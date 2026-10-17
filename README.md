@@ -37,21 +37,19 @@ coding-workflow 原文、Node 探针和 Git 实验后修订；对齐结论与未
 
 ## Issue 索引
 
-Issue 在 GitHub 上创建后编号写回此处；在此之前以文件为准。
-
-| 文件 | 标题 | 阶段 |
+| Issue | 文件 | 阶段 |
 |---|---|---|
-| `docs/issues/00_design_revision_v2.1.md` | 设计修订 v2.1：开工前需要确认的七项规则 | 设计 |
-| `docs/issues/01_W0_baseline.md` | W0 现有交付与政策基线 | G0 |
-| `docs/issues/02_W1_facts_and_pr_handoff.md` | W1 事实采集与原 PR 交接 | G1 |
-| `docs/issues/03_W2_evidence_and_combination.md` | W2 可执行证据与临时组合 | G1 |
-| `docs/issues/04_W3_queue_authorization_operations.md` | W3 接收队列、有限授权与可靠操作 | G1 |
-| `docs/issues/05_W4_executor_adapters.md` | W4 两种执行器与准确结果 | G2 |
-| `docs/issues/06_W5_review_loop_relay.md` | W5 按项目流程自动转接审核循环 | G2 |
-| `docs/issues/07_W6_dispatch_and_delivery.md` | W6 多任务分配与实际交付通信 | G3 |
-| `docs/issues/08_W7_three_views_and_release.md` | W7 完整三视图、外部步骤与交付 | G3 |
+| [#1 设计修订 v2.1：开工前需要确认的十项规则](https://github.com/wlvh/tongxu/issues/1) | `docs/issues/00_design_revision_v2.1.md` | 设计 |
+| [#2 W0 现有交付与政策基线](https://github.com/wlvh/tongxu/issues/2) | `docs/issues/01_W0_baseline.md` | G0 |
+| [#3 W1 事实采集与原 PR 交接](https://github.com/wlvh/tongxu/issues/3) | `docs/issues/02_W1_facts_and_pr_handoff.md` | G1 |
+| [#4 W2 可执行证据与临时组合](https://github.com/wlvh/tongxu/issues/4) | `docs/issues/03_W2_evidence_and_combination.md` | G1 |
+| [#5 W3 接收队列、有限授权与可靠操作](https://github.com/wlvh/tongxu/issues/5) | `docs/issues/04_W3_queue_authorization_operations.md` | G1 |
+| [#6 W4 两种执行器与准确结果](https://github.com/wlvh/tongxu/issues/6) | `docs/issues/05_W4_executor_adapters.md` | G2 |
+| [#7 W5 按项目流程自动转接审核循环](https://github.com/wlvh/tongxu/issues/7) | `docs/issues/06_W5_review_loop_relay.md` | G2 |
+| [#8 W6 多任务分配与实际交付通信](https://github.com/wlvh/tongxu/issues/8) | `docs/issues/07_W6_dispatch_and_delivery.md` | G3 |
+| [#9 W7 完整三视图、外部步骤与交付](https://github.com/wlvh/tongxu/issues/9) | `docs/issues/08_W7_three_views_and_release.md` | G3 |
 
-按 v2 §23.1，先只做 W0；W1 之后的 Issue 在 W0 的 Bridge 产出后按 Issue Agent 规则细化为可编码 Issue。
+GitHub Issue 正文与 `docs/issues/` 同步；改动先改文件再更新 Issue。按 v2 §23.1，先只做 #2（W0）；#3 以后的 Issue 在 W0 的 Bridge 产出后按 Issue Agent 规则细化为可编码 Issue。#1 的十项决定是 #3 以后的前置。
 
 ## 验证脚本
 
