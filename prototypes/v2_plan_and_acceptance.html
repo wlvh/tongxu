@@ -1,0 +1,1157 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"><title>同序 v2.0 · 完整方案、开发与验收</title><meta name="description" content="以交付为中心：GitHub 接收优先，再自动接续原生 Agent。完整方案、8 个开发工作包、32 项验收及离线演练。"><style>:root{--bg:#f4f5f0;--paper:#fffefb;--soft:#edf1e9;--ink:#22352d;--muted:#66756c;--line:#dbe2d8;--green:#17684d;--green-bg:#e1eee3;--amber:#896022;--amber-bg:#fff0d4;--red:#a7403a;--red-bg:#f9e7e4;--purple:#6c5187;--purple-bg:#eee8f6;--shade:0 12px 40px #263f2d0a;color-scheme:light}
+:root[data-theme=dark]{--bg:#131c17;--paper:#1b2820;--soft:#25352a;--ink:#e4ecdf;--muted:#acb9aa;--line:#3d4e40;--green:#9ed8b3;--green-bg:#294637;--amber:#efcf8a;--amber-bg:#493e27;--red:#edb1a6;--red-bg:#4c302c;--purple:#cfbcea;--purple-bg:#3c3248;--shade:none;color-scheme:dark}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:104px}body{margin:0;font:16px/1.9 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}a{color:var(--green);text-underline-offset:3px;overflow-wrap:anywhere}a:hover{opacity:.8}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--amber);outline-offset:3px}h1,h2,h3,h4,p{margin:0}h1{font-size:42px;line-height:1.33;letter-spacing:-1.8px;font-weight:700}h2{font-size:26px;line-height:1.5;letter-spacing:-.5px}h3{font-size:19px;line-height:1.6}h4{font-size:16px}p{margin:13px 0}strong{font-weight:650}small,.small{font-size:13px}.muted{color:var(--muted)}.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,'Noto Sans Mono',monospace}code{font-size:.88em;background:var(--soft);padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{font-size:12.5px;line-height:1.9;background:var(--soft);border:1px solid var(--line);padding:18px 20px;border-radius:9px;overflow:auto;tab-size:2}pre code{padding:0;background:none;font-size:inherit;overflow-wrap:normal}blockquote{margin:24px 0;padding:8px 22px;border-left:4px solid var(--green);background:var(--green-bg);font-weight:550;border-radius:0 9px 9px 0}.skip{position:absolute;top:-80px;left:10px;z-index:200;background:var(--paper);padding:9px}.skip:focus{top:5px}[hidden]{display:none!important}.shell{display:grid;grid-template-columns:234px minmax(0,1fr);min-height:100vh}.sidebar{position:fixed;left:0;top:0;bottom:0;width:234px;background:var(--paper);border-right:1px solid var(--line);padding:25px 20px;overflow:auto;z-index:50}.brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;margin-bottom:24px}.mark{display:grid;place-items:center;width:35px;height:35px;background:var(--green);color:var(--paper);border-radius:9px;font-size:23px}.brand b{font-size:23px;letter-spacing:3px}.brand small{display:block;font:9px/1.8 ui-monospace,monospace;letter-spacing:1.9px;color:var(--muted)}.edition{padding:12px;background:var(--soft);border:1px solid var(--line);border-radius:9px;font-size:12px;margin-bottom:20px}.eyebrow{font:11px/1.7 ui-monospace,monospace;letter-spacing:1.4px;color:var(--muted);text-transform:uppercase}.toc{margin-top:12px;display:grid;gap:3px}.toc a{display:flex;gap:9px;font-size:12px;line-height:1.65;text-decoration:none;color:var(--muted);padding:6px 7px;border-radius:5px}.toc a:hover,.toc a.active{background:var(--green-bg);color:var(--green)}.toc .num{font:11px/1.9 ui-monospace,monospace;opacity:.7}.sidebarfoot{margin-top:23px;border-top:1px solid var(--line);padding-top:14px;font-size:11px;color:var(--muted)}.main{grid-column:2;min-width:0}.topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:14px;padding:13px 30px;background:var(--bg);border-bottom:1px solid var(--line);min-height:70px;flex-wrap:wrap}.modes{display:flex;gap:5px;flex-wrap:wrap}.btn,.modes button,.pill{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:7px;padding:7px 12px;font-size:12px;line-height:1.5;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:5px}.btn:hover,.modes button:hover{background:var(--soft)}.modes .active,.btn.primary{background:var(--green);color:var(--paper);border-color:var(--green)}.btn.danger{color:var(--red)}.tools{display:flex;gap:7px;margin-left:auto}.badge{display:inline-block;border-radius:5px;background:var(--soft);border:1px solid var(--line);padding:2px 7px;font-size:11px;font-weight:600;white-space:nowrap}.badge.green{background:var(--green-bg);border-color:transparent;color:var(--green)}.badge.amber{background:var(--amber-bg);border-color:transparent;color:var(--amber)}.badge.red{background:var(--red-bg);border-color:transparent;color:var(--red)}.badge.purple{background:var(--purple-bg);color:var(--purple);border-color:transparent}.content{max-width:1240px;margin:auto;padding:33px 44px 70px}.hero{padding:33px 36px;background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shade);margin-bottom:27px}.hero .eyebrow{margin-bottom:14px}.hero .lead{font-size:18px;max-width:760px;color:var(--muted);line-height:1.85;margin-top:19px}.hero-foot{display:flex;gap:9px;flex-wrap:wrap;margin-top:22px}.flow-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0 0}.flow-item{border-top:2px solid var(--line);padding-top:11px;font-size:12px;line-height:1.8;color:var(--muted)}.flow-item b{display:block;font-size:14px;color:var(--ink)}.flow-item .code{font:11px ui-monospace,monospace;color:var(--green);margin-right:7px}.notice{background:var(--amber-bg);color:var(--amber);border:1px solid transparent;padding:12px 16px;font-size:13px;border-radius:8px;line-height:1.8;margin:15px 0}.notice.neutral{background:var(--soft);color:var(--muted);border-color:var(--line)}.notice.green{background:var(--green-bg);color:var(--green)}.notice.red{background:var(--red-bg);color:var(--red)}.reading-tools{display:flex;gap:10px;align-items:center;margin-bottom:22px}.reading-tools input{max-width:450px}input,select,textarea{border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);padding:8px 10px;font-size:13px;min-width:0}input[type=search]{width:100%}textarea{resize:vertical;min-height:68px}.chapter{padding:27px 0 36px;border-bottom:1px solid var(--line);scroll-margin-top:94px}.chapter h2{padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:23px}.chapter h3{margin:28px 0 10px}.chapter .section-no{display:block;color:var(--green);font:12px/1.7 ui-monospace,monospace;letter-spacing:1.1px;margin-bottom:8px}.chapter p,.chapter li{max-width:100%;overflow-wrap:break-word}.chapter ul,.chapter ol{padding-left:23px}.chapter a.source-ref{font:11px ui-monospace,monospace;text-decoration:none;margin-left:3px}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px;margin:20px 0;background:var(--paper)}table{border-collapse:collapse;min-width:640px;width:100%;font-size:13px;line-height:1.9}thead{background:var(--soft)}th{font-weight:600;text-align:left;color:var(--muted);font-size:12px}th,td{padding:13px 15px;vertical-align:top;border-bottom:1px solid var(--line)}tbody tr:last-child td{border-bottom:0}tbody tr:nth-child(even){background:color-mix(in srgb,var(--soft) 35%,transparent)}td:first-child{min-width:122px}td code{font-size:11px}.page-head{margin:9px 0 25px}.page-head h1{font-size:34px}.page-head p{color:var(--muted);font-size:15px}.stage-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:23px 0}.card{background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:23px;box-shadow:var(--shade);min-width:0}.card p{font-size:14px;color:var(--muted)}.card h3{font-size:18px}.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.between{justify-content:space-between}.worklist{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workcard .eyebrow{color:var(--green);margin-bottom:8px}.workcard dl{font-size:13px;line-height:1.85;display:grid;grid-template-columns:70px 1fr;gap:10px;margin:18px 0}.workcard dt{color:var(--muted)}.workcard dd{margin:0}.filters{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0;align-items:center}.filters input{flex:1;min-width:200px}.counter{font:12px/1.8 ui-monospace,monospace;color:var(--muted)}.test-grid{display:grid;gap:13px}.testcard{padding:20px 23px}.testcard h3{font-size:16px}.testcard p{font-size:13px;margin:10px 0}.testfields{display:grid;grid-template-columns:145px 1fr;gap:10px;margin-top:13px}.testfields label{display:grid;gap:5px;font-size:11px;color:var(--muted)}.testfields .full{grid-column:1/-1}.testfields textarea{font-size:12px;min-height:56px}.quiet{font-size:12px;color:var(--muted);line-height:1.8}.demo-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:17px 0}.demo-tabs button{padding:8px 13px;background:var(--paper);border:1px solid var(--line);border-radius:7px;font-size:12px;color:var(--ink)}.demo-tabs .active{background:var(--ink);color:var(--paper)}.demo-layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:17px;align-items:start}.pritem{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);padding:16px;margin-bottom:10px;line-height:1.8}.pritem.active{border:2px solid var(--green);padding:15px}.pritem b{display:block;font-size:14px;margin:9px 0 5px}.pritem small{display:block;color:var(--muted);font-size:11px;overflow-wrap:anywhere}.checks{display:grid;gap:0;margin:15px 0}.check{display:flex;align-items:start;gap:10px;border-bottom:1px solid var(--line);padding:10px 0;font-size:12px}.check:last-child{border:0}.check .ok{color:var(--green)}.check .bad{color:var(--red)}.kv{display:grid;grid-template-columns:95px 1fr;gap:8px;font-size:12px;margin:15px 0}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:15px 0}.action-area{margin-top:18px;border-top:1px solid var(--line);padding-top:15px}.demo-log{max-height:220px;overflow:auto;padding:5px 0}.demo-log p{font-size:12px;border-bottom:1px solid var(--line);padding:10px 0;margin:0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}.stat b{font-size:30px;line-height:1.2;display:block;font-weight:600;margin:10px 0}.stat{padding:17px;background:var(--paper);border:1px solid var(--line);border-radius:10px;font-size:12px;color:var(--muted)}.stat b{color:var(--ink)}details{border:1px solid var(--line);border-radius:8px;padding:12px 15px;margin:15px 0;background:var(--soft)}summary{cursor:pointer;font-size:13px;font-weight:600}.handoff-chain{display:flex;gap:7px;margin:18px 0}.handoff-chain div{flex:1;text-align:center;border:1px solid var(--line);background:var(--soft);padding:13px 6px;border-radius:7px;font-size:12px}.handoff-chain .done{background:var(--green-bg);color:var(--green)}.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:100;padding:12px 19px;border-radius:9px;background:var(--ink);color:var(--paper);font-size:13px;max-width:min(680px,90vw);box-shadow:0 5px 24px #0003}.foot{display:flex;gap:15px;justify-content:space-between;border-top:1px solid var(--line);margin-top:35px;padding-top:17px;color:var(--muted);font-size:11px}.mobile-menu{display:none}#read-progress{position:fixed;top:0;left:234px;height:3px;background:var(--green);width:0;z-index:70}.pill.active{background:var(--green);color:var(--paper)}.source-list{font-size:13px}.empty{padding:40px;text-align:center;color:var(--muted)}
+@media(min-width:1600px){.content{padding-left:65px;padding-right:65px}}
+@media(max-width:1150px){.content{padding:26px}.topbar{padding:12px 20px}.stage-grid{grid-template-columns:1fr 1fr}.demo-layout{grid-template-columns:230px minmax(0,1fr)}h1{font-size:36px}.hero{padding:27px}.tools .print-btn{display:none}}
+@media(max-width:900px){.shell{grid-template-columns:1fr}.main{grid-column:1}.sidebar{transform:translateX(-100%);transition:transform .15s;box-shadow:var(--shade)}.sidebar.open{transform:none}.mobile-menu{display:inline-flex}#read-progress{left:0}.demo-layout{grid-template-columns:1fr}.prlist{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.pritem{margin:0}.worklist{grid-template-columns:1fr}.topbar{gap:8px}.topbar .tools{margin-left:auto}.modes{order:3;width:100%;overflow-x:auto;flex-wrap:nowrap}.modes button{flex:1;white-space:nowrap}.chapter{scroll-margin-top:134px}}
+@media(max-width:580px){body{font-size:15px}.content{padding:19px 16px 45px}.hero{padding:23px 20px}h1{font-size:30px;letter-spacing:-1px}.hero .lead{font-size:16px}.flow-strip{grid-template-columns:1fr 1fr}.chapter h2{font-size:22px}.chapter h3{font-size:17px}.stage-grid{gap:9px}.card{padding:19px}.prlist{grid-template-columns:1fr}.pritem{padding:13px}.pritem.active{padding:12px}.pritem b{display:inline;margin-left:8px}.stats{gap:7px}.stat{padding:13px}.stat b{font-size:26px}.testfields{grid-template-columns:1fr}.testfields .full{grid-column:auto}.page-head h1{font-size:28px}.filters input{min-width:100%}.topbar{padding:11px 16px}.testcard{padding:17px}.foot{flex-direction:column}.modes button{font-size:11px;padding:8px 6px}pre{font-size:11px;padding:14px}.reading-tools{flex-wrap:wrap}.reading-tools .counter{width:100%}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+@media print{body{background:#fff;color:#111;font:10pt/1.6 sans-serif}.sidebar,.topbar,.reading-tools,#demo-panel,#work-panel,#accept-panel,#read-progress,.toast,.skip{display:none!important}.shell,.main{display:block}#document-panel{display:block!important}.content{padding:0;max-width:none}.hero{border:0;padding:0;box-shadow:none}.chapter{display:block!important;break-before:auto;padding:16px 0}.chapter h2,.chapter h3{break-after:avoid}.table-wrap{overflow:visible}table{min-width:0;font-size:8pt}th,td{padding:6px}.hero h1{font-size:25pt}pre{white-space:pre-wrap;overflow:visible}a{color:#111}.foot{font-size:8pt}.notice{border:1px solid #ccc;color:#222}blockquote{background:#eee;color:#111}p{orphans:3;widows:3}}
+/* Keep chapter numbers intact when the title wraps in the narrow sidebar. */
+.toc .num{flex:none;min-width:16px;white-space:nowrap}
+</style></head><body>
+<a class="skip" href="#main">跳到正文</a><div id="read-progress" aria-hidden="true"></div>
+<div class="shell"><aside class="sidebar" id="sidebar"><a class="brand" href="#s01" data-section="s01"><span class="mark">↔</span><span><b>同序</b><small>DELIVERY BEFORE ORCHESTRATION</small></span></a><div class="edition"><strong>v2.0 · 交付优先</strong><br><span class="muted">2026-10-17 / Asia·Tokyo<br>设计与验收基线 · 非上线报告</span></div><div class="eyebrow">阅读导航 / 24 CHAPTERS</div><nav class="toc" aria-label="方案目录"><a href="#s01" data-section="s01"><span class="num">01</span><span>这份文件如何使用</span></a><a href="#s02" data-section="s02"><span class="num">02</span><span>产品目标与四个交付阶段</span></a><a href="#s03" data-section="s03"><span class="num">03</span><span>依据、经验如何进入设计，以及旧版如何退出</span></a><a href="#s04" data-section="s04"><span class="num">04</span><span>权威与责任：每类事实只有一个正式来源</span></a><a href="#s05" data-section="s05"><span class="num">05</span><span>任务分派前的共同验收</span></a><a href="#s06" data-section="s06"><span class="num">06</span><span>交接只用两类结构，不要求重复抄事实</span></a><a href="#s07" data-section="s07"><span class="num">07</span><span>从事实到动作：机械检查的正确边界</span></a><a href="#s08" data-section="s08"><span class="num">08</span><span>版本、材料与证据怎样固定</span></a><a href="#s09" data-section="s09"><span class="num">09</span><span>把已有验收工具接起来，而不是重造测试平台</span></a><a href="#s10" data-section="s10"><span class="num">10</span><span>接收状态与下一步责任</span></a><a href="#s11" data-section="s11"><span class="num">11</span><span>队列：先完成交付，再增加开工</span></a><a href="#s12" data-section="s12"><span class="num">12</span><span>授权模式、身份与共享资源</span></a><a href="#s13" data-section="s13"><span class="num">13</span><span>分支、临时组合与实际合并</span></a><a href="#s14" data-section="s14"><span class="num">14</span><span>操作可靠性、迟到事件和故障恢复</span></a><a href="#s15" data-section="s15"><span class="num">15</span><span>最小架构：先 CLI 接收层，再同源界面</span></a><a href="#s16" data-section="s16"><span class="num">16</span><span>G2：接通审核—核实—修复，而不偷偷改流程</span></a><a href="#s17" data-section="s17"><span class="num">17</span><span>G3：三种派发、准确会话与通信交付</span></a><a href="#s18" data-section="s18"><span class="num">18</span><span>三个主视图与网页端 GPT 的位置</span></a><a href="#s19" data-section="s19"><span class="num">19</span><span>如何开发：八个纵向工作包</span></a><a href="#s20" data-section="s20"><span class="num">20</span><span>第一份可用交付与最终完成定义</span></a><a href="#s21" data-section="s21"><span class="num">21</span><span>验收清单：功能、证据、恢复和收益</span></a><a href="#s22" data-section="s22"><span class="num">22</span><span>怎样亲自验收：四条现场路径</span></a><a href="#s23" data-section="s23"><span class="num">23</span><span>交给开发者与审核者的直接指令</span></a><a href="#s24" data-section="s24"><span class="num">24</span><span>退出条件、来源与当前交付边界</span></a></nav><div class="sidebarfoot">本文件离线可读，无外部字体、脚本或服务依赖。源链接仅在主动点击时打开。所有演练均为虚构，绝不请求真实合并。</div></aside>
+<div class="main"><header class="topbar"><button class="btn mobile-menu" id="menu" aria-label="展开目录">☰ 目录</button><div class="modes" role="tablist" aria-label="阅读模式"><button role="tab" class="active" data-mode="document" aria-selected="true">完整方案</button><button role="tab" data-mode="work" aria-selected="false">如何开发</button><button role="tab" data-mode="accept" aria-selected="false">如何验收</button><button role="tab" data-mode="demo" aria-selected="false">交互演练</button></div><div class="tools"><span class="badge amber">离线设计稿</span><button class="btn" id="theme" aria-label="切换明暗主题">◐</button><button class="btn print-btn" id="print">打印方案</button></div></header>
+<main class="content" id="main">
+<section id="document-panel" data-panel="document"><div class="hero"><div class="eyebrow">TONGXU / PRODUCT & DELIVERY SPECIFICATION / REVISION 2.0</div><h1>先让成果交出去。<br>再让 Agent 自动接续。</h1><p class="lead">不再以“接通两个执行器”作为首个价值证明。先将现有 PR、验收工具、有限授权和接收队列连接起来，再扩展完整的多 Issue 协作。</p><div class="hero-foot"><span class="badge green">完整产品方案</span><span class="badge">8 个开发工作包</span><span class="badge">32 项待执行验收</span><span class="badge">保留原三个主视图</span></div><div class="flow-strip"><div class="flow-item"><b><span class="code">G0</span>只读摸底</b>现有事实、政策与可复用工具</div><div class="flow-item"><b><span class="code">G1</span>交付接收</b>原 PR、证据、下一步与队列</div><div class="flow-item"><b><span class="code">G2</span>执行闭环</b>审核 → 核实 → 修复 → 再审</div><div class="flow-item"><b><span class="code">G3</span>完整协作</b>任务分配、原生消息、实际消费</div></div></div><div class="notice">本文件替换 v1 的实施安排，不改变目标仓库现行政策，不新增合并／付费授权。软件和 T01—T32 尚待开发与实际验收。</div><div class="reading-tools"><input type="search" id="doc-search" placeholder="按关键词筛选章节，例如：授权、组合、原 PR" aria-label="搜索方案章节"><span class="counter" id="doc-count">24 章 · 8 个工作包 · 32 项待执行验收</span></div><section class="chapter" id="s01"><h2><span class="section-no">CHAPTER 01</span>这份文件如何使用</h2><p>本文件替代上一份《同序 v1：完整方案、开发路线与验收基线》的产品实施安排；不覆盖目标仓库的现行政策，也不构成新的合并、付费、建仓或生产操作授权。方案、下面的 W0—W7 工作包和 T01—T32 验收编号，在写入目标项目正式 Issue 后才成为对应开发的实施依据。</p>
+<p><strong>产品负责人</strong>先读第 02、03、12、20、22 节；<strong>开发者</strong>读第 04—19、21、23 节；<strong>PR 审核者</strong>使用第 21—23 节，沿引用回到具体机制。每个工作包都要有能演示的结果，不能只按页面、表或接口拆分。</p>
+<p>配套 HTML 完整保留本文，另提供离线交互演练与可填写的验收记录。演练中的仓库、PR、版本、运行及授权均为虚构数据，按钮不连接 GitHub、Codex 或 Claude Code；验收记录默认全部“未执行”。浏览器本地勾选不是生产验收证据。</p>
+<p>**不依赖前面对话。**本文明确写出保留项、变更项、实施边界、失败恢复、完成定义和来源。源材料中的经验结论不自动变成已证实的统计规律；本轮没有重跑 SEC 原件普查、用户本机执行器或生产合并。</p>
+</section><section class="chapter" id="s02"><h2><span class="section-no">CHAPTER 02</span>产品目标与四个交付阶段</h2><h3>2.1 产品是什么</h3>
+<p>同序是一个以<strong>交付</strong>为中心的本地协作台：Issue 说明要实现什么；PR 或固定产物承担具体交接；接收者判断是否达标；程序连接可确定的事实、证据、责任和队列；Codex、Claude Code 留在原生工具里调查、开发和验证。</p>
+<p>它要消除的是人工找会话、重复填版本、复制长报告、追问谁负责下一步、反复核对真实目标，以及已获有限授权后仍无理由等待。它不消除业务判断，不以合并数代替价值，也不增加一个全局主 Agent。</p>
+<p>**最终用户必须能回答六个问题：**现在什么可用；什么没完成；谁在等谁；哪个版本经过了什么验证；这次代码实际进哪里；哪项事情确实需要我决定。</p>
+<h3>2.2 分阶段交付，不把前置研究做成漫长门槛</h3>
+<div aria-label="产品目标与四个交付阶段：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>交付名称</th>
+<th>用户实际得到什么</th>
+<th>不允许冒称什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G0</td>
+<td>只读摸底与实施入口</td>
+<td>现有流程、工具、授权、在途交付的事实基线；W1 实施 Issue 草稿</td>
+<td>原生接口已接通、远端写权限已获批</td>
+</tr>
+<tr>
+<td>G1</td>
+<td>GitHub 交付接收版</td>
+<td>原 PR 交接、自动事实采集、既有检查调用、固定组合、下一步责任与队列；按有效授权发布或提交操作包</td>
+<td>模型之间已经自动转接、可以驱动全部原生会话</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>单 PR 执行闭环版</td>
+<td>正式审核、必要核实、综合、授权内修复、再审的结果自动转接；可靠关联原生现场</td>
+<td>运行中跨工具投递和完整多 Issue 协作已完成</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>完整多 Issue 协作台</td>
+<td>三种子任务安排、同／跨工具交接、实际消费、可选集成路径、三个主视图</td>
+<td>所有主机、CLI 版本、用户账号或仓库类型都受支持</td>
+</tr>
+</tbody>
+</table></div>
+<p>G1 可在既有 Agent 继续手工接收任务的情况下成立；模型间尚需人搬运的环节必须标明。G2 自动链内的模型结果搬运应为零。G3 用真实多任务证明协作收益，不能用 G2 的成功代替。</p>
+<p>首个受支持部署是单用户、单项目仓库、单台已验证主机，优先本地 Mac。能读取 GitHub 中已有远端 Agent 的交付，不等于能控制那台远端机器。完整验收沿用原场景：三个顶层 Issue、两位 Codex 负责人和一位 Claude Code 负责人；这是覆盖场景，不是生产中固定三项任务或固定模型配额的限制。<a class="source-ref" href="#source-1">[S1]</a></p>
+<h3>2.3 首版不做什么</h3>
+<p>不做统一聊天、编辑器和终端；不做通用流程编辑器、通用依赖闭包免审器、自动扩写范围、自动 rebase 作者分支、多仓库多用户、跨主机调度、通用财务账本、订阅费用推算和每个子代理的永久工单。</p>
+<p>不强制集成分支，不强制“每个任务一个 PR”，不强制每项交付都增加三个角色签字。**有限委托下的技术合并可以自动执行；无委托的合并必须取得具体确认。**两者与无条件自动合并完全不同。</p>
+</section><section class="chapter" id="s03"><h2><span class="section-no">CHAPTER 03</span>依据、经验如何进入设计，以及旧版如何退出</h2><h3>3.1 已有依据与本次新增设计分开</h3>
+<div aria-label="依据、经验如何进入设计，以及旧版如何退出：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>来源支持的内容</th>
+<th>本方案如何使用</th>
+<th>明确边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原方案的三视图、三种派发、固定产物、未知状态不重派</td>
+<td>保留为 G3 产品承诺</td>
+<td>原 HTML 是演示，不是生产代码 <a class="source-ref" href="#source-1">[S1]</a></td>
+</tr>
+<tr>
+<td>coding-workflow 固定版本的独立审核、Finding 核实、显式取舍、测试复用</td>
+<td>作为参考流程；采纳后按固定版本执行</td>
+<td>目标项目现行有效政策需先核对，不由模板自动覆盖 <a class="source-ref" href="#source-2">[S2]</a></td>
+</tr>
+<tr>
+<td>SEC_metrics #153 的接收分工及有限技术合并委托</td>
+<td>验证“已有授权不该每次重批”；复用现有接收入口</td>
+<td>该 Issue 可编辑且多个 Agent 共用账号；不是同序的新授权 <a class="source-ref" href="#source-3">[S3]</a></td>
+</tr>
+<tr>
+<td>#264 已合入 D02 对照工具</td>
+<td>接入现成生产入口比较工具，不重新开发一遍</td>
+<td>只证明工具覆盖的 D02 准备；不代表整个公司链正确 <a class="source-ref" href="#source-4">[S4]</a></td>
+</tr>
+<tr>
+<td>#287 的误目标记录</td>
+<td>把真实目标与最终出口、操作前核对做成验收</td>
+<td>不能仅凭现正文推断当时未声明叠放 <a class="source-ref" href="#source-5">[S5]</a></td>
+</tr>
+<tr>
+<td>#293 的额度预留候选</td>
+<td>引用原账本与消费接口，避免第二份预算</td>
+<td>本轮读取为 open / Draft，head a8977a9d；不声称已合入或已运行 <a class="source-ref" href="#source-6">[S6]</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>反馈来自同一项目的不同参与者，优先级价值很高，但不是独立对照实验。本文不使用“五天上百 PR”“每轮两小时”等未经本轮系统统计的数字推算收益。</p>
+<h3>3.2 对 v1 的明确替换</h3>
+<div aria-label="依据、经验如何进入设计，以及旧版如何退出：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>旧安排</th>
+<th>v2 生效设计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>两种执行器接通才能开始主要产品交付</td>
+<td>G1 先解决现有 GitHub 交付；原生接口探针只阻塞依赖它的 G2/G3 能力</td>
+</tr>
+<tr>
+<td>所有合并一律逐次由人确认</td>
+<td>默认无新增权；有效有限委托内不重复请示；越界或来源不明才升级</td>
+</tr>
+<tr>
+<td>首个可用版本是模型审核循环</td>
+<td>首个可用版本是交付接收；审核循环后接，不删除最终目标</td>
+</tr>
+<tr>
+<td>队列主要用于 Agent 执行</td>
+<td>提前管理待接收、退回收尾和目标分支推进；限制同时展开的验收</td>
+</tr>
+<tr>
+<td>不自动 rebase，容易退化为作者每次追 main</td>
+<td>不动作者分支，在隔离现场构造固定目标＋候选来验证</td>
+</tr>
+<tr>
+<td>主要靠后端建立完整会话模型</td>
+<td>G1 只保存必要交付和操作记录；会话控制在 G2 添加</td>
+</tr>
+</tbody>
+</table></div>
+<p>旧 D0—D7 不继续作为新实施入口；它们的可靠性要求迁入 W0—W7。旧版每项 A 验收所保护的行为不因改编号消失，已确认的七个原型缺口在第 21 节单独映射。</p>
+</section><section class="chapter" id="s04"><h2><span class="section-no">CHAPTER 04</span>权威与责任：每类事实只有一个正式来源</h2><h3>4.1 载体职责</h3>
+<div aria-label="权威与责任：每类事实只有一个正式来源：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>载体</th>
+<th>保存什么</th>
+<th>不保存什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>任务 Issue</td>
+<td>目标、范围、非目标、共同验收、正式业务决定、依赖</td>
+<td>每个 PR 全部执行历史的副本</td>
+</tr>
+<tr>
+<td>原 PR</td>
+<td>本次代码交付摘要、固定证据入口、接收／退回、复验和合并记录</td>
+<td>平行需求正文；父目标的自动完成证明</td>
+</tr>
+<tr>
+<td>项目接收索引</td>
+<td>角色／授权来源、跨任务等待关系、正式交接入口</td>
+<td>人工复制的全部 PR 动态和长报告</td>
+</tr>
+<tr>
+<td>原生执行器</td>
+<td>session、turn、工具调用、运行／等待／退出事实</td>
+<td>单独决定业务已完成</td>
+</tr>
+<tr>
+<td>原项目资源账本</td>
+<td>预留、认领、实际消耗及失败／未知的处理</td>
+<td>根据消息数推导的“已花费”</td>
+</tr>
+<tr>
+<td>同序本地存储</td>
+<td>已采用引用、观测缓存、请求、排队、回执、恢复位置</td>
+<td>第二份可独立改写的需求或预算</td>
+</tr>
+<tr>
+<td>消息</td>
+<td>谁需要谁做什么，引用原 PR／Issue／产物</td>
+<td>另一份授权与验收结论</td>
+</tr>
+</tbody>
+</table></div>
+<p>PR 是代码交付的主要交接入口，不是所有产物的唯一入口。没有 PR 的数据包或接口样例，先在关联 Issue／已有产物记录下交接；以后产生 PR 时引用原交付，不能复制出一套独立状态。</p>
+<h3>4.2 角色不是固定的常驻会话</h3>
+<p>产品负责人负责目标和超出授权的取舍。交付负责人负责实现与合成。独立审核者判断代码、测试、契约及复杂度。接收者判断本次交付是否能进入目标、协调剩余工作；不必新增一个全局上级 Agent。</p>
+<p>每项未结束交付有一个<strong>下一步交接责任人</strong>，记录“谁／做什么／作用于哪个候选／缺什么／完成后交给谁”。验证可以并行；负责把结果收齐的责任不能悬空。机器步骤的责任可写为“接收服务，由接收角色负责处理异常”。</p>
+<p>同一角色可以跨天持续，会话可以更换；独立审核不得继承作者工作对话。一个会话空闲不能说明交付完成，一个会话失联也不能取消其未确认写入责任。</p>
+<h3>4.3 防止摘要成为第二权威</h3>
+<p>当前状态在原 PR 正文中简短展示，关键事件在原 PR 评论／正式 review 留痕。可直接取得的 head、base、检查状态由程序生成，作者不再重复填。叙事、边界和判断由责任人写。</p>
+<p>沿用目标 PR 模板，在既有 Review / Fix Record 内索引原始证据；不再新建一条同义“同序汇总评论”。程序只维护获准的正文区块，写入前重读；发现他人编辑则保留并重新合成，不覆盖整篇。该重读不宣称是 API 不支持的跨系统原子锁。实质变更后读回内容核对，关键更正用短评论指向被更正记录。</p>
+<p>G1 在未获写权限时只导出更新建议。人工发布路径明确标“待发布”，不能因为本地产生 Markdown 就显示远端已更新。</p>
+</section><section class="chapter" id="s05"><h2><span class="section-no">CHAPTER 05</span>任务分派前的共同验收</h2><p>仅对跨 Agent、共享入口、保存／复用条件、旧状态兼容或真实热点变化补充共同验收。独立小修补复用现有测试政策，不增加普遍开工审批。</p>
+<p>由开发负责人先写“我改变什么、什么不该变、怎样证明”；接收者补遗漏的消费者、反例和组合。双方使用一个正式 Issue 段落，不建立两份可漂移的契约。</p>
+<pre><code class="language-text">共同交付：用户从哪个实际入口得到什么结果或准确限制。
+分工：谁实现提供方，谁接消费者，谁确认真实组合。
+必须一致：输入输出、单位／期间／来源、失败与拒绝含义、旧结果处置。
+材料：固定材料位置与身份；作者、消费者、接收者均可取得。
+验证：使用哪个已有入口，正常与关键失败场景；谁维护与执行。
+预期差异：允许什么改变、哪些必须保留；其余变化需要解释。
+合入与退出：哪些可独立先合，什么证据满足后共同交付才算完成。
+</code></pre>
+<p>先让最短的真实用户路径接通，再扩展公司、年份和异常。共享样例用于提前对接，但最终必须换真实实现，不接受双方各自对自己的假数据通过。</p>
+<p>公共输入输出、错误含义、持久化／复用规则变化，或出现实质新反例时，重审受影响部分。代码未变但出现新反例，旧通过结论也可能失效。普通补链接、进度更新不自动重置范围。</p>
+<p>**旧版是对照，不是正确答案。**成功变失败可能是纠正错误放行；失败变成功可能是删掉困难材料。验收要比较状态、内容、身份、来源和副作用，而非只看通过率。</p>
+</section><section class="chapter" id="s06"><h2><span class="section-no">CHAPTER 06</span>交接只用两类结构，不要求重复抄事实</h2><h3>6.1 提交或返修</h3>
+<p>沿用原 PR 正文，保留以下信息；已由程序生成的项目引用它，不再人工填同义字段。</p>
+<pre><code class="language-text">本次交付：实际改变、范围之外、用户入口。
+受审对象：程序生成的 head、实际目标、base／受测组合、采用范围。
+证据：命令与预期、固定材料、结果、范围、环境及原始输出。
+独立性：作者自测／消费者复验／独立审阅，分别注明。
+返修：回应哪条原反馈，已做什么，哪些旧证据仍适用及理由。
+剩余：限制、需要决定的事项、建议的下一步责任人。
+</code></pre>
+<h3>6.2 接收、退回或要求补证据</h3>
+<pre><code class="language-text">对象与结论：对哪个候选、哪部分范围接受／退回／待补证据。
+已核对：本轮成立的证据；未来复用须满足什么条件。
+仍失败：命题、触发路径、后果、复现与原始证据。
+通过条件：怎样的最小充分修正或补证据可以重新接收。
+下一步：交给谁；仅阻止哪部分工作；无关部分是否可继续。
+建议：非阻断改进另列，不混入必须修复。
+</code></pre>
+<p>结构完整只能证明没有漏填，不能证明事实与语义正确。历史 PR 不因缺少新字段被一律倒退；W0 建立采用边界，新受管交接遵守该结构，旧记录缺项按风险补取。</p>
+<p>**按类修复：**同类反复出现时，退回应指出共同失效机制、既有契约、当前范围内变体及有限通过条件。不能继续只补新词，也不能借此要求证明全部自然语言或扩出通用框架。第一次已看见根因即可按类处理，不必等固定次数。</p>
+</section><section class="chapter" id="s07"><h2><span class="section-no">CHAPTER 07</span>从事实到动作：机械检查的正确边界</h2><div aria-label="从事实到动作：机械检查的正确边界：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>可直接机械确定</th>
+<th>需要语义判断</th>
+<th>程序不应冒充的结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GitHub 实际 head/base/目标、提交包含关系、变更路径</td>
+<td>是否拆分合理、额外提交是否符合交付范围</td>
+<td>没有文件交集所以没有业务冲突</td>
+</tr>
+<tr>
+<td>命令实际开始／结束、退出码、原始结果位置</td>
+<td>测试是否检查了真正风险、异常是否合理拒绝</td>
+<td>测试命令成功所以业务通过</td>
+</tr>
+<tr>
+<td>已登记依赖命中、在途 PR 文件重叠</td>
+<td>是否漏登记消费者、运行时数据依赖</td>
+<td>清单之外的指标都不受影响</td>
+</tr>
+<tr>
+<td>证据与候选／输入／工具版本是否匹配</td>
+<td>原证据是否仍覆盖当前主张</td>
+<td>patch 字节相同所以自动免审</td>
+</tr>
+<tr>
+<td>授权的角色、资源、范围、时效等字段是否匹配</td>
+<td>新动作是否改变业务含义或超出原取舍</td>
+<td>评论声称同意所以已有本人授权</td>
+</tr>
+</tbody>
+</table></div>
+<p>影响脚本输出“已登记关系与潜在碰撞”，不是完整依赖证明。只读提示不要求开发者为每条建议创建 Issue。目标分支不符、证据对象不符、权限不符等可确定错误可以阻断；消费者是否列全不能靠非空字段断言。</p>
+<p>新增长久检查须覆盖真实缺口；优先扩展已有场景。没有具体收益的声明、台账和重复检查保持不添加。</p>
+</section><section class="chapter" id="s08"><h2><span class="section-no">CHAPTER 08</span>版本、材料与证据怎样固定</h2><h3>8.1 一份候选需要表达什么</h3>
+<p>候选 C 记录 repo、PR、源 head H、实际目标引用、观测目标提交 B、merge base、可选受测合并树 T、采用范围 S、适用政策／提示版本，以及本轮真实读取的材料位置。</p>
+<p>代码和 diff 按固定 Git object 读取。PR body、Issue、授权文字等可变内容保存本轮快照及来源 ID／更新时间；远端变化时保留历史，不拼出 H1 标签配 H2 差异。只用 head 不能定位本轮全部证据。</p>
+<h3>8.2 一条证据证明什么</h3>
+<p>证据记录：候选或产物版本、运行的工具版本、实际输入／样本范围、命令或人工步骤、环境、预期、实际结果、退出码（适用时）、原始输出、作者与独立性、限制和副作用。</p>
+<p>机器能从原生事件或工具输出读取的事实，不以模型文字替代。工具没有提供关键证据时显示缺失；模型生成报告不自动补出“零真实调用”“全部样本通过”。</p>
+<p>昂贵测试可以复用有效证据或按明确风险抽样，但记录抽样依据与未覆盖项。廉价关键回归优先实际重跑。需要新付费调用时，测试授权与业务调用授权分开。</p>
+<h3>8.3 新鲜度与复用</h3>
+<p>新 H、相关 B、采用范围／权限改变，或新反例影响判断时，旧证据保留但重新判断适用性。原始证据可复用，不自动复制 PASS。重复 webhook、轮询和传输不启动新审查；同候选有新证据时允许合法重审。</p>
+<p>只在候选真正进入接收或准备合入时集中处理 base 增量，不为每次主干推进重开所有兄弟 PR。添加本轮报告引用不导致报告自我失效；实质改写测试主张、限制、目标或范围才重核相应部分。</p>
+<p>临时报告和候选材料放在仓库外；需要在 GitHub 交接的正式证据按项目已有政策归档。不能发布对接收者不可访问的私人路径后声称“证据可用”。</p>
+</section><section class="chapter" id="s09"><h2><span class="section-no">CHAPTER 09</span>把已有验收工具接起来，而不是重造测试平台</h2><p>G1 首先复用目标仓库已有的实际入口。SEC_metrics 的 D02 比较工具已由 #264 合入，可作为一项项目适配；其他项目使用自己的命令，不硬编码 D02、公司名或财年到同序核心。<a class="source-ref" href="#source-4">[S4]</a></p>
+<p>同序只做：选择获准测试项；固定输入、代码与工具；在隔离现场执行；收集原始结果；把返回分类与限制呈现给责任人。脚本与临时组合中的代码均视为待审代码，不能拿发布凭据直接运行。</p>
+<div aria-label="把已有验收工具接起来，而不是重造测试平台：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>对照分类</th>
+<th>接收时必须核对</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SAME_OK</td>
+<td>状态相同且相关内容／身份／来源相同，仍需知道比较实际覆盖了什么</td>
+</tr>
+<tr>
+<td>CHANGED_OK</td>
+<td>都成功但内容不同；不得吞成“无变化”</td>
+</tr>
+<tr>
+<td>FAIL_TO_OK</td>
+<td>新成功是否完整、正确，是否掩盖拒绝或遗漏</td>
+</tr>
+<tr>
+<td>OK_TO_FAIL</td>
+<td>是新回归，还是纠正旧错误放行</td>
+</tr>
+<tr>
+<td>SAME_FAIL</td>
+<td>仍未证明业务成功；不能作为正确结果计数</td>
+</tr>
+<tr>
+<td>CHANGED_FAIL</td>
+<td>失败原因是否更准确，还是更早失败掩盖原问题</td>
+</tr>
+<tr>
+<td>NOT_COMPARED／工具故障／缺材料</td>
+<td>未覆盖或执行不完整，不得算作 SAME 或 PASS</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些分类沿用 D02 工具示例，不强制其他项目采用同一业务格式。目标工具的 COMPLETE／退出码 0 可能只表示比较完整，不等于所有样本业务正确。工具定义的 fail-on 规则只形成告警或已采纳的限定断言，不能把“只准成功增加”推广为全局标准。</p>
+<p>工具也要被验收：漏样本、空样本、工具异常、丢范围／出处、输入被改变，都应有可复现负例。首次看见某类工具缺陷时扩展原测试，不另建第二套准备流程。</p>
+</section><section class="chapter" id="s10"><h2><span class="section-no">CHAPTER 10</span>接收状态与下一步责任</h2><p>交付、运行、审核三层分开。运行完成可带来返工；交付已合入不等于正式结果已采纳。正式审核沿用 PASS / REWORK_REQUIRED / OWNER_DECISION_REQUIRED；解析失败是“没有有效判断”，不是第四种业务 verdict。</p>
+<div aria-label="接收状态与下一步责任：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>交付状态</th>
+<th>进入依据</th>
+<th>下一步责任</th>
+<th>怎样退出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>开发中</td>
+<td>范围已采用，实施者接手</td>
+<td>开发负责人</td>
+<td>固定产物与提交交接齐备后进入待接收</td>
+</tr>
+<tr>
+<td>待接收</td>
+<td>固定候选与必要材料已经登记</td>
+<td>接收角色</td>
+<td>获取验收席位并开始实际核查</td>
+</tr>
+<tr>
+<td>接收中</td>
+<td>已实际启动验证或判断</td>
+<td>本次接收负责人</td>
+<td>有范围的接受、退回或需决定结论</td>
+</tr>
+<tr>
+<td>待修正／补证据</td>
+<td>已定位具体缺口及通过条件</td>
+<td>被点名的开发／证据负责人</td>
+<td>新候选或补证据返回原 PR</td>
+</tr>
+<tr>
+<td>条件齐备、待执行</td>
+<td>当前候选满足技术条件</td>
+<td>获权执行者；无委托时为 Owner</td>
+<td>授权核对后请求合并或提供人工操作包</td>
+</tr>
+<tr>
+<td>合并请求中／回执未知</td>
+<td>请求已登记发出，尚未确认实际结果</td>
+<td>原操作的执行者</td>
+<td>查询远端，不盲目重发</td>
+</tr>
+<tr>
+<td>已合入指定目标</td>
+<td>读回真实合并记录</td>
+<td>交付负责人</td>
+<td>核对最终成果、使用入口与项目关闭条件</td>
+</tr>
+</tbody>
+</table></div>
+<p>等待原因另附具体对象：等材料、等依赖、等审批、等外部服务。不能只写“协调中”。每个未完成状态都有责任与下一步；等待本身不能清空已获得的证据。</p>
+<p>迟到的旧审核只能归档到其候选，不覆盖新状态。新的 PASS 不自动抹掉独立开放 finding；必须有适用的处理与复核记录。关闭 review thread 也不单独证明问题已解决。</p>
+</section><section class="chapter" id="s11"><h2><span class="section-no">CHAPTER 11</span>队列：先完成交付，再增加开工</h2><h3>11.1 简单、可解释的次序</h3>
+<p>主干严重错误优先；随后处理已具备证据、只差有限收尾的交付及明确退回项；能够解锁这些交付的依赖可提升顺序；其他新候选按已批准优先级和等待时长处理。紧急插队写一句原因和接续点，不要求长报告。</p>
+<p>等待上游的任务不占用“正在处理”的席位；其必要上游可以提升优先级，避免依赖永远排在被阻塞任务之后。老任务的等待要可见，不能因不断有新候选而永久饥饿。不中断正在运行的长验证，只在安全边界接续。</p>
+<h3>11.2 限制正在展开的接收，不限制所有等待项</h3>
+<p>试用默认可设同时最多两项实质接收、同一目标分支一个推进过程；这是可调整运行参数，不是产品正确性定理。只读或相互隔离的测试可并行，共享额度／工作区须另核资源限制。</p>
+<p>接收积压时提示负责人先收尾退回项与已验成果，不把所有开发强制停掉。已批准的重要工作可以继续，但解释代价和原因。程序提供队列，Agent 处理业务优先级取舍。</p>
+<h3>11.3 事件优先，补查保底</h3>
+<p>复用已有 CI 事件、原生事件流、授权可用的 GitHub 通知。单机 G1 没有 webhook 入口时，以普通程序增量轮询和 ETag／游标补查，不为“事件驱动”先建公网基础设施。</p>
+<p>活跃候选适度补查，空队列降频，故障退避并显示最后成功时间。周期由实际限流与反馈确定，不再写死每两小时启动一个模型巡检。超时触发提醒或核查，不视为默认同意、退出或可重复调用。</p>
+</section><section class="chapter" id="s12"><h2><span class="section-no">CHAPTER 12</span>授权模式、身份与共享资源</h2><h3>12.1 三种运行模式</h3>
+<div aria-label="授权模式、身份与共享资源：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>模式</th>
+<th>可做什么</th>
+<th>不可做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只读／影子模式</td>
+<td>采集、比较、队列建议、生成待发布交接包</td>
+<td>写正文、评论、分支或执行新增真实调用</td>
+</tr>
+<tr>
+<td>逐次确认模式</td>
+<td>执行本次具体获准动作</td>
+<td>把一次确认扩大为未来所有同类操作</td>
+</tr>
+<tr>
+<td>有限委托模式</td>
+<td>在已核验委托范围内自动发布、技术合并或修复</td>
+<td>越过目标／角色／费用／破坏性操作边界</td>
+</tr>
+</tbody>
+</table></div>
+<p>没有既有委托就不自动增加。已有有效委托，不要求每 PR 重批；对委托的首次接入只核验来源、范围、执行身份和可撤销性，不将其重做成一项更窄的新授权。遇到冲突只暂停受影响动作。</p>
+<p>#153 的书面分工允许接收角色在条件明确时进行技术合并，同时保留业务定义、新真实调用、采纳／部署和破坏性操作给用户。它证明需要尊重项目差异，不证明本次文档已经授权同序接管那个角色。<a class="source-ref" href="#source-3">[S3]</a></p>
+<h3>12.2 权限绑定动作，而不绑定一句话</h3>
+<p>采用委托时至少明确：来源、委托角色、仓库／目标、允许动作、作用范围、必要门槛、资源上限、是否有到期条件、撤销入口。实际请求绑定当前候选；有效委托不必逐 head 由人重签。</p>
+<p>撤销、范围改变或授权来源不能确认时，未发送动作不继续；已经发出的动作先查结果，不能假装撤销远端已完成的副作用。决定已确认、实施证据过期时只重验落实，不要求 Owner 重选同一选项。</p>
+<p>“技术接收通过”不是“业务采纳”，普通工具批准不是“增加预算”，机器人写下 Owner 已同意不是本人确认。多个 Agent 共用用户账号时，账号只能证明凭据身份，不能证明人的意图。</p>
+<h3>12.3 身份与执行边界</h3>
+<p>首版采用 A 档：防漏步骤、错误对象、重复动作和善意执行者顺手越权，不承诺抵御与平台同权限的主动恶意程序。只保护受管入口，不宣称全机进程锁。</p>
+<p>G1 只读不需要先迁移所有现存 Agent 的账号。受管写入上线前，明确实际凭据路径并隔离人的确认与执行者。建议受限发布进程持有机器人／App 凭据；执行器只提交已定义请求，不取得任意 GitHub 代理。机器人身份本身不保证无法合并，仍须限制发布入口与目标规则。</p>
+<p>核查环境变量、gh 配置、Git credential helper、SSH agent 和可访问配置；缺机器人凭据时不得回落个人身份。测试进程不携带发布／批准凭据。不能通过“这是测试”执行真实付费或破坏性操作。</p>
+<p>共享 main 的推进过程只有一个；这不要求某个特定会话永不退出。交接时核对原操作、工作区、未提交内容、后台副作用与远端结果，确认安全后再移交。不凭租期到期或 heartbeat 消失自动抢占。</p>
+<h3>12.4 额度只认项目原账本</h3>
+<p>同序保存授权与账本入口的引用，不复制预算余额。授权、准备可执行请求、取得密钥、认领机会、实际调用、最终结果分别判断。未知或失败是否消耗机会由原账本政策决定，同序不擅自归还或生成新请求绕去重。</p>
+<p>#293 的候选实现可用于理解预留／认领边界，但必须等其实际合入与执行路径核查后才能依赖；不把该固定 81 次模型／1 次 SEC 的项目配置写入同序通用核心。<a class="source-ref" href="#source-6">[S6]</a></p>
+</section><section class="chapter" id="s13"><h2><span class="section-no">CHAPTER 13</span>分支、临时组合与实际合并</h2><h3>13.1 三种关系分开</h3>
+<p>父子 Issue 表达共同目标；实现依赖表达缺什么接口或产物；合入依赖表达进入目标前需要什么。数据包依赖不自动成为代码分支依赖，小任务也不强制独立 PR。</p>
+<p>子改动可分别合入并保持目标正常，默认直接对实际主干或项目目标。只有共同启用才可交付或确需隔离组合验收时，建立集成分支。默认关闭开关和数据化登记不天然隔离影响，仍验证导入、配置、复用和旧路径。</p>
+<h3>13.2 真实目标与最终出口同屏</h3>
+<p>每个 PR 显示 source → actual target；同时给出共同交付最终出口与中间关系。发现实际 base 与采用安排不同，停止该合并并交责任人核对，不自动改 base，也不因为正文写了 stacked 就放行。</p>
+<p>按实际提交／树关系展示本 PR 会带入的额外内容。叠放 PR 指向下层分支并非自动错误；错误是它与意图、验证或授权不一致。涉及额外未接收内容，必须明确范围与全部前置，不能借一次合并请求隐式批准别的交付。</p>
+<h3>13.3 构造临时组合，不重写作者分支</h3>
+<p>固定 B 与 H，计算合并结果 T，在隔离 checkout 运行测试。<code>git merge-tree --write-tree</code> 是可选基础能力，它不修改工作区或 index，但会在 Git 对象库写入树；需要实测当前 Git 版本、冲突输出和仓库策略。<a class="source-ref" href="#source-7">[S7]</a></p>
+<p>只在平台自己的隔离对象库／测试目录操作。不自动 cherry-pick、rebase 或 push 作者分支；文本冲突交回对应责任人。语义组合错误即使零文本冲突也会阻断相应交付。</p>
+<p>记录 B、H、T、合并方法、工具环境、输入与测试入口。代码树不能代表依赖包、运行环境、外部数据或构建中读取的提交身份；测试会读取 Git 元数据时，必须核对临时候选与真实合并方法的差异，不能只看树相同。</p>
+<h3>13.4 审核与集成验证不是一回事</h3>
+<p>正式审核面对固定代码候选与契约；集成验证证明与目标的具体组合。各子 PR 已 PASS 可以复用局部证据，但最终组合仍需风险导向判断。只有冲突提交需要审查、diff 的并集自动安全、import 闭包外自动免审，均不采用。</p>
+<h3>13.5 按授权发请求，读回实际结果</h3>
+<p>合并前依次核对工作流证据、GitHub 原生条件、有效具体确认或有限委托，再取得目标推进占用。请求使用支持的 head SHA 条件；API 成功受理／入队不等于实际合并。<a class="source-ref" href="#source-8">[S8]</a></p>
+<p>普通 REST 合并不提供同时锁定任意观测 B 的通用条件。发送前重读也不是跨系统原子保证。要求“只合入精确 B”时，必须使用经过验证、能承担此承诺的服务端机制；没有就关闭该强保证下的自动路径，不能降级后仍称满足。</p>
+<p>仓库原生 merge queue 可用时优先评估；它受仓库类型／套餐限制，CI 需处理 merge_group。本地队列用于接收调度，不冒充 GitHub 的服务端队列。<a class="source-ref" href="#source-9">[S9]</a></p>
+<p>合并后读取真正的 merge commit 与目标，检查该提交的树而不是已经又前进的最新 main。若与受测 T 不同，保留“代码已合入，但组合证据待核对”，暂停依赖该证据的继续推进；调查后针对差异验证，不自动回滚或删除结果。树相同仅证明代码内容一致，不替代业务判断。</p>
+</section><section class="chapter" id="s14"><h2><span class="section-no">CHAPTER 14</span>操作可靠性、迟到事件和故障恢复</h2><p>本地数据库事务先登记 Operation、输入候选和必要占用，再调用外部接口。数据库与 GitHub／执行器不组成一个分布式事务；不承诺 exactly-once。用稳定请求标识、真实回读和未知保留防止盲重试。</p>
+<div aria-label="操作可靠性、迟到事件和故障恢复：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>情形</th>
+<th>必须行为</th>
+<th>恢复出口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同一事件重复到达</td>
+<td>合并到原操作，不新增执行／评论／账本认领</td>
+<td>已知状态直接引用，未知继续查询</td>
+</tr>
+<tr>
+<td>发送后响应丢失</td>
+<td>保存未知，不认定失败可重做</td>
+<td>查询原 PR、comment、run 或请求</td>
+</tr>
+<tr>
+<td>老审核晚到</td>
+<td>归入对应旧候选，不覆写当前状态</td>
+<td>当前候选仍按适用证据推进</td>
+</tr>
+<tr>
+<td>服务重启</td>
+<td>恢复原请求及占用，不由页面刷新驱动业务状态</td>
+<td>对原对象补查后继续</td>
+</tr>
+<tr>
+<td>长时间无事件</td>
+<td>显示观测缺口，提醒原责任人</td>
+<td>有证据才判断退出、暂停或仍运行</td>
+</tr>
+<tr>
+<td>进程退出但后台写入尚在</td>
+<td>不立即交出工作区</td>
+<td>核对副作用结束及未提交内容</td>
+</tr>
+<tr>
+<td>授权撤销或规则变化</td>
+<td>不发送新的受影响动作</td>
+<td>查已发送结果，重新核对授权</td>
+</tr>
+<tr>
+<td>发布正文与预期不同</td>
+<td>显示发布不一致，不伪称完成</td>
+<td>短更正与读回，保护人工编辑</td>
+</tr>
+</tbody>
+</table></div>
+<p>时间使用服务与来源实际时间，分别保留 observed_at 和 source_at；无证据不推算“作者已沉默 X 小时所以退出”。数据不完整、权限不足或分页失败，要显示覆盖不足，不把剩余内容当不存在。</p>
+</section><section class="chapter" id="s15"><h2><span class="section-no">CHAPTER 15</span>最小架构：先 CLI 接收层，再同源界面</h2><h3>15.1 技术取舍</h3>
+<p>作为独立产品仓库，默认推荐受支持 Node LTS＋TypeScript＋SQLite；具体版本在 W0 验证固定。若已有目标仓库已有合适栈，Bridge 优先复用，不为了统一语言重写项目工具。</p>
+<p>G1 先交付一个 CLI／本地任务入口、普通程序补查、已有 GitHub 页面和可离线导出的接收视图。需要操作去重和恢复时使用同一个小型数据库，不先上多服务、Redis 或通用队列。G2/G3 在同一核心上添加适配器和浏览器控制，不重写一套状态。</p>
+<pre><code class="language-text">GitHub Issue／PR／规则    项目测试入口    现有授权／资源账本
+          \                 |                 /
+           事实采集 → 固定候选 → 证据 → 接收／下一步责任
+                              |
+                      队列与操作恢复核心
+                    /                    \
+             CLI／只读导出             受限发布与合并
+                              |
+                后续：Codex／Claude 适配器
+                              |
+                 浏览器三个主视图（同源状态）
+</code></pre>
+<h3>15.2 建议模块与存储</h3>
+<div aria-label="最小架构：先 CLI 接收层，再同源界面：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>职责</th>
+<th>不承担</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>core</td>
+<td>候选、责任、有限状态、队列、占用与恢复</td>
+<td>模型的业务判断</td>
+</tr>
+<tr>
+<td>github</td>
+<td>固定读取、关系、已批准正文区块、受限写入和回读</td>
+<td>自动更改目标、任意 API 代理</td>
+</tr>
+<tr>
+<td>evidence</td>
+<td>隔离运行现有命令，收集输入、输出及覆盖</td>
+<td>重新实现业务读取／计算</td>
+</tr>
+<tr>
+<td>policy</td>
+<td>已采用政策与委托的来源、范围核对</td>
+<td>通用审批 DSL、由评论自行扩权</td>
+</tr>
+<tr>
+<td>adapters（G2 起）</td>
+<td>原生启动、准确 ID、最终结果、能力探针</td>
+<td>自行判断 PR 完成</td>
+</tr>
+<tr>
+<td>web（逐步）</td>
+<td>同源事实、证据导航、明确操作</td>
+<td>token、权威状态、自动执行消息中的命令</td>
+</tr>
+</tbody>
+</table></div>
+<p>工作项／交付、候选、证据判断、下一步动作、Operation、占用、观测位置是必要数据语义，不要求逐项独立服务或文件。scope 与权限副本只是已采用引用及内容，不能另行编辑成为权威。</p>
+<p>候选与日志放在目标仓库外；正式业务证据按已有交付政策归档。大原件保留一个真实可访问来源，不在多个 PR 重复复制。保留正在处理交付的证据，不默认无限存储完整聊天。清理须识别已结束范围和保留政策，不把删除原始资料当缓存清理。</p>
+<h3>15.3 配置和命令接口的边界</h3>
+<p>注册已审查的命令入口 ID、工作目录、参数与允许读写范围。参数按数组传递，不把模型消息拼接为 shell；候选代码中的恶意或错误脚本不可拿到发布凭据。产物路径须限制在已授权根目录，报告 HTML 在无控制权限的隔离视图呈现。</p>
+<p>本地服务只绑定 loopback，验证 Origin／Host，人的确认与 Agent 请求分入口并防跨站请求。loopback 不等于权限隔离。前端和日志不保存 token；导出只包含必要脱敏证据。</p>
+</section><section class="chapter" id="s16"><h2><span class="section-no">CHAPTER 16</span>G2：接通审核—核实—修复，而不偷偷改流程</h2><h3>16.1 流程版本如何选择</h3>
+<p>先核对目标项目现行政策、已接受决定及上游模板的适用范围。普通目标采用 coding-workflow@1772cd2c… 时，正式审核为新独立 Codex；有需要处理的 finding 时，再由新 Codex 核事实、新 Claude Code 核影响面，Codex 综合，授权内修复后再独立审查。<a class="source-ref" href="#source-2">[S2]</a></p>
+<p>SEC_metrics 的现有接收角色和第三方审查不能被同序悄悄替换。W0 写明采用的具体角色与职责：已有检查覆盖同一风险时复用其任务，不无理由再强制三方签字；修改原有审核分工属于显式政策变更。首版支持一个已采用项目流程，不造任意可拖拽流程引擎。</p>
+<h3>16.2 转接与运行中投递分开</h3>
+<p>G2 所需的是“X 本次工作明确完成 → 固定结果 → 填入 Y 的输入 → 启动 Y”。不是向任意正在运行的会话注入消息。中间日志、子代理回复、标题中的 PASS 不触发下一步。</p>
+<p>保留完整报告，并以最小结构化字段关联 candidate、verdict、findings、evidence、限制；结构校验不冒充语义证明。格式补正不重跑已结束的副作用任务。新上下文还须核对是否继承作者聊天、自动记忆或隐藏状态，不能只换线程名字。</p>
+<h3>16.3 修复授权与写入移交</h3>
+<p>先核实、再决定是否修；默认按现有指令在综合后取得修复确认，也可采用已明确授予的有限自动修复范围。无授权不从只读自行升级。原 finding 不成立时交反证复核同候选，不制造空提交。</p>
+<p>若采用上游规定在 Codex 验证会话修复，就验证同一会话后续轮次及工作区变更的能力。不能默认新建替身后仍叫“原会话接续”。不支持的能力显示缺口，只阻塞依赖它的闭环。</p>
+<p>对任务实施范围、规范化 machine＋worktree、同源分支发布责任取得后端事务占用。原执行者与后台命令未确认结束时不抢占；只读测试在隔离 checkout 写临时文件，不修改作者现场。</p>
+<h3>16.4 停止与反复返工</h3>
+<p>证据分歧按已采用流程最多三轮交换事实；未补齐就保持需要返工，不以模型投票裁决。返工计数只计真正已执行并发布的修复批次，不计重复负面审核与网络重试。</p>
+<p>超过三次实际修复时，停止自动堆轮次，生成网页端 GPT 的简化反思待办；这与三轮证据讨论不是同一计数。限额／模型配额不足时停在可恢复位置，不切换收费路径。没有新工作不靠空转保持负责人存活。</p>
+</section><section class="chapter" id="s17"><h2><span class="section-no">CHAPTER 17</span>G3：三种派发、准确会话与通信交付</h2><h3>17.1 派发方式</h3>
+<p>同工具新会话：独立范围与现场；另一工具新会话：同样独立但换执行器；并入负责人待办：复用原责任及队列，不开启同一工作区的第二个写进程。该方式以后可以有独立顺序 Run，验收点是没有新增竞争会话／并行写轮次，而不是永远只能一个 Run。</p>
+<p>每次派发前核对已有任务、产物和实施状态。相同任务或共享现场已有未知尝试时不重派。任务、角色、原生会话与机器分开记录；不能用“最近会话”定位。</p>
+<h3>17.2 接口路线与能力</h3>
+<p>Codex 优先核查官方非交互结构化输出，需要控制与批准时使用 App Server；<code>turn/steer</code> 面向匹配的活跃 turn，不匹配时不得悄悄变为启动新 turn。Claude Code 优先核查 <code>-p</code> 的 JSON／stream-json 和指定会话后续轮次；运行中通信优先实测启用消息能力的本机 socket。<a class="source-ref" href="#source-10">[S10]</a><a class="source-ref" href="#source-11">[S11]</a></p>
+<p>文档提供接口候选，不证明用户安装版本可用。具体命令、认证、session／turn 生命周期和批准由 W4 实测。仅支持创建不推导出支持恢复／中断。关联、可观察、可控制按具体操作开放，新会话握手前不能一律升级为 control。</p>
+<p>原有长期会话先关联观察；不为探针重启、迁移或夺取控制。原生批准必须由已接通客户端处理或明确停等，不能自动接受全部请求。认证与订阅适用性单独核对，不假设 CLI 子进程等同于任何 SDK 产品均可沿用订阅。</p>
+<h3>17.3 消息和产物</h3>
+<p>消息先按 Issue／角色寻址，实际发送时固定会话和请求；已发送／未知消息不随角色更换静默重定向。发送者来自真实连接，不由模型自报 Owner。原生支持安全接收时点即可，不要求强行打断每个活跃轮次。</p>
+<p>消息区分待投递、发送中、送达、暂存、拒绝、未知和回复；socket 连接成功不等于消息送达，Delivered 不等于对方完成。产物另分已登记、已接收、已验证：版本匹配且能读取才接收，经实际消费入口核对才验证。新版本要重核，人工复制只算调试，不算跨工具自动交接通过。</p>
+<p>查回原消息后，同一回执更新消息和原 Operation。普通技术讨论不改采用范围；正式范围变化经有效决定写回 Issue 后再采用。必要时一个新调查会话可解释已发布接口，但不能替原写入者报告未提交现场。</p>
+</section><section class="chapter" id="s18"><h2><span class="section-no">CHAPTER 18</span>三个主视图与网页端 GPT 的位置</h2><p>保留原三视图，不另外增加一套项目管理台。<a class="source-ref" href="#source-1">[S1]</a></p>
+<p>**项目总览：**当前可用成果、剩余缺口、接收积压、有效等待、现在需人的取舍及最近实质变化。区分观察覆盖、代码合入、已验证、重新计算和业务采纳；不给没有明确分母的完成率。</p>
+<p>**任务／会话／PR：**以交付卡片为中心，先显示实际目标、当前候选、下一步责任、阻断与证据；会话作为执行入口展开。默认不铺满模型头像。父子、实现依赖、合入前置分别显示，接收队列与目标推进队列不混淆。</p>
+<p>**通信与交付：**原 PR 交接索引、关键请求、固定产物、待回复／接收／验证。不镜像全部聊天，不发“已实际读取”式报到；无实质变化不写重复评论。正式失败、更正和交接仍留可定位历史。</p>
+<p>七阶段条只做证据导航，不是七个必开 Agent；“人工合并”改为“按授权合并”，逐次确认和有限委托各显示依据。通过、Ready、可请求、入队、已合入、用户验收不混为绿色完成。</p>
+<p>网页端 GPT 的技术解读、返工后的简化反思和用户验收计划合意保留外部步骤：自动准备固定输入入口，登记输出及适用范围。候选变更后报告可成为历史，不布尔标记永久完成；reject 与 request_evidence 不能显示验收通过。</p>
+</section><section class="chapter" id="s19"><h2><span class="section-no">CHAPTER 19</span>如何开发：八个纵向工作包</h2><p>W 编号是新工作包，不是已创建的 GitHub Issue。下表及 W 详情是唯一新开发顺序；旧 D 编号不并行维护。</p>
+<div aria-label="如何开发：八个纵向工作包：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>工作包</th>
+<th>阶段</th>
+<th>交付核心</th>
+<th>主要验收</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W0</td>
+<td>G0</td>
+<td>现有交付与政策基线</td>
+<td>T01/T02/T05/T17 的调查部分</td>
+</tr>
+<tr>
+<td>W1</td>
+<td>G1</td>
+<td>事实采集与原 PR 交接</td>
+<td>T01—T06/T19（采集部分）</td>
+</tr>
+<tr>
+<td>W2</td>
+<td>G1</td>
+<td>可执行证据与临时组合</td>
+<td>T08—T12/T14/T16</td>
+</tr>
+<tr>
+<td>W3</td>
+<td>G1</td>
+<td>接收队列、有限授权与可靠操作</td>
+<td>T07/T13—T21/T23/T24/T32（G1）</td>
+</tr>
+<tr>
+<td>W4</td>
+<td>G2</td>
+<td>两种执行器与准确结果</td>
+<td>T17/T19/T22/T26/T27</td>
+</tr>
+<tr>
+<td>W5</td>
+<td>G2</td>
+<td>按项目流程自动转接审核循环</td>
+<td>T13/T19/T22—T27</td>
+</tr>
+<tr>
+<td>W6</td>
+<td>G3</td>
+<td>多任务分配与实际交付通信</td>
+<td>T07/T20/T26—T30</td>
+</tr>
+<tr>
+<td>W7</td>
+<td>G3</td>
+<td>完整三视图、外部步骤与交付</td>
+<td>T19—T21/T28—T32及所有受影响回归</td>
+</tr>
+</tbody>
+</table></div>
+<h3>W0｜现有交付与政策基线（G0）</h3>
+<p>**前置：**无新接口前置；只读访问和既有资料足够先做。</p>
+<p>**开发范围：**核对目标仓库、项目政策、有限授权、现有工具和材料、在途 PR、下一步责任；形成 W1 Bridge 与实施 Issue 草稿。</p>
+<p>**可检查产物：**一份真实基线＋W1 可编码 Issue，指明必须取舍与可继续部分；执行器探针不做 G1 前置。</p>
+<p>**不做：**不接管生产会话、不建仓、不改权限、不重做 #264，不批量开八个 Issue。</p>
+<p>**验收入口：**T01/T02/T05/T17 的调查部分。先给接收者核对事实与政策差异，再按 Issue Agent 的两种镜头形成唯一实施入口。</p>
+<h3>W1｜事实采集与原 PR 交接（G1）</h3>
+<p>**前置：**W0 确定读取范围、采用规则和目标代码触点。</p>
+<p>**开发范围：**实现只读 CLI、完整分页、固定候选、原 PR 摘要/交接包、下一步责任，保存最小恢复信息。</p>
+<p>**可检查产物：**同一真实 PR 的实际 H/B/目标/证据/下一步一次看清；未获写授权时仅输出待发布包。</p>
+<p>**不做：**不启动模型，不解析所有历史散文为强制协议，不要求 legacy PR 全部补表。</p>
+<p>**验收入口：**T01—T06/T19（采集部分）。先以真实 GitHub 只读数据和故障夹具演示，再开放有明确边界的正文更新。</p>
+<h3>W2｜可执行证据与临时组合（G1）</h3>
+<p>**前置：**W1 的候选和材料稳定；项目原测试入口可取得。</p>
+<p>**开发范围：**接现有对照工具、隔离输入与测试、构造 B＋H 组合，输出分类与覆盖；检查工具自身的负例。</p>
+<p>**可检查产物：**一个实际检查可重跑，组合不改作者分支；内容变化、缺材料和工具故障可见。</p>
+<p>**不做：**不复制业务实现、不跑新真实付费请求、不建设全语言依赖分析。</p>
+<p>**验收入口：**T08—T12/T14/T16。与现有测试工具维护者协作；验收工具的判断标准和原始输出，而不只看退出码。</p>
+<h3>W3｜接收队列、有限授权与可靠操作（G1）</h3>
+<p>**前置：**W1/W2 可用；受管写入口授权与交接明确。</p>
+<p>**开发范围：**接收席位、下一步动作、原 PR 发布、目标推进、逐次/委托模式、未知查询、日志读回与恢复。</p>
+<p>**可检查产物：**测试仓库完整接收闭环；已有有限委托不重批；无委托不执行；可退只读。</p>
+<p>**不做：**不绕过分支规则、不复制额度、不把生产长期进程当可抢占资源。</p>
+<p>**验收入口：**T07/T13—T21/T23/T24/T32（G1）。G1 的唯一发布里程碑。先影子对照接收者，再迁移一个已授权写入口。</p>
+<h3>W4｜两种执行器与准确结果（G2）</h3>
+<p>**前置：**G1 先可用；此包的原生认证、版本、预算与测试任务另外固定。</p>
+<p>**开发范围：**验证并实现启动/指定接续/最终事件/原生批准/失败；两适配器可在接口固定后并行。</p>
+<p>**可检查产物：**两种真实引擎的准确 session/turn 与结果读回；按操作开放能力。</p>
+<p>**不做：**不重启旧会话、不隐藏新会话替身、不默认买 API 或接受全部批准。</p>
+<p>**验收入口：**T17/T19/T22/T26/T27。使用隔离探针，记录真实事件；失败说明影响哪个后续动作，不反向阻塞 G1。</p>
+<h3>W5｜按项目流程自动转接审核循环（G2）</h3>
+<p>**前置：**W4 的结果与权限移交可靠；采用分工已写入实施 Issue。</p>
+<p>**开发范围：**正式审核→必要两路核实→综合→授权修复→再审，处理错误 finding、scope 变化和有限停止。</p>
+<p>**可检查产物：**一个真实 PR 跑通采用流程；自动链内不人工复制模型报告，不为无效 finding 造提交。</p>
+<p>**不做：**不新增固定签字层、不复制旧 PASS、不实现通用流程编辑器和免审器。</p>
+<p>**验收入口：**T13/T19/T22—T27。先可控响应覆盖分支，再真实模型路径；二者证据分开，MVP 不等活跃消息系统。</p>
+<h3>W6｜多任务分配与实际交付通信（G3）</h3>
+<p>**前置：**G2 已可用；确实出现多工作项与可用投递路径。</p>
+<p>**开发范围：**三种派发、角色与会话分离、路径责任、实际依赖、同/跨工具消息与消费、可选集成。</p>
+<p>**可检查产物：**三个顶层责任及至少一条真实跨工具消费；并入待办没有竞争写入。</p>
+<p>**不做：**不强制父任务集成分支，不建设新对象存储，不猜测原生内部子代理。</p>
+<p>**验收入口：**T07/T20/T26—T30。责任寻址由 Issue/PR 起，投递到准确原生对象；能力缺失不冒充人工复制为自动。</p>
+<h3>W7｜完整三视图、外部步骤与交付（G3）</h3>
+<p>**前置：**W6 行为稳定；前端来自既有核心而不是另一套状态机。</p>
+<p>**开发范围：**三视图、固定报告、验收记录、安装/升级/退出、七缺口回归和完整现场验证。</p>
+<p>**可检查产物：**最终六个用户问题可回答；完整真实旅程、限制、收益和恢复手册可交付。</p>
+<p>**不做：**不追加花哨完成率、用量计费面板或重复汇总评论。</p>
+<p>**验收入口：**T19—T21/T28—T32及所有受影响回归。完成 G3 后才称完整 v1 能力已实现；本文件版本 v2.0 是设计修订，不表示产品已发布。</p>
+<h3>19.1 开发协作与分支</h3>
+<p>同序应在已指定产品仓库实施；未指定时先输出 W0 调查与建仓建议，不自建同名远端仓库。SEC_metrics 的特定适配／原测试修改与同序通用实现分别提交，不把业务代码搬进协调核心。</p>
+<p>先一位主执行者负责协调核心与最终集成。W4 的两个适配器在接口固定后可按不重叠目录并行；W1—W3 的共享状态不让多个 Agent 同时改。W2 的工具接入复用项目维护者已做的工作，不重新描述给另一个 Agent 从零复刻。</p>
+<p>默认小型可独立合入 PR，不要求每个 W 恰好一个 PR，也不按所有页面同时铺开。只在有真实依赖时叠放。每次引入新机制必须说明独立风险、使用者、现有机制为何不足及可删除什么重复工作。</p>
+<h3>19.2 接入现有系统的四步</h3>
+<p>只读影子运行 → 对比现有接收结果并解释分歧 → 明确迁移一个受管写入口／资源责任 → 再扩大范围。原 main 写入者未结束并完成交接前，新服务不能同时写。服务出错可退回只读与原流程，不能双开兜底执行。</p>
+<p>采用九份文档的职责，不要求在还没看代码时把九份全部重写。W0 形成 FSD／Bridge 需要的事实与政策差异，实施 Issue 是唯一编码入口；开发者从 Issue 提取 Spec Unit → 代码 → 测试 → 文档，避免本文、聊天和 PR 再各形成一套指令。</p>
+</section><section class="chapter" id="s20"><h2><span class="section-no">CHAPTER 20</span>第一份可用交付与最终完成定义</h2><div aria-label="第一份可用交付与最终完成定义：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>发布前必须成立</th>
+<th>人仍需要做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G0</td>
+<td>可访问范围、现有工具／政策、在途交付、W1 范围均有来源；未知明确</td>
+<td>核验必要的采用与首次接入授权</td>
+</tr>
+<tr>
+<td>G1 只读子版</td>
+<td>真实 GitHub 读取和本地比较可用，固定交接包、下一步责任与队列准确</td>
+<td>发布／合并仍走既有授权入口；明确标未自动化</td>
+</tr>
+<tr>
+<td>G1 受管版</td>
+<td>在测试仓库完成原 PR 发布、接收、复验、队列与按授权操作，丢回执可恢复</td>
+<td>只处理超范围判断；不重复填机器已知事实</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>至少一个真实需要处理的 PR 完成采用的审核循环；无人工搬运自动链结果</td>
+<td>真实业务取舍、政策要求的外部步骤</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>真实多 Issue、三种派发、同／跨工具消费、可选集成和三视图全部覆盖</td>
+<td>掌握目标、重要取舍和仍未委托的动作</td>
+</tr>
+</tbody>
+</table></div>
+<p>不能为了 G1 名称好听，把人工复制、执行器未接通或只导出文件隐去。反之，也不能要求先完成 G3 才允许发布有明确收益的 G1 子版。</p>
+<h3>20.1 收益怎样判断</h3>
+<p>用一批明确纳入的实际交付及其观察窗口比较，不承诺一周必然证明长期效果。记录：进入待接收到首次有效反馈的时长；本次有效接收通过到合入的时长；退回原因与重复类别；合入后严重遗漏；人的机械操作、决定次数与等待；新增维护成本。</p>
+<p>有效反馈不是“收到”，而是实际接受、明确退回或可执行补证据请求。存在新 head 导致接受失效时，保留每轮事件，不用旧通过时刻掩盖新等待。处理中时间取真实 Run，工作时段由用户规则确定；缺数据时只报告日历时长／未知，不猜“沉默即等待”。</p>
+<p>观察覆盖、新计算量、代码合入、正确业务结果和正式采纳分别计数，重复记录按实际对象去重。不用模型说“N 项”作为计数来源；样本范围与缺失数直接从结果取得。</p>
+<p>通过的收益信号应同时出现：更多同类问题在提交前被工具发现；交付等待和机械介入下降；严重漏检没有增加。单次看不到严重错误只能说明该观察窗，不是安全率证明。G1 不要求模型间搬运为零；G2 自动链才要求为零。</p>
+</section><section class="chapter" id="s21"><h2><span class="section-no">CHAPTER 21</span>验收清单：功能、证据、恢复和收益</h2><p>**下面全部是待执行要求，不是当前已通过的测试。**T 编号是覆盖目标，不是每项新增一个测试文件。优先复用现有场景和参数化扩展。</p>
+<div aria-label="验收清单：功能、证据、恢复和收益：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>编号／阶段</th>
+<th>场景与操作</th>
+<th>必须观察到的行为</th>
+<th>原始证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>T01</strong> · G0/G1<br/>真实工作事实与目标</td>
+<td>读取普通、叠放、集成 PR；将实际目标与采用安排制造差异。</td>
+<td>精确显示 H/B/实际目标/最终出口；差异需核对，不改错目标；不从分支名猜关系。</td>
+<td>GitHub 固定读取、差异清单、拒绝或核对记录</td>
+</tr>
+<tr>
+<td><strong>T02</strong> · G0/G1<br/>不完整读取</td>
+<td>模拟分页中断、权限不足、缺少一页评论或关系。</td>
+<td>明确覆盖缺口；未读部分不当作不存在；必要事实未知时不自动放行。</td>
+<td>分页游标、错误、已读范围与界面状态</td>
+</tr>
+<tr>
+<td><strong>T03</strong> · G1<br/>范围与新证据</td>
+<td>先补链接，再改正式验收范围，最后同 head 提供新反例。</td>
+<td>记录更新不无限失效；实质范围和新反例触发相关复核；其他任务继续。</td>
+<td>范围快照、差异判断、受影响动作</td>
+</tr>
+<tr>
+<td><strong>T04</strong> · G1<br/>原 PR 交接与写回</td>
+<td>发布一次交接；重复事件；在更新正文前加入人工编辑。</td>
+<td>原 PR 唯一正式记录；不刷重复评论、不丢人工编辑；写回与读回相符。</td>
+<td>原 comment/review ID、前后正文、发布回执</td>
+</tr>
+<tr>
+<td><strong>T05</strong> · G0/G1<br/>候选固定与材料可取得</td>
+<td>在元信息与 diff 读取间推新 head；提供私人不可读路径。</td>
+<td>无 H1 配 H2；候选有实际材料；接收者拿不到材料显示未覆盖，不伪接收。</td>
+<td>固定 Git 对象、候选清单、材料访问结果</td>
+</tr>
+<tr>
+<td><strong>T06</strong> · G1<br/>结果与覆盖分离</td>
+<td>命令返回 0 但部分样本失败／遗漏；提交作者声称全部通过。</td>
+<td>从真实结果统计；成功状态、完整覆盖和业务通过分开；作者陈述不改事实。</td>
+<td>原始输出、样本计数、覆盖与判断</td>
+</tr>
+<tr>
+<td><strong>T07</strong> · G1/G2/G3<br/>并发与资源占用</td>
+<td>两个请求同一任务/规范化工作区/发布分支/目标推进；原执行未知。</td>
+<td>后端最多一个实际获准写者；不凭超时释放；核查确认结束后可交接。</td>
+<td>数据库事务、实际副作用次数、恢复记录</td>
+</tr>
+<tr>
+<td><strong>T08</strong> · G1<br/>复用已有入口</td>
+<td>使用项目现成检查命令；只给部分样本；默认禁止真实网络调用。</td>
+<td>不复制业务实现；命令、工具版、输入及范围可重跑；部分范围明确。</td>
+<td>真实命令/工具版本、隔离环境、原始结果</td>
+</tr>
+<tr>
+<td><strong>T09</strong> · G1<br/>内容与状态对照</td>
+<td>参数化 SAME_OK、CHANGED_OK、FAIL_TO_OK、OK_TO_FAIL、SAME_FAIL、CHANGED_FAIL、NOT_COMPARED。</td>
+<td>都成功但内容变仍显示；新拒绝不一律当退步；缺比较不变成通过。</td>
+<td>各类固定输入与输出、判定说明</td>
+</tr>
+<tr>
+<td><strong>T10</strong> · G1<br/>检查工具本身</td>
+<td>用漏样本、空样本、丢来源/范围、工作进程崩溃、改动输入的变体。</td>
+<td>工具或覆盖缺陷可见并阻断对应完整声明；不能稳定地错判为无变化。</td>
+<td>变体前后测试、来源/样本与原始异常</td>
+</tr>
+<tr>
+<td><strong>T11</strong> · G1<br/>隔离临时组合</td>
+<td>对 B/H 构造无冲突组合和文本冲突组合；检查作者现场。</td>
+<td>不改变作者分支/工作区；冲突交回；保留 T、方法、工具与实际测试入口。</td>
+<td>前后 refs/status、B/H/T、冲突及测试记录</td>
+</tr>
+<tr>
+<td><strong>T12</strong> · G1<br/>无文本冲突但语义失败</td>
+<td>使用金额单位配置变化、下游 JSON 消费者变化，两份局部检查分别通过。</td>
+<td>即使 patch 相同/路径不重叠，组合反例仍可阻断；不启用闭包免审。</td>
+<td>固定构造仓库、组合断言与复核证据</td>
+</tr>
+<tr>
+<td><strong>T13</strong> · G1/G2<br/>就绪不是绿灯相加</td>
+<td>CI 完成但报告 BLOCKER，或有效 PASS 仍有阻断 finding；分别 Ready/PASS。</td>
+<td>读实际语义结论及候选；关闭线程/Ready/CI 不替代正式复核；修复后能恢复。</td>
+<td>GitHub 状态、报告、finding 处理与恢复</td>
+</tr>
+<tr>
+<td><strong>T14</strong> · G1<br/>合并竞态与树回读</td>
+<td>确认后改 H/B/目标；实际 merge tree 与预测不同；主干随后再次前进。</td>
+<td>过期输入不直接用；不伪称 base 原子锁；检查真正 merge commit，不把最新 main 当受测树；异常保留已合入事实。</td>
+<td>请求及 sha、真实 merge commit/tree、后续核查</td>
+</tr>
+<tr>
+<td><strong>T15</strong> · G1<br/>三种授权模式</td>
+<td>只读尝试写；逐次模式无确认；有效委托内/外；发送前撤销。</td>
+<td>只读不写；无确认不发；范围内无需重批；越界/撤销不发；已发先查结果。</td>
+<td>授权来源与修订、实际 actor、执行/拒绝记录</td>
+</tr>
+<tr>
+<td><strong>T16</strong> · G1<br/>原账本和执行能力</td>
+<td>两任务竞争同项额度；认领后结果未知；任务被授权但无密钥。</td>
+<td>只认原账本；未知不擅自返还；缺执行能力不宣称已调用；不创造第二份预算。</td>
+<td>测试账本/认领记录、调用出口计数、真实能力</td>
+</tr>
+<tr>
+<td><strong>T17</strong> · G0/G1/G2<br/>身份隔离与费用</td>
+<td>机器人凭据缺失；候选测试尝试使用发布身份；Agent 声称本人批准。</td>
+<td>无个人身份回退；测试拿不到发布权限；文字不等于本人授权；不切换收费路径。</td>
+<td>脱敏配置、隔离/拒绝、授权源、费用模式</td>
+</tr>
+<tr>
+<td><strong>T18</strong> · G1<br/>接收队列与依赖</td>
+<td>超过接收席位；前项等后项依赖；紧急插队与老任务等待。</td>
+<td>席位不超配；必要上游能推进；队列理由可解释；无新工作不空转模型。</td>
+<td>队列前后、占用、真实开始/结束、原因</td>
+</tr>
+<tr>
+<td><strong>T19</strong> · G1/G2<br/>重复事件与未知恢复</td>
+<td>登记后、发送后、成功未落库时故障；乱序重放旧事件并重启。</td>
+<td>不二次发布/合并/认领；未知先核查；旧结果不覆盖新状态；查证后正常继续。</td>
+<td>原 Operation、外部 ID、持久记录、次数</td>
+</tr>
+<tr>
+<td><strong>T20</strong> · G1/G3<br/>责任接力与历史</td>
+<td>让一个接收过程停止，再由新 Agent 仅依据 Issue/原 PR/证据接手。</td>
+<td>下一步责任明确；历史仍可定位；不让用户复述全对话；过期任务不得新抢占。</td>
+<td>正式交接、新角色读取/操作与原记录</td>
+</tr>
+<tr>
+<td><strong>T21</strong> · G1/G3<br/>进度和收益计数</td>
+<td>重复测试记录、覆盖但未重算、已合入但未采纳；缺少工作时段。</td>
+<td>计数去重并说明证明范围；观察/验证/合入/采纳分开；缺时间数据不猜处理/等待。</td>
+<td>结果对象与事件、纳入范围、口径说明</td>
+</tr>
+<tr>
+<td><strong>T22</strong> · G2<br/>真实循环与最终结果</td>
+<td>两引擎真实执行采用流程；输出中间 PASS、子代理文本、错误 JSON、顶层返工。</td>
+<td>只读匹配 Run 的最终有效结果；结果自动转接；独立上下文可核查；模拟不冒充模型发现。</td>
+<td>原生事件、准确 session/turn、完整报告、修复 diff</td>
+</tr>
+<tr>
+<td><strong>T23</strong> · G1/G2<br/>按类退回与有限范围</td>
+<td>同类词项漏洞再出现；同时提出无关建议；另造一个不成立 finding。</td>
+<td>按共同机制修复并给有限条件；建议不阻断；不成立不造空提交；旧证据有条件复用。</td>
+<td>反例、通过标准、scope 与实际修复</td>
+</tr>
+<tr>
+<td><strong>T24</strong> · G1/G2<br/>决定落实能恢复</td>
+<td>本人确认某决定、验证实施；推新 head 后重新核对实施。</td>
+<td>确认保留但实施证据待核；重验后可继续，无重复产品决定也无 D2 死锁。</td>
+<td>原决定、采用范围、新候选实施证据</td>
+</tr>
+<tr>
+<td><strong>T25</strong> · G2<br/>真实返工与停止</td>
+<td>重读同负面结果；发布四个真实修复批次；出现证据讨论或预算上限。</td>
+<td>重试不加计数；修复批次才计；到边界停止，生成有范围下一步，不无限循环。</td>
+<td>修复批次、Run、停止/反思/预算记录</td>
+</tr>
+<tr>
+<td><strong>T26</strong> · G2/G3<br/>准确会话与能力</td>
+<td>绑定旧会话、新会话握手失败、移除投递能力、turn 不匹配。</td>
+<td>不以最近会话替代；未握手不 control；不把 steer 失败降级为启动；缺能力按钮不可用。</td>
+<td>真实 ID、握手、引擎版本、原生失败回执</td>
+</tr>
+<tr>
+<td><strong>T27</strong> · G2/G3<br/>写入交接与后台副作用</td>
+<td>验证会话转修复；旧进程退出但后台仍写；核查后再次交接。</td>
+<td>按采用政策接续；后台未知不接管；测试只写隔离现场；查清后不是永远禁止。</td>
+<td>会话/turn、文件/进程与权限、交接记录</td>
+</tr>
+<tr>
+<td><strong>T28</strong> · G3<br/>三种分配与实际关系</td>
+<td>三个顶层责任分别派同工具、另一工具、并入待办；再重复派发。</td>
+<td>独立现场准确；并入不新开竞争会话/写轮次；关系非猜测，后续顺序 Run 合法。</td>
+<td>原生会话、工作区、实际 Run 数与依赖</td>
+</tr>
+<tr>
+<td><strong>T29</strong> · G3<br/>真实消息与消费</td>
+<td>同/跨工具、子到父/兄弟发送固定包；错版本、不可读路径、只发已验证文字。</td>
+<td>送达/接收/验证分开；实际消费才通过；角色换会话不偷偷重定向未知消息。</td>
+<td>双端回执、包版本、消费命令与结果</td>
+</tr>
+<tr>
+<td><strong>T30</strong> · G3<br/>投递未知与重复</td>
+<td>Delivered/Held/Refused，断流后查回原消息，重复发送同事件。</td>
+<td>语义不混淆；消息与原操作一起恢复；没有第二份消息或替身任务。</td>
+<td>原消息/请求 ID、发送次数、同步状态</td>
+</tr>
+<tr>
+<td><strong>T31</strong> · G3<br/>三视图与外部报告</td>
+<td>展示旧报告、新候选、reject/request_evidence、恶意 HTML、断流后刷新。</td>
+<td>不同页面同源；历史不当当前；验收拒绝不绿；报告无控制权；六个用户问题可回答。</td>
+<td>页面与后端、候选、报告隔离、使用者观察</td>
+</tr>
+<tr>
+<td><strong>T32</strong> · G1/G3<br/>安装退出与实际收益</td>
+<td>干净受支持环境安装；未完成操作升级/迁移失败；试点窗口前后对比。</td>
+<td>文档可操作；不清空或重派；能退只读和原流程；维护不吞收益；阶段声明准确。</td>
+<td>命令/备份、原 PR 可接手、实际操作与缺口</td>
+</tr>
+</tbody>
+</table></div>
+<h3>21.1 七项旧原型缺口必须迁移</h3>
+<div aria-label="验收清单：功能、证据、恢复和收益：表格，可横向滚动" class="table-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>旧缺口</th>
+<th>v2 覆盖与恢复要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>reject／待补证据也标完成</td>
+<td>T31：判断与运行分离，恢复后显示正确用户结果</td>
+</tr>
+<tr>
+<td>解读只用永久布尔值</td>
+<td>T31：报告绑定候选，历史仍可读但不能当前放行</td>
+</tr>
+<tr>
+<td>负面审核重复累加返工</td>
+<td>T25：只计已执行并发布修复批次</td>
+</tr>
+<tr>
+<td>消息查到送达、原操作仍未知</td>
+<td>T30：同回执更新两处来源一致状态</td>
+</tr>
+<tr>
+<td>D2 新 head 后死锁</td>
+<td>T24：确认不重做，当前候选可重验实施证据</td>
+</tr>
+<tr>
+<td>新会话直接获得 control</td>
+<td>T26：按已验证具体能力及本次握手开放</td>
+</tr>
+<tr>
+<td>工作区没有并发检查</td>
+<td>T07／T27：事务取得占用，未知不释放，查证后能接续</td>
+</tr>
+</tbody>
+</table></div>
+<p>旧 HTML 只保留为历史演示，不先给全部旧 reducer 打补丁再写一遍后台。正式 UI 只消费新的共同状态逻辑；本交付中的演练也是演练，不作为未来后端正确性的证明。</p>
+<h3>21.2 每份验收证据需要什么</h3>
+<p>记录 T 编号、同序版本、模式、候选／范围／授权引用、工具与引擎版本、样本与来源位置、实际命令／步骤、预期、观察、退出／故障、原始产物、覆盖限制及清理结果。可读原始报告与机器摘要同源，不要求人抄两份。</p>
+<p>验收状态只用未执行、通过、未通过、经明确批准不适用。对应阶段核心能力不能以“不适用”跳过；降级必须同时改变发布名称与能力说明。截屏只证明页面，远端结果／身份／消息与进程数量要有实际来源。</p>
+</section><section class="chapter" id="s22"><h2><span class="section-no">CHAPTER 22</span>怎样亲自验收：四条现场路径</h2><h3>22.1 G1 接收路径</h3>
+<p>使用明确批准的测试仓库和至少三类固定候选：普通独立 PR、指向非主干的叠放 PR、需要共享检查的 PR。固定真实目标、输入材料和受管操作范围；不要第一次就在生产 main 故障注入。</p>
+<p>先只读导入，核对实际 head/base、旧报告与下一步责任。让两个候选竞争一个接收席位，再让一个因依赖等待，确认必要上游可先行。执行已有可重跑检查；缺一份材料时应显示不完整而不是通过。</p>
+<p>在隔离现场生成 B＋H 组合，验证不改作者分支。分别测试：逐次确认模式缺确认拒绝；有限委托模式范围内不重复请示；范围外／已撤销拒绝。失去合并响应后查询原结果，不发第二次请求。实际合入目标和受测对象分别核对。</p>
+<p>生产试点先影子对照现有接收者，不中断长期任务。正式接管写入前核对主干资源与凭据，明确旧执行过程已交接。</p>
+<h3>22.2 G2 审核循环</h3>
+<p>选一个真实可复现缺陷，在采用流程中完成独立审核、必要两路核实、综合、授权修复与再审。模型没找到预设缺陷就如实失败或未覆盖，不能脚本注入 finding 后声称独立发现。</p>
+<p>再用可控响应覆盖无问题 PASS、错误 finding、新证据同 head 重审、Owner 决定、格式错误和限额分支。故障注入只针对测试进程。观察自动链是否还要人复制正文、手填 head 或寻找正确会话。</p>
+<h3>22.3 G3 三目标协作</h3>
+<p>使用原产品三个顶层目标覆盖两位 Codex 与一位 Claude 责任，分别用独立同工具、另一工具和并入待办。共同交付不等于强制三份实现。</p>
+<p>完成一次真正的跨工具数据包消费；让一个范围决定只阻塞相关任务；将一条独立交付直接合入，另一条确需组合的交付经过集成候选。运行中投递可排到原生安全接收时点，但必须到正确原对象。</p>
+<p>中途更换一个已确认退出的执行会话，用 Issue、原 PR、固定材料恢复；不依赖用户重述所有历史。演练未知不能抢占，恢复后不是永久死锁。</p>
+<h3>22.4 信息与收益验收</h3>
+<p>由未参与实现的使用者只看三视图，回答第 02 节六个问题；把“已观察／已验证／已合入／已采纳”说清。记录原流程与新流程的机械操作和维护动作，必要决定不被当成应消灭的负担。</p>
+<p>如果后台安全但页面误导，T31 不通过；如果功能都可用但新增维护吞掉节省，T32 不通过或暂不扩展。不能用多 Agent 并行截图代替实际交付。</p>
+</section><section class="chapter" id="s23"><h2><span class="section-no">CHAPTER 23</span>交给开发者与审核者的直接指令</h2><h3>23.1 第一个任务：只实施 W0，并产出 W1 的可编码 Issue</h3>
+<pre><code class="language-text">任务：按《同序 v2.0》实施 W0。不要沿用旧版“先接通两种执行器才能开发”的前置。
+
+先读取已指定目标仓库及其实际政策、代码与测试。没有明确目标仓库时只做
+现有材料和试点项目调查，不创建同名远端仓库、不修改 SEC_metrics 生产流程。
+
+1. 固定工作流参考版本，核对项目既有接收、主干写入、有限委托与资源账本。
+   冲突说明适用范围，不从共享 GitHub 账号的文字自行推定人的新授权。
+2. 读取一组在途或固定历史 PR，复原实际目标、依赖、证据入口与下一步责任。
+   不完整读取必须标明；不做无来源的完成率。
+3. 盘点已存在的验收入口及材料可用性。#264 已有工具优先复用；#293 是否可用
+   依实际合入和接口核查，不把候选说明当成上线事实。
+4. 形成 W1 Target State Bridge：具体代码触点、复用/新增理由、权限、失败恢复、
+   正式测试入口、文档影响；给出 T01—T06 的覆盖办法及后续交付边界。
+5. 按现行 Issue Agent 规则写 W1 实施 Issue 草稿，包含目标、非目标、Spec Unit、
+   验收、授权与未决项。不要一次性开 W0—W7 的全量并行工程。
+
+本任务无生产合并、新真实调用、额度变更、重启长期会话、权限迁移或建仓授权。
+执行器探针只列 G2 需要核实的能力，不阻塞已能完成的 G1 调查。
+报告区分实测、读码推断、引用历史记录与未检查。
+</code></pre>
+<h3>23.2 每次 Coding 的完成包</h3>
+<p>从已确认实施 Issue 提取 SU → 代码／测试／文档清单，沿现有 TESTING 入口执行。PR 展示真实变更、证据、环境与限制；原 PR 返回，不新增平行问题线程。未授权不 commit／push／创建 PR；获准时遵循项目当前策略，不默认强推或单提交。</p>
+<h3>23.3 每次独立审查的核心问题</h3>
+<pre><code class="language-text">先核对当前 Issue、采用流程、候选与范围。审核对象是完整交付链，不只是页面。
+对当前 W 对应的 T 场景复用／扩展已有测试，检查：
+用户动作 → 权限 → 固定对象 → 实际接口 → 状态持久化 → 回读 → 失败恢复。
+
+重要发现先用代码与最小复现核实。区分真实缺陷、证据不足、计划外建议；
+指出下一步责任与有限通过条件。状态只有阻断没有恢复，也算缺陷。
+
+同时检查：是否让作者重复填机械事实，是否重造已有工具或账本，是否偷偷改变
+审核／合并委托，是否把没有冲突、树相同或 CI 绿当作业务通过。
+输出范围、证据、限制和项目规定 verdict；不得用作者自审代替独立审查。
+</code></pre>
+<h3>23.4 命令如何落地</h3>
+<p>下面只是待实现接口形态，不是当前已经存在的可执行软件：</p>
+<pre><code class="language-text">tongxu inspect --repo &lt;明确仓库&gt; --readonly
+tongxu collect --pr &lt;编号&gt; --output &lt;隔离目录&gt;
+tongxu verify --candidate &lt;固定候选&gt; --check &lt;已登记入口&gt;
+tongxu queue --repo &lt;明确仓库&gt;
+tongxu receive --candidate &lt;固定候选&gt; --record &lt;本轮判断&gt;
+tongxu merge --candidate &lt;固定候选&gt; --authorization &lt;已核验引用&gt;
+tongxu reconcile --operation &lt;原请求&gt;
+</code></pre>
+<p>W0/W1 决定实际 CLI 命令和包管理器；后续只在目标 TESTING.md 维护权威命令，其他文档引用。inspect／collect 默认只读外部；verify 的命令、网络和副作用受授权约束；receive／merge 有显式写模式，不能因复制本段就执行。</p>
+</section><section class="chapter" id="s24"><h2><span class="section-no">CHAPTER 24</span>退出条件、来源与当前交付边界</h2><h3>24.1 失败怎么处理</h3>
+<p>接口不可用只关闭对应能力；权限不足不扩权；事实未知保留原操作；语义分歧回原证据；新成本／业务取舍交 Owner；维护成本过高暂停后续阶段。保留已证明有用的接收脚本，不为保住大平台继续堆机制。</p>
+<p>升级前停止接新写任务，保存本地数据库与证据引用，核对未完成操作。迁移失败退回只读，不清空现场。退出平台时原 PR、Issue、正式证据仍可用于接手；关键业务结论不能只在同序私有数据库中才能解释。</p>
+<h3>24.2 来源说明</h3>
+<p id="source-1">[S1] 本次对话原始《同序 v1》方案及 <code>tongxu_issue_workbench_complete (1).html</code>；三视图、三种派发、固定交付与未知保护的来源。旧版 <code>tongxu_v1_完整方案_开发与验收.md</code> 用于本次替换对照。原型不是生产验证。</p>
+<p id="source-2">[S2] <a href="https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/docs/development_workflow/README.md" rel="noopener noreferrer" target="_blank">coding-workflow 固定工作流</a>、<a href="https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/docs/development_workflow/decisions.md" rel="noopener noreferrer" target="_blank">决策</a>、<a href="https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/prompts/pr_review_system.md" rel="noopener noreferrer" target="_blank">正式审核提示</a>。依据前述固定版本读码，本轮不宣称重新运行其全部流程。</p>
+<p id="source-3">[S3] <a href="https://github.com/wlvh/SEC_metrics/issues/153" rel="noopener noreferrer" target="_blank">SEC_metrics #153 项目接收入口</a>。2026-10-17 再次读取；正文可编辑，描述有限技术合并委托和保留给用户的事项。同序接入仍需核验授权来源和执行身份，不凭本文取得权限。</p>
+<p id="source-4">[S4] <a href="https://github.com/wlvh/SEC_metrics/pull/264" rel="noopener noreferrer" target="_blank">PR #264</a>。本轮再次确认 merged；工具 <code>tools/compare_d02_preparation.py</code> 的具体比较逻辑依据此前读码与本轮交付记录，不宣称本轮重跑原件。</p>
+<p id="source-5">[S5] <a href="https://github.com/wlvh/SEC_metrics/pull/287#issuecomment-6170751266" rel="noopener noreferrer" target="_blank">PR #287 更正记录</a>。依据上一轮实际读取，说明曾先合入 #285 分支；不把现正文当作当时的完整历史。</p>
+<p id="source-6">[S6] <a href="https://github.com/wlvh/SEC_metrics/pull/293" rel="noopener noreferrer" target="_blank">PR #293</a>。2026-10-17 本轮读取 open / Draft，head <code>a8977a9de2bf4225d547dbd89700e6237b431a23</code>。候选账本实现依据此前读取，不代表已经在正式路径部署。</p>
+<p id="source-7">[S7] <a href="https://git-scm.com/docs/git-merge-tree" rel="noopener noreferrer" target="_blank">Git merge-tree 官方文档</a>。本轮查阅；固定对象的组合、冲突和写树能力仍需按安装版本试验。</p>
+<p id="source-8">[S8] <a href="https://docs.github.com/en/rest/pulls/pulls" rel="noopener noreferrer" target="_blank">GitHub PR REST 官方文档</a>。本轮查阅；合并 head 条件、请求与实际结果的边界，不提供本文承诺之外的原子保证。</p>
+<p id="source-9">[S9] <a href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue" rel="noopener noreferrer" target="_blank">GitHub merge queue 官方文档</a>。本轮查阅；可用性与 merge_group 配置须核实目标仓库。</p>
+<p id="source-10">[S10] <a href="https://developers.openai.com/codex/app-server" rel="noopener noreferrer" target="_blank">Codex App Server</a>、<a href="https://developers.openai.com/codex/noninteractive" rel="noopener noreferrer" target="_blank">非交互模式</a>。本轮查阅；只作为 G2/G3 接口候选，未运行用户本机 CLI。</p>
+<p id="source-11">[S11] <a href="https://code.claude.com/docs/en/headless" rel="noopener noreferrer" target="_blank">Claude Code 程序化入口</a>、<a href="https://code.claude.com/docs/en/cross-session-messaging" rel="noopener noreferrer" target="_blank">跨会话消息</a>。本轮查阅；socket／认证／恢复能力以未来 W4 探针为准。</p>
+<h3>24.3 本次交付究竟完成了什么</h3>
+<p>完成的是这份统一新版方案、同源离线 HTML、可填写验收记录与演练页面。页面自身的检查见随包 <code>artifact_validation.md</code>，它与 T01—T32 的生产验收分开。没有创建远端仓库或 Issue／PR，没有修改项目政策，没有实际启动原生会话或执行生产合并。</p>
+<p><strong>首先交付能减少既有交付摩擦的 G1；再用真实收益决定 G2／G3 的扩展。正确性、授权和恢复边界保留，形式、重复记录和无收益机制可以退出。</strong></p>
+</section></section>
+<section id="work-panel" data-panel="work" hidden><div class="page-head"><div class="eyebrow">BUILD / VERTICAL DELIVERABLES</div><h1>按交付闭环开发，不按页面铺开。</h1><p>工作包与完整方案同源。W 编号不是已经创建的 GitHub Issue；先 W0，再确认 W1，禁止一次性并行铺开全部工程。</p></div><div class="stage-grid"><article class="card"><span class="badge">G0 / W0</span><h3 style="margin-top:12px">只读摸底</h3><p>事实与政策核对；已有工具不重造；原生探针不阻塞接收层。</p></article><article class="card"><span class="badge green">G1 / W1—W3</span><h3 style="margin-top:12px">先交付接收版</h3><p>最先验证现有 Agent 和 GitHub 不换，机械摩擦已经减少。</p></article><article class="card"><span class="badge">G2 / W4—W5</span><h3 style="margin-top:12px">自动转接执行</h3><p>准确会话、最终结果、授权修复；不是把运行中消息做前置。</p></article><article class="card"><span class="badge">G3 / W6—W7</span><h3 style="margin-top:12px">完整多任务协作</h3><p>三种派发、实际消费与三视图，完成后才宣称完整协作。</p></article></div><div class="notice neutral">第一份交付：真实基线＋W1 的 Bridge 与可编码 Issue。第一份可用软件：不依赖接通两种原生引擎的 GitHub 交付接收层。</div><div class="worklist" id="worklist"></div><div class="actions"><a class="btn primary" href="#s23" data-section="s23">阅读可直接给开发 Agent 的指令</a></div></section>
+<section id="accept-panel" data-panel="accept" hidden><div class="page-head"><div class="eyebrow">ACCEPTANCE / REAL EVIDENCE FIRST</div><h1>既要能阻断，也要能恢复。</h1><p>这是一份本地可填写的验收工作表。默认全部未执行；手工登记不等于真实系统已经通过。</p></div><div class="notice">“通过”与“不适用”必须附实际证据及范围说明；核心能力不能用“不适用”跳过。演练回执、页面截图和原生／远端实测是不同证据。</div><div class="row between"><div class="filters" aria-label="阶段筛选"><button class="pill active" data-stage="all">全部</button><button class="pill" data-stage="G0">G0</button><button class="pill" data-stage="G1">G1</button><button class="pill" data-stage="G2">G2</button><button class="pill" data-stage="G3">G3</button></div><div class="row"><button class="btn" id="export-acceptance">导出手工记录 JSON</button><button class="btn danger" id="reset-acceptance">清除本地记录</button></div></div><div class="filters"><input type="search" id="test-search" placeholder="查找场景、T 编号或行为" aria-label="搜索验收场景"><select id="test-state" aria-label="筛选手工状态"><option value="all">全部状态</option><option>未执行</option><option>通过</option><option>未通过</option><option>经批准不适用</option></select></div><p class="counter" id="test-count"></p><div class="test-grid" id="testlist"></div></section>
+<section id="demo-panel" data-panel="demo" hidden><div class="page-head"><div class="eyebrow">SANDBOX / FICTIONAL DATA ONLY</div><h1>看看规则怎样改变下一步动作。</h1><p>有限的离线演练：真实目标、旧证据、有限委托、请求回执和产物交接。不是生产系统，不会写入任何外部服务。</p></div><div class="notice">所有 PR、候选、授权与回执均为虚构。演练不会更新验收工作表，也不能代替 T01—T32 的实际执行。</div><div class="row between"><div class="demo-tabs"><button class="active" data-demo-view="overview">项目总览</button><button data-demo-view="work">任务／会话／PR</button><button data-demo-view="comms">通信与交付</button></div><button class="btn" data-demo-act="reset">重置演练</button></div><div id="demo-content"></div><details open><summary>模拟事件：提出请求不等于已经发生</summary><div class="demo-log" id="demo-log"></div></details><details><summary>建议体验的五条路径</summary><p class="small">① #701 逐次确认后发请求，再查回结果。② 切有限委托：未核验会拒绝，核验后范围内不再要求逐次重批。③ 新 head 后旧审核和落实证据失效，重新检查与落实后恢复。④ #703 目标不同，不能靠声明叠放就放行。⑤ 通信页查询原消息，消息与原操作一起恢复；接收不自动等于消费验证。</p></details></section>
+<footer class="foot"><span>同序 v2.0 · 2026-10-17 · 设计／开发／验收统一基线</span><span>不联网执行 · 未创建远端对象 · 不含凭据</span></footer>
+</main></div></div><div id="toast" class="toast" role="status" hidden></div>
+<noscript><p style="padding:20px">JavaScript 未启用；完整方案仍可阅读。开发卡片、工作表与演练需启用脚本。本页不依赖外部服务。</p></noscript>
+<script type="application/json" id="test-data">[{"id": "T01", "stage": "G0/G1", "title": "真实工作事实与目标", "action": "读取普通、叠放、集成 PR；将实际目标与采用安排制造差异。", "expected": "精确显示 H/B/实际目标/最终出口；差异需核对，不改错目标；不从分支名猜关系。", "evidence": "GitHub 固定读取、差异清单、拒绝或核对记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T02", "stage": "G0/G1", "title": "不完整读取", "action": "模拟分页中断、权限不足、缺少一页评论或关系。", "expected": "明确覆盖缺口；未读部分不当作不存在；必要事实未知时不自动放行。", "evidence": "分页游标、错误、已读范围与界面状态", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T03", "stage": "G1", "title": "范围与新证据", "action": "先补链接，再改正式验收范围，最后同 head 提供新反例。", "expected": "记录更新不无限失效；实质范围和新反例触发相关复核；其他任务继续。", "evidence": "范围快照、差异判断、受影响动作", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T04", "stage": "G1", "title": "原 PR 交接与写回", "action": "发布一次交接；重复事件；在更新正文前加入人工编辑。", "expected": "原 PR 唯一正式记录；不刷重复评论、不丢人工编辑；写回与读回相符。", "evidence": "原 comment/review ID、前后正文、发布回执", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T05", "stage": "G0/G1", "title": "候选固定与材料可取得", "action": "在元信息与 diff 读取间推新 head；提供私人不可读路径。", "expected": "无 H1 配 H2；候选有实际材料；接收者拿不到材料显示未覆盖，不伪接收。", "evidence": "固定 Git 对象、候选清单、材料访问结果", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T06", "stage": "G1", "title": "结果与覆盖分离", "action": "命令返回 0 但部分样本失败／遗漏；提交作者声称全部通过。", "expected": "从真实结果统计；成功状态、完整覆盖和业务通过分开；作者陈述不改事实。", "evidence": "原始输出、样本计数、覆盖与判断", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T07", "stage": "G1/G2/G3", "title": "并发与资源占用", "action": "两个请求同一任务/规范化工作区/发布分支/目标推进；原执行未知。", "expected": "后端最多一个实际获准写者；不凭超时释放；核查确认结束后可交接。", "evidence": "数据库事务、实际副作用次数、恢复记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T08", "stage": "G1", "title": "复用已有入口", "action": "使用项目现成检查命令；只给部分样本；默认禁止真实网络调用。", "expected": "不复制业务实现；命令、工具版、输入及范围可重跑；部分范围明确。", "evidence": "真实命令/工具版本、隔离环境、原始结果", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T09", "stage": "G1", "title": "内容与状态对照", "action": "参数化 SAME_OK、CHANGED_OK、FAIL_TO_OK、OK_TO_FAIL、SAME_FAIL、CHANGED_FAIL、NOT_COMPARED。", "expected": "都成功但内容变仍显示；新拒绝不一律当退步；缺比较不变成通过。", "evidence": "各类固定输入与输出、判定说明", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T10", "stage": "G1", "title": "检查工具本身", "action": "用漏样本、空样本、丢来源/范围、工作进程崩溃、改动输入的变体。", "expected": "工具或覆盖缺陷可见并阻断对应完整声明；不能稳定地错判为无变化。", "evidence": "变体前后测试、来源/样本与原始异常", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T11", "stage": "G1", "title": "隔离临时组合", "action": "对 B/H 构造无冲突组合和文本冲突组合；检查作者现场。", "expected": "不改变作者分支/工作区；冲突交回；保留 T、方法、工具与实际测试入口。", "evidence": "前后 refs/status、B/H/T、冲突及测试记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T12", "stage": "G1", "title": "无文本冲突但语义失败", "action": "使用金额单位配置变化、下游 JSON 消费者变化，两份局部检查分别通过。", "expected": "即使 patch 相同/路径不重叠，组合反例仍可阻断；不启用闭包免审。", "evidence": "固定构造仓库、组合断言与复核证据", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T13", "stage": "G1/G2", "title": "就绪不是绿灯相加", "action": "CI 完成但报告 BLOCKER，或有效 PASS 仍有阻断 finding；分别 Ready/PASS。", "expected": "读实际语义结论及候选；关闭线程/Ready/CI 不替代正式复核；修复后能恢复。", "evidence": "GitHub 状态、报告、finding 处理与恢复", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T14", "stage": "G1", "title": "合并竞态与树回读", "action": "确认后改 H/B/目标；实际 merge tree 与预测不同；主干随后再次前进。", "expected": "过期输入不直接用；不伪称 base 原子锁；检查真正 merge commit，不把最新 main 当受测树；异常保留已合入事实。", "evidence": "请求及 sha、真实 merge commit/tree、后续核查", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T15", "stage": "G1", "title": "三种授权模式", "action": "只读尝试写；逐次模式无确认；有效委托内/外；发送前撤销。", "expected": "只读不写；无确认不发；范围内无需重批；越界/撤销不发；已发先查结果。", "evidence": "授权来源与修订、实际 actor、执行/拒绝记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T16", "stage": "G1", "title": "原账本和执行能力", "action": "两任务竞争同项额度；认领后结果未知；任务被授权但无密钥。", "expected": "只认原账本；未知不擅自返还；缺执行能力不宣称已调用；不创造第二份预算。", "evidence": "测试账本/认领记录、调用出口计数、真实能力", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T17", "stage": "G0/G1/G2", "title": "身份隔离与费用", "action": "机器人凭据缺失；候选测试尝试使用发布身份；Agent 声称本人批准。", "expected": "无个人身份回退；测试拿不到发布权限；文字不等于本人授权；不切换收费路径。", "evidence": "脱敏配置、隔离/拒绝、授权源、费用模式", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T18", "stage": "G1", "title": "接收队列与依赖", "action": "超过接收席位；前项等后项依赖；紧急插队与老任务等待。", "expected": "席位不超配；必要上游能推进；队列理由可解释；无新工作不空转模型。", "evidence": "队列前后、占用、真实开始/结束、原因", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T19", "stage": "G1/G2", "title": "重复事件与未知恢复", "action": "登记后、发送后、成功未落库时故障；乱序重放旧事件并重启。", "expected": "不二次发布/合并/认领；未知先核查；旧结果不覆盖新状态；查证后正常继续。", "evidence": "原 Operation、外部 ID、持久记录、次数", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T20", "stage": "G1/G3", "title": "责任接力与历史", "action": "让一个接收过程停止，再由新 Agent 仅依据 Issue/原 PR/证据接手。", "expected": "下一步责任明确；历史仍可定位；不让用户复述全对话；过期任务不得新抢占。", "evidence": "正式交接、新角色读取/操作与原记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T21", "stage": "G1/G3", "title": "进度和收益计数", "action": "重复测试记录、覆盖但未重算、已合入但未采纳；缺少工作时段。", "expected": "计数去重并说明证明范围；观察/验证/合入/采纳分开；缺时间数据不猜处理/等待。", "evidence": "结果对象与事件、纳入范围、口径说明", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T22", "stage": "G2", "title": "真实循环与最终结果", "action": "两引擎真实执行采用流程；输出中间 PASS、子代理文本、错误 JSON、顶层返工。", "expected": "只读匹配 Run 的最终有效结果；结果自动转接；独立上下文可核查；模拟不冒充模型发现。", "evidence": "原生事件、准确 session/turn、完整报告、修复 diff", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T23", "stage": "G1/G2", "title": "按类退回与有限范围", "action": "同类词项漏洞再出现；同时提出无关建议；另造一个不成立 finding。", "expected": "按共同机制修复并给有限条件；建议不阻断；不成立不造空提交；旧证据有条件复用。", "evidence": "反例、通过标准、scope 与实际修复", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T24", "stage": "G1/G2", "title": "决定落实能恢复", "action": "本人确认某决定、验证实施；推新 head 后重新核对实施。", "expected": "确认保留但实施证据待核；重验后可继续，无重复产品决定也无 D2 死锁。", "evidence": "原决定、采用范围、新候选实施证据", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T25", "stage": "G2", "title": "真实返工与停止", "action": "重读同负面结果；发布四个真实修复批次；出现证据讨论或预算上限。", "expected": "重试不加计数；修复批次才计；到边界停止，生成有范围下一步，不无限循环。", "evidence": "修复批次、Run、停止/反思/预算记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T26", "stage": "G2/G3", "title": "准确会话与能力", "action": "绑定旧会话、新会话握手失败、移除投递能力、turn 不匹配。", "expected": "不以最近会话替代；未握手不 control；不把 steer 失败降级为启动；缺能力按钮不可用。", "evidence": "真实 ID、握手、引擎版本、原生失败回执", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T27", "stage": "G2/G3", "title": "写入交接与后台副作用", "action": "验证会话转修复；旧进程退出但后台仍写；核查后再次交接。", "expected": "按采用政策接续；后台未知不接管；测试只写隔离现场；查清后不是永远禁止。", "evidence": "会话/turn、文件/进程与权限、交接记录", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T28", "stage": "G3", "title": "三种分配与实际关系", "action": "三个顶层责任分别派同工具、另一工具、并入待办；再重复派发。", "expected": "独立现场准确；并入不新开竞争会话/写轮次；关系非猜测，后续顺序 Run 合法。", "evidence": "原生会话、工作区、实际 Run 数与依赖", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T29", "stage": "G3", "title": "真实消息与消费", "action": "同/跨工具、子到父/兄弟发送固定包；错版本、不可读路径、只发已验证文字。", "expected": "送达/接收/验证分开；实际消费才通过；角色换会话不偷偷重定向未知消息。", "evidence": "双端回执、包版本、消费命令与结果", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T30", "stage": "G3", "title": "投递未知与重复", "action": "Delivered/Held/Refused，断流后查回原消息，重复发送同事件。", "expected": "语义不混淆；消息与原操作一起恢复；没有第二份消息或替身任务。", "evidence": "原消息/请求 ID、发送次数、同步状态", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T31", "stage": "G3", "title": "三视图与外部报告", "action": "展示旧报告、新候选、reject/request_evidence、恶意 HTML、断流后刷新。", "expected": "不同页面同源；历史不当当前；验收拒绝不绿；报告无控制权；六个用户问题可回答。", "evidence": "页面与后端、候选、报告隔离、使用者观察", "status": "未执行", "evidence_ref": "", "notes": ""}, {"id": "T32", "stage": "G1/G3", "title": "安装退出与实际收益", "action": "干净受支持环境安装；未完成操作升级/迁移失败；试点窗口前后对比。", "expected": "文档可操作；不清空或重派；能退只读和原流程；维护不吞收益；阶段声明准确。", "evidence": "命令/备份、原 PR 可接手、实际操作与缺口", "status": "未执行", "evidence_ref": "", "notes": ""}]</script><script type="application/json" id="work-data">[{"id": "W0", "stage": "G0", "title": "现有交付与政策基线", "prerequisite": "无新接口前置；只读访问和既有资料足够先做。", "scope": "核对目标仓库、项目政策、有限授权、现有工具和材料、在途 PR、下一步责任；形成 W1 Bridge 与实施 Issue 草稿。", "deliverable": "一份真实基线＋W1 可编码 Issue，指明必须取舍与可继续部分；执行器探针不做 G1 前置。", "excluded": "不接管生产会话、不建仓、不改权限、不重做 #264，不批量开八个 Issue。", "tests": "T01/T02/T05/T17 的调查部分", "exit": "先给接收者核对事实与政策差异，再按 Issue Agent 的两种镜头形成唯一实施入口。"}, {"id": "W1", "stage": "G1", "title": "事实采集与原 PR 交接", "prerequisite": "W0 确定读取范围、采用规则和目标代码触点。", "scope": "实现只读 CLI、完整分页、固定候选、原 PR 摘要/交接包、下一步责任，保存最小恢复信息。", "deliverable": "同一真实 PR 的实际 H/B/目标/证据/下一步一次看清；未获写授权时仅输出待发布包。", "excluded": "不启动模型，不解析所有历史散文为强制协议，不要求 legacy PR 全部补表。", "tests": "T01—T06/T19（采集部分）", "exit": "先以真实 GitHub 只读数据和故障夹具演示，再开放有明确边界的正文更新。"}, {"id": "W2", "stage": "G1", "title": "可执行证据与临时组合", "prerequisite": "W1 的候选和材料稳定；项目原测试入口可取得。", "scope": "接现有对照工具、隔离输入与测试、构造 B＋H 组合，输出分类与覆盖；检查工具自身的负例。", "deliverable": "一个实际检查可重跑，组合不改作者分支；内容变化、缺材料和工具故障可见。", "excluded": "不复制业务实现、不跑新真实付费请求、不建设全语言依赖分析。", "tests": "T08—T12/T14/T16", "exit": "与现有测试工具维护者协作；验收工具的判断标准和原始输出，而不只看退出码。"}, {"id": "W3", "stage": "G1", "title": "接收队列、有限授权与可靠操作", "prerequisite": "W1/W2 可用；受管写入口授权与交接明确。", "scope": "接收席位、下一步动作、原 PR 发布、目标推进、逐次/委托模式、未知查询、日志读回与恢复。", "deliverable": "测试仓库完整接收闭环；已有有限委托不重批；无委托不执行；可退只读。", "excluded": "不绕过分支规则、不复制额度、不把生产长期进程当可抢占资源。", "tests": "T07/T13—T21/T23/T24/T32（G1）", "exit": "G1 的唯一发布里程碑。先影子对照接收者，再迁移一个已授权写入口。"}, {"id": "W4", "stage": "G2", "title": "两种执行器与准确结果", "prerequisite": "G1 先可用；此包的原生认证、版本、预算与测试任务另外固定。", "scope": "验证并实现启动/指定接续/最终事件/原生批准/失败；两适配器可在接口固定后并行。", "deliverable": "两种真实引擎的准确 session/turn 与结果读回；按操作开放能力。", "excluded": "不重启旧会话、不隐藏新会话替身、不默认买 API 或接受全部批准。", "tests": "T17/T19/T22/T26/T27", "exit": "使用隔离探针，记录真实事件；失败说明影响哪个后续动作，不反向阻塞 G1。"}, {"id": "W5", "stage": "G2", "title": "按项目流程自动转接审核循环", "prerequisite": "W4 的结果与权限移交可靠；采用分工已写入实施 Issue。", "scope": "正式审核→必要两路核实→综合→授权修复→再审，处理错误 finding、scope 变化和有限停止。", "deliverable": "一个真实 PR 跑通采用流程；自动链内不人工复制模型报告，不为无效 finding 造提交。", "excluded": "不新增固定签字层、不复制旧 PASS、不实现通用流程编辑器和免审器。", "tests": "T13/T19/T22—T27", "exit": "先可控响应覆盖分支，再真实模型路径；二者证据分开，MVP 不等活跃消息系统。"}, {"id": "W6", "stage": "G3", "title": "多任务分配与实际交付通信", "prerequisite": "G2 已可用；确实出现多工作项与可用投递路径。", "scope": "三种派发、角色与会话分离、路径责任、实际依赖、同/跨工具消息与消费、可选集成。", "deliverable": "三个顶层责任及至少一条真实跨工具消费；并入待办没有竞争写入。", "excluded": "不强制父任务集成分支，不建设新对象存储，不猜测原生内部子代理。", "tests": "T07/T20/T26—T30", "exit": "责任寻址由 Issue/PR 起，投递到准确原生对象；能力缺失不冒充人工复制为自动。"}, {"id": "W7", "stage": "G3", "title": "完整三视图、外部步骤与交付", "prerequisite": "W6 行为稳定；前端来自既有核心而不是另一套状态机。", "scope": "三视图、固定报告、验收记录、安装/升级/退出、七缺口回归和完整现场验证。", "deliverable": "最终六个用户问题可回答；完整真实旅程、限制、收益和恢复手册可交付。", "excluded": "不追加花哨完成率、用量计费面板或重复汇总评论。", "tests": "T19—T21/T28—T32及所有受影响回归", "exit": "完成 G3 后才称完整 v1 能力已实现；本文件版本 v2.0 是设计修订，不表示产品已发布。"}]</script><script>'use strict';
+const $=s=>document.querySelector(s),$$=s=>Array.from(document.querySelectorAll(s));
+const E=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const TESTS=JSON.parse($('#test-data').textContent),WORKS=JSON.parse($('#work-data').textContent);
+const NS='tongxu-plan-v2-20261017';
+function readStore(k,fallback){try{return JSON.parse(localStorage.getItem(NS+k))??fallback}catch{return fallback}}
+function saveStore(k,v){try{localStorage.setItem(NS+k,JSON.stringify(v))}catch{}}
+let mode='document',toastTimer;
+let records=readStore('-acceptance',{});if(!records||typeof records!=='object'||Array.isArray(records))records={};
+let stage='all',testQuery='',testState='all';
+const theme=readStore('-theme','light');document.documentElement.dataset.theme=theme==='dark'?'dark':'light';
+function toast(text){$('#toast').textContent=text;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,4500)}
+function showMode(next,scroll=true){if(!['document','work','accept','demo'].includes(next))return;mode=next;$$('[data-panel]').forEach(x=>x.hidden=x.dataset.panel!==next);$$('[data-mode]').forEach(x=>{x.classList.toggle('active',x.dataset.mode===next);x.setAttribute('aria-selected',String(x.dataset.mode===next))});$('#sidebar').classList.remove('open');if(next==='work')renderWorks();if(next==='accept')renderTests();if(next==='demo')renderDemo();if(scroll)window.scrollTo({top:0,behavior:'auto'});$('#read-progress').style.width='0'}
+function downloadJSON(name,data){const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000)}
+function badge(text,cls=''){return `<span class="badge ${cls}">${E(text)}</span>`}
+function renderWorks(){const target=$('#worklist');target.innerHTML=WORKS.map(w=>`<article class="card workcard"><div class="eyebrow">${E(w.id)} / ${E(w.stage)}</div><h3>${E(w.title)}</h3><dl><dt>前置</dt><dd>${E(w.prerequisite)}</dd><dt>开发</dt><dd>${E(w.scope)}</dd><dt>交付物</dt><dd>${E(w.deliverable)}</dd><dt>不做</dt><dd>${E(w.excluded)}</dd></dl><div class="row between">${badge(w.tests)}<button class="btn" data-to-test="${w.stage}">查看阶段验收</button></div><p class="quiet">${E(w.exit)}</p></article>`).join('')}
+function getRecord(id){const r=records[id];return r&&typeof r==='object'?r:{status:'未执行',evidence_ref:'',notes:''}}
+function renderTests(){const list=TESTS.filter(t=>(stage==='all'||t.stage.split('/').includes(stage))&&(!testQuery||(t.id+t.title+t.action+t.expected).toLowerCase().includes(testQuery.toLowerCase()))&&(testState==='all'||getRecord(t.id).status===testState));$('#testlist').innerHTML=list.map(t=>{const r=getRecord(t.id),st=['未执行','通过','未通过','经批准不适用'].includes(r.status)?r.status:'未执行';return `<article class="card testcard" id="case-${t.id}"><div class="row between"><div class="row">${badge(t.id,'green')}<h3>${E(t.title)}</h3></div>${badge(t.stage)}</div><p><strong>操作：</strong>${E(t.action)}</p><p><strong>必须观察：</strong>${E(t.expected)}</p><p class="quiet"><strong>原始证据：</strong>${E(t.evidence)}</p><div class="testfields"><label>手工登记状态<select data-record="${t.id}" data-field="status">${['未执行','通过','未通过','经批准不适用'].map(s=>`<option ${s===st?'selected':''}>${s}</option>`).join('')}</select></label><label>实际证据／不适用批准引用<input data-record="${t.id}" data-field="evidence_ref" value="${E(r.evidence_ref)}" placeholder="固定报告、PR 评论或实际运行记录位置"></label><label class="full">观察、范围、环境与限制<textarea data-record="${t.id}" data-field="notes" placeholder="写实际观察；演练回执不能填成真实执行证据">${E(r.notes)}</textarea></label></div><div class="row between" style="margin-top:12px"><span class="quiet">手工记录，不是同序自动验证。</span><button class="btn" data-save-case="${t.id}">保存此项</button></div></article>`}).join('')||'<div class="empty">没有匹配的场景。</div>';const done=TESTS.filter(t=>getRecord(t.id).status==='通过').length,filled=TESTS.filter(t=>getRecord(t.id).status&&getRecord(t.id).status!=='未执行').length;$('#test-count').textContent=`显示 ${list.length} / ${TESTS.length} 项 · 手工已登记 ${filled} 项，其中登记通过 ${done} 项（未自动核验）`;$$('[data-stage]').forEach(x=>x.classList.toggle('active',x.dataset.stage===stage))}
+function saveCase(id){const el=$('#case-'+id);if(!el)return;const r={status:el.querySelector('[data-field=status]').value,evidence_ref:el.querySelector('[data-field=evidence_ref]').value.trim(),notes:el.querySelector('[data-field=notes]').value.trim()};if(['通过','经批准不适用'].includes(r.status)&&(!r.evidence_ref||!r.notes)){toast('“通过”或“不适用”需填写实际证据及范围说明；尚未保存。');return false}records[id]={...r,recorded_at:new Date().toISOString(),provenance:'user_entered_not_automatically_verified'};saveStore('-acceptance',records);toast('已保存本地手工记录，不代表自动验收。');renderTests();return true}
+
+// A small, explicitly fictional reducer. It never invokes a connector, shell or network endpoint.
+function seed(){return {selected:701,view:'overview',mode:'manual',grant:false,grantVersion:1,clock:0,base:1,seq:0,log:[],prs:{701:{id:701,title:'金额导出：保持单位与来源',h:1,scope:1,target:'main',intended:'main',evidence:true,review:{h:1,s:1,b:1},test:{h:1,s:1,b:1,tree:'T(1,1,1)'},decision:{confirmed:true,h:1},confirm:null,op:null,merged:false,incident:false},702:{id:702,title:'保存原件：补齐接收材料',h:1,scope:1,target:'main',intended:'main',evidence:false,review:null,test:null,decision:{confirmed:true,h:1},confirm:null,op:null,merged:false,incident:false},703:{id:703,title:'历史消费者：核对叠放目标',h:1,scope:1,target:'integration/70',intended:'main',evidence:true,review:{h:1,s:1,b:1},test:{h:1,s:1,b:1,tree:'T(1,1,1)'},decision:{confirmed:true,h:1},confirm:null,op:null,merged:false,incident:false}},message:{id:'demo-msg-1',state:'unknown',operation:'unknown',sentCount:1,artifact:0},issued:0}}
+let d=seed();
+function event(msg){d.log.unshift({n:++d.clock,text:msg});d.log=d.log.slice(0,25)}
+function identity(p){return {h:p.h,s:p.scope,target:p.target}}
+function same(a,b){return !!a&&a.h===b.h&&a.s===b.s&&a.target===b.target}
+function facts(p){return [{ok:p.target===p.intended,title:'实际目标符合采用安排',detail:`${p.target} → 最终出口 ${p.intended}`},{ok:p.evidence,title:'材料可取得',detail:p.evidence?'已模拟核对固定材料':'仍缺一份输入材料；不视为没变化'},{ok:!!p.review&&p.review.h===p.h&&p.review.s===p.scope&&p.review.b===d.base,title:'当前候选接收判断有效',detail:`H${p.h} / 范围 S${p.scope} / 目标 B${d.base}`},{ok:!!p.test&&p.test.h===p.h&&p.test.s===p.scope&&p.test.b===d.base,title:'组合检查适用于当前候选',detail:p.test?`受测 ${p.test.tree}（模拟）`:'还没有受测组合'},{ok:p.decision.confirmed&&p.decision.h===p.h,title:'已确认决定落实到当前版本',detail:p.decision.confirmed?'产品决定未改变；新 head 只需重验落实':'尚无有效产品决定'}]}
+function authorization(p){if(d.mode==='readonly')return {ok:false,text:'只读模式：不执行写动作'};if(d.mode==='delegated')return {ok:d.grant&&p.target==='main'&&p.scope===1,text:d.grant?'有限委托：只覆盖 S1 的技术合并到 main，不含新调用／采纳':'有限委托未核验或已撤销'};return {ok:same(p.confirm,identity(p)),text:same(p.confirm,identity(p))?'本候选已有模拟本人确认':'逐次模式：需要针对当前候选的本人确认'}}
+function eligible(p){return !p.merged&&!p.op&&facts(p).every(x=>x.ok)&&authorization(p).ok}
+function label(p){if(p.merged)return p.incident?['已合入，证据待核','amber']:['已合入 '+p.target,'green'];if(p.op)return [p.op.state==='unknown'?'原请求回执未知':'模拟请求中','amber'];if(!facts(p).every(x=>x.ok))return ['需核对／补证据','amber'];return authorization(p).ok?['条件齐备','green']:['等待有效授权','purple']}
+function nextOwner(p){if(p.merged)return p.incident?'接收者核对实际组合，不自动回滚':'交付负责人核对用户成果，未自动采纳';if(p.op)return '原操作执行者核查回执，不发第二次';if(!p.evidence)return '材料负责人补一份可取得输入';if(p.target!==p.intended)return '交付负责人核对实际目标与合入安排';if(!facts(p).every(x=>x.ok))return '接收角色核对当前候选及实施证据';if(!authorization(p).ok)return d.mode==='manual'?'Owner 对当前候选确认':'采用授权的负责人核对模式／范围';return '获权接收服务执行技术合并'}
+function prsMarkup(){return Object.values(d.prs).map(p=>{const l=label(p);return `<button class="pritem ${p.id===d.selected?'active':''}" data-pr="${p.id}">${badge('#'+p.id)}<b>${E(p.title)}</b><small>task/${p.id} → ${E(p.target)} · H${p.h}</small><div style="margin-top:8px">${badge(l[0],l[1])}</div></button>`}).join('')}
+function renderDemo(){const p=d.prs[d.selected];$$('[data-demo-view]').forEach(x=>x.classList.toggle('active',x.dataset.demoView===d.view));let html='';if(d.view==='overview'){html=`<div class="stats"><div class="stat">虚构 PR<b>3</b>不是生产任务数</div><div class="stat">已发模拟合并请求<b>${d.issued}</b>重查不增加请求</div><div class="stat">实际业务采纳<b>0</b>技术合并不自动采纳</div></div><div class="worklist">${Object.values(d.prs).map(x=>`<article class="card"><div class="row between">${badge('#'+x.id)}${badge(...label(x))}</div><h3 style="margin-top:13px">${E(x.title)}</h3><p>下一步：${E(nextOwner(x))}</p><p class="quiet">真实目标（示例）：${E(x.target)}；最终出口：${E(x.intended)}</p><button class="btn" data-open-pr="${x.id}">查看候选与动作</button></article>`).join('')}</div><div class="notice neutral">这部分只演练目标、证据、授权、回执和交接，不模拟真实的完整后端、队列调度或原生执行器。</div>`}else if(d.view==='work'){const auth=authorization(p);html=`<div class="demo-layout"><div class="prlist">${prsMarkup()}</div><article class="card"><div class="row between"><h3>#${p.id} ${E(p.title)}</h3>${badge(...label(p))}</div><dl class="kv"><dt>源与目标</dt><dd>task/${p.id} → <strong>${E(p.target)}</strong></dd><dt>固定身份</dt><dd>H${p.h} · S${p.scope} · B${d.base}</dd><dt>下一步责任</dt><dd>${E(nextOwner(p))}</dd><dt>授权模式</dt><dd><select id="demo-mode" aria-label="演练授权模式">${[['readonly','只读'],['manual','逐次确认'],['delegated','有限委托']].map(([v,l])=>`<option value="${v}" ${d.mode===v?'selected':''}>${l}</option>`).join('')}</select></dd></dl><div class="checks">${facts(p).map(c=>`<div class="check"><strong class="${c.ok?'ok':'bad'}">${c.ok?'✓':'○'}</strong><div><b>${E(c.title)}</b><div class="muted">${E(c.detail)}</div></div></div>`).join('')}<div class="check"><strong class="${auth.ok?'ok':'bad'}">${auth.ok?'✓':'○'}</strong><div><b>授权可用于这次动作</b><div class="muted">${E(auth.text)}</div></div></div></div><div class="actions"><button class="btn" data-demo-act="confirm">模拟本人确认本候选</button><button class="btn" data-demo-act="grant">模拟核验有限委托</button><button class="btn primary" data-demo-act="merge">请求模拟合并</button></div><p class="quiet">按钮仍可点击以观察拒绝原因；它们只改本页虚构数据。</p><div class="action-area"><b class="small">恢复与核查</b><div class="actions"><button class="btn" data-demo-act="evidence">模拟补齐材料</button><button class="btn" data-demo-act="check">模拟完成当前检查</button><button class="btn" data-demo-act="apply">模拟重验决定落实</button><button class="btn" data-demo-act="retarget">模拟负责人纠正目标</button><button class="btn" data-demo-act="success">模拟原请求成功回执</button><button class="btn" data-demo-act="query">模拟查回原结果</button></div></div><details><summary>故障探针：旧候选、撤销与未知</summary><div class="actions"><button class="btn" data-demo-act="head">新 head</button><button class="btn" data-demo-act="base">主干前进</button><button class="btn" data-demo-act="scope">范围变为 S2</button><button class="btn danger" data-demo-act="revoke">撤销委托</button><button class="btn" data-demo-act="lost">丢失当前请求回执</button></div><p class="quiet">发送后主干变化可能改变真实合入树。演练会保留“已合入、证据待核”，不伪造 REST 的 base 原子锁。</p></details>${p.op?`<div class="notice neutral">原操作 ${E(p.op.id)} · ${E(p.op.state)} · 请求候选 H${p.op.h}/S${p.op.s}/B${p.op.b}。重复点击不会多发一次。</div>`:''}</article></div>`}else{const m=d.message;html=`<article class="card"><div class="row between"><h3>来源包 → 历史消费者</h3>${badge(m.state==='unknown'?'回执未知':m.state==='delivered'?'已送达':'已回复',m.state==='unknown'?'amber':'green')}</div><p>固定产物 source-pack-demo-v1；原接收会话 demo-claude-history。此处所有回执均为模拟。</p><dl class="kv"><dt>消息 ID</dt><dd>${m.id}</dd><dt>原操作状态</dt><dd>${E(m.operation)}</dd><dt>投递次数</dt><dd>${m.sentCount}（重查不会递增）</dd></dl><div class="handoff-chain">${['已登记','已接收','已验证'].map((v,i)=>`<div class="${m.artifact>=i?'done':''}">${v}</div>`).join('')}</div><div class="actions"><button class="btn" data-demo-act="message-query">模拟核查原投递</button><button class="btn" data-demo-act="receive">模拟接收匹配包</button><button class="btn" data-demo-act="consume">模拟消费入口通过</button><button class="btn" data-demo-act="resend">尝试重复投递</button></div><div class="notice neutral">投递、接收、消费是三个不同事实。本演练不能替代真实双端消息和消费证据。</div></article>`}$('#demo-content').innerHTML=html;$('#demo-log').innerHTML=d.log.length?d.log.map(e=>`<p><span class="mono muted">${String(e.n).padStart(2,'0')}</span> ${E(e.text)}</p>`).join(''):'<p class="quiet">尚未执行演练。建议先进入“任务／会话／PR”，观察逐次与委托模式的差别。</p>'}
+function reject(text){event('拒绝／未推进：'+text);toast(text)}
+function completeRemote(p){if(!p.op){reject('没有原合并请求。');return}const o=p.op;if(o.h!==p.h){o.state='rejected';event(`${o.id} 模拟远端因 head 不匹配拒绝；没有合并。`);p.op=null;return}p.merged=true;p.incident=p.target!==o.target||d.base!==o.b||p.scope!==o.s;p.actualTree=`T(${d.base},${p.h},${p.scope})`;o.state='confirmed';event(`${o.id} 原请求已合入 ${p.target}。${p.incident?'实际组合已变，证据待核；未自动回滚。':'受测代码内容一致；不代表业务采纳。'}`);d.base++;}
+function demoAct(action){const p=d.prs[d.selected],m=d.message;
+if(action==='reset'){d=seed();renderDemo();toast('已重置虚构演练；验收工作表未改变。');return}
+if(['message-query','receive','consume','resend'].includes(action)){
+ if(action==='message-query'){if(m.state==='unknown')m.state='delivered';m.operation='confirmed';event('查回原消息：消息与原操作一起恢复；未再次投递。')}
+ if(action==='receive'){if(!['delivered','replied'].includes(m.state)){reject('送达尚未核查，不能直接接收。')}else{m.artifact=Math.max(m.artifact,1);event('模拟接收方读取并匹配 v1；行为尚未验证。')}}
+ if(action==='consume'){if(m.artifact<1)reject('先接收匹配版本，再从实际入口验证。');else{m.artifact=2;m.state='replied';event('模拟消费完成；正式产品仍需真实入口与原始证据。')}}
+ if(action==='resend')reject('相同消息已存在；核查原消息，不发送第二份。');renderDemo();return}
+if(p.merged&&!['base','revoke'].includes(action)){reject('本 PR 已合入；演练新候选请重置。');renderDemo();return}
+switch(action){
+case 'confirm':if(d.mode!=='manual')reject('本人确认只用于演练逐次模式。');else{p.confirm=identity(p);event(`模拟本人确认 #${p.id} 的 H${p.h}/S${p.scope} → ${p.target}。`)}break;
+case 'grant':if(d.mode!=='delegated')reject('先选有限委托模式。');else{d.grant=true;event('模拟核验委托：S1 的技术合并到 main；不包含付费、部署或采纳。')}break;
+case 'revoke':d.grant=false;d.grantVersion++;event('委托已模拟撤销；不发送新的受影响请求，已发操作仍需查询。');break;
+case 'merge':if(p.op){reject('存在原请求，先核查，不再发送。');break}if(!eligible(p)){reject('目标、材料、当前证据或授权未满足。');break}p.op={id:'demo-op-'+(++d.seq),...identity(p),b:d.base,tree:p.test.tree,state:'sent',grantVersion:d.grantVersion};d.issued++;event(`${p.op.id} 已模拟发送；不立即显示已合入。`);break;
+case 'lost':if(!p.op)reject('先产生原请求。');else{p.op.state='unknown';event('当前请求回执丢失，保留原 ID；不释放为可重复执行。')}break;
+case 'query':case 'success':completeRemote(p);break;
+case 'head':p.h++;p.confirm=null;event(`新 H${p.h}：旧审核与实施证据过期；产品决定本身不重做。`);break;
+case 'base':d.base++;event(`目标前进为 B${d.base}；临时组合需按变化核对，不自动改作者分支。`);break;
+case 'scope':p.scope=2;p.confirm=null;event('采用范围改为 S2；旧审核与 S1 委托不能覆盖新范围。');break;
+case 'evidence':p.evidence=true;event('模拟取得此前缺失的固定输入；尚未自动生成审核通过。');break;
+case 'check':if(!p.evidence)reject('材料未齐，不能声称完成全部检查。');else{p.review={h:p.h,s:p.scope,b:d.base};p.test={h:p.h,s:p.scope,b:d.base,tree:`T(${d.base},${p.h},${p.scope})`};event('模拟固定候选的检查与接收判断完成；不替代授权或决定落实。')}break;
+case 'apply':if(!p.decision.confirmed)reject('先有有效产品决定。');else{p.decision.h=p.h;event('模拟重验决定在新 head 的落实；没有重复要求 Owner 决定。')}break;
+case 'retarget':if(p.op)reject('原请求未确认，不能悄悄改目标。');else{p.target=p.intended;p.confirm=null;p.review=null;p.test=null;event('模拟负责人按既有范围纠正目标；重新核对当前组合与证据。')}break;
+}renderDemo()}
+
+document.addEventListener('click',e=>{const b=e.target.closest('button,a');if(!b)return;if(b.dataset.mode){showMode(b.dataset.mode);return}if(b.dataset.section){e.preventDefault();$('#doc-search').value='';filterDoc('');showMode('document',false);const el=document.getElementById(b.dataset.section);if(el){el.scrollIntoView({behavior:'auto'});history.replaceState(null,'','#'+b.dataset.section)}return}
+if(b.tagName==='A'&&/^#source-/.test(b.getAttribute('href')||'')){filterDoc('');$('#doc-search').value='';showMode('document',false);return}
+if(b.dataset.toTest){stage=b.dataset.toTest;showMode('accept');return}if(b.dataset.stage){stage=b.dataset.stage;renderTests();return}if(b.dataset.saveCase){saveCase(b.dataset.saveCase);return}if(b.dataset.demoView){d.view=b.dataset.demoView;renderDemo();return}if(b.dataset.pr){d.selected=+b.dataset.pr;renderDemo();return}if(b.dataset.openPr){d.selected=+b.dataset.openPr;d.view='work';renderDemo();return}if(b.dataset.demoAct){demoAct(b.dataset.demoAct);return}
+if(b.id==='theme'){document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';saveStore('-theme',document.documentElement.dataset.theme);return}if(b.id==='menu'){$('#sidebar').classList.toggle('open');return}if(b.id==='print'){showMode('document',false);filterDoc('');$('#doc-search').value='';window.print();return}if(b.id==='export-acceptance'){downloadJSON('tongxu-v2-acceptance-record.json',{version:'2.0',kind:'user_entered_not_automatically_verified',exported_at:new Date().toISOString(),cases:TESTS.map(t=>({...t,...getRecord(t.id)}))});return}if(b.id==='reset-acceptance'){if(window.confirm('清除本浏览器的手工验收记录？演练和真实项目不受影响。')){records={};saveStore('-acceptance',records);renderTests()}return}});
+document.addEventListener('change',e=>{if(e.target.id==='test-state'){testState=e.target.value;renderTests()}if(e.target.id==='demo-mode'){d.mode=e.target.value;Object.values(d.prs).forEach(p=>p.confirm=null);event('切换演练模式：'+d.mode+'；切换模式本身不产生新授权。');renderDemo()}});
+function filterDoc(q){const terms=q.trim().toLowerCase();let n=0;$$('.chapter').forEach(s=>{const yes=!terms||s.textContent.toLowerCase().includes(terms);s.hidden=!yes;if(yes)n++});$('#doc-count').textContent=terms?`匹配 ${n} / 24 章`:'24 章 · 8 个工作包 · 32 项待执行验收'}
+$('#doc-search').addEventListener('input',e=>filterDoc(e.target.value));$('#test-search').addEventListener('input',e=>{testQuery=e.target.value;renderTests()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')$('#sidebar').classList.remove('open')});
+let scrollPending=false;window.addEventListener('scroll',()=>{if(scrollPending)return;scrollPending=true;requestAnimationFrame(()=>{scrollPending=false;if(mode!=='document')return;const available=document.documentElement.scrollHeight-window.innerHeight;$('#read-progress').style.width=(available>0?Math.min(100,Math.max(0,window.scrollY/available*100)):0)+'%';let current='s01';$$('.chapter:not([hidden])').forEach(s=>{if(s.getBoundingClientRect().top<165)current=s.id});$$('.toc a').forEach(a=>a.classList.toggle('active',a.dataset.section===current))})},{passive:true});
+window.__tongxuPlanDemo={snapshot:()=>JSON.parse(JSON.stringify(d)),act:demoAct,reset:()=>{d=seed();renderDemo()},select:n=>{if(d.prs[n]){d.selected=n;renderDemo()}},mode:v=>{if(['manual','readonly','delegated'].includes(v)){d.mode=v;renderDemo()}},eligibility:n=>eligible(d.prs[n])};
+renderWorks();renderTests();renderDemo();filterDoc('');if(/^#s\d\d$/.test(location.hash)){const t=$(location.hash);if(t)setTimeout(()=>t.scrollIntoView({behavior:'auto'}),50)}
+</script></body></html>
