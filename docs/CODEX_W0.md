@@ -1,29 +1,29 @@
-# 发给 Codex：只执行 tongxu #2 / W0
+# 发给 Codex：按 v2.2 继续 tongxu #2 / W0
 
-你在 `wlvh/tongxu` 实施 **Issue #2**。先读取当前 main 的 README、现行 v2.1 规范及 #2 正文和新评论。#1 已收口，不再要求用户填写 D1—D10；若出现后续有效决定，先核对其范围。
+在 `https://github.com/wlvh/tongxu` 执行 Issue #2。先读取当前 main、#2 正文与新评论、README、`docs/tongxu_v2_plan.md`、`prompts/README.md`。已经在做 W0 时先核对原现场与本修订的增量，继续原任务，不重开、不回退、不覆盖他人修改。
 
-## 已确定的范围
+## 已确定，不再重复询问
 
-- 产品仓库：`wlvh/tongxu`，不要再建仓。
-- 只读试点：`wlvh/SEC_metrics`。只调查既有政策、接收责任、原件可得性、工具入口、在途／固定历史 PR 和实际下一步。
-- 本轮产出：可核对基线、W1 Target State Bridge、符合 Issue Agent 的 #3 实施正文草稿。
-- 不做 W1 应用编码，不开 W2—W7；不改 SEC_metrics，不接管生产会话，不合并，不调用 SEC／业务模型，不花新的业务额度，不改认证／分支保护。
-- 不等待 D5 确认载体、Checks 发布权、merge queue 或 W4 接口。缺访问则按实际失败说明受影响范围，用已获准资料完成其余调查，不扩大来源。
+产品仓库 tongxu；只读试点 SEC_metrics；G1→G2→G3。新增工作秘书只是用户的秘书：默认独立 Codex App Server，总览/联络/跟进，不编码、不测试、不技术验收、不直接合并。独立 PR 接收默认 Claude Code；任务通过工作台直接联系，GitHub 保存正式记录。
 
-## 工作步骤
+新任务需要与相关在途负责人核对共享接口与未提交工作；未回复不算同意。共同交付 X 与本次安全合入集合不同：A1 兼容可先合，B1 只等 A1，A2 等消费者与组合；确不可拆才最小集成。事件触发接收，定期补漏，不到点全合、不等整个 Issue。新 X2 不默认扩大 X1。
 
-1. 核对当前仓库和分支、dirty 状态与远端变化。使用新的干净工作分支／worktree；保留他人修改，不 reset、clean、强推或夺取已有工作区。首次参考材料修订不等于未来任意直推 main 授权。
-2. 读仓库现存政策；没有 AGENTS／TESTING 等应用政策时记录真实缺失，不编造入口，不为 W0 堆出九份无事实模板。工作流参考固定 `wlvh/coding-workflow@1772cd2c25bfc42b7a89cf38b35bf19d3dc22000` 的 README、Issue Agent 和 PR review；不静默换 main。
-3. 只读核对 SEC_metrics #153、#28、#47，以及 #264/#287/#293 的实际状态和必要源码／证据。它们是代表线索，不是旧叙述永远正确的保证；按真实相关性少量补查，不普查全部数百 PR。区分政策、当前代码、记录引用与本轮实测，保留固定版本和时间。
-4. 基线覆盖实际目标／依赖、当前接收责任、有效委托来源尚需核验的点、原账本与凭据能力的区别、已有检查入口及材料能否取得、下一步负责人。不得以共用 `wlvh` 身份的自然语言自行认定新授权。
-5. Bridge 围绕 W1 的只读 CLI、完整分页、固定候选、交接包、下一步责任和最小恢复展开。给出 SU→真实代码触点（新文件也明确是预测）→测试→文档。W1 结果对象独立于最终 check run/commit status 发布，写入后端留到 W3。
-6. 更新 `docs/issues/02_W1_facts_and_pr_handoff.md` 为自足可编码草稿：Why、Scope/Non-goals、契约、SU、Bridge、代码／文档／测试预测、Acceptance Checklist、风险与 Owner 边界。共同验收嵌入该 Checklist，不再开平行规格。
-7. `python3 prototypes/build_product_ui.py` 和 `node verification/html_probes/current_v21.js` 是现有材料/原型回归，不是同序应用测试。运行并记录实际结果；W0 测试选择按真实改动，不把旧探针绿灯冒充 W1 验收。
-8. 在 tongxu 提交本轮限定文档、实际必要修正和报告，自审后推送独立分支并建 **Draft PR，引用 #2，不合并**。PR body 在仓库外生成。公开前移除 token、个人路径、私人会话链接、未经允许的原件内容；正式材料只引用获准可见位置。
-9. 在 #2 写一次完成交接（基线／Bridge／Draft PR、未检查与下一步）。#3 可编码正文先保留为该 PR 中的草稿，待其采用后由唯一执笔者发布到原 #3 并读回核对；不要提前把未审核草稿变成已批准实施范围。
+这些是产品约束，不要求 W0 立即实施秘书／消息／合并运行器。当前只交付基线、W1 Bridge 和 #3 可编码草稿。
 
-## 停止点与交付
+## 实际工作
 
-停在 W0 的 Draft PR，等待采用，不自动开始 W1。不因纯工程实现选择重新要求用户拍板；确实涉及新权限／费用／业务含义的事项明确指出只阻止什么，并继续不受影响部分。
+1. 查本仓库 HEAD、政策、脚本和缺失的应用入口；保留 dirty 工作，在独立分支/worktree 做本任务，不 reset/clean/强推/直推 main。
+2. 固定参考 coding-workflow@1772cd2c25bfc42b7a89cf38b35bf19d3dc22000 的 README、Issue Agent 与 PR review，不静默跟随 main。现存项目有效规则按范围核对。
+3. 只读查 SEC_metrics #153/#28/#47 与 #264/#287/#293 等代表性真实记录及必要源码。区分当前事实、历史说明、候选实现与本轮实测；少量按相关性补查，不普查全部 PR、不再实现现有工具。
+4. 基线说明接收责任、实际目标、局部依赖、材料/工具可得性、原账本与执行能力差别、授权来源待核点、下一步。新增观察任务接入和共同交付如何记录；没有记录就明确，不编造已协调。
+5. W1 Bridge 明确 SU→实际触点或新增预测→测试→文档。只读 CLI、完整分页、固定候选、交接包、下一步与最小恢复；角色/协调/共同交付只保留正式引用，不先造完整 G3。发布数据与 W3 具体 check run/status 后端分离。
+6. 更新 `docs/issues/02_W1_facts_and_pr_handoff.md` 为自足 #3 草稿：Why、Scope、契约/SU、Bridge、代码/文档/测试预测、Acceptance Checklist、风险与权限。共同验收扩展 Checklist，不建新审批层。
+7. 按实际改动运行检查。可运行 `python3 prototypes/build_product_ui.py`、`node verification/html_probes/current_v21.js`、`node verification/html_probes/current_v22.js`；它们只是材料/离线原型回归，不是应用已验收。
+8. 本任务只在 tongxu 发布独立分支和引用 #2 的 Draft PR。PR body 在仓库外生成；检查公开内容无 token、私人路径/会话链接、未获允许的原件。SEC_metrics 不做任何写入、不新增来源获取/业务模型/费用、不接管运行会话、不改认证或保护。
+9. #2 留一次交接，附基线、Bridge、Draft PR、实际命令和未检查；#3 新正文先留 PR 草稿，采用后由唯一执笔者同步原 Issue 并读回。
 
-最终给出固定版本、实际读过的来源、真实命令及范围、W0 满足情况、Draft PR 链接、#3 草稿位置和少量未决项。不要只回复“文档已读”“测试 N 项绿”或预报将来会完成。
+## 停止点
+
+停在 W0 的 Draft PR，未合并，不自动开始 W1，不批量启动 W2—W7。W0 不等秘书/CLI/Checks/merge queue/确认载体。访问失败只限制相关调查，不自行扩大来源。
+
+最终报告实际版本、读过的来源、真实检查、#2 验收满足情况、PR 链接及真正剩余的少量取舍。没有执行的产品能力明确未实现，不用 prompt/HTML 演练通过包装。
