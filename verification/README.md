@@ -1,13 +1,20 @@
-# 验证脚本
+# 验证入口
 
-每个脚本都能独立重跑，不依赖网络。实测输出记录在 `RESULTS.md`。
+## 当前产品原型 v2.1
 
-| 脚本 | 证明什么 | 对应方案位置 |
-|---|---|---|
-| `semantic_conflict/repro.sh` | 两份改动不碰同一文件、无文本冲突、候选 patch 在新旧 base 上字节相同，合并后行为仍改变；import 闭包碰撞只能提示；组合场景测试才能拦截 | §7、§8.3、§13.4、T12 |
-| `merge_tree/test.sh` | `git merge-tree --write-tree` 不改工作区与 index，有冲突时返回树与冲突清单并退出 1，结果树可读入隔离 worktree | §13.3、T11 |
-| `html_probes/run.sh` | 在 Node 中加载三份 HTML 的脚本，验证状态机：七处 v1 缺陷、v2 与产品原型的修复情况，以及两者之间的三处规则不一致 | §21.1、T07/T14/T15/T24–T26/T30/T31 |
+```bash
+python3 prototypes/build_product_ui.py
+node verification/html_probes/current_v21.js
+```
 
-探针用 DOM 与 localStorage 替身加载原始脚本，`setTimeout` 改为队列，由 `flush()` 推进。它们证明的是页面脚本的状态逻辑，不是浏览器端到端行为，也不是未来后端的正确性。
+构建产物 `prototypes/product_ui_prototype.html` 可在浏览器打开，不提交。源码为构建器与冻结模板；不联网、不启动引擎。新脚本断言 36 个行为，临时目录自动清理；不能替代真实产品验收。完整范围和限制见 [REVISION_V21.md](REVISION_V21.md)。
 
-运行要求：Node 20 以上，Git 2.38 以上（`merge-tree --write-tree`），Python 3。
+## 历史反例与探针
+
+```bash
+bash verification/semantic_conflict/repro.sh
+bash verification/merge_tree/test.sh
+bash verification/html_probes/run.sh
+```
+
+这些入口保留以重演旧原型或 Git 反例。`html_probes/run.sh` 读取冻结产品模板，不把当前修复当旧缺陷，也不要求三套历史 HTML 同步改动。原 [RESULTS.md](RESULTS.md) 保留原执行环境、时点与范围；不是本轮重新完成的报告。

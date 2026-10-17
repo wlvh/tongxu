@@ -1,68 +1,58 @@
 # 同序（tongxu）
 
-交付优先的多 Issue、多 Agent 协作台。本仓库目前只有**设计材料、交互原型、评审记录、验证脚本和实施 Issue**，没有可运行的软件。
+交付优先的多 Issue、多 Agent 协作台。**当前是 v2.1 设计基线、可构建离线产品 UI、验证脚本和规划 Issue；尚无真实接入的同序应用。**
 
-状态：2026-10-17。方案版本 v2.0 加三轮评审形成的 v2.1 修订项。工作流参考固定在
-[wlvh/coding-workflow@1772cd2c](https://github.com/wlvh/coding-workflow/tree/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000)。
+先让成果准确接收、复验、排队并进入正确目标，再自动接续原生 Agent。不是第三个编码客户端，不重建聊天。**不无条件自动合并；受管写入只依据已核验的逐次确认或有限委托。**
 
-## 这是什么
+## 现在怎么推进
 
-同序要解决的不是"缺一个看板"，而是多个 Issue、多个执行者（Codex、Claude Code）同时交付时，
-"工作分给谁；信息送到哪里；产物是否被接收；哪个 PR 还差什么；现在需要人处理哪件事"这些机械协调动作。
-它不是第三个编码客户端，不自动合并，不把模型的一句"完成了"当成事实。
+产品仓库已确定为本仓库，首个只读调查对象为 `wlvh/SEC_metrics`。先执行 [#2 / W0](https://github.com/wlvh/tongxu/issues/2)，按 [Codex 起步指令](docs/CODEX_W0.md) 产出事实基线、W1 Bridge 和细化后的 #3 草稿。
 
-完整方案见 [docs/tongxu_v2_plan.md](docs/tongxu_v2_plan.md)。方案由 GPT 6 Pro 起草，经 Claude 三轮评审对照
-coding-workflow 原文、Node 探针和 Git 实验后修订；对齐结论与未决项见
-[docs/review/aligned_decisions.md](docs/review/aligned_decisions.md)。
+#1 的十项规则已归并，不再是开工前逐项批准表；**W0 不等待 D5、Checks 写权、merge queue 或原生执行器**。未知只限制它实际影响的动作。此安排不授权 SEC_metrics 写入、合并、调用、费用或接管。
 
-## 目录地图
+## 现行入口
 
-| 路径 | 内容 | 来源与状态 |
-|---|---|---|
-| `docs/tongxu_v2_plan.md` | v2.0 完整方案：24 章、W0–W7 工作包、T01–T32 验收场景 | GPT 6 Pro 起草，原文未改 |
-| `docs/acceptance/T01-T32.json` | 32 项验收场景的结构化数据 | 从 v2 HTML 内嵌 JSON 抽出 |
-| `docs/acceptance/work_packages_W0-W7.json` | 8 个工作包的结构化数据 | 同上 |
-| `docs/review/` | 三轮评审全文（GPT 与 Claude 各三份）与对齐结论 | 对话原文转录 |
-| `docs/issues/` | 实施 Issue 正文（与 GitHub Issue 同步） | Claude 按 v2 §19 与评审结论编写 |
-| `prototypes/v1_issue_workbench.html` | v1 交互原型，历史保留 | 虚构数据，七处状态缺陷已登记 |
-| `prototypes/v2_plan_and_acceptance.html` | v2 方案同源 HTML：方案、开发、验收工作表、演练 | 虚构数据 |
-| `prototypes/product_ui_prototype.html` | 产品界面交互原型 | 虚构数据，三处规则与方案不一致，见 Issue |
-| `verification/` | 可重跑的验证脚本与实测结果 | Claude 编写并在 Node 22、Git 2.43 下运行 |
+| 入口 | 用途 |
+|---|---|
+| [完整规范](docs/tongxu_v2_plan.md) | 已整合的 v2.1，唯一当前产品基线；保留 24 章结构 |
+| [变更索引](docs/review/aligned_decisions.md) | D1—D10 的结论、理由及落实位置，不重复定义政策 |
+| [Issue 发布源](docs/issues/) | 一个执笔者更新并发布，读回核对；当前编码依据是已发布 Issue |
+| [32 项验收](docs/acceptance/T01-T32.json) | 覆盖清单，不是已通过记录 |
+| [当前 UI 构建源](prototypes/build_product_ui.py) | 保留原布局，生成单文件离线界面；不加载外部服务 |
+| [本轮验证](verification/REVISION_V21.md) | 确切运行范围、原型断言和限制 |
 
-## 阅读顺序
-
-1. 产品负责人：方案第 02、03、12、20、22 节，然后 `docs/review/aligned_decisions.md`。
-2. 开发者：方案第 04–19、21、23 节，然后 `docs/issues/` 按编号读。
-3. 审核者：方案第 21–23 节，`verification/RESULTS.md`。
-
-## Issue 索引
-
-| Issue | 文件 | 阶段 |
-|---|---|---|
-| [#1 设计修订 v2.1：开工前需要确认的十项规则](https://github.com/wlvh/tongxu/issues/1) | `docs/issues/00_design_revision_v2.1.md` | 设计 |
-| [#2 W0 现有交付与政策基线](https://github.com/wlvh/tongxu/issues/2) | `docs/issues/01_W0_baseline.md` | G0 |
-| [#3 W1 事实采集与原 PR 交接](https://github.com/wlvh/tongxu/issues/3) | `docs/issues/02_W1_facts_and_pr_handoff.md` | G1 |
-| [#4 W2 可执行证据与临时组合](https://github.com/wlvh/tongxu/issues/4) | `docs/issues/03_W2_evidence_and_combination.md` | G1 |
-| [#5 W3 接收队列、有限授权与可靠操作](https://github.com/wlvh/tongxu/issues/5) | `docs/issues/04_W3_queue_authorization_operations.md` | G1 |
-| [#6 W4 两种执行器与准确结果](https://github.com/wlvh/tongxu/issues/6) | `docs/issues/05_W4_executor_adapters.md` | G2 |
-| [#7 W5 按项目流程自动转接审核循环](https://github.com/wlvh/tongxu/issues/7) | `docs/issues/06_W5_review_loop_relay.md` | G2 |
-| [#8 W6 多任务分配与实际交付通信](https://github.com/wlvh/tongxu/issues/8) | `docs/issues/07_W6_dispatch_and_delivery.md` | G3 |
-| [#9 W7 完整三视图、外部步骤与交付](https://github.com/wlvh/tongxu/issues/9) | `docs/issues/08_W7_three_views_and_release.md` | G3 |
-
-GitHub Issue 正文与 `docs/issues/` 同步；改动先改文件再更新 Issue。按 v2 §23.1，先只做 #2（W0）；#3 以后的 Issue 在 W0 的 Bridge 产出后按 Issue Agent 规则细化为可编码 Issue。#1 的十项决定是 #3 以后的前置。
-
-## 验证脚本
+## 打开当前产品 UI
 
 ```bash
-bash verification/semantic_conflict/repro.sh   # patch 字节不变、无冲突、行为改变的反例
-bash verification/merge_tree/test.sh           # git merge-tree --write-tree 的组合与冲突行为
-bash verification/html_probes/run.sh           # 三份 HTML 状态机的 Node 探针
+python3 prototypes/build_product_ui.py
+# 浏览器打开 prototypes/product_ui_prototype.html
+node verification/html_probes/current_v21.js
 ```
 
-实测输出见 [verification/RESULTS.md](verification/RESULTS.md)。
+构建只从 `prototypes/archive/product_ui_v2.html` 的固定模板生成，替换点不匹配就失败；输出无运行时加载层、无外部依赖。生成的 HTML 不作为另一份手改源码，也不进入 commit。当前源码是生成器与固定模板；W7 交付真实 UI 后退役这段原型构建机制。旧模板不能作为当前交互入口。
 
-## 边界
+主界面是**项目总览、任务／会话／PR、通信与交付**，不是方案阅读器。委托范围、目标增量判断、实际合入证据待核与恢复、逐操作能力均可演练。所有版本、回执和身份为虚构数据，点击不访问 GitHub、Codex 或 Claude Code。
 
-- 原型中的仓库、会话、版本、回执全部是虚构示例，按钮只改本地状态，不连接 GitHub、Codex 或 Claude Code。
-- 方案引用的 SEC_metrics Issue 与 PR（#153、#264、#287、#293）未在本仓库核验，按 GPT 的转述对待。
-- GPT 交付包中的 `W0_开发起步.md`、`artifact_validation.md` 等文件未提供给本仓库；T01–T32 数据从 HTML 内嵌 JSON 抽出。
+## 工作包
+
+| Issue | 工作包 | 状态边界 |
+|---|---|---|
+| [#1](https://github.com/wlvh/tongxu/issues/1) | v2.1 规则归并 | 设计收口，不是产品验收 |
+| [#2](https://github.com/wlvh/tongxu/issues/2) | W0 基线与 W1 Bridge | **现在执行** |
+| [#3](https://github.com/wlvh/tongxu/issues/3) | W1 事实与原 PR 交接 | W0 后细化，规划级 |
+| [#4](https://github.com/wlvh/tongxu/issues/4) | W2 证据与临时组合 | W1 后细化，规划级 |
+| [#5](https://github.com/wlvh/tongxu/issues/5) | W3 队列／授权／可靠操作 | G1 受管接收版发布点，规划级 |
+| [#6](https://github.com/wlvh/tongxu/issues/6) | W4 真实执行器 | G2，规划级 |
+| [#7](https://github.com/wlvh/tongxu/issues/7) | W5 审核循环转接 | G2，规划级 |
+| [#8](https://github.com/wlvh/tongxu/issues/8) | W6 分配与通信 | G3，规划级 |
+| [#9](https://github.com/wlvh/tongxu/issues/9) | W7 三视图与完整交付 | G3，规划级 |
+
+不同时派出八个工作包。W0 只细化 W1；未知写入方式不阻塞只读采集。后续受管写权和正式验收根据真实对象另核。
+
+## 历史与同步
+
+`docs/archive/tongxu_v2_plan.md`、`docs/review/01`—`06`、`prototypes/v1_issue_workbench.html`、`prototypes/v2_plan_and_acceptance.html` 和冻结产品模板保留历史。旧缺陷探针仍可用于重演，不证明当前产品状态，不要求三套 HTML 同时迭代。
+
+每轮先读取远端 Issue 和新评论，再更新对应 `docs/issues/`；发布后读回核对。缺少发布权限时明确“草稿待发布”。禁止用旧文件覆盖新的有效决定，也不新增永久同步服务。评审对话、变更索引不成为另一套实施入口。
+
+本轮没有清洗历史 commit 身份、删除材料、强推或修改分支保护。公开材料包含历史转述；试点仓库事实由 W0 再核，不能据旧 PR 说明声明当前已上线。
