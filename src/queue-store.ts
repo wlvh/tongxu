@@ -13,14 +13,14 @@ const parse = (row: Row | undefined, key: string): any => row ? JSON.parse(row[k
 const schema = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE blobs(hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
-CREATE TABLE items(id TEXT PRIMARY KEY, candidate TEXT NOT NULL, context TEXT NOT NULL, current_packet INTEGER, created_at TEXT NOT NULL, latest_observation TEXT, latest_source_observation TEXT);
+CREATE TABLE items(id TEXT PRIMARY KEY, candidate TEXT NOT NULL, context TEXT NOT NULL, current_packet INTEGER, created_at TEXT NOT NULL, latest_observation TEXT, latest_source_observation TEXT, observation_conflict INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE packets(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL REFERENCES items(id), fingerprint TEXT NOT NULL, manifest_hash TEXT NOT NULL, report_hash TEXT NOT NULL, context_hash TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE observations(item TEXT NOT NULL, fingerprint TEXT NOT NULL, manifest_hash TEXT NOT NULL, report_hash TEXT NOT NULL, context_hash TEXT NOT NULL, observed_at TEXT NOT NULL, UNIQUE(item,manifest_hash,report_hash,context_hash));
 CREATE TABLE operations(id TEXT PRIMARY KEY, item TEXT NOT NULL REFERENCES items(id), packet INTEGER NOT NULL UNIQUE REFERENCES packets(id), target TEXT NOT NULL, generation INTEGER NOT NULL, run_ref TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, result TEXT);
 CREATE TABLE claims(target TEXT PRIMARY KEY, operation TEXT NOT NULL UNIQUE REFERENCES operations(id), generation INTEGER NOT NULL);
 CREATE TABLE controls(scope TEXT NOT NULL, kind TEXT NOT NULL, stopped INTEGER NOT NULL, revision INTEGER NOT NULL, source TEXT NOT NULL, requested_at TEXT NOT NULL, effective_at TEXT NOT NULL, PRIMARY KEY(scope,kind));
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, object TEXT NOT NULL, data TEXT NOT NULL, observed_at TEXT NOT NULL);
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 `;
 
 export class QueueStore {
@@ -46,7 +46,7 @@ export class QueueStore {
     try {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (version.user_version !== 2 || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (version.user_version !== 3 || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
@@ -85,18 +85,25 @@ export class QueueStore {
       const known = this.db.prepare('SELECT 1 FROM observations WHERE item=? AND manifest_hash=? AND report_hash=? AND context_hash=?').get(id, packet.manifestHash, packet.reportHash, packet.contextHash);
       if (known) return { item: id, packet: item.current_packet, duplicate: true, currentPacket: item.current_packet, mode: 'shadow' };
       this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
-      const older = Boolean(previous && ((!packet.summary.observation || !packet.summary.sourceObservation) || (item.latest_observation && packet.summary.observation < item.latest_observation) || (item.latest_source_observation && packet.summary.sourceObservation < item.latest_source_observation)));
-      if (!older) this.db.prepare('UPDATE items SET latest_observation=?,latest_source_observation=? WHERE id=?').run(packet.summary.observation, packet.summary.sourceObservation, id);
+      const incoming = [packet.summary.observation, packet.summary.sourceObservation], watermark = [item.latest_observation, item.latest_source_observation];
+      const order = incoming.map((value, i) => !value || !watermark[i] ? null : value < watermark[i] ? -1 : value > watermark[i] ? 1 : 0);
+      // Source and execution observations form a partial order: one newer and one older
+      // is a counter-observation to reconcile, never proof that the whole packet is stale.
+      const conflict = Boolean(previous && (order.includes(null) || (order.includes(-1) && order.includes(1)) || (!item.observation_conflict && order.every(n => n === 0) && previous.fingerprint !== packet.fingerprint)));
+      const older = Boolean(previous && !conflict && order.includes(-1));
+      const effectiveConflict = conflict || (older && Boolean(item.observation_conflict));
+      const maximum = incoming.map((value, i) => value && (!watermark[i] || value > watermark[i]) ? value : watermark[i] ?? null);
+      this.db.prepare('UPDATE items SET latest_observation=?,latest_source_observation=?,observation_conflict=? WHERE id=?').run(maximum[0], maximum[1], effectiveConflict ? 1 : 0, id);
       // Deduplication is relative to the current state, not every fingerprint in history.
-      if (previous?.fingerprint === packet.fingerprint) {
+      if (previous?.fingerprint === packet.fingerprint && !item.observation_conflict && !conflict) {
         this.event(older ? 'older_duplicate_archived' : 'duplicate_observation_recorded', id, { packet: previous.id, observation: packet.summary.observation, sourceObservation: packet.summary.sourceObservation });
         return { item: id, packet: previous.id, duplicate: true, archived: older, currentPacket: item.current_packet, mode: 'shadow' };
       }
       const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(packet.summary), now());
       const packetId = Number(inserted.lastInsertRowid);
-      if (!older) this.db.prepare('UPDATE items SET current_packet=?,context=? WHERE id=?').run(packetId, JSON.stringify(packet.context), id);
-      this.event(older ? 'older_observation_archived' : 'material_changed', id, { packet: packetId, fingerprint: packet.fingerprint });
-      return { item: id, packet: packetId, duplicate: false, archived: Boolean(older), currentPacket: this.item(id).current_packet, mode: 'shadow' };
+      if (!older && !conflict) this.db.prepare('UPDATE items SET current_packet=?,candidate=?,context=? WHERE id=?').run(packetId, JSON.stringify(packet.candidate), JSON.stringify(packet.context), id);
+      this.event(conflict ? 'conflicting_observation_retained' : older ? 'older_observation_archived' : 'material_changed', id, { packet: packetId, fingerprint: packet.fingerprint });
+      return { item: id, packet: packetId, duplicate: false, archived: older, observationConflict: effectiveConflict, currentPacket: this.item(id).current_packet, mode: 'shadow' };
     });
   }
   control(scope: string, kind: string, state: string, source: string): Row {
@@ -116,6 +123,7 @@ export class QueueStore {
       if (visited.has(row.id)) return;
       if (visited.size + visiting.size >= 1000) { gaps.push('dependency_scan_limit'); return; }
       visiting.add(row.id);
+      if (row.observation_conflict) gaps.push(`observation_order_conflict:${row.id}`);
       for (const req of (parse(row, 'context') as QueueContext).requires.filter(r => r.blocks === 'shadow_review')) {
         const parent = this.db.prepare('SELECT * FROM items WHERE id=?').get(req.item) as Row | undefined;
         if (!parent || !parent.current_packet) { gaps.push(`missing_dependency:${req.item}`); continue; }
@@ -135,6 +143,7 @@ export class QueueStore {
     return this.transaction(() => {
       const item = this.item(id);
       const existing = this.db.prepare('SELECT * FROM operations WHERE packet=?').get(item.current_packet) as Row | undefined;
+      if (item.observation_conflict) return { blocked: ['observation_order_conflict'], originalOperation: existing?.id ?? null, next: existing?.status === 'running' ? 'evaluate_original_operation' : 'import_jointly_current_observation', mode: 'shadow' };
       if (existing) return { operation: existing.id, status: existing.status, duplicate: true, next: existing.status === 'running' ? 'evaluate_original_operation' : 'read_saved_result', mode: 'shadow' };
       const context = parse(item, 'context') as QueueContext;
       if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) return { blocked: ['new_investment_stopped'], mode: 'shadow' };
@@ -161,7 +170,7 @@ export class QueueStore {
       const item = this.item(op.item), packet = this.packet(op.packet);
       // A damaged unrelated candidate must not block this operation's intact evidence.
       const { context, manifest, report } = this.packetEvidence(packet);
-      const summary = parse(packet, 'summary'), gaps = [...summary.gaps, ...this.prerequisites({ ...item, context: JSON.stringify(context) }), 'independent_receiver_unavailable', 'production_authorization_unverified', 'pending_publish', 'live_candidate_and_rules_not_rechecked'];
+      const summary = this.effectiveSummary(item, packet), gaps = [...summary.gaps, ...this.prerequisites({ ...item, context: JSON.stringify(context) }), 'independent_receiver_unavailable', 'production_authorization_unverified', 'pending_publish', 'live_candidate_and_rules_not_rechecked'];
       if (item.current_packet !== op.packet) gaps.push('newer_material_requires_own_evaluation');
       const controls = this.db.prepare('SELECT kind,stopped,revision FROM controls WHERE scope=? ORDER BY kind').all(context.scope.id);
       const result = { mode: 'shadow', status: 'evaluated', item: item.id, packet: op.packet, generation: op.generation, candidate: manifest.candidate, tree: summary.tree, evidenceComplete: summary.evidenceComplete, businessCorrectness: report.businessCorrectness, independentReception: 'pending', permissionModes: { shadow: 'active', perAction: 'unavailable', delegated: 'unavailable' }, productionActionAllowed: false, externalActionSent: false, gaps: [...new Set(gaps)], controls, originalOperations: summary.originalOperations, limitations: summary.limitations, next: 'review_fixed_materials_and_resolve_reported_gaps' };
@@ -171,10 +180,17 @@ export class QueueStore {
       return { operation: id, ...result };
     });
   }
+  private effectiveSummary(item: Row, packet: Row): Row {
+    const summary = parse(packet, 'summary');
+    return { ...summary, evidenceComplete: summary.evidenceComplete && !item.observation_conflict, gaps: [...summary.gaps, ...(item.observation_conflict ? ['observation_order_conflict'] : [])] };
+  }
+  private itemStatus(item: Row): Row {
+    return { id: item.id, candidate: parse(item, 'candidate'), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+  }
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const result = { mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'unavailable', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => ({ id: i.id, candidate: parse(i, 'candidate'), currentPacket: i.current_packet, latestObservation: i.latest_observation, latestSourceObservation: i.latest_source_observation, context: parse(i, 'context'), summary: parse(this.packet(i.current_packet), 'summary'), dependencyGaps: this.prerequisites(i) })), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'unavailable', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }

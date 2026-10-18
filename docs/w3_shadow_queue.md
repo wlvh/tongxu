@@ -10,7 +10,7 @@ node dist/src/cli.js queue add --store /tmp/tongxu-queue-new --snapshot /tmp/w1-
 node dist/src/cli.js queue status --store /tmp/tongxu-queue-new
 ```
 
-将 `add` 返回的 64 位 `item` 填入后续命令。所有路径为仓库外规范绝对路径，目录须私有，不穿透符号链接。新库不覆盖现有目录；当前 SQLite schema 为 2，早期开发候选的 schema 1 及其他版本保留原件并报错，不清空或自动迁移。需从未变的 W1/W2 输入创建新库，旧操作仍留原库待核，不自动转移占用。原输入只读，导入的原字节按 SHA-256 进入库。CLI 输出含来源引用，视为私人材料，不直接粘贴至公共 Issue。
+将 `add` 返回的 64 位 `item` 填入后续命令。所有路径为仓库外规范绝对路径，目录须私有，不穿透符号链接。新库不覆盖现有目录；当前 SQLite schema 为 3，早期开发候选的 schema 1/2 及其他版本保留原件并报错，不清空或自动迁移。需从未变的 W1/W2 输入创建新库，旧操作仍留原库待核，不自动转移占用。原输入只读，导入的原字节按 SHA-256 进入库。CLI 输出含来源引用，视为私人材料，不直接粘贴至公共 Issue。
 
 context 是操作方显式提供的来源报告，不是授权文件。最小例子：
 
@@ -46,6 +46,8 @@ node dist/src/cli.js queue evaluate --store /tmp/tongxu-queue-new --operation OP
 `begin` 先原子登记 operation、代次与目标占用，再返回；尚未评估时状态为 running/unknown。`evaluate` 只核固定本地材料、前置和控制，保存缺口与下一步。两个命令可以跨进程和主机重启接续；用原 operation ID，不新建替身。同 repo/真实 target 最多一个占用，全部目标默认 2 席，可在建库时设 1—8。等待或未知占用没有超时夺取。旧代次的重复完成不会释放新占用。库损坏导致原操作保留未知，先恢复对应原件，不能直接删 claim 当作成功。
 
 同候选的新实质材料产生新 packet；与**当前**材料相同，仅重收时间/运行编号改变时只存观察、推进观察水位、不重派。判断依据变化、样本失败、运行器变化会形成新材料；失败后新的成功即使与历史成功同语义，也产生新 packet 和评估资格。去重依据明确结果，不能理解任意日志语义；普通日志变化可归档而不触发评估，需把有意义的反例作为新来源或结构化结果导入。旧观察保留但不倒退当前 packet，状态分别显示 packet 原观察与最新水位。候选 H/B/target/S/r 改变产生新 item，不复用旧结论。
+
+采集观察与执行观察分别维护水位。一新一旧、缺少顺序或同一时刻的矛盾实质材料进入 `observationConflict` 待核，状态保留各原包，当前证据不再宣称完整，相关前置不能放行；不会因采集包较旧而吞掉较新的测试失败。只有同时覆盖两个水位的新联合观察才能解除，解除产生新的评估资格，旧原件重放不能清除冲突。原操作仍可按 ID 核查，无关目标继续。
 
 ```bash
 node dist/src/cli.js queue control --store /tmp/tongxu-queue-new --scope project-g1 --kind investment --state stopped --source OPERATOR_REFERENCE

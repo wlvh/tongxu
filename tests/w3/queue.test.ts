@@ -134,10 +134,10 @@ test('stored corruption keeps the original operation unresolved and does not rel
 test('changed failure or runner evidence is substantive even when source and test exit are unchanged', async t => {
   const f = await setup(t); t.after(() => f.q.close());
   const initial = f.q.import(await (await f.fixture()).packet()); f.q.evaluate(f.q.begin(initial.item, 'initial').operation);
-  const failed = f.q.import(await (await f.fixture({ report: r => { r.observedSampleFailures = 1; r.comparisonComplete = false; } })).packet());
+  const failed = f.q.import(await (await f.fixture({ at: '2026-10-18T11:00:00.000Z', report: r => { r.observedSampleFailures = 1; r.comparisonComplete = false; } })).packet());
   assert.equal(failed.duplicate, false); const failure = f.q.evaluate(f.q.begin(initial.item, 'new-failure').operation);
   assert.equal(failure.evidenceComplete, false); assert.ok(failure.gaps.includes('sample_failure_or_incomplete_comparison'));
-  const runner = f.q.import(await (await f.fixture({ report: r => { r.toolVersions = { runner_verification_sha256: 'f'.repeat(64) }; } })).packet());
+  const runner = f.q.import(await (await f.fixture({ at: '2026-10-18T12:00:00.000Z', report: r => { r.toolVersions = { runner_verification_sha256: 'f'.repeat(64) }; } })).packet());
   assert.equal(runner.duplicate, false); assert.notEqual(runner.currentPacket, failed.currentPacket);
 });
 
@@ -221,4 +221,39 @@ test('duplicate observations advance the watermark, and a newer return to histor
   assert.equal(q.status().items[0].summary.evidenceComplete, false); assert.equal(q.status().items[0].latestObservation, '2026-10-18T15:58:00.000Z');
   const recovered = q.import(await (await f.fixture({ report: at('15:59') })).packet()); assert.equal(recovered.duplicate, false); assert.notEqual(recovered.currentPacket, first.currentPacket);
   const next = q.begin(first.item, 'recovered'); assert.notEqual(next.operation, initial.operation); assert.equal(next.generation, 3); assert.equal(q.evaluate(next.operation).evidenceComplete, true);
+});
+
+test('all source/run order combinations preserve counter-observations instead of releasing dependencies', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const first = await f.fixture({ at: '2026-10-18T12:00:00.000Z', report: r => { r.startedAt = '2026-10-18T15:00:00.000Z'; } });
+  for (const sourceHour of [11, 12, 13]) for (const runHour of [14, 15, 16]) {
+    const source = await f.fixture({ at: `2026-10-18T${sourceHour}:00:00.000Z`, report: r => { r.startedAt = `2026-10-18T${runHour}:00:00.000Z`; r.status = 'partial'; r.executionComplete = false; r.gaps = ['fixture_failed']; } });
+    const q = await QueueStore.create(join(f.root, `order-${sourceHour}-${runHour}`), 'example/project');
+    try {
+      const initial = q.import(await first.packet()); const added = q.import(await source.packet());
+      const mixed = (sourceHour < 12 && runHour > 15) || (sourceHour > 12 && runHour < 15) || (sourceHour === 12 && runHour === 15);
+      const old = !mixed && (sourceHour < 12 || runHour < 15);
+      assert.equal(added.observationConflict, mixed, `source ${sourceHour}, run ${runHour}`); assert.equal(added.archived, old);
+      const state = q.status().items[0]; assert.equal(state.summary.evidenceComplete, old);
+      if (mixed) { assert.equal(q.begin(initial.item, 'must-wait').blocked[0], 'observation_order_conflict'); assert.equal(state.materialHistory.length, 2); }
+    } finally { q.close(); }
+  }
+});
+
+test('mixed observations persist, block dependents, preserve original recovery, and require a joint update', async t => {
+  const f = await setup(t); let q = f.q; t.after(() => q.close());
+  const first = await f.fixture({ at: '2026-10-18T13:00:00.000Z', report: r => { r.startedAt = '2026-10-18T14:00:00.000Z'; } });
+  const parent = q.import(await first.packet()), original = q.begin(parent.item, 'original-still-running');
+  const failed = await f.fixture({ at: '2026-10-18T12:00:00.000Z', report: r => { r.startedAt = '2026-10-18T15:00:00.000Z'; r.status = 'partial'; r.executionComplete = false; r.gaps = ['fixture_failed']; } });
+  assert.equal(q.import(await failed.packet()).observationConflict, true); q.close(); q = await QueueStore.open(f.store);
+  const context = { ...first.context, requires: [{ item: parent.item, type: 'development', version: first.candidate.H, blocks: 'shadow_review', source: 'fixture:parent', canContinue: 'independent work' }] };
+  const child = q.import(await (await f.fixture({ pr: 2, context })).packet()); assert.ok(q.begin(child.item, 'child-waits').blocked.includes(`observation_order_conflict:${parent.item}`));
+  assert.equal(q.begin(parent.item, 'no-substitute').originalOperation, original.operation);
+  const unaffected = q.import(await (await f.fixture({ pr: 3, target: 'other-target' })).packet()); assert.equal(q.evaluate(q.begin(unaffected.item, 'independent').operation).evidenceComplete, true);
+  assert.equal(q.evaluate(original.operation).evidenceComplete, false); assert.equal(q.status().claims.length, 0);
+  q.import(await first.packet()); assert.equal(q.status().items.find((i: any) => i.id === parent.item).observationConflict, true);
+  const joint = await f.fixture({ at: '2026-10-18T16:00:00.000Z', report: r => { r.startedAt = '2026-10-18T17:00:00.000Z'; } });
+  const resolved = q.import(await joint.packet()); assert.equal(resolved.observationConflict, false); assert.equal(resolved.duplicate, false);
+  const current = q.begin(parent.item, 'joint-evidence'); assert.notEqual(current.operation, original.operation); assert.equal(q.evaluate(current.operation).evidenceComplete, true);
+  assert.ok(q.begin(child.item, 'child-can-review').operation);
 });
