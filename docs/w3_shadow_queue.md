@@ -10,7 +10,7 @@ node dist/src/cli.js queue add --store /tmp/tongxu-queue-new --snapshot /tmp/w1-
 node dist/src/cli.js queue status --store /tmp/tongxu-queue-new
 ```
 
-将 `add` 返回的 64 位 `item` 填入后续命令。所有路径为仓库外规范绝对路径，目录须私有，不穿透符号链接。新库不覆盖现有目录；当前 SQLite schema 为 3，早期开发候选的 schema 1/2 及其他版本保留原件并报错，不清空或自动迁移。需从未变的 W1/W2 输入创建新库，旧操作仍留原库待核，不自动转移占用。原输入只读，导入的原字节按 SHA-256 进入库。CLI 输出含来源引用，视为私人材料，不直接粘贴至公共 Issue。
+将 `add` 返回的 64 位 `item` 填入后续命令。所有路径为仓库外规范绝对路径，目录须私有，不穿透符号链接。新库不覆盖现有目录；当前 SQLite schema 为 3，早期 schema 1/2 及其他版本报错，不清空逻辑记录或自动迁移。需从未变的 W1/W2 输入创建新库，旧操作仍留原库待核，不自动转移占用。SQLite 打开/关闭可能 checkpoint 崩溃遗留 WAL，改变 DB/WAL/SHM 物理布局，逻辑记录、证据 blob、原 operation/claim 保留；若需文件级取证，先确认原写者已停并复制完整 DB/WAL/SHM，再对副本检查。原输入只读，导入的原字节按 SHA-256 进入库。CLI 输出含来源引用，视为私人材料，不直接粘贴至公共 Issue。
 
 context 是操作方显式提供的来源报告，不是授权文件。最小例子：
 

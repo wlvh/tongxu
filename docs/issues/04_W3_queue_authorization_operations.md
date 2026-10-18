@@ -26,7 +26,7 @@ tongxu queue begin --store ABS_DIR --item ITEM_ID --run RUN_REFERENCE
 tongxu queue evaluate --store ABS_DIR --operation OPERATION_ID
 ```
 
-路径和材料沿用私有、仓库外、不穿透符号链接的边界。新状态目录拒绝覆盖；既有库 schema 不支持时退出并保留原文件，不自动清空迁移。没有 daemon、计划轮询或订阅；操作者显式导入新观察，空操作不会唤醒模型。
+路径和材料沿用私有、仓库外、不穿透符号链接的边界。新状态目录拒绝覆盖；既有库 schema 不支持时退出，不自动迁移或清空逻辑记录、证据 blob 和原操作/占用。SQLite 打开/关闭可能正常 checkpoint 崩溃遗留 WAL，因此不保证 DB/WAL/SHM 的物理字节布局不变；如需保全崩溃原字节，先在原写者已停后复制完整文件组，再检查副本。没有 daemon、计划轮询或订阅；操作者显式导入新观察，空操作不会唤醒模型。
 
 ## 候选、来源与去重
 
