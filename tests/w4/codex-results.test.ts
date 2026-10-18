@@ -88,13 +88,14 @@ test('quota/error, interruption and actual waiting are retained without inventin
 
 test('terminal retyping of the same final ID cannot export the earlier answer', async t => {
   const d = await dir(t);
-  for (const type of ['userMessage', 'plan']) {
+  for (const type of ['userMessage', 'plan', 'missing_type']) for (const duplicate of [false, true]) {
     const f = singleFrames(), id = f[2].params.item.id;
-    f[3].params.turn.items = [type === 'userMessage' ? { id, type, content: [] } : { id, type, text: 'different semantic item' }];
-    const io = await inputs(d, encode(f), single()), output = join(d, type);
-    const result = await importResult({ ...io, output });
-    assert.equal(result.status, 'unknown'); assert.ok(result.gaps.includes('terminal_items_disagree_with_final'));
-    await assert.rejects(prepareHandoff(output, join(d, type + '-handoff')), /not_ready/);
+    const replacement = type === 'userMessage' ? { id, type, content: [] } : { id, type: type === 'missing_type' ? undefined : type, text: 'different semantic item' };
+    f[3].params.turn.items = [...(duplicate ? [structuredClone(f[2].params.item)] : []), replacement];
+    const io = await inputs(d, encode(f), single()), output = join(d, type + '-' + duplicate), handoff = output + '-handoff';
+    await assert.rejects(exec(process.execPath, [cli, 'import', '--binding', io.binding, '--input', io.input, '--output', output]), (e: any) => e.code === 2 && JSON.parse(e.stdout).gaps.includes('terminal_items_disagree_with_final'));
+    await assert.rejects(exec(process.execPath, [cli, 'handoff', '--packet', output, '--output', handoff]), (e: any) => e.code === 1 && JSON.parse(e.stderr).error === 'codex_result_not_ready_for_impact_input');
+    await assert.rejects(lstat(handoff), { code: 'ENOENT' });
   }
 });
 
