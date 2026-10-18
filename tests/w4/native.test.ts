@@ -41,7 +41,8 @@ for (const [name, handler, gap] of [
   ['timeout', `void m;`, 'native_request_timeout'],
   ['output cap', `process.stdout.write('x'.repeat(32_768));`, 'native_output_limit']
 ] as const) test(`native ${name} preserves bounded evidence and cannot satisfy a new request`, async t => {
-  const f = await rpcFixture(t, handler, { timeoutMs: 150, maxBytes: 1024 });
+  // Non-timeout cases include Node startup; let their intended protocol fault arrive under load.
+  const f = await rpcFixture(t, handler, { timeoutMs: name === 'timeout' ? 150 : 1500, maxBytes: 1024 });
   await assert.rejects(f.rpc.request('initialize', {}), new RegExp(gap));
   await assert.rejects(f.rpc.request('thread/read', {}), new RegExp(gap));
   assert.ok(f.rpc.gaps.includes(gap)); assert.ok((await lstat(f.paths.stdout)).size + (await lstat(f.paths.stderr)).size <= 1024);

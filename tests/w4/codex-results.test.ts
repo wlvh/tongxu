@@ -86,6 +86,18 @@ test('quota/error, interruption and actual waiting are retained without inventin
   f[2].params.willRetry = false; assert.equal(parseCodexResult(encode(f), single()).handoffReady, false);
 });
 
+test('terminal retyping of the same final ID cannot export the earlier answer', async t => {
+  const d = await dir(t);
+  for (const type of ['userMessage', 'plan']) {
+    const f = singleFrames(), id = f[2].params.item.id;
+    f[3].params.turn.items = [type === 'userMessage' ? { id, type, content: [] } : { id, type, text: 'different semantic item' }];
+    const io = await inputs(d, encode(f), single()), output = join(d, type);
+    const result = await importResult({ ...io, output });
+    assert.equal(result.status, 'unknown'); assert.ok(result.gaps.includes('terminal_items_disagree_with_final'));
+    await assert.rejects(prepareHandoff(output, join(d, type + '-handoff')), /not_ready/);
+  }
+});
+
 test('malformed/truncated/oversized UTF-8 frames and metadata-only probes never pass', () => {
   const good = encode(frames());
   for (const raw of [good.subarray(0, -1), Buffer.concat([good, Buffer.from('bad\n')]), Buffer.concat([good, Buffer.from([0xff, 10])]), Buffer.concat([good, Buffer.from('x'.repeat(1024 * 1024 + 1) + '\n')])]) assert.equal(parseCodexResult(raw, binding()).handoffReady, false);

@@ -104,7 +104,9 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
       if (terminal.error != null) t.errors.push({ ...terminal.error, willRetry: false });
       if (terminal.status === 'completed' && t.errors.some(e => e.willRetry === false)) invalid('completed_with_terminal_error');
       for (const item of terminal.items) {
-        if (item?.type === 'agentMessage' && (item.phase === 'final_answer' || item.id === t.final?.id) && !isDeepStrictEqual(items.get(t.id + ':' + item.id), item)) invalid('terminal_items_disagree_with_final');
+        const referencesFinal = t.final !== null && item?.id === t.final.id;
+        const declaresFinal = item?.type === 'agentMessage' && item.phase === 'final_answer';
+        if ((referencesFinal || declaresFinal) && !isDeepStrictEqual(items.get(t.id + ':' + item.id), item)) invalid('terminal_items_disagree_with_final');
       }
       if (terminal.status === 'completed' && (terminal.itemsView ?? 'full') === 'full' && t.final && !terminal.items.some((i: any) => i?.id === t.final!.id)) invalid('final_absent_from_full_terminal_items');
     } else ignored++;
