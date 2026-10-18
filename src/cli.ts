@@ -15,9 +15,9 @@ tongxu collect --repo OWNER/REPO --pr N --output ABSOLUTE_NEW_DIR [--issue N ...
 tongxu collect --resume ABSOLUTE_EXISTING_DIR
 tongxu verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT --plan ABS_PLAN --output ABS_NEW_DIR [--with ABS_W1_BUNDLE ...]
 Transport: --transport gh (default), or --transport relay --relay-dir ABSOLUTE_PRIVATE_DIR
-Requires Node 24+, Git, and gh for the default transport. Read-only GitHub GET / Git object reads.
-Exit 0 = requested facts collected, 2 = saved partial collection, 1 = invalid input/local error.
-An exit code never grants approval, merge permission or business PASS. See docs/w1_cli.md.\n`;
+Requires Node 24+, Git, and gh for default collection; verify also requires Linux/bubblewrap and existing tools.
+Exit 0 = requested collection/verification complete; 2 = saved gaps or observed sample failure; 1 = invalid input/local error.
+An exit code never grants approval, merge permission or business PASS. See docs/w1_cli.md and docs/w2_verification.md.\n`;
 type Options = { command: 'inspect' | 'collect'; repo?: string; pr?: number; issues: number[]; output?: string; resume?: string; context?: string; format: string; transport: string; relayDir?: string };
 const number = (v: string) => { if (!/^[1-9]\d*$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error('invalid_positive_integer'); return Number(v); };
 export function parseArgs(args: string[]): Options {

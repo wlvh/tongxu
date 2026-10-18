@@ -1,14 +1,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, writeFile, mkdir, lstat, readlink, link, unlink, rename, realpath } from 'node:fs/promises';
-import { join, dirname, isAbsolute, resolve } from 'node:path';
+import { readFile, writeFile, mkdir, lstat, readlink, link, unlink, rename, realpath, readdir } from 'node:fs/promises';
+import { join, isAbsolute, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { now, repoPattern, shaPattern } from './contract.js';
 import type { Candidate, Manifest } from './contract.js';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical, compare, samples } from './comparison.js';
 import type { SampleSet, Comparison } from './comparison.js';
-import { runSandbox, validateDependencies, dependencyDigest } from './sandbox.js';
+import { runSandbox, validateDependencies, dependencyDigest, runtimeResources } from './sandbox.js';
 
 const exec = promisify(execFile);
 type Tool = { id: string; argv: string[]; timeoutMs: number; expectedSampleIds?: string[] };
@@ -19,7 +19,7 @@ type ToolResult = { id: string; argv: string[]; status: string; startedAt: strin
 type Stage = { index: number; inputHead: string; parent: string; tree: string | null; head: string | null; status: string; tools: ToolResult[]; comparisons: { tool: string; results: Comparison[] }[]; gaps: string[]; mergeOutput?: Blob; preInputHash?: string };
 type Report = { schemaVersion: 1; kind: 'tongxu-verification'; id: string; startedAt: string; finishedAt?: string; status: string; repository: string; targetRef: string; inputs: Input[]; plan: Blob; planHash: string; judgmentRefs: string[]; toolVersions: Record<string, string>; stages: Stage[]; gaps: string[]; limitations: string[]; executionComplete: boolean; comparisonComplete: boolean | null; businessCorrectness: 'unverified'; observedSampleFailures: number; failureOutput?: { stdout: Blob; stderr: Blob }; dependencyHash: string | null };
 const safeCode = (e: unknown) => e instanceof Error && /^[a-z0-9_]+$/.test(e.message) ? e.message : 'local_or_tool_error';
-const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' });
+const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' });
 async function git(directory: string, ...args: string[]): Promise<Buffer> {
   return (await exec('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'protocol.file.allow=always', '-c', 'user.name=Tongxu isolated verification', '-c', 'user.email=tongxu@example.invalid', '-C', directory, ...args], { env: gitEnv(), encoding: 'buffer', timeout: 60_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
 }
@@ -104,6 +104,23 @@ async function safeFile(root: string, path: string): Promise<string> {
 async function fingerprint(directory: string, paths: string[]): Promise<string> {
   const items = [];
   for (const p of paths) items.push([p, await safeFile(directory, p)]);
+  // HEAD/index/config alone miss replace refs, grafts, alternates and changed objects.
+  // Inspect the entire private Git state as bytes; never invoke Git after a tool.
+  let entries = 0, gitBytes = 0;
+  async function walk(path: string): Promise<void> {
+    if (++entries > 50_000) throw new Error('git_state_snapshot_limit');
+    const stat = await lstat(join(directory, path));
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      items.push([path, 'directory']);
+      for (const name of (await readdir(join(directory, path))).sort()) await walk(`${path}/${name}`);
+    } else {
+      if ((gitBytes += stat.size) > 512 * 1024 * 1024) throw new Error('git_state_snapshot_limit');
+      items.push([path, await safeFile(directory, path)]);
+    }
+  }
+  const gitDirectory = await lstat(join(directory, '.git'));
+  if (!gitDirectory.isDirectory() || gitDirectory.isSymbolicLink()) throw new Error('input_git_directory_replaced');
+  await walk('.git');
   return hash(canonical(items));
 }
 async function checkout(cache: string, destination: string, head: string): Promise<string[]> {
@@ -131,8 +148,8 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
   await save();
   try {
     for (const name of ['verification', 'sandbox', 'comparison', 'snapshot', 'contract', 'cli']) report.toolVersions[`runner_${name}_sha256`] = hash(await readFile(new URL(`./${name}.js`, import.meta.url)));
-    const runtime = dirname(dirname(await realpath(process.execPath)));
-    try { report.toolVersions.npm = JSON.parse(await readFile(join(runtime, 'lib/node_modules/npm/package.json'), 'utf8')).version; } catch { /* not every Node installation includes npm */ }
+    const runtime = await runtimeResources();
+    if (runtime.npmVersion) report.toolVersions.npm = runtime.npmVersion;
     report.dependencyHash = await dependencyDigest(dependencies);
     if (dependencies) report.limitations.push('host_dependency_observation_is_not_atomic');
     report.toolVersions.git = (await exec('git', ['--version'], { env: gitEnv() })).stdout.trim();

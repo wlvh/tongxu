@@ -1,18 +1,40 @@
 import { spawn } from 'node:child_process';
 import { realpath, lstat, readdir, readlink, readFile } from 'node:fs/promises';
-import { dirname, join, isAbsolute } from 'node:path';
+import { basename, dirname, join, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export type Execution = { status: 'completed' | 'failed' | 'timeout' | 'output_limit' | 'unavailable'; exitCode: number | null; signal: string | null; stdout: Buffer; stderr: Buffer; durationMs: number };
 export type SandboxOptions = { work: string; resultDirectory: string; dependencies?: string; timeoutMs: number; maxBytes: number; argv: string[]; onSpawn?: (pid: number) => Promise<void> };
+export async function runtimeResources(): Promise<{ node: string; bin: string; npm?: string; npmVersion?: string }> {
+  const node = await realpath(process.execPath), bin = dirname(node);
+  const result: { node: string; bin: string; npm?: string; npmVersion?: string } = { node, bin };
+  if (basename(bin) === 'bin') {
+    const npm = join(dirname(bin), 'lib/node_modules/npm');
+    try {
+      const stat = await lstat(npm), metadata = JSON.parse(await readFile(join(npm, 'package.json'), 'utf8'));
+      if (stat.isDirectory() && !stat.isSymbolicLink() && await realpath(npm) === npm && metadata.name === 'npm' && typeof metadata.version === 'string') { result.npm = npm; result.npmVersion = metadata.version; }
+    } catch { /* npm is optional; never mount a guessed parent directory */ }
+  }
+  return result;
+}
 export async function sandboxArguments(o: SandboxOptions): Promise<string[]> {
-  const runtime = dirname(dirname(await realpath(process.execPath)));
+  const runtime = await runtimeResources();
   const args = ['--unshare-all', '--die-with-parent', '--new-session', '--ro-bind', '/usr', '/usr', '--ro-bind', '/bin', '/bin', '--ro-bind', '/lib', '/lib'];
   try { await lstat('/lib64'); args.push('--ro-bind', '/lib64', '/lib64'); } catch { /* distribution without /lib64 */ }
-  if (runtime !== '/usr') args.push('--ro-bind', runtime, runtime);
+  // Support flat and bin/ installations without exposing an ancestor such as / or HOME.
+  args.push('--ro-bind', runtime.node, runtime.node, '--dir', '/tongxu-tools', '--symlink', runtime.node, '/tongxu-tools/node');
+  if (runtime.npm) {
+    args.push('--ro-bind', runtime.npm, runtime.npm);
+    for (const command of ['npm', 'npx']) {
+      const file = join(runtime.npm, `bin/${command}-cli.js`);
+      const stat = await lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || await realpath(file) !== file) throw new Error('invalid_npm_runtime_file');
+      args.push('--symlink', file, `/tongxu-tools/${command}`);
+    }
+  }
   args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/home/tongxu', '--bind', o.work, '/work', '--bind', o.resultDirectory, '/result');
   if (o.dependencies) args.push('--ro-bind', o.dependencies, '/work/node_modules');
-  args.push('--chdir', '/work', '--clearenv', '--setenv', 'HOME', '/home/tongxu', '--setenv', 'TMPDIR', '/tmp', '--setenv', 'PATH', `${join(runtime, 'bin')}:/usr/bin:/bin`, '--setenv', 'GIT_CONFIG_NOSYSTEM', '1', '--setenv', 'GIT_CONFIG_GLOBAL', '/dev/null', '--setenv', 'GIT_TERMINAL_PROMPT', '0', '--setenv', 'NPM_CONFIG_USERCONFIG', '/dev/null', '--setenv', 'TONGXU_RESULT_FILE', '/result/result.json', ...o.argv);
+  args.push('--chdir', '/work', '--clearenv', '--setenv', 'HOME', '/home/tongxu', '--setenv', 'TMPDIR', '/tmp', '--setenv', 'PATH', '/tongxu-tools:/usr/bin:/bin', '--setenv', 'GIT_CONFIG_NOSYSTEM', '1', '--setenv', 'GIT_CONFIG_GLOBAL', '/dev/null', '--setenv', 'GIT_TERMINAL_PROMPT', '0', '--setenv', 'GIT_NO_REPLACE_OBJECTS', '1', '--setenv', 'NPM_CONFIG_USERCONFIG', '/dev/null', '--setenv', 'TONGXU_RESULT_FILE', '/result/result.json', ...o.argv);
   return args;
 }
 export async function runSandbox(o: SandboxOptions): Promise<Execution> {

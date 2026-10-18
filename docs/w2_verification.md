@@ -40,7 +40,7 @@ node dist/src/cli.js verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT
 
 退出 0 表示要求的执行/证据完整且未观察到声明样本失败；2 表示已保存的冲突、测试失败、隔离不可用或缺口；1 表示参数/存储错误。`executionComplete`、`comparisonComplete` 和 `businessCorrectness` 分开，最后一项始终为 `unverified`。普通测试没有样本协议时，`comparisonComplete=null`，不会凭退出 0 推断业务覆盖。完整采样也可能观察到失败，因此 `status=complete` 与退出 2 可以同时成立。
 
-每阶段先核真实 `HEAD^{tree}=T`；每个工具前后核 tracked 文件及 Git HEAD/index/config。输入或依赖变动会使证据无效，并停止该阶段其余工具。下一阶段从新的固定现场开始，后面的成功不抹掉前面的失败。文本冲突停止组合，不制造“受测树”。同一次证据重复使用不增加独立样本数。
+每阶段先核真实 `HEAD^{tree}=T`；每个工具前后核 tracked 文件及整个私有 Git 状态，包含 HEAD/index/config、refs/replace、objects 和辅助文件。工具后只读文件字节，不在候选可改的 Git 配置下再运行宿主 Git；Git 状态摘要最多 50000 项/512MiB。输入或依赖变动会使证据无效，并停止该阶段其余工具。下一阶段从新的固定现场开始，后面的成功不抹掉前面的失败。文本冲突停止组合，不制造“受测树”。同一次证据重复使用不增加独立样本数。
 
 ## 可选结构化对照
 
@@ -54,7 +54,7 @@ node dist/src/cli.js verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT
 
 ## 隔离、边界与中断
 
-工具有独立网络/PID/挂载视图、净环境和空 HOME；系统/Node 运行时只读，只有本阶段 checkout、新结果和临时目录可写。没有宿主 HOME、代理、SSH、gh 或发布 token 的正常访问路径。每项最多 300 秒、4MiB 合计输出，超限终止进程组并保留已得字节；最多 16 项工具、每项 100 个参数。结构化文件最多 4MiB。没有独立 CPU、内存或磁盘配额，也不声称抵抗主动恶意的同权限宿主进程。
+工具有独立网络/PID/挂载视图、净环境和空 HOME；系统只读，Node 仅挂载真实可执行文件及已确认的 npm 资源目录，不按安装路径猜测和挂载祖父目录。只有本阶段 checkout、新结果和临时目录可写。没有宿主 HOME、代理、SSH、gh 或发布 token 的正常访问路径。每项最多 300 秒、4MiB 合计输出，超限终止进程组并保留已得字节；最多 16 项工具、每项 100 个参数。结构化文件最多 4MiB。没有独立 CPU、内存或磁盘配额，也不声称抵抗主动恶意的同权限宿主进程。
 
 固定 runner 文件、计划、依赖摘要和工具版本可核；系统运行库未全量 hash，宿主依赖前后观察非原子，限制如实记录。固定 W1 包不证明远端当前仍是同一候选；原采集缺口继续保存在输入记录中。
 

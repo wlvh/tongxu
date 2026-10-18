@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { runSandbox, validateDependencies } from '../../src/sandbox.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { runSandbox, validateDependencies, runtimeResources } from '../../src/sandbox.js';
 
 async function setup(t: test.TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'tongxu-sandbox-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -31,4 +34,18 @@ test('timeout and output cap terminate the isolated process group and retain bou
 test('dependency mount accepts only explicit Node dependency directories', async () => {
   await assert.rejects(() => validateDependencies('/etc'), /invalid_dependency/);
   await assert.rejects(() => validateDependencies('/home'), /invalid_dependency/);
+});
+
+test('exact runtime resources preserve the npm command used by nested project scripts', { timeout: 10_000 }, async t => {
+  const o = await setup(t); const runtime = await runtimeResources();
+  assert.ok(runtime.npm, 'this supported test host must have npm installed');
+  const result = await runSandbox({ ...o, argv: [process.execPath, '-e', "console.log(require('node:child_process').execFileSync('npm',['--version'],{encoding:'utf8'}).trim())"] });
+  assert.equal(result.status, 'completed', result.stderr.toString()); assert.equal(result.stdout.toString().trim(), runtime.npmVersion);
+});
+
+test('flat Node installation exposes only the executable, not its ancestor filesystem', { timeout: 15_000 }, async t => {
+  const o = await setup(t); const fake = join(o.root, 'fake-credential'); await writeFile(fake, 'FAKE_ONLY');
+  const script = "import {runSandbox} from '/code/src/sandbox.js'; const r=await runSandbox({work:'/work',resultDirectory:'/result',timeoutMs:3000,maxBytes:1000,argv:[process.execPath,'-e',\"console.log(JSON.stringify({outside:require('node:fs').existsSync('/outside/fake-credential')}))\"]});console.log(JSON.stringify({status:r.status,exit:r.exitCode,output:r.stdout.toString(),error:r.stderr.toString()}));";
+  const { stdout } = await promisify(execFile)('bwrap', ['--unshare-all', '--die-with-parent', '--ro-bind', '/usr', '/usr', '--ro-bind', '/bin', '/bin', '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/home/tongxu', '--dir', '/work', '--dir', '/result', '--ro-bind', process.execPath, '/opt/node', '--ro-bind', fileURLToPath(new URL('../..', import.meta.url)), '/code', '--ro-bind', fake, '/outside/fake-credential', '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin', '/opt/node', '--input-type=module', '-e', script], { timeout: 10_000, maxBuffer: 1024 * 1024 });
+  const observed = JSON.parse(stdout); assert.equal(observed.status, 'completed', observed.error); assert.equal(observed.exit, 0); assert.deepEqual(JSON.parse(observed.output), { outside: false });
 });

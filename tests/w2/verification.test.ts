@@ -107,6 +107,15 @@ test('preexisting complete JSON is not a result from a no-op current tool', { ti
   assert.ok(r.report.stages[1]!.tools[0]!.gaps.includes('missing_or_invalid_fresh_result')); assert.equal(r.report.stages[1]!.comparisons[0]!.results[0]!.result, 'NOT_COMPARED');
 });
 
+test('Git replacement refs invalidate evidence and stop subsequent tools on the same fixed tree', { timeout: 25_000 }, async t => {
+  const f = await fixture(t); const H = await f.branch('A', 'new.txt', 'feature\n');
+  const replacement = "const cp=require('node:child_process');const g=(a,input)=>cp.execFileSync('git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...a],{input,encoding:'utf8'}).trim();const blob=g(['hash-object','-w','--stdin'],'changed');const tree=g(['mktree'],'100644 blob '+blob+'\\tdata.json\\n');const commit=g(['commit-tree',tree,'-m','replacement']);g(['replace','HEAD',commit]);";
+  await writeFile(f.planPath, JSON.stringify({ schemaVersion: 1, tools: [{ id: 'replace', argv: [process.execPath, '-e', replacement], timeoutMs: 3000 }, ...f.tools] }));
+  const r = await verify({ snapshots: [await f.bundle(H)], objects: f.repo, plan: f.planPath, output: join(f.root, 'replacement') });
+  assert.equal(r.exit, 2); assert.equal(r.report.executionComplete, false);
+  for (const s of r.report.stages) { assert.equal(s.tools.length, 1); assert.equal(s.tools[0]!.exitCode, 0); assert.equal(s.tools[0]!.inputUnchanged, false); assert.ok(s.gaps.includes('remaining_tools_not_run')); }
+});
+
 test('snapshot corruption and invalid command plans fail before creating execution output', async t => {
   const f = await fixture(t); const H = await f.branch('A', 'new.txt', 'feature\n'); const bundle = await f.bundle(H);
   const m = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8')); m.candidate.H = 'moving-branch'; await writeFile(join(bundle, 'manifest.json'), JSON.stringify(m));
