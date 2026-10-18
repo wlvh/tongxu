@@ -48,3 +48,17 @@ AC1–AC5 的 W2 局部能力有上述实测；T01–T52 不整体改 PASS。接
 - 两阶段输入与依赖摘要前后相同，整包保持退出 2 / partial。报告 SHA-256 `83d33129d5a917517a683324a7f312b4ee10c0a7c3c7f625d2478c3e83ea0731`；候选 stdout SHA-256 `7e33308e5ede2d44abe1e98c4bff95a33df88da3e658d4ecca8f7070c69605fb`。
 
 上述是负责人实测；修复候选交新的独立上下文复审，不能自填技术 PASS。Claude 影响核实仍待执行，不声称完整双引擎流程通过。未修改源 W1 包、主干、管理设置、认证或费用路径。
+
+新上下文复审判断 `TX-W2-CODEX-20261018-1e01ee31-9e45-4ede-9485-a47de799374e = PASS（独立 Codex 技术范围）`，绑定 H `792cdfd3dafba7af15bfb058bf5ac75e77e689b1`、上述 B/target。独立导出 44/44，六种 Git 状态污染都停止后续工具；平铺 `/opt/node` 只挂文件，假宿主材料不可见。审核者还独立运行真实 PR #13 包：候选 27/27，基线 254，全包正确 partial；核对作者包原报告、引用 blob 和六个编译 runner hash。原两 P1 关闭，无开放 P0/P1。非阻断 P2 指出 Git 版本范围含糊，随后将报告字段改为 `host_git` 并标明不穷举测试子进程版本；文档区分宿主 2.52.0 和隔离内 2.47.3。Claude 影响核实仍待审。
+
+## W2 PR #14 的完整固定场景
+
+实际生产 collect 为 [PR #14](https://github.com/wlvh/tongxu/pull/14) 执行 7 个实时只读 GET 及 Git fetch，退出 0；H `792cdfd3dafba7af15bfb058bf5ac75e77e689b1`，真实 B `6c6640eebbcedcf19d8444c4a39c3843b3304cb2`，target `feat/w1-readonly-cli`。输入 manifest SHA-256 `0fa4544a1a32224da06e3b058c57695725d6beb63646863809cefb9fda62e43c`，保留 relay 的 headers 不可得限制。
+
+同一生产 verify 与现成 npm test 计划在 `2026-10-18T15:55:07.338Z` 至 `15:55:24.776Z` 实际运行，run `d6469b55-d87c-45f1-b16d-422b409bfb85`：
+
+- W1 基线 T `62f3d6e242348960df6c1dce54d90e4acd006ecf`：27/27，退出 0。
+- W2 候选 T `1ceafb5a152bbd27758b0bbd6422c936a45573d2`，synthetic HEAD `8fbd11408067ae31c5faa1dce83b1d8d923eb4c5`：44/44，退出 0；包含真实嵌套隔离回归。
+- 全包 complete / 退出 0，executionComplete=true，comparisonComplete=null，businessCorrectness=unverified；两阶段输入和依赖摘要均未变。报告 SHA-256 `000c91ac0b2e6c8cfdcb8e1add6ee7ac00f59835aa92140e9398076e2eaa8bbe`；候选 stdout SHA-256 `1f2a6e80aca76409b85e87b3833850bbdab5a501a62e0f2e94970651e19c5ffb`。
+
+这是固定版本的完整执行证据，不抹掉原 main 基线缺口、不变为业务正确或完整 G1 接收。后续 Git 版本字段命名与记录补充不改变受测测试逻辑；实际代码版本和摘要按本节明确保留。

@@ -152,7 +152,8 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
     if (runtime.npmVersion) report.toolVersions.npm = runtime.npmVersion;
     report.dependencyHash = await dependencyDigest(dependencies);
     if (dependencies) report.limitations.push('host_dependency_observation_is_not_atomic');
-    report.toolVersions.git = (await exec('git', ['--version'], { env: gitEnv() })).stdout.trim();
+    report.toolVersions.host_git = (await exec('git', ['--version'], { env: gitEnv() })).stdout.trim();
+    report.limitations.push('test_child_tool_versions_not_exhaustively_observed');
     try { report.toolVersions.bwrap = (await exec('bwrap', ['--version'], { env: { PATH: '/usr/bin:/bin' } })).stdout.trim(); } catch { throw new Error('isolation_unavailable'); }
     const cache = join(o.output, 'objects'); await mkdir(cache, { mode: 0o700 }); await git(cache, 'init', '--bare', '--template=');
     for (const b of bundles) await git(cache, 'fetch', '--no-tags', '--no-write-fetch-head', o.objects, b.candidate.B, b.candidate.H);
