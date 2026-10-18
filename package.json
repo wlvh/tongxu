@@ -1,0 +1,13 @@
+{
+  "name": "tongxu",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/tests/w1/*.test.js",
+    "start": "node dist/src/cli.js"
+  },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" }
+}

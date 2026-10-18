@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 # Generated standalone current UI; source is builder + frozen template.
 /prototypes/product_ui_prototype.html
+dist/
+*.tsbuildinfo
