@@ -53,4 +53,8 @@ node dist/src/cli.js collect --resume ABSOLUTE_EXISTING_PRIVATE_DIR --transport 
 
 原负责人复跑两项原反例确认成立，按用户已有范围内普通修复授权实施；`npm test` 扩至 27 项通过。初次真实 smoke 的 Git/连接器数据和固定候选仍可复用：修改未改变这些端点/数据计算；目录修复补故障回归，gh 主机修复补实际参数验证。新候选再交新的独立执行者复审，结论待追加。
 
+第二个新上下文执行者的判断 `TX-W1-CODE-20261018-e6eaffc-R2 = PASS（独立 Codex 技术范围）`，绑定 H `e6eaffc0e8d640df6a78c8a5d16ad2aaa8503194`、B `1ba5ae893b49e5856a4e8d682139f70e5c907f5f`、target `main`。独立导出后 27/27 通过；额外生产 CLI 空 raw/git symlink 反例均退出 1、零 gh 请求、模拟 checkout 无写入、manifest 不变、锁释放；原 smoke 28 项大小/hash 全部匹配。两项 P1 关闭，未发现开放 P0/P1，未作规模压测或重跑实时接口。目录/gh 参数修复未改变原 relay/Git smoke 适用性。该判断不是 GitHub approval 或合并许可。
+
+另在 bubblewrap 0.12.0 的新网络/PID/挂载视图、净环境/空 HOME 中，对固定 `e6eaffc` 导出运行同一 `npm test`，27/27 通过。只读系统/Node 运行时和现成 node_modules，临时 checkout 可写；未自动安装依赖或运行 SEC 业务。这证明下一包可采用实际隔离能力，尚不称 W2 运行器已实现。
+
 现行 `prompts/verifier_impact.md` / v2.3 §16 要求独立 Claude 影响核实。当前环境无 claude 命令，已发现工具无相应可用执行器；该项未执行，不能声称完整双引擎审核链通过。Codex 的独立技术复审与该待审项分别记录，不自批或合并，不因能力缺口阻止普通修复、独立测试与分支开发。具体模型构建版本不可核验，未编造。没有修改保护/认证或切换计费路径。
