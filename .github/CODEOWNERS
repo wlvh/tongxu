@@ -5,8 +5,11 @@
 /docs/GOVERNANCE.md @wlvh
 /docs/tongxu_v2_plan.md @wlvh
 /docs/decisions.md @wlvh
+/docs/PRODUCT_GUIDE.md @wlvh
 /prompts/README.md @wlvh
 /prompts/runtime_contract.md @wlvh
 /prompts/governance_contract.md @wlvh
 /prompts/tool_policy.json @wlvh
 /prompts/secretary.md @wlvh
+/prompts/reviewer.md @wlvh
+/prompts/receiver.md @wlvh

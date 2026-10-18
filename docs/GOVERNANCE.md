@@ -4,19 +4,39 @@
 
 ## 1. 谁能修改约束
 
-所有同序代码与规范修改走独立分支和 PR，包括本次，不直接更新 main。修改授权不自动豁免已有 PR 要求。边界变化应先说明旧规则、新规则、允许／禁止行为如何变化、影响的已有委托和恢复安排，再由可信本人入口作相应采用；技术约定与事实纠错可在已有委托内通过独立接收，不要求所有 PR 由人逐次批准。
+同序代码、版本化规范与角色规则的修改走独立分支和 PR，包括本次，不直接更新 main。修改授权不自动豁免已有 PR 要求。普通 Issue 更新、评论与交接按明确委托直接办理、标注来源，不为发一条交接再建 PR。边界变化应先说明旧规则、新规则、允许／禁止行为如何变化、影响的已有委托和恢复安排，再由可信本人入口作相应采用；技术约定与事实纠错可在已有委托内通过独立接收，不要求所有 PR 由人逐次批准。
 
-必须一起保护的对象是：规则本身、CODEOWNERS、检查／发布工作流、规则判定及工具权限实现、能够改变这些要求的仓库管理权限。Agent 不持有修改 ruleset、关闭保护或解除自己阻断 review 的权限。程序的规则判定使用受信任 base 版本，候选不得替换判定器后证明自己合规。路径命中只是保守筛选；改到其他路径也可能改变授权行为，不能以未命中自动免审。
+必须一起保护的对象是：规则本身、CODEOWNERS、检查／发布工作流、规则判定及工具权限实现、能够改变这些要求的仓库管理权限。本候选补齐 `prompts/reviewer.md`、`prompts/receiver.md` 和 `docs/PRODUCT_GUIDE.md`：前两者承载审核／接收判断，后者包含对人的控制与交付承诺。混合文件先保守保护，其他角色不因此整体升成人工审批路径。Agent 不持有修改 ruleset、关闭保护或解除自己阻断 review 的权限。程序用受信任 base 版本判定规则，候选不得替换判定器后证明自己合规。路径命中只是保守筛选，未命中也可能改变边界。
 
-建议复用 GitHub 的 require-PR 与 code-owner review：main 不允许普通直推／强推／删除；核对管理员和 App 的 bypass；边界路径由本人批准，其他路径按既有独立审核／委托。现有混合文件保守列为边界路径，可能带来额外人工审核；后续确有负担再拆分，不建立自然语言“自动修宪判定器”。CODEOWNERS 自身也在保护范围。
+### 身份按认证方式区分，不按工具名称推断
 
-### 当前真实状态与初始化
+用户身份的凭据会把代理操作归属给用户；App 安装身份的操作归属给 App。当前共享 wlvh 署名的连接器写入按代理代笔处理，不把显示账号当本人确认；不宣称所有连接器永远只能使用用户身份。CLI 也不会天然获得独立身份，必须实际配置并核验安装身份／最小权限，缺凭据时不得回退个人 gh 登录、credential helper 或 SSH agent。
 
-2026-10-18 读取 main@1ba5ae893b49e5856a4e8d682139f70e5c907f5f 返回 protected=false。当前连接器读取 protection 端点返回 403，且未提供设置写动作。故本次只提交 CODEOWNERS 与设置验收说明，不声称保护开启。真实启用任务是 #10。
+常规业务执行／测试不携带本人或发布凭据。受管发布端按最小权限取得限时安装令牌，不把 App 私钥、个人管理员 token 或扩大管理权交给 Agent。身份分离不等于权限正确；即使 App 作者与本人批准者已分开，仍要核对服务端规则、bypass、实际目标与授权。
 
-CODEOWNERS 必须已在目标 base，且服务端要求其 review 才生效。当前连接器可能以 wlvh 创建 PR，而 GitHub 作者不能自批；因此不能直接打开“必须由 wlvh 批准”并声称流程已经可用。先核对独立机器人／发布 App 与本人的身份、凭据及管理权限。必要时由已获授权的独立身份以同一受审候选发 PR，旧 PR 引用替代入口；不得用同一身份自批，也不得通过临时关保护或强推解决。首次安装所需的身份安排／管理员操作由本人或已核验的管理委托完成，不把管理员 token 发给执行 Agent。
+### 分两步启用，不阻塞只读 W0
 
-#10 的完成标准区分文件进入 base、服务端设置、身份隔离、实际拒绝与正常通过路径。读取失败不等于无保护，配置文件存在不等于已配置。没有真实管理员接口或身份条件时，该治理写入口待核，W0 只读调查继续。不得对真实 main 推垃圾测试；先用获准隔离测试验证拒绝路径，再读回实际设置。紧急管理员例外也必须说明对象、理由和撤销／恢复，不由 Agent 自行突破。
+**第一步：PR 路径约束。** 在管理员已经核对现有配置并获得具体设置授权后，可先要求 main 变更关联 PR，禁止强推／删除，将要求应用于管理员及 App 的普通操作、不授予操作 bypass，暂不要求批准。已有更强保护不得被自动降级。此步不等待机器人身份、CODEOWNERS 或未来维护委托全部就绪。
+
+此阶段不保证只有本人能合并。有合并能力的同一身份仍可能通过 API 请求合并；管理员也仍可能修改规则。因此 UI 与报告必须写“路径约束已核验／人工批准隔离未完成”，不能写“完整治理已启用”。禁止代理合并仍是本阶段的明确执行边界，不能包装成 GitHub 已能识别谁亲自点击。require-PR 的具体 Git／API 拒绝行为按实际配置验证，不承诺它阻止所有形式的目标 ref 更新。
+
+**第二步：独立身份与边界批准。** 确认受管发布使用独立身份、人的凭据不进入执行环境，CODEOWNERS 已在目标 base，随后启用边界路径的本人 code-owner 审核，检查过期批准、dismissal、管理员／App bypass 与正常交付路径。普通技术 PR 仍按原有效审核和有限委托处理，不新增一律人工批准。当前 PR 作者为 wlvh 时不能让同一账号自批；需要时由已授权的独立身份提出同一受审候选并明确替代引用，不伪造机器人身份，不关闭保护解锁。
+
+两步均由本人直接配置，或由有明确配置授权且管理权限已核实的主体执行。当前修订未执行管理员设置；#10 分别验收，不因第一步完成就关闭整个任务。
+
+### 首次安装的限定采用记录
+
+#11 当前是初次引入 CODEOWNERS 的提案，新文件不能追溯约束本 PR 自己。由本人读取最终候选、独立审阅结果与限制，亲自完成获准的 Ready／合并操作；若当时有效规则不允许，停在待处理，不临时关保护、强推或自批。这里不预先声称本人已经读过或批准。
+
+实际完成后，在原 #11／#10 记录：本人确认的来源与时间、最终 head／base、实际合入版本、采用时的旧规则和保护缺口、这次仅安装哪些文件、尚待启用哪些服务端要求。保留“文件已进入 base”“设置已启用”“拒绝与合法通过已验证”三者区别。这次初始化不是后续代理的旁路；紧急管理变更仍需独立、限定的明确授权与恢复记录。
+
+`docs/decisions.md` 中 TX-DEC-001 是面向未来的维护委托草案。过去一次“可以改仓库”不能追认为永久授权；合入本文件或关闭资料 Issue 也不能自动采用该草案。本人可确认代理准备的准确文本，无需亲自起草；采用前仍按当前具体任务授权行动。
+
+### 实际观察与验证边界
+
+2026-10-18 读取 main@1ba5ae893b49e5856a4e8d682139f70e5c907f5f 返回 protected=false；此前 protection 端点返回 403，当前连接器没有管理写动作。本次只提交规则候选与验证说明，**没有开启分支保护**。#10 是实际配置入口，缺管理能力只限制该动作。不得向真实 main 推垃圾测试；使用获准隔离场景验证，再读回真实设置。读取失败不能证明无保护，文件存在不能证明已启用。
+
+W0 按现行 main 和 #2 独立继续：不等待 #11 合并、TX-DEC-001、App 或保护全部完成。只有新的实际接口／验收失败才修改受影响部分；W0 Draft PR 出现前不再开启全局设计循环，不新增 v2.5、常驻治理角色或一套管理平台。
 
 ## 2. 本批目标怎样落到 GitHub
 
@@ -72,6 +92,8 @@ Milestone 是分组，不是批准。改描述、挂入 Issue、把里程碑关�
 
 - https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 - https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches
+- https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
+- https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/about-authentication-with-a-github-app
 - https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/approving-a-pull-request-with-required-reviews
 - https://docs.github.com/en/rest/issues/issues#update-an-issue
 - https://docs.github.com/en/issues/using-labels-and-milestones-to-track-work/about-milestones
