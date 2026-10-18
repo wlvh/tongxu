@@ -6,7 +6,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test dist/tests/w1/*.test.js",
+    "test": "npm run build && node --test dist/tests/w1/*.test.js dist/tests/w2/*.test.js",
     "start": "node dist/src/cli.js"
   },
   "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" }

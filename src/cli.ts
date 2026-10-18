@@ -8,10 +8,12 @@ import { Snapshot, parseContext, privateDirectory } from './snapshot.js';
 import { GhTransport, RelayTransport } from './transport.js';
 import { collect } from './collector.js';
 import { renderHandoff } from './handoff.js';
+import { parseVerifyArgs, verify } from './verification.js';
 
 const help = `tongxu inspect --repo OWNER/REPO --pr N [--issue N ...] [--format text|json]
 tongxu collect --repo OWNER/REPO --pr N --output ABSOLUTE_NEW_DIR [--issue N ...] [--context JSON_FILE]
 tongxu collect --resume ABSOLUTE_EXISTING_DIR
+tongxu verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT --plan ABS_PLAN --output ABS_NEW_DIR [--with ABS_W1_BUNDLE ...]
 Transport: --transport gh (default), or --transport relay --relay-dir ABSOLUTE_PRIVATE_DIR
 Requires Node 24+, Git, and gh for the default transport. Read-only GitHub GET / Git object reads.
 Exit 0 = requested facts collected, 2 = saved partial collection, 1 = invalid input/local error.
@@ -53,6 +55,12 @@ export async function main(args: string[]): Promise<number> {
   let temporary: string | undefined;
   let relayLock: string | undefined;
   try {
+    if (args[0] === 'verify') {
+      const options = parseVerifyArgs(args.slice(1));
+      const result = await verify(options);
+      process.stdout.write(JSON.stringify({ exit: result.exit, output: options.output, run: result.report.id, status: result.report.status }) + '\n');
+      return result.exit;
+    }
     const options = parseArgs(args);
     const context = options.context ? parseContext(JSON.parse(await readFile(options.context, 'utf8'))) : [];
     if (options.relayDir) {
