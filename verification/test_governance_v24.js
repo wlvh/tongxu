@@ -1,0 +1,43 @@
+// Generated offline UI contract tests, not GitHub rules, LLM evaluations or identity proof.
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'tongxu-gov-'));
+let n=0;const ok=(v,label)=>{assert.ok(v,label);n++;};
+try{
+ const html=fs.readFileSync(path.join(root,'prototypes/product_ui_prototype.html'),'utf8');
+ const js=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).join('\n');
+ const file=path.join(temp,'ui.js');fs.writeFileSync(file,js);
+ const h=require('./html_probes/harness2')(file,['s','actions','govPreview','govApply','govEffect','govPrecedent','govDraw','govGovernanceState','controlOwner','secretaryAllowed']);
+ const s=h.s(),A=h.actions(),preview=h.govPreview(),apply=h.govApply();
+ ok(!h.secretaryAllowed()('merge'),'secretary cannot merge');
+ ok(!h.secretaryAllowed()('shell'),'secretary cannot shell');
+ const p=preview('organization',{mode:'serial',note:'B shared phase waits for A1',revision:s.control.boundary.revision});
+ ok(p.scope.includes('独立调查继续'),'structured unaffected scope');
+ ok(s.control.organization.mode==='parallel','preview does not execute');
+ ok(!apply(p,'secretary').ok,'secretary cannot impersonate owner in contract fixture');
+ s.control.controlRevision++;ok(!apply(p).ok,'stale control version rejected');
+ const q=preview('organization',{mode:'serial',note:'only shared phase',revision:s.control.boundary.revision});
+ ok(apply(q).ok&&s.control.organization.mode==='serial','current preview applies');
+ ok(!apply(q).ok,'duplicate preview cannot reapply');
+ const u=preview('restore-merge',{note:'restore existing only'});s.grantActive=!s.grantActive;ok(!apply(u).ok,'changed grant rejects old preview');
+ const z=preview('adopt',{revision:s.control.boundary.revision,note:'adopt'});s.branches.main='changed-base';ok(!apply(z).ok,'changed base rejects preview');
+ s.mode='readonly';ok(!apply(preview('resume-new',{note:'resume'})).ok,'read-only denies');s.mode='delegated';
+ A['gov-emergency']();ok(s.control.stopMerge&&!s.grantActive,'immediate restrict without secretary confirmation');
+ h.controlOwner()('resume-new',{note:'resume implementation only'});ok(s.control.stopMerge,'resume implementation does not restore merge');
+ const eff=h.govEffect();ok(eff('merge',{known:false}).class==='unknown','unknown consequences not low');
+ ok(eff('merge',{known:true,paid:true}).class==='external-consequence','paid effect carried with merge');
+ ok(!eff('merge',{known:true}).mayDelegate,'contained effect alone not authority');
+ const dec=h.govPrecedent(),d={status:'adopted',source:'fixture',scope:'X1',effect:'offline'};
+ ok(dec(d,{scope:'X1',effect:'offline'}).ok,'same scoped example');
+ ok(!dec(d,{scope:'X1',effect:'paid'}).ok,'different consequence');
+ ok(!dec({...d,revoked:true},{scope:'X1',effect:'offline'}).ok,'revocation');
+ ok(!dec({...d,status:'proposed'},{scope:'X1',effect:'offline'}).ok,'draft not precedent');
+ const ledger={},draw=h.govDraw();const first=draw(ledger,'C',0.1,0.04);ok(first.selected,'untagged uniform sample may select');
+ ok(draw(ledger,'C',0.1,0.9)===first,'no reroll');ok(first.observation==='not-executed','selected is not passed');
+ ok(!draw(ledger,'D',0.1,0.4).selected,'unselected remains unselected');
+ let invalid=false;try{draw(ledger,'E',1.1,0.2);}catch{invalid=true;}ok(invalid,'invalid sampler probability rejected');
+ const state=h.govGovernanceState();ok(state({fileInBase:true})==='unverified','CODEOWNERS alone is not protection');
+ ok(state({fileInBase:true,serverRule:true,identitySeparated:true,rejectionVerified:true})==='verified','all fixture evidence required');
+ ok(html.includes('治理与有限复用'),'governance route in generated UI');
+ ok(html.includes('预览变更'),'single final confirmation preceded by preview');
+ console.log(JSON.stringify({result:'PASS',assertions:n,scope:'offline UI with DOM/timer/identity stubs; no GitHub or model calls'},null,2));
+}finally{fs.rmSync(temp,{recursive:true,force:true});}

@@ -1,0 +1,12 @@
+# Candidate mapping. Inert until merged into base AND required code-owner review is enabled.
+# Shared wlvh credentials are not proof of human identity; see docs/GOVERNANCE.md and Issue #10.
+# Mixed policy files are conservatively protected; absence of a path match does not prove no policy impact.
+/.github/ @wlvh
+/docs/GOVERNANCE.md @wlvh
+/docs/tongxu_v2_plan.md @wlvh
+/docs/decisions.md @wlvh
+/prompts/README.md @wlvh
+/prompts/runtime_contract.md @wlvh
+/prompts/governance_contract.md @wlvh
+/prompts/tool_policy.json @wlvh
+/prompts/secretary.md @wlvh
