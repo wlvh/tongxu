@@ -13,14 +13,14 @@ const parse = (row: Row | undefined, key: string): any => row ? JSON.parse(row[k
 const schema = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE blobs(hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
-CREATE TABLE items(id TEXT PRIMARY KEY, candidate TEXT NOT NULL, context TEXT NOT NULL, current_packet INTEGER, created_at TEXT NOT NULL);
-CREATE TABLE packets(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL REFERENCES items(id), fingerprint TEXT NOT NULL, manifest_hash TEXT NOT NULL, report_hash TEXT NOT NULL, context_hash TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(item,fingerprint));
+CREATE TABLE items(id TEXT PRIMARY KEY, candidate TEXT NOT NULL, context TEXT NOT NULL, current_packet INTEGER, created_at TEXT NOT NULL, latest_observation TEXT, latest_source_observation TEXT);
+CREATE TABLE packets(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL REFERENCES items(id), fingerprint TEXT NOT NULL, manifest_hash TEXT NOT NULL, report_hash TEXT NOT NULL, context_hash TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE observations(item TEXT NOT NULL, fingerprint TEXT NOT NULL, manifest_hash TEXT NOT NULL, report_hash TEXT NOT NULL, context_hash TEXT NOT NULL, observed_at TEXT NOT NULL, UNIQUE(item,manifest_hash,report_hash,context_hash));
 CREATE TABLE operations(id TEXT PRIMARY KEY, item TEXT NOT NULL REFERENCES items(id), packet INTEGER NOT NULL UNIQUE REFERENCES packets(id), target TEXT NOT NULL, generation INTEGER NOT NULL, run_ref TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, result TEXT);
 CREATE TABLE claims(target TEXT PRIMARY KEY, operation TEXT NOT NULL UNIQUE REFERENCES operations(id), generation INTEGER NOT NULL);
 CREATE TABLE controls(scope TEXT NOT NULL, kind TEXT NOT NULL, stopped INTEGER NOT NULL, revision INTEGER NOT NULL, source TEXT NOT NULL, requested_at TEXT NOT NULL, effective_at TEXT NOT NULL, PRIMARY KEY(scope,kind));
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, object TEXT NOT NULL, data TEXT NOT NULL, observed_at TEXT NOT NULL);
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 `;
 
 export class QueueStore {
@@ -46,7 +46,7 @@ export class QueueStore {
     try {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (version.user_version !== 1 || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (version.user_version !== 2 || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
@@ -80,14 +80,20 @@ export class QueueStore {
       if ((this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value !== packet.candidate.repository.toLowerCase()) throw new Error('queue_repository_mismatch');
       const id = candidateKey(packet.candidate, packet.context);
       for (const [digest, bytes] of packet.blobs) { if (hash(bytes) !== digest) throw new Error('invalid_import_blob'); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(digest, bytes); this.blob(digest); }
-      this.db.prepare('INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
-      const prior = this.db.prepare('SELECT * FROM packets WHERE item=? AND fingerprint=?').get(id, packet.fingerprint) as Row | undefined;
-      if (prior) return { item: id, packet: prior.id, duplicate: true, currentPacket: this.item(id).current_packet, mode: 'shadow' };
       this.db.prepare('INSERT OR IGNORE INTO items(id,candidate,context,created_at) VALUES(?,?,?,?)').run(id, JSON.stringify(packet.candidate), JSON.stringify(packet.context), now());
-      const item = this.item(id), previous = item.current_packet ? parse(this.packet(item.current_packet), 'summary') : undefined;
+      const item = this.item(id), previous = item.current_packet ? this.packet(item.current_packet) : undefined;
+      const known = this.db.prepare('SELECT 1 FROM observations WHERE item=? AND manifest_hash=? AND report_hash=? AND context_hash=?').get(id, packet.manifestHash, packet.reportHash, packet.contextHash);
+      if (known) return { item: id, packet: item.current_packet, duplicate: true, currentPacket: item.current_packet, mode: 'shadow' };
+      this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
+      const older = Boolean(previous && ((!packet.summary.observation || !packet.summary.sourceObservation) || (item.latest_observation && packet.summary.observation < item.latest_observation) || (item.latest_source_observation && packet.summary.sourceObservation < item.latest_source_observation)));
+      if (!older) this.db.prepare('UPDATE items SET latest_observation=?,latest_source_observation=? WHERE id=?').run(packet.summary.observation, packet.summary.sourceObservation, id);
+      // Deduplication is relative to the current state, not every fingerprint in history.
+      if (previous?.fingerprint === packet.fingerprint) {
+        this.event(older ? 'older_duplicate_archived' : 'duplicate_observation_recorded', id, { packet: previous.id, observation: packet.summary.observation, sourceObservation: packet.summary.sourceObservation });
+        return { item: id, packet: previous.id, duplicate: true, archived: older, currentPacket: item.current_packet, mode: 'shadow' };
+      }
       const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(packet.summary), now());
       const packetId = Number(inserted.lastInsertRowid);
-      const older = previous && ((previous.observation && packet.summary.observation && packet.summary.observation < previous.observation) || (previous.sourceObservation && packet.summary.sourceObservation && packet.summary.sourceObservation < previous.sourceObservation));
       if (!older) this.db.prepare('UPDATE items SET current_packet=?,context=? WHERE id=?').run(packetId, JSON.stringify(packet.context), id);
       this.event(older ? 'older_observation_archived' : 'material_changed', id, { packet: packetId, fingerprint: packet.fingerprint });
       return { item: id, packet: packetId, duplicate: false, archived: Boolean(older), currentPacket: this.item(id).current_packet, mode: 'shadow' };
@@ -168,7 +174,7 @@ export class QueueStore {
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const result = { mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'unavailable', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => ({ id: i.id, candidate: parse(i, 'candidate'), currentPacket: i.current_packet, context: parse(i, 'context'), summary: parse(this.packet(i.current_packet), 'summary'), dependencyGaps: this.prerequisites(i) })), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'unavailable', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => ({ id: i.id, candidate: parse(i, 'candidate'), currentPacket: i.current_packet, latestObservation: i.latest_observation, latestSourceObservation: i.latest_source_observation, context: parse(i, 'context'), summary: parse(this.packet(i.current_packet), 'summary'), dependencyGaps: this.prerequisites(i) })), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }

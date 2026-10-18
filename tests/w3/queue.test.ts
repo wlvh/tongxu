@@ -28,8 +28,9 @@ async function setup(t: test.TestContext) {
     await s.save(); await s.close(); const manifest = await readFile(join(snapshot, 'manifest.json'));
     const verification = join(prefix, 'verification'); await mkdir(verification, { mode: 0o700 }); await mkdir(join(verification, 'raw'), { mode: 0o700 });
     const blob = async (bytes: Buffer) => { const sha256 = hash(bytes); const path = `raw/${sha256}.bin`; await writeFile(join(verification, path), bytes, { mode: 0o600 }); return { path, sha256, bytes: bytes.length }; };
-    const output = await blob(Buffer.from('fixture output')), plan = await blob(Buffer.from('{"fixture":"no command executed"}'));
-    const stages = [candidate.B, candidate.H].map((head, index) => ({ index, inputHead: head, parent: candidate.B, head, tree: hash(`tree-${head}`).slice(0, 40), status: 'complete', gaps: [], tools: [{ id: 'fixture', status: 'completed', exitCode: 0, inputUnchanged: true, dependenciesUnchanged: true, gaps: [], stdout: output, stderr: output }] }));
+    const argv = ['/fixture/runner'];
+    const output = await blob(Buffer.from('local fixture: no command executed')), plan = await blob(Buffer.from(JSON.stringify({ schemaVersion: 1, tools: [{ id: 'fixture', argv, timeoutMs: 1000 }] })));
+    const stages = await Promise.all([candidate.B, candidate.H].map(async (head, index) => ({ index, inputHead: head, parent: candidate.B, head, tree: hash(`tree-${head}`).slice(0, 40), status: 'complete', gaps: [], comparisons: [], ...(index > 0 ? { mergeOutput: await blob(Buffer.from(hash(`tree-${head}`).slice(0, 40) + '\n')) } : {}), tools: [{ id: 'fixture', argv, status: 'completed', exitCode: 0, inputUnchanged: true, dependenciesUnchanged: true, gaps: [], stdout: output, stderr: output }] })));
     const report = { schemaVersion: 1, kind: 'tongxu-verification', id: `fixture-${count}`, repository: candidate.repository, targetRef: candidate.targetRef, startedAt: at, finishedAt: at, status: 'complete', executionComplete: true, comparisonComplete: null, observedSampleFailures: 0, businessCorrectness: 'unverified', dependencyHash: null, plan, planHash: plan.sha256, judgmentRefs: [], inputs: [{ candidate, manifestHash: hash(manifest), manifest: await blob(manifest), sourceGaps: [] }], stages, gaps: [] };
     o.report?.(report); await writeFile(join(verification, 'verification.json'), JSON.stringify(report), { mode: 0o600 });
     const context = o.context ?? { schemaVersion: 1, scope: { id: 'X1', version: 'S1', source: 'fixture:scope' }, arrangement: { id: 'team', version: 'r1', source: 'fixture:arrangement' }, decisionKind: 'proposal', requires: [] };
@@ -157,4 +158,67 @@ test('unfinished W2 operation remains a reference, and CLI has no live execution
   assert.equal(result.evidenceComplete, false); assert.equal(result.originalOperations.length, 1); assert.equal(result.externalActionSent, false);
   await assert.rejects(() => queueMain(['merge', '--store', f.store]), /invalid_queue_command/);
   const forbidden = join(f.root, 'forbidden'); await assert.rejects(() => queueMain(['init', '--store', forbidden, '--repo', 'example/project', '--mode', 'delegated']), /invalid_queue_option/); await assert.rejects(() => access(forbidden));
+});
+
+test('missing original tool output cannot satisfy an exact local evidence prerequisite', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const bad = await f.fixture({ report: r => { for (const stage of r.stages) for (const tool of stage.tools) { delete tool.stdout; delete tool.stderr; } } });
+  const packet = await bad.packet(); assert.equal(packet.summary.evidenceComplete, false); assert.ok(packet.summary.gaps.includes('original_tool_output_missing'));
+  const parent = f.q.import(packet), context = { ...bad.context, requires: [{ item: parent.item, type: 'development', version: bad.candidate.H, blocks: 'shadow_review', source: 'fixture:A1', canContinue: 'independent work' }] };
+  const child = f.q.import(await (await f.fixture({ pr: 2, context })).packet());
+  assert.ok(f.q.begin(child.item, 'blocked-child').blocked.includes(`dependency_evidence_incomplete:${parent.item}`)); assert.equal(f.q.status().claims.length, 0);
+});
+
+test('stage tools must cover the original plan with the same arguments', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const source = await f.fixture();
+  const path = join(source.verification, 'verification.json'), report = JSON.parse(await readFile(path, 'utf8'));
+  const plan = JSON.parse(await readFile(join(source.verification, report.plan.path), 'utf8')); plan.tools.push({ ...plan.tools[0], id: 'omitted-required-check' });
+  const bytes = Buffer.from(JSON.stringify(plan)), sha256 = hash(bytes); report.plan = { path: `raw/${sha256}.bin`, sha256, bytes: bytes.length }; report.planHash = sha256;
+  await writeFile(join(source.verification, report.plan.path), bytes, { mode: 0o600 }); await writeFile(path, JSON.stringify(report));
+  assert.ok((await source.packet()).summary.gaps.includes('planned_tool_coverage_mismatch'));
+  const wrongArgv = await f.fixture({ report: r => { r.stages[1].tools[0].argv = ['/different/tool']; } });
+  assert.ok((await wrongArgv.packet()).summary.gaps.includes('planned_tool_coverage_mismatch'));
+});
+
+test('reported stage tree and head must agree with original merge output and chain', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const source = await f.fixture({ report: r => { r.stages[1].tree = r.stages[0].tree; r.stages[1].head = r.stages[0].head; } });
+  const packet = await source.packet(); assert.equal(packet.summary.evidenceComplete, false); assert.ok(packet.summary.gaps.includes('merge_tree_evidence_mismatch')); assert.ok(packet.summary.gaps.includes('stage_identity_chain_mismatch'));
+});
+
+test('sample summaries require matching raw results from the registered tool', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const source = await f.fixture();
+  const path = join(source.verification, 'verification.json'), report = JSON.parse(await readFile(path, 'utf8'));
+  const plan = JSON.parse(await readFile(join(source.verification, report.plan.path), 'utf8')); plan.tools[0].expectedSampleIds = ['sample'];
+  const bytes = Buffer.from(JSON.stringify(plan)), sha256 = hash(bytes); report.plan = { path: `raw/${sha256}.bin`, sha256, bytes: bytes.length }; report.planHash = sha256;
+  for (const stage of report.stages) stage.tools[0].sampleSet = { complete: true, samples: [{ id: 'sample', status: 'ok', content: 1, identity: 'fixture', source: 'fixture:claim', sideEffects: [] }], gaps: [] };
+  report.comparisonComplete = true;
+  await writeFile(join(source.verification, report.plan.path), bytes, { mode: 0o600 }); await writeFile(path, JSON.stringify(report));
+  const packet = await source.packet(); assert.equal(packet.summary.evidenceComplete, false); assert.ok(packet.summary.gaps.includes('original_sample_result_missing_or_invalid')); assert.ok(packet.summary.gaps.includes('sample_result_evidence_mismatch'));
+});
+
+test('intact structured original results are accepted, while a forged summary is incomplete', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const source = await f.fixture();
+  const path = join(source.verification, 'verification.json'), report = JSON.parse(await readFile(path, 'utf8'));
+  const blob = async (value: unknown) => { const bytes = Buffer.from(JSON.stringify(value)), sha256 = hash(bytes), path = `raw/${sha256}.bin`; await writeFile(join(source.verification, path), bytes, { mode: 0o600 }); return { path, sha256, bytes: bytes.length }; };
+  const plan = JSON.parse(await readFile(join(source.verification, report.plan.path), 'utf8')); plan.tools[0].expectedSampleIds = ['sample']; report.plan = await blob(plan); report.planHash = report.plan.sha256;
+  const rows = [{ id: 'sample', status: 'ok', content: { result: 1 }, identity: 'fixture', source: 'fixture:original-result', sideEffects: [] }], original = await blob({ samples: rows });
+  for (const stage of report.stages) { stage.tools[0].result = original; stage.tools[0].sampleSet = { complete: true, samples: rows, gaps: [] }; stage.comparisons = [{ tool: 'fixture', results: [{ id: 'sample', result: stage.index === 0 ? 'NOT_COMPARED' : 'SAME_OK' }] }]; }
+  report.comparisonComplete = true; await writeFile(path, JSON.stringify(report));
+  assert.equal((await source.packet()).summary.evidenceComplete, true);
+  report.stages[1].tools[0].sampleSet.samples = [{ ...rows[0], content: 'unsupported summary' }]; await writeFile(path, JSON.stringify(report));
+  const altered = await source.packet(); assert.equal(altered.summary.evidenceComplete, false); assert.ok(altered.summary.gaps.includes('sample_result_evidence_mismatch'));
+});
+
+test('duplicate observations advance the watermark, and a newer return to historical content is reevaluated', async t => {
+  const f = await setup(t); let q = f.q; t.after(() => q.close());
+  const at = (time: string, fail = false) => (r: any) => { r.startedAt = `2026-10-18T${time}:00.000Z`; if (fail) { r.observedSampleFailures = 1; r.comparisonComplete = false; } };
+  const first = q.import(await (await f.fixture({ report: at('15:55') })).packet()); const initial = q.begin(first.item, 'first'); q.evaluate(initial.operation);
+  const failure = q.import(await (await f.fixture({ report: at('15:56', true) })).packet()); q.evaluate(q.begin(first.item, 'failure').operation);
+  const repeat = q.import(await (await f.fixture({ report: at('15:58', true) })).packet()); assert.equal(repeat.duplicate, true);
+  q.close(); q = await QueueStore.open(f.store);
+  const old = q.import(await (await f.fixture({ report: at('15:57') })).packet()); assert.equal(old.archived, true); assert.equal(old.currentPacket, failure.currentPacket);
+  assert.equal(q.status().items[0].summary.evidenceComplete, false); assert.equal(q.status().items[0].latestObservation, '2026-10-18T15:58:00.000Z');
+  const recovered = q.import(await (await f.fixture({ report: at('15:59') })).packet()); assert.equal(recovered.duplicate, false); assert.notEqual(recovered.currentPacket, first.currentPacket);
+  const next = q.begin(first.item, 'recovered'); assert.notEqual(next.operation, initial.operation); assert.equal(next.generation, 3); assert.equal(q.evaluate(next.operation).evidenceComplete, true);
 });
