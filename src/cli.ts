@@ -9,11 +9,13 @@ import { GhTransport, RelayTransport } from './transport.js';
 import { collect } from './collector.js';
 import { renderHandoff } from './handoff.js';
 import { parseVerifyArgs, verify } from './verification.js';
+import { queueMain } from './queue-cli.js';
 
 const help = `tongxu inspect --repo OWNER/REPO --pr N [--issue N ...] [--format text|json]
 tongxu collect --repo OWNER/REPO --pr N --output ABSOLUTE_NEW_DIR [--issue N ...] [--context JSON_FILE]
 tongxu collect --resume ABSOLUTE_EXISTING_DIR
 tongxu verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT --plan ABS_PLAN --output ABS_NEW_DIR [--with ABS_W1_BUNDLE ...]
+tongxu queue init|add|status|control|begin|evaluate --store ABS_PRIVATE_DIR ... (shadow only; docs/w3_shadow_queue.md)
 Transport: --transport gh (default), or --transport relay --relay-dir ABSOLUTE_PRIVATE_DIR
 Requires Node 24+, Git, and gh for default collection; verify also requires Linux/bubblewrap and existing tools.
 Exit 0 = requested collection/verification complete; 2 = saved gaps or observed sample failure; 1 = invalid input/local error.
@@ -55,6 +57,10 @@ export async function main(args: string[]): Promise<number> {
   let temporary: string | undefined;
   let relayLock: string | undefined;
   try {
+    if (args[0] === 'queue') {
+      const result = await queueMain(args.slice(1));
+      process.stdout.write(JSON.stringify(result.result, null, 2) + '\n'); return result.exit;
+    }
     if (args[0] === 'verify') {
       const options = parseVerifyArgs(args.slice(1));
       const result = await verify(options);

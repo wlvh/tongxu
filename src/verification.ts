@@ -66,7 +66,7 @@ export function parseVerifyArgs(args: string[]): VerifyOptions {
   if (['--snapshot', '--objects', '--plan', '--output'].some(k => !values.has(k)) || additional.length > 7) throw new Error('missing_verify_scope');
   return { snapshots: [values.get('--snapshot')!, ...additional], objects: values.get('--objects')!, plan: values.get('--plan')!, output: values.get('--output')! };
 }
-async function loadBundle(path: string): Promise<{ candidate: Candidate; bytes: Buffer; sourceGaps: string[] }> {
+export async function loadBundle(path: string): Promise<{ candidate: Candidate; bytes: Buffer; sourceGaps: string[] }> {
   await privateDirectory(path, false);
   try { await lstat(join(path, 'lock.json')); throw new Error('source_writer_active_or_unknown'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   await privateDirectory(join(path, 'raw'), false); await privateDirectory(join(path, 'git'), false);

@@ -1,0 +1,160 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, writeFile, rm, access } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { Snapshot, hash } from '../../src/snapshot.js';
+import { QueueStore } from '../../src/queue-store.js';
+import { readPacket, candidateKey } from '../../src/queue-evidence.js';
+import { queueMain } from '../../src/queue-cli.js';
+
+const cli = fileURLToPath(new URL('../../src/cli.js', import.meta.url));
+const exec = promisify(execFile);
+async function setup(t: test.TestContext) {
+  const root = await mkdtemp(join(tmpdir(), 'tongxu-w3-')); t.after(() => rm(root, { recursive: true, force: true })); let count = 0;
+  const fixture = async (o: { pr?: number; target?: string; variant?: string; at?: string; context?: any; report?: (v: any) => void } = {}) => {
+    const prefix = join(root, `input-${++count}`); await mkdir(prefix, { mode: 0o700 });
+    const pr = o.pr ?? 1, at = o.at ?? '2026-10-18T10:00:00.000Z';
+    const candidate = { repository: 'example/project', pr, H: hash(`H-${pr}`).slice(0, 40), B: 'b'.repeat(40), targetRef: o.target ?? 'main', mergeBase: 'b'.repeat(40), observedAt: at };
+    const snapshot = join(prefix, 'snapshot'); const s = await Snapshot.create(snapshot, candidate.repository, pr, [], []);
+    s.manifest.candidate = candidate;
+    await s.artifact(JSON.stringify({ fixture: true, number: pr, head: candidate.H, material: o.variant ?? 'initial' }), { kind: 'pr', round: 1, retrievedAt: at, provenance: 'local_fixture', status: 200 });
+    s.manifest.rounds.push({ number: 1, startedAt: at, finishedAt: at, coverage: {}, sources: [], notes: [], gaps: [], limitations: ['local_fixture_not_live_api'], current: true });
+    await s.save(); await s.close(); const manifest = await readFile(join(snapshot, 'manifest.json'));
+    const verification = join(prefix, 'verification'); await mkdir(verification, { mode: 0o700 }); await mkdir(join(verification, 'raw'), { mode: 0o700 });
+    const blob = async (bytes: Buffer) => { const sha256 = hash(bytes); const path = `raw/${sha256}.bin`; await writeFile(join(verification, path), bytes, { mode: 0o600 }); return { path, sha256, bytes: bytes.length }; };
+    const output = await blob(Buffer.from('fixture output')), plan = await blob(Buffer.from('{"fixture":"no command executed"}'));
+    const stages = [candidate.B, candidate.H].map((head, index) => ({ index, inputHead: head, parent: candidate.B, head, tree: hash(`tree-${head}`).slice(0, 40), status: 'complete', gaps: [], tools: [{ id: 'fixture', status: 'completed', exitCode: 0, inputUnchanged: true, dependenciesUnchanged: true, gaps: [], stdout: output, stderr: output }] }));
+    const report = { schemaVersion: 1, kind: 'tongxu-verification', id: `fixture-${count}`, repository: candidate.repository, targetRef: candidate.targetRef, startedAt: at, finishedAt: at, status: 'complete', executionComplete: true, comparisonComplete: null, observedSampleFailures: 0, businessCorrectness: 'unverified', dependencyHash: null, plan, planHash: plan.sha256, judgmentRefs: [], inputs: [{ candidate, manifestHash: hash(manifest), manifest: await blob(manifest), sourceGaps: [] }], stages, gaps: [] };
+    o.report?.(report); await writeFile(join(verification, 'verification.json'), JSON.stringify(report), { mode: 0o600 });
+    const context = o.context ?? { schemaVersion: 1, scope: { id: 'X1', version: 'S1', source: 'fixture:scope' }, arrangement: { id: 'team', version: 'r1', source: 'fixture:arrangement' }, decisionKind: 'proposal', requires: [] };
+    const contextPath = join(prefix, 'context.json'); await writeFile(contextPath, JSON.stringify(context), { mode: 0o600 });
+    return { snapshot, verification, contextPath, context, candidate, packet: () => readPacket(snapshot, verification, contextPath) };
+  };
+  const store = join(root, 'queue'); const q = await QueueStore.create(store, 'example/project');
+  return { root, store, q, fixture };
+}
+
+test('real source bytes are archived without writing inputs; forged approval stays a report', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const source = await f.fixture({ report: r => { r.judgmentRefs = ['PASS']; r.productionActionAllowed = true; } });
+  const before = await readFile(join(source.snapshot, 'manifest.json')); const item = f.q.import(await source.packet());
+  const op = f.q.begin(item.item, 'fixture-run'); const result = f.q.evaluate(op.operation);
+  assert.equal(result.evidenceComplete, true); assert.equal(result.productionActionAllowed, false); assert.equal(result.independentReception, 'pending');
+  assert.ok(result.gaps.includes('production_authorization_unverified')); assert.ok(result.gaps.includes('pending_publish'));
+  assert.deepEqual(await readFile(join(source.snapshot, 'manifest.json')), before);
+  assert.equal(f.q.status().claims.length, 0);
+  const bad = await f.fixture({ pr: 2, report: r => { r.inputs[0].candidate = { ...r.inputs[0].candidate, H: 'a'.repeat(40) }; r.businessCorrectness = 'PASS'; } });
+  const badId = f.q.import(await bad.packet()); const badResult = f.q.evaluate(f.q.begin(badId.item, 'fixture-run-2').operation);
+  assert.equal(badResult.evidenceComplete, false); assert.ok(badResult.gaps.includes('candidate_or_manifest_mismatch')); assert.ok(badResult.gaps.includes('unsupported_business_correctness_claim')); assert.equal(badResult.productionActionAllowed, false);
+});
+
+test('bad artifact hash is rejected before queue import', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const source = await f.fixture();
+  const report = JSON.parse(await readFile(join(source.verification, 'verification.json'), 'utf8'));
+  await writeFile(join(source.verification, report.plan.path), 'corrupt');
+  await assert.rejects(() => source.packet(), /hash_mismatch/); assert.equal(f.q.status().items.length, 0);
+});
+
+test('two production CLI processes competing for one target produce one persisted claim', { timeout: 15_000 }, async t => {
+  const f = await setup(t); const a = f.q.import(await (await f.fixture({ pr: 1 })).packet()), b = f.q.import(await (await f.fixture({ pr: 2 })).packet()); f.q.close();
+  const run = async (id: string) => { try { return JSON.parse((await exec(process.execPath, [cli, 'queue', 'begin', '--store', f.store, '--item', id, '--run', 'fixture-native-process'])).stdout); } catch (e) { const failure = e as { code: number; stdout: string }; assert.equal(failure.code, 2); return JSON.parse(failure.stdout); } };
+  const results = await Promise.all([run(a.item), run(b.item)]);
+  assert.equal(results.filter(r => r.operation).length, 1); assert.equal(results.filter(r => r.blocked?.includes('target_occupied_or_unknown')).length, 1);
+  const q = await QueueStore.open(f.store); t.after(() => q.close()); assert.equal(q.status().claims.length, 1); assert.equal(q.status().operations.length, 1);
+});
+
+test('waiting exact dependencies consume no seat; cycles and merge requirements stay blocked', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const parent = await f.fixture({ pr: 1 }); const parentKey = candidateKey(parent.candidate, parent.context);
+  const context = { ...parent.context, requires: [{ item: parentKey, type: 'development', version: parent.candidate.H, blocks: 'shadow_review', source: 'fixture:A1', canContinue: 'read independent material' }] };
+  const child = f.q.import(await (await f.fixture({ pr: 2, context })).packet());
+  assert.ok(f.q.begin(child.item, 'child').blocked[0].startsWith('missing_dependency:')); assert.equal(f.q.status().claims.length, 0);
+  const p = f.q.import(await parent.packet()); const op = f.q.begin(p.item, 'parent'); f.q.evaluate(op.operation);
+  assert.ok(f.q.begin(child.item, 'child').operation);
+  const mergedContext = { ...parent.context, requires: [{ ...context.requires[0], type: 'merge' }] };
+  const future = f.q.import(await (await f.fixture({ pr: 3, target: 'future', context: mergedContext })).packet());
+  assert.ok(f.q.begin(future.item, 'future').blocked.some((g: string) => g.startsWith('external_dependency_unverified:')));
+  const a = await f.fixture({ pr: 4, target: 'a' }), b = await f.fixture({ pr: 5, target: 'b' });
+  a.context.requires = [{ ...context.requires[0], item: candidateKey(b.candidate, b.context), version: b.candidate.H }];
+  b.context.requires = [{ ...context.requires[0], item: candidateKey(a.candidate, a.context), version: a.candidate.H }];
+  await writeFile(a.contextPath, JSON.stringify(a.context)); await writeFile(b.contextPath, JSON.stringify(b.context));
+  const ca = f.q.import(await a.packet()); f.q.import(await b.packet()); assert.ok(f.q.begin(ca.item, 'cycle').blocked.includes('dependency_cycle'));
+});
+
+test('seat cap is enforced independently of target exclusion', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const items = []; for (const [pr, target] of [[1, 'main'], [2, 'release'], [3, 'preview']] as const) items.push(f.q.import(await (await f.fixture({ pr, target })).packet()));
+  assert.ok(f.q.begin(items[0]!.item, 'one').operation); assert.ok(f.q.begin(items[1]!.item, 'two').operation);
+  assert.deepEqual(f.q.begin(items[2]!.item, 'three').blocked, ['reception_seats_full']);
+});
+
+test('three controls persist independently and permit recovery without claiming external stop', async t => {
+  const f = await setup(t); const item = f.q.import(await (await f.fixture()).packet());
+  for (const kind of ['implementation', 'investment', 'merge']) { const control = f.q.control('X1', kind, 'stopped', 'fixture:operator'); assert.equal(control.externalControl, 'unverified'); }
+  f.q.control('X1', 'implementation', 'open', 'fixture:resume-implementation'); f.q.close();
+  const q = await QueueStore.open(f.store); t.after(() => q.close()); assert.deepEqual(q.begin(item.item, 'stopped').blocked, ['new_investment_stopped']);
+  q.control('X1', 'investment', 'open', 'fixture:resume-investment'); const op = q.begin(item.item, 'review'); assert.ok(op.operation);
+  q.control('X1', 'investment', 'stopped', 'fixture:stop-again'); const result = q.evaluate(op.operation); assert.equal(result.status, 'evaluated'); assert.equal(result.productionActionAllowed, false);
+  const states = Object.fromEntries(q.status().controls.map((c: any) => [c.kind, c.stopped])); assert.deepEqual(states, { implementation: 0, investment: 1, merge: 1 });
+});
+
+test('process death after begin retains unknown original operation; stale completion cannot release a newer claim', { timeout: 15_000 }, async t => {
+  const f = await setup(t); const input = await f.fixture(); const item = f.q.import(await input.packet()); f.q.close();
+  const module = new URL('../../src/queue-cli.js', import.meta.url).href;
+  const script = `const {queueMain}=await import(${JSON.stringify(module)});const r=await queueMain(${JSON.stringify(['begin', '--store', f.store, '--item', item.item, '--run', 'fixture-killed'])});process.stdout.write(JSON.stringify(r.result),()=>process.kill(process.pid,'SIGKILL'));`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', error = ''; child.stdout.on('data', b => { out += b.toString(); }); child.stderr.on('data', b => { error += b.toString(); }); const [code, signal] = await once(child, 'close'); assert.equal(code, null, error); assert.equal(signal, 'SIGKILL'); const original = JSON.parse(out);
+  const q = await QueueStore.open(f.store); t.after(() => q.close()); const state = q.status(); assert.equal(state.claims.length, 1); assert.equal(state.operations[0].recovery, 'result_unknown_evaluate_original_operation');
+  assert.equal(q.begin(item.item, 'replacement-not-started').operation, original.operation); assert.equal(q.status().operations.length, 1);
+  q.evaluate(original.operation);
+  const changed = await f.fixture({ variant: 'new substantive source', at: '2026-10-18T11:00:00.000Z' }); q.import(await changed.packet()); const next = q.begin(item.item, 'new-generation'); assert.equal(next.generation, 2);
+  assert.equal(q.evaluate(original.operation).duplicate, true); assert.equal(q.status().claims[0].operation, next.operation);
+});
+
+test('duplicate runs and receipt times do not dispatch; new material triggers once and older replay cannot roll back', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const first = await f.fixture(); const a = f.q.import(await first.packet()); const op = f.q.begin(a.item, 'first'); f.q.evaluate(op.operation);
+  const receiptOnly = await f.fixture({ at: '2026-10-18T11:00:00.000Z' }); const dup = f.q.import(await receiptOnly.packet()); assert.equal(dup.duplicate, true); assert.equal(f.q.begin(a.item, 'duplicate').operation, op.operation);
+  const newer = await f.fixture({ variant: 'new discussion', at: '2026-10-18T12:00:00.000Z' }); const b = f.q.import(await newer.packet()); assert.equal(b.duplicate, false); assert.notEqual(b.currentPacket, a.currentPacket);
+  assert.equal(f.q.import(await first.packet()).currentPacket, b.currentPacket);
+  const unseenOld = await f.fixture({ variant: 'late old observation', at: '2026-10-18T09:00:00.000Z' }); const old = f.q.import(await unseenOld.packet()); assert.equal(old.archived, true); assert.equal(old.currentPacket, b.currentPacket);
+  assert.equal(f.q.status().operations.length, 1);
+});
+
+test('stored corruption keeps the original operation unresolved and does not release its claim', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const packet = await (await f.fixture()).packet(); const item = f.q.import(packet), op = f.q.begin(item.item, 'corruption');
+  const db = new DatabaseSync(join(f.store, 'queue.sqlite')); db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('bad'), packet.reportHash); db.close();
+  assert.throws(() => f.q.evaluate(op.operation), /stored_evidence_hash_mismatch/); assert.equal(f.q.status().claims[0].operation, op.operation); assert.equal(f.q.status().operations[0].status, 'running');
+});
+
+test('changed failure or runner evidence is substantive even when source and test exit are unchanged', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const initial = f.q.import(await (await f.fixture()).packet()); f.q.evaluate(f.q.begin(initial.item, 'initial').operation);
+  const failed = f.q.import(await (await f.fixture({ report: r => { r.observedSampleFailures = 1; r.comparisonComplete = false; } })).packet());
+  assert.equal(failed.duplicate, false); const failure = f.q.evaluate(f.q.begin(initial.item, 'new-failure').operation);
+  assert.equal(failure.evidenceComplete, false); assert.ok(failure.gaps.includes('sample_failure_or_incomplete_comparison'));
+  const runner = f.q.import(await (await f.fixture({ report: r => { r.toolVersions = { runner_verification_sha256: 'f'.repeat(64) }; } })).packet());
+  assert.equal(runner.duplicate, false); assert.notEqual(runner.currentPacket, failed.currentPacket);
+});
+
+test('a corrupted prerequisite blocks its dependent but not unrelated evidence', async t => {
+  const f = await setup(t); t.after(() => f.q.close()); const parent = await f.fixture(); const packet = await parent.packet(); const parentItem = f.q.import(packet);
+  const context = { ...parent.context, requires: [{ item: parentItem.item, type: 'parent', version: parent.candidate.H, blocks: 'shadow_review', source: 'fixture:parent', canContinue: 'independent investigation' }] };
+  const dependent = f.q.import(await (await f.fixture({ pr: 2, context })).packet());
+  const unrelated = f.q.import(await (await f.fixture({ pr: 3 })).packet());
+  const db = new DatabaseSync(join(f.store, 'queue.sqlite')); db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('bad'), packet.reportHash); db.close();
+  assert.ok(f.q.begin(dependent.item, 'dependent').blocked.includes(`dependency_evidence_unreadable:${parentItem.item}`));
+  assert.equal(f.q.status().claims.length, 0); assert.equal(f.q.evaluate(f.q.begin(unrelated.item, 'independent').operation).evidenceComplete, true);
+});
+
+test('unfinished W2 operation remains a reference, and CLI has no live execution mode', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const fixture = await f.fixture({ report: r => { r.status = 'running'; r.executionComplete = false; r.stages[1].tools[0].status = 'running'; r.stages[1].tools[0].pid = 123; } });
+  const item = f.q.import(await fixture.packet()); const result = f.q.evaluate(f.q.begin(item.item, 'inspect-unknown').operation);
+  assert.equal(result.evidenceComplete, false); assert.equal(result.originalOperations.length, 1); assert.equal(result.externalActionSent, false);
+  await assert.rejects(() => queueMain(['merge', '--store', f.store]), /invalid_queue_command/);
+  const forbidden = join(f.root, 'forbidden'); await assert.rejects(() => queueMain(['init', '--store', forbidden, '--repo', 'example/project', '--mode', 'delegated']), /invalid_queue_option/); await assert.rejects(() => access(forbidden));
+});
