@@ -1,5 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { access, chmod, lstat, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -7,8 +6,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
 import { InspectionRpc } from './native-rpc.js';
+import { captureVersion } from './native-version.js';
 
-const exec = promisify(execFile);
 const safeCode = (e: unknown): string => e instanceof Error && /^[a-z0-9_]+$/.test(e.message) ? e.message : 'native_inspection_failed';
 async function binaryHash(path: string): Promise<string> { const h = createHash('sha256'); for await (const part of createReadStream(path)) h.update(part); return h.digest('hex'); }
 export type NativeOptions = { codex: string; output: string };
@@ -41,9 +40,11 @@ export async function inspectNative(o: NativeOptions): Promise<{ exit: number; r
   const rawNames = ['version.stdout', 'version.stderr', 'native.stdin', 'native.stdout', 'native.stderr', 'native-events.json'];
   try {
     report.status = 'running'; report.phase = 'version'; await save();
-    const version = await exec('bwrap', [...prefix, '--version'], { env: { PATH: '/usr/bin:/bin' }, cwd: '/', timeout: 15_000, maxBuffer: 128 * 1024, encoding: 'buffer' });
-    await writeFile(join(o.output, 'version.stdout'), version.stdout, { flag: 'wx', mode: 0o600 }); await writeFile(join(o.output, 'version.stderr'), version.stderr, { flag: 'wx', mode: 0o600 });
-    report.version = version.stdout.toString().trim(); if (!/^codex-cli [0-9][^\r\n]{0,120}$/.test(report.version)) throw new Error('unrecognized_native_version');
+    const versionPaths = { stdout: join(o.output, 'version.stdout'), stderr: join(o.output, 'version.stderr') };
+    const version = await captureVersion(prefix, versionPaths, async pid => { report.versionProcess = { pid, status: 'running_or_unknown' }; await save(); });
+    report.versionProcess = { ...report.versionProcess, status: 'exited', ...version }; report.gaps.push(...version.gaps); await save();
+    if (version.gaps.length) throw new Error('native_version_incomplete');
+    report.version = (await readFile(versionPaths.stdout, 'utf8')).trim(); if (!/^codex-cli [0-9][^\r\n]{0,120}$/.test(report.version)) throw new Error('unrecognized_native_version');
     const paths = { stdin: join(o.output, 'native.stdin'), stdout: join(o.output, 'native.stdout'), stderr: join(o.output, 'native.stderr') };
     for (const path of Object.values(paths)) await writeFile(path, '', { flag: 'wx', mode: 0o600 });
     report.phase = 'app_server_registered'; await save();
@@ -61,19 +62,17 @@ export async function inspectNative(o: NativeOptions): Promise<{ exit: number; r
     rpc.initialized();
     const started = await call('thread/start', { cwd: '/native-workspace', sandbox: 'read-only', approvalPolicy: 'never', ephemeral: true });
     const result = started.result, thread = result?.thread;
-    if (started.error || typeof thread?.id !== 'string' || !thread.id || thread.id.length > 128 || result.cwd !== '/native-workspace' || result.sandbox?.type !== 'readOnly' || result.sandbox.networkAccess !== false || result.approvalPolicy !== 'never' || !Array.isArray(thread.turns) || thread.turns.length) throw new Error('native_session_boundary_unverified');
-    report.observations.session = { id: thread.id, workspace: result.cwd, sandbox: result.sandbox, approvalPolicy: result.approvalPolicy, ephemeralRequested: true, modelExecutionObserved: false };
+    if (started.error || typeof thread?.id !== 'string' || !thread.id || thread.id.length > 128 || thread.ephemeral !== true || thread.cwd !== '/native-workspace' || result.cwd !== '/native-workspace' || result.sandbox?.type !== 'readOnly' || result.sandbox.networkAccess !== false || result.approvalPolicy !== 'never' || !Array.isArray(thread.turns) || thread.turns.length) throw new Error('native_session_boundary_unverified');
+    report.observations.session = { id: thread.id, workspace: result.cwd, sandbox: result.sandbox, approvalPolicy: result.approvalPolicy, ephemeralRequested: true, ephemeralObserved: true, modelExecutionObserved: false };
     const read = await call('thread/read', { threadId: thread.id, includeTurns: false });
-    if (read.error || read.result?.thread?.id !== thread.id || read.result.thread.cwd !== '/native-workspace') throw new Error('native_session_read_mismatch');
+    if (read.error || read.result?.thread?.id !== thread.id || read.result.thread.cwd !== '/native-workspace' || read.result.thread.ephemeral !== true) throw new Error('native_session_read_mismatch');
     const steer = await call('turn/steer', { threadId: thread.id, expectedTurnId: 'tongxu-inspection-no-active-turn', input: [{ type: 'text', text: 'No active turn exists; reject this input.' }] });
     if (!steer.error || steer.error.code !== -32600 || steer.error.message !== 'no active turn to steer') throw new Error('native_stale_steer_rejection_unverified');
     const after = await call('thread/read', { threadId: thread.id, includeTurns: false });
-    if (after.error || after.result?.thread?.id !== thread.id || after.result.thread.cwd !== '/native-workspace' || after.result.thread.status?.type !== 'idle') throw new Error('native_post_steer_idle_unverified');
+    if (after.error || after.result?.thread?.id !== thread.id || after.result.thread.cwd !== '/native-workspace' || after.result.thread.ephemeral !== true || after.result.thread.status?.type !== 'idle') throw new Error('native_post_steer_idle_unverified');
     report.observations.staleSteer = 'native_rejected_no_active_turn'; report.observations.postSteerStatus = 'idle'; report.capabilities.isolatedMetadata = 'observed';
   } catch (e) {
     report.gaps.push(safeCode(e));
-    const failure = e as { stdout?: Buffer; stderr?: Buffer };
-    for (const [name, bytes] of [['version.stdout', failure.stdout], ['version.stderr', failure.stderr]] as const) if (bytes) { try { await writeFile(join(o.output, name), bytes, { flag: 'wx', mode: 0o600 }); } catch { /* original bytes already exist */ } }
   } finally {
     if (rpc) { await rpc.close(); report.processExit = rpc.exit; report.gaps.push(...rpc.gaps); await writeFile(join(o.output, 'native-events.json'), JSON.stringify(rpc.events, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
     try { if (await binaryHash(o.codex) !== report.executableHash) report.gaps.push('native_executable_changed'); }

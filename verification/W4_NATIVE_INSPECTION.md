@@ -19,3 +19,13 @@
 真实 SIGKILL 中断生产 CLI 后，原运行/请求仍持久为 running/sent_or_unknown，重复输出目录被拒绝且原字节不变。原生断连保存 unknown；仅错误码 -32600 而原因不符不会假报负向测试成功。测试初版的并发前置断言误把“本请求尚未发送”写成“任何请求都未发送”，已改为按请求 ID 核查并重新执行全套，未改变客户端来迎合错误断言。
 
 夹具原生标记 `0.0.0-fixture`，不能代表 Claude 或真实模型运行。未测试模型两轮、最终模型结果、实际认证/额度、真实 Claude、生产写责任/身份、发布/合并、macOS/Windows或其他原生版本。完整 W4/G2 的相关验收保持待验证。用户本机交接见 `docs/local_claude_verification.md`；有前置的后续阶段只细化真实可做部分。
+
+## 独立审核及修复
+
+新独立上下文对 H `664730b9d94d71f14c6f226d3a40d50a0750706f`、原 B/target 判断 `TX-W4-NATIVE-REVIEW-20261018-01 = REWORK_REQUIRED`。其独立 27/27、14/14 和真实原生 smoke 均通过，但确认一个 P1：版本查询用内存缓冲，父 CLI 在版本阶段被 SIGKILL，已输出并 flush 的原 stdout/stderr 全丢。报告 SHA-256 `07eb5c67651d41471ed1e60576a7d2904484c2970a988a0a4224c6df709ebf26`。真实成功 smoke 不抵销留证缺陷。
+
+负责人用同一独立探针在新私有目录复跑旧/修补实现。旧实现确实只剩运行报告/私有 passwd；修补后版本原 stdout/stderr 均保留，状态仍 running/unknown。前后探针摘要 SHA-256 分别为 `0db6b2fc62e25ad3ce829a6ffb6086e2176d50aff2e829a2f499d53b4000ef00` / `0295a01c90c5a81ab2f676318ac2054c2670de47e64469aa77bb4161525c6d1b`。
+
+已改为先创建私有版本原件文件、收到输出即有界落盘，再解析版本；保存版本进程原 ID、退出和缺口，超时/上限不覆写原字节。同时核实际 schema/原输出后，确认 thread 的有效 ephemeral 字段；非零原生退出及末尾不完整帧记录为局部缺口，未把它们说成此前已确认的 P1 或模型结果无效。独立探针这三项现为 partial，真实 app-server 中断仍保留原请求。
+
+修补后 `npm run test:native` **17/17**，新增版本中断、上限/失败、有效 ephemeral、尾帧和非零退出覆盖；W1 代码未变，其 27 项先前回归适用。最终软件于 **17:07:52.714Z–17:07:54.943Z** 再运行真实 codex-cli 0.159.2，原 binary hash 不变；版本 exit 0、五请求与拒绝 steer/再次 idle 匹配、status complete，原生 stderr 仍空。运行 ID `dd990117-95fa-4b64-b3fa-af03d125e3dc`，报告 SHA-256 `d90034e8d5f956fd2a6861a07c053cfd36275a614d40927237b722a55aea269d`。新固定候选的独立复审待执行，原失败报告/现场保留；仍无模型、Claude、认证/费用或生产动作。

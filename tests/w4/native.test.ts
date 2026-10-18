@@ -60,12 +60,23 @@ test('duplicate late responses fail the channel instead of becoming the next res
   await assert.rejects(f.rpc.request('thread/read', {}), /unexpected_native_response_id/);
 });
 
+test('closing preserves incomplete trailing protocol frames and nonzero native exit as gaps', async t => {
+  const f = await rpcFixture(t, `send({id:m.id,result:{}});process.stdout.write('{"id":');process.stdin.on('end',()=>process.exit(42));`);
+  await f.rpc.request('initialize', {}); await f.rpc.close();
+  assert.ok(f.rpc.gaps.includes('incomplete_native_frame')); assert.ok(f.rpc.gaps.includes('native_nonzero_exit'));
+  assert.ok((await readFile(f.paths.stdout, 'utf8')).endsWith('{"id":'));
+});
+
 async function nativeFixture(dir: string, mode = 'complete', port = 1) {
   const executable = join(dir, `native-${mode}`), canary = join(dir, 'private-host-canary'); await writeFile(canary, 'fake-test-secret', { mode: 0o600 });
   const code = `#!/usr/bin/python3
 import sys,json,os,socket,time
 if sys.argv[1:]==['--version']:
- print('codex-cli 0.0.0-fixture');sys.exit(0)
+ print('codex-cli 0.0.0-fixture',flush=True)
+ if ${JSON.stringify(mode)}=='version-stall':
+  print('version-original-stderr',file=sys.stderr,flush=True);time.sleep(60)
+ if ${JSON.stringify(mode)}=='version-flood':print('x'*200000,flush=True)
+ sys.exit(23 if ${JSON.stringify(mode)}=='version-exit' else 0)
 assert sys.argv[1:]==['app-server','--listen','stdio://']
 assert 'TONGXU_NATIVE_FAKE_SECRET' not in os.environ
 assert not os.path.exists(${JSON.stringify(canary)})
@@ -73,7 +84,7 @@ assert os.getcwd()=='/native-workspace'
 probe=socket.socket();probe.settimeout(0.2)
 assert probe.connect_ex(('127.0.0.1',${port}))!=0
 probe.close()
-thread={'id':'fixture-ephemeral','cwd':'/native-workspace','turns':[],'status':{'type':'idle'}}
+thread={'id':'fixture-ephemeral','ephemeral':${JSON.stringify(mode)}!='not-ephemeral','cwd':'/native-workspace','turns':[],'status':{'type':'idle'}}
 for line in sys.stdin:
  m=json.loads(line)
  if 'id' not in m:continue
@@ -120,6 +131,36 @@ test('native disconnect preserves the original unknown request, and arbitrary -3
     else assert.ok(result.report.gaps.includes('native_stale_steer_rejection_unverified'));
     assert.ok(result.report.artifacts.length >= 5);
   }
+});
+
+test('version failure/cap retain partial original output, and a non-ephemeral session is rejected', { timeout: 20_000 }, async t => {
+  const dir = await root(t);
+  for (const mode of ['version-flood', 'version-exit', 'not-ephemeral']) {
+    const executable = await nativeFixture(dir, mode), output = join(dir, mode), result = await inspectNative({ codex: executable, output });
+    assert.equal(result.exit, 2); assert.equal(result.report.capabilities.isolatedMetadata, 'not_tested');
+    const expected = mode === 'version-flood' ? 'native_version_output_limit' : mode === 'version-exit' ? 'native_version_exit_unverified' : 'native_session_boundary_unverified';
+    assert.ok(result.report.gaps.includes(expected));
+    assert.ok((await readFile(join(output, 'version.stdout'), 'utf8')).startsWith('codex-cli 0.0.0-fixture'));
+    assert.ok((await lstat(join(output, 'version.stdout'))).size + (await lstat(join(output, 'version.stderr'))).size <= 128 * 1024);
+  }
+});
+
+test('SIGKILL during version detection preserves already collected stdout/stderr before process completion', { timeout: 20_000 }, async t => {
+  const dir = await root(t), executable = await nativeFixture(dir, 'version-stall'), output = join(dir, 'version-interrupted');
+  const child = spawn(process.execPath, [cli, 'inspect', '--codex', executable, '--output', output], { env: { PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let ready = false; const deadline = Date.now() + 8000;
+  try {
+    while (Date.now() < deadline) {
+      try { ready = (await readFile(join(output, 'version.stdout'), 'utf8')).includes('codex-cli 0.0.0-fixture') && (await readFile(join(output, 'version.stderr'), 'utf8')).includes('version-original-stderr'); if (ready) break; } catch { /* wait for captured raw output */ }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(ready, true); const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+    const report = JSON.parse(await readFile(join(output, 'native-inspection.json'), 'utf8'));
+    assert.equal(report.phase, 'version'); assert.equal(report.versionProcess.status, 'running_or_unknown');
+    const before = await readFile(join(output, 'version.stdout')); assert.ok(before.length > 0);
+    await assert.rejects(inspectNative({ codex: executable, output }), /EEXIST/); assert.deepEqual(await readFile(join(output, 'version.stdout')), before);
+    assert.equal(await readFile(join(output, 'version.stderr'), 'utf8'), 'version-original-stderr\n');
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
 });
 
 test('SIGKILL of the production CLI leaves registered original requests and refuses to overwrite their evidence', { timeout: 20_000 }, async t => {

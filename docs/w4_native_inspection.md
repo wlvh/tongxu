@@ -33,7 +33,7 @@ Linux bubblewrap 隔离网络/PID/挂载和环境，提供系统运行库、精�
 
 ## 原始记录与中断
 
-新目录为 0700，文件为 0600。`native-inspection.json` 保存运行、每个请求、能力、限制、退出与原件索引；`version.stdout/stderr`、`native.stdin/stdout/stderr` 保存原字节，`native-events.json` 便于逐条核查。详细 session ID/消息只在私有包，不自动发布。stdin 和 stdout/stderr 各限 4 MiB，单请求 15 秒；错 ID、重复晚到结果、坏 JSON、超时和断连不能完成其他请求。意外工具或审批请求以错误拒绝并留下缺口。
+新目录为 0700，文件为 0600。`native-inspection.json` 保存运行、每个请求、能力、限制、退出与原件索引；`version.stdout/stderr`、`native.stdin/stdout/stderr` 保存原字节，`native-events.json` 便于逐条核查。版本子进程启动前建原件文件，输出块收到即落盘，合计限 128 KiB、15 秒；进程中断时已收到的版本/诊断原文仍留存。详细 session ID/消息只在私有包，不自动发布。App Server stdin 和 stdout/stderr 各限 4 MiB，单请求 15 秒；错 ID、重复晚到结果、坏 JSON、超时和断连不能完成其他请求。原生非零退出、尾部残帧、未实际返回 ephemeral 都留下缺口；意外工具或审批请求以错误拒绝并留下缺口。
 
 进程被杀时，已有报告可能仍是 running，原请求为 sent_or_unknown；这表示未记录最终结果。不要把报告改成完成，不接管未知外部进程。此子版不支持 resume：先保留原目录，新自检必须另建目录，不能覆写旧证据。二进制前后 hash 不同或无法复核同样留下缺口。
 

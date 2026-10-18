@@ -89,5 +89,7 @@ export class InspectionRpc {
     const signal = (sig: NodeJS.Signals) => { if (!this.exit && this.child.exitCode === null && this.child.signalCode === null && this.child.pid) { try { process.kill(-this.child.pid, sig); } catch { /* already exited */ } } };
     await wait(1000); signal('SIGTERM'); await wait(1000); signal('SIGKILL'); await wait(1000);
     if (!this.exit) this.gaps.push('inspection_process_exit_unknown');
+    if (this.exit?.code !== null && this.exit?.code !== undefined && this.exit.code !== 0) this.gaps.push('native_nonzero_exit');
+    if (this.buffer.toString().trim()) this.gaps.push('incomplete_native_frame');
   }
 }
