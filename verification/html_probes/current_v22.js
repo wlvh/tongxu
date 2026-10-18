@@ -9,6 +9,8 @@ try{
  const source=path.join(temp,'ui.js');fs.writeFileSync(source,script);
  const H=require('./harness2.js')(source,['s','P','T','actions','coordCreate','coordAck','coordWriteAllowed','coordCurrentPlan','secretarySend','secretaryAllowed','coordPrepare','coordRequirement','requirements','depOK','dispatch','eligible']);
  const s=H.s(),A=H.actions(),P=H.P();
+ // v2.3 adds explicit outcome adoption. Preserve these legacy assertions on an adopted fixture.
+ if(s.control)H.__eval("controlOwner('adopt',{revision:s.control.boundary.revision,note:'已采用的兼容性回归夹具'},'owner-ui')");
  ok(s.page==='secretary','secretary is home');
  ok(H.secretaryAllowed()('read'),'secretary read capability');
  for(const name of ['merge','run_check','write_business_code','record_acceptance','shell'])ok(!H.secretaryAllowed()(name),'secretary denies '+name);

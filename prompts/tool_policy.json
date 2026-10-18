@@ -1,16 +1,13 @@
 {
-  "version": "2.2",
+  "version": "2.3",
   "status": "design_contract_not_installed_tools",
-  "enforcement": "Backend role checks plus native capability restriction; prompts alone do not enforce permissions.",
-  "defaults": {
-    "secretary": "codex_app_server_independent",
-    "receiver": "claude_cli_independent",
-    "reviewer": "codex_independent"
-  },
-  "secretary_allow": ["read_project", "read_task", "read_pr", "read_evidence_index", "read_policy", "read_followups", "send_work_message", "register_intake", "register_followup", "request_approved_assignment", "set_authorized_queue_preference", "present_owner_decision"],
-  "secretary_deny": ["shell", "write_business_code", "run_check", "record_review", "record_acceptance", "record_reception", "merge", "approve", "increase_budget", "deploy"],
+  "enforcement": "Backend and native capability intersection; no prompt-only authorization",
+  "defaults": {"secretary": "codex_app_server_independent", "receiver": "claude_cli_independent", "reviewer": "codex_independent"},
+  "secretary_allow": ["read_project", "read_task", "read_pr", "read_evidence_index", "read_policy", "read_followups", "read_decision_provenance", "read_outcome_samples", "send_work_message", "register_intake", "register_followup", "request_approved_assignment", "set_authorized_queue_preference", "present_owner_decision", "present_control_request"],
+  "secretary_deny": ["shell", "write_business_code", "run_check", "record_review", "record_acceptance", "record_reception", "merge", "approve", "sign_owner_adoption", "change_reserved_boundary", "increase_budget", "deploy"],
   "receiver_allow": ["read_project", "read_pr", "read_fixed_candidate", "read_evidence", "send_work_message", "propose_reception_plan", "run_authorized_check", "record_reception", "request_authorized_merge", "reconcile_operation"],
   "author_allow": ["read_task", "read_project", "send_work_message", "propose_coordination", "write_owned_scope", "run_authorized_check", "register_artifact", "submit_pr_handoff"],
-  "shared_constraints": ["trusted_actor_from_connection", "adopted_scope_required_for_writes", "unknown_does_not_release_ownership", "no_personal_publish_credentials_in_execution", "candidate_and_plan_bound_results", "no_self_authorization"],
-  "runtime_rule": "Effective tools are the intersection of role allowance, registered backend capabilities, current authorization, native version and current session conditions. Never expose an arbitrary URL or shell proxy to the secretary."
+  "owner_controls": ["adopt_outcome_boundary", "select_work_organization", "stop_new_execution", "stop_batch_investment", "revoke_delegation", "accept_outcome", "request_independent_sample"],
+  "shared_constraints": ["trusted_actor_from_connection", "distinct_owner_S_technical_r", "adopted_scope_required_for_writes", "stage_gate_and_stop_checked_before_new_actions", "unknown_does_not_release_ownership", "no_personal_publish_credentials_in_execution", "candidate_and_plan_bound_results", "outcome_score_never_auto_escalates_authority", "no_self_authorization"],
+  "runtime_rule": "Effective tools intersect role allowance, registered capability, valid authorization, organization stage gate, stop controls, native version and session state. Owner source is never supplied by model text. Already-sent operations remain reconciled after revocation."
 }
