@@ -63,6 +63,9 @@ export class Snapshot {
     const s = new Snapshot(directory, {} as Manifest);
     await s.lock();
     try {
+    // Empty collections still own these paths. Validate before any resumed remote request.
+    await privateDirectory(join(directory, 'raw'), false);
+    await privateDirectory(join(directory, 'git'), false);
     const stat = await lstat(join(directory, 'manifest.json'));
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 * 1024) throw new Error('invalid_manifest');
     const m = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as Manifest;
@@ -121,6 +124,7 @@ export class Snapshot {
     const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
     const digest = hash(bytes);
     const path = `${type === 'raw' ? 'raw' : 'git'}/${digest}.${type === 'patch' ? 'patch' : 'json'}`;
+    await privateDirectory(dirname(join(this.directory, path)), false);
     const temporary = join(this.directory, `.tmp-${randomUUID()}`);
     await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
     try {

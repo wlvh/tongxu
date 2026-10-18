@@ -1,8 +1,8 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, symlink, lstat, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, symlink, lstat, readdir, rm, rename } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { Snapshot, hash } from '../../src/snapshot.js';
 import { collect } from '../../src/collector.js';
 import { renderSummary } from '../../src/handoff.js';
@@ -183,4 +183,15 @@ test('resume recovers only a demonstrably absent local writer and preserves its 
   await writeFile(join(s.directory, 'lock.json'), JSON.stringify({ host: hostname(), pid: 2147483647, id: 'dead' }), { mode: 0o600 });
   const resumed = await Snapshot.resume(s.directory); t.after(() => resumed.close());
   assert.ok((await readdir(s.directory)).some(p => p.startsWith('abandoned-lock-')));
+});
+
+for (const material of ['raw', 'git'] as const) test(`resume and artifact publication reject replaced empty ${material} directory`, async t => {
+  const s = await setup(t);
+  const target = join(dirname(s.directory), 'target-checkout'); await mkdir(target); await mkdir(join(target, '.git'));
+  await rename(join(s.directory, material), join(s.directory, `${material}-original`));
+  await symlink(target, join(s.directory, material));
+  await assert.rejects(() => s.artifact('{}', { kind: 'probe', round: 0, retrievedAt: 'fixture', provenance: 'fixture' }, material === 'raw' ? 'raw' : 'git-json'), /symlink/);
+  await s.close();
+  await assert.rejects(() => Snapshot.resume(s.directory), /symlink/);
+  assert.deepEqual(await readdir(target), ['.git']);
 });

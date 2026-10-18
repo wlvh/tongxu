@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
 import { parseArgs } from '../../src/cli.js';
-import { assertEndpoint, parseGh } from '../../src/transport.js';
+import { assertEndpoint, parseGh, GhTransport } from '../../src/transport.js';
 import { readFixedObjects } from '../../src/git.js';
 import { hash } from '../../src/snapshot.js';
 const exec = promisify(execFile);
@@ -34,6 +34,20 @@ test('gh preserves body bytes and selected coverage headers but drops authentica
   const response = parseGh(`HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/a/b/issues/1/comments?per_page=100&page=2>; rel="next"\r\nAuthorization: secret\r\nSet-Cookie: secret\r\n\r\n${body}`);
   assert.equal(response.body, body); assert.equal(response.status, 200);
   assert.ok(response.headers.link); assert.equal(response.headers.authorization, undefined); assert.equal(response.headers['set-cookie'], undefined);
+});
+
+test('gh fixes github.com even when GH_HOST selects another existing identity', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tongxu-gh-host-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const record = join(root, 'args.json');
+  await writeFile(join(root, 'gh'), `#!${process.execPath}\nconst fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv.slice(2),host:process.env.GH_HOST})); process.stdout.write('HTTP/2.0 200 OK\\r\\n\\r\\n{}');\n`, { mode: 0o700 });
+  const path = process.env.PATH, host = process.env.GH_HOST;
+  process.env.PATH = `${root}:${path}`; process.env.GH_HOST = 'enterprise.example.invalid';
+  try { assert.equal((await new GhTransport().get('repos/example/project/pulls/12')).status, 200); }
+  finally { process.env.PATH = path; if (host === undefined) delete process.env.GH_HOST; else process.env.GH_HOST = host; }
+  const value = JSON.parse(await readFile(record, 'utf8'));
+  assert.equal(value.host, 'enterprise.example.invalid'); // No hidden identity/environment migration.
+  assert.equal(value.args[value.args.indexOf('--hostname') + 1], 'github.com');
+  assert.equal(value.args[value.args.indexOf('--method') + 1], 'GET');
 });
 
 test('fixed Git diff uses merge base and leaves an author checkout/index unchanged', async t => {
