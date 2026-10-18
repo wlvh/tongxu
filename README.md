@@ -10,6 +10,8 @@
 - [现行完整设计与实施基线](docs/tongxu_v2_plan.md)
 - [发给 Codex 的当前指令](docs/CODEX_W0.md)
 - [角色 prompt 装配及工具权限](prompts/README.md)
+- [W0 真实基线与来源（调查草稿）](docs/baselines/W0_BASELINE_2026-10-18.md)
+- [W1 Target State Bridge（待采用，W1 未启动）](docs/baselines/W1_TARGET_STATE_BRIDGE.md)
 
 首页是本批目标、组织方式、委托与停止、成果验收、复盘抽查五项控制；秘书对话与原三工作区保留。人的采用、团队技术约定、代理依据委托作出的处置分别可查。可以并行，也可按阶段串行或统一负责人；不以更多Agent作为成功标准。
 

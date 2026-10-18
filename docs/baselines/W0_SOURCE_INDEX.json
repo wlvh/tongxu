@@ -1,0 +1,519 @@
+{
+  "schema_version": 1,
+  "kind": "W0_read_only_source_index_not_W1_runtime_schema",
+  "assembled_at": "2026-10-18T14:24:18+00:00",
+  "observation_date": "2026-10-18",
+  "display_timezone": "Asia/Shanghai",
+  "scope": "Selected records only; SEC_metrics read-only; no business execution",
+  "limits": [
+    "Mutable records contain metadata and full-body hashes, not private raw originals; later edits cannot be reconstructed from this index alone.",
+    "Exact per-request timestamps and page headers were not exposed by normalized connector results; assembled_at is not the fetch time.",
+    "Comments with null timestamps retain that gap; two key records were separately read through REST.",
+    "Reported actor, adoption, test and resource claims are not independently authenticated or re-executed."
+  ],
+  "fixed_refs": {
+    "tongxu_main": "1ba5ae893b49e5856a4e8d682139f70e5c907f5f",
+    "tongxu_pr11_candidate": "f23f32e67411b987935153a25d1b804fed077113",
+    "SEC_metrics_main": "203bf4b0544222657e555212fd15cf92c5b1dce4",
+    "coding_workflow": "1772cd2c25bfc42b7a89cf38b35bf19d3dc22000"
+  },
+  "issues": [
+    {
+      "id": "SEC-ISSUE-153",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/153",
+      "title": "SEC_metrics：项目级集成、验收与Agent交接",
+      "state": "open",
+      "updated_at": "2026-10-14T20:33:38Z",
+      "expected_comments": 21,
+      "observed_comments": 21,
+      "body_sha256": "8b85918ea11b58b300938b44bcfb0f51ea9d8b6c6638f8bdac6ebe17d1315b8d",
+      "body_utf8_bytes": 33885
+    },
+    {
+      "id": "SEC-ISSUE-28",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/28",
+      "title": "[SEC_metrics] 可信财报结果、自动更新、39 指标统一生产与旧路径退出",
+      "state": "open",
+      "updated_at": "2026-10-14T16:59:35Z",
+      "expected_comments": 115,
+      "observed_comments": 115,
+      "body_sha256": "4efdab84f904d81830a825662de6d27d7b9cd57f34452c0fda81b8707cfcb2d6",
+      "body_utf8_bytes": 138481
+    },
+    {
+      "id": "SEC-ISSUE-47",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/47",
+      "title": "[历史回填] 最近五个财年完整支持：来源、原生运行、五年验收与全量覆盖（单一 Issue）",
+      "state": "open",
+      "updated_at": "2026-10-14T16:27:51Z",
+      "expected_comments": 154,
+      "observed_comments": 154,
+      "body_sha256": "6b0e58c73272c19d70125a004157c31326c075aa0759b119bfdfe476d4c33198",
+      "body_utf8_bytes": 230833
+    },
+    {
+      "id": "TX-issue2",
+      "url": "https://github.com/wlvh/tongxu/issues/2",
+      "state": "open",
+      "updated_at": "2026-10-18T10:30:07Z",
+      "expected_comments": 0,
+      "body_sha256": "865da9f99d2e0e477b943370001f53fe245d24f8186f82897979187742144e08",
+      "body_utf8_bytes": 2747,
+      "role": "effective published issue; unchanged by W0 draft"
+    },
+    {
+      "id": "TX-issue3",
+      "url": "https://github.com/wlvh/tongxu/issues/3",
+      "state": "open",
+      "updated_at": "2026-10-18T10:30:23Z",
+      "expected_comments": 0,
+      "body_sha256": "71c27a026faa74781a2861cd5545183ef32781221f20ca5427ad8d1a0c2c7cc3",
+      "body_utf8_bytes": 1552,
+      "role": "effective published issue; unchanged by W0 draft"
+    }
+  ],
+  "prs": [
+    {
+      "id": "SEC-PR-264",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/264",
+      "state": "closed",
+      "draft": false,
+      "merged": true,
+      "head": "f461fe68f52eb281972c5c03690b1539c8399760",
+      "base": "c25872ee388c933b697d9d3a9764e5eb7d1859e3",
+      "target": "main",
+      "merge_commit": "17569516a8be63002f0a6336041421ac14d33459",
+      "updated_at": "2026-10-13T22:09:30Z",
+      "author_account": "wlvh",
+      "claimed_actor": "unknown_from_account",
+      "body_sha256": "983dc25cec15eaaeb5de905666608121cb0e58dea3ced542998b5af1a7fd9ca6",
+      "body_utf8_bytes": 10301
+    },
+    {
+      "id": "SEC-PR-287",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/287",
+      "state": "closed",
+      "draft": false,
+      "merged": true,
+      "head": "947ccbd01291b96a43afa87dd81eeda68fccaab8",
+      "base": "f377bb18044a28d11bf09dc0a5b6f1510eef6bc5",
+      "target": "task/issue28-d04-route-dependencies",
+      "merge_commit": "673a21a3cf232b701abf8ed07a4ae568b3ba21ee",
+      "updated_at": "2026-10-14T14:30:10Z",
+      "author_account": "wlvh",
+      "claimed_actor": "unknown_from_account",
+      "body_sha256": "bd5589e8e12b5c8cb943ab13250eadf9e866d45d178637fa46e06e7a27a9d68e",
+      "body_utf8_bytes": 3795
+    },
+    {
+      "id": "SEC-PR-293",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/293",
+      "state": "open",
+      "draft": true,
+      "merged": false,
+      "head": "a8977a9de2bf4225d547dbd89700e6237b431a23",
+      "base": "97005a378b8195b0003a154bd3abd44ce26de43b",
+      "target": "main",
+      "merge_commit": "9bd229131c841ff9017d99047c6f599d2b2f5049",
+      "updated_at": "2026-10-14T17:02:24Z",
+      "author_account": "wlvh",
+      "claimed_actor": "unknown_from_account",
+      "body_sha256": "f4064563aac96605d6ec1a4583d8eaee449d5cc7f2a868854855c98bbc2ebbc1",
+      "body_utf8_bytes": 2553
+    },
+    {
+      "id": "SEC-PR-285",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/285",
+      "state": "closed",
+      "draft": false,
+      "merged": true,
+      "head": "673a21a3cf232b701abf8ed07a4ae568b3ba21ee",
+      "base": "357039f173b96b170e965bb333b4cb4616f91676",
+      "target": "main",
+      "merge_commit": "6f8ba16698db2e2cfc78897e08ed0dbf0b7f770c",
+      "updated_at": "2026-10-14T14:30:06Z",
+      "author_account": "wlvh",
+      "claimed_actor": "unknown_from_account",
+      "body_sha256": "7a01a0f437d5138d85232a6de59b6041ce4936415336794766ce1bbbeac320b5",
+      "body_utf8_bytes": 2024
+    }
+  ],
+  "comments": [
+    {
+      "id": "SEC-COMMENT-6168784038",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/153#issuecomment-6168784038",
+      "account": "wlvh",
+      "created_at": null,
+      "updated_at": null,
+      "body_sha256": "db844a94f03af2bf367e3d65e079a8c6a510818b4766eeff447ea16402f608ec",
+      "body_utf8_bytes": 1289
+    },
+    {
+      "id": "SEC-COMMENT-6170161481",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/153#issuecomment-6170161481",
+      "account": "wlvh",
+      "created_at": null,
+      "updated_at": null,
+      "body_sha256": "65fd83a9989af62320d44a13fb7ae73ab74d0a4ff2e7e53270829a91a24c9ad7",
+      "body_utf8_bytes": 2070
+    },
+    {
+      "id": "SEC-COMMENT-6177840161",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/153#issuecomment-6177840161",
+      "account": "wlvh",
+      "created_at": null,
+      "updated_at": null,
+      "body_sha256": "4b41183bc107d1edfb438453991a78ab60043598f1de869ca4f219e7027efcaa",
+      "body_utf8_bytes": 1594
+    },
+    {
+      "id": "SEC-COMMENT-6173745814",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/28#issuecomment-6173745814",
+      "account": "wlvh",
+      "created_at": "2026-10-14T16:59:35Z",
+      "updated_at": "2026-10-14T16:59:35Z",
+      "body_sha256": "3e6d613700d38916cf441f5544e005c7d46d91afba6566fc8f8e4e26e7f9469d",
+      "body_utf8_bytes": 1668
+    },
+    {
+      "id": "SEC-COMMENT-6170138586",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/47#issuecomment-6170138586",
+      "account": "wlvh",
+      "created_at": "2026-10-14T14:00:19Z",
+      "updated_at": "2026-10-14T14:00:19Z",
+      "body_sha256": "0dc7eeaa900e7901447ee57cf7e226756791641fd46bb4b07f93085b160beb22",
+      "body_utf8_bytes": 5166
+    },
+    {
+      "id": "SEC-COMMENT-6171765620",
+      "url": "https://github.com/wlvh/SEC_metrics/issues/47#issuecomment-6171765620",
+      "account": "wlvh",
+      "created_at": null,
+      "updated_at": null,
+      "body_sha256": "a4e2fd4fb42e2fe2a6a55156b6f7dc9a32171db83135a2cce6ba7543846275f5",
+      "body_utf8_bytes": 1193
+    },
+    {
+      "id": "SEC-COMMENT-6152102068",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/264#issuecomment-6152102068",
+      "account": "wlvh",
+      "created_at": "2026-10-13T18:12:43Z",
+      "updated_at": "2026-10-13T18:12:43Z",
+      "body_sha256": "f4d53c39fe5dfd476de2a7b69a7f7bd2406b9af1f5ef76a464430c571aa29594",
+      "body_utf8_bytes": 1343
+    },
+    {
+      "id": "SEC-COMMENT-6156239640",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/264#issuecomment-6156239640",
+      "account": "wlvh",
+      "created_at": "2026-10-13T22:09:30Z",
+      "updated_at": "2026-10-13T22:09:30Z",
+      "body_sha256": "85fd1bd78490319433331c52f0c3172bd371bb7ab92124e3966fe48359379e27",
+      "body_utf8_bytes": 1022
+    },
+    {
+      "id": "SEC-COMMENT-6167175005",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/287#issuecomment-6167175005",
+      "account": "wlvh",
+      "created_at": "2026-10-14T11:20:59Z",
+      "updated_at": "2026-10-14T11:20:59Z",
+      "body_sha256": "9cc574f3df380e512c0ce0099338f4be4c46692fe7616e5120114baebd3cfcef",
+      "body_utf8_bytes": 1229
+    },
+    {
+      "id": "SEC-COMMENT-6168124241",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/287#issuecomment-6168124241",
+      "account": "wlvh",
+      "created_at": "2026-10-14T12:16:37Z",
+      "updated_at": "2026-10-14T12:16:37Z",
+      "body_sha256": "9afd1481cdbe04063d910d0fa1fc2fd0fb3f4c79b2204e76f257c5c27d0a8d40",
+      "body_utf8_bytes": 1160
+    },
+    {
+      "id": "SEC-COMMENT-6170751266",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/287#issuecomment-6170751266",
+      "account": "wlvh",
+      "created_at": "2026-10-14T14:30:09Z",
+      "updated_at": "2026-10-14T14:30:09Z",
+      "body_sha256": "b693e1fae1ab057b4edf6bf37ad0b07e9c387e5b03efed73987d7c43cff97f16",
+      "body_utf8_bytes": 927
+    },
+    {
+      "id": "SEC-COMMENT-4273819469",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/293#discussion_r4273819469",
+      "account": "chatgpt-codex-connector[bot]",
+      "created_at": "2026-10-14T17:01:31Z",
+      "updated_at": "2026-10-14T17:01:31Z",
+      "body_sha256": "b584d537dc7aa0b30ef922b71ba122ff6abf05f8068554ef4823cde24801f5d6",
+      "body_utf8_bytes": 690
+    },
+    {
+      "id": "SEC-COMMENT-4273826046",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/293#discussion_r4273826046",
+      "account": "wlvh",
+      "created_at": "2026-10-14T17:02:11Z",
+      "updated_at": "2026-10-14T17:02:11Z",
+      "body_sha256": "a1fa55922dd1c9f2fbf7f04c5250c3a9f2675b00e21167be78385f4f6f6eed76",
+      "body_utf8_bytes": 1035
+    },
+    {
+      "id": "SEC-COMMENT-4273826528",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/293#discussion_r4273826528",
+      "account": "wlvh",
+      "created_at": "2026-10-14T17:02:14Z",
+      "updated_at": "2026-10-14T17:02:14Z",
+      "body_sha256": "cc6b14ccfa03ecf0a9d5c0f571919d4aceb1a613d023b5d1726de21587927a8f",
+      "body_utf8_bytes": 418
+    },
+    {
+      "id": "SEC-COMMENT-6173798633",
+      "url": "https://github.com/wlvh/SEC_metrics/pull/293#issuecomment-6173798633",
+      "account": "wlvh",
+      "created_at": "2026-10-14T17:02:20Z",
+      "updated_at": "2026-10-14T17:02:20Z",
+      "body_sha256": "596973e7f2753ed75770aef051bd11c9fc4dfb2b9c7ba9b8594b30e648b28936",
+      "body_utf8_bytes": 1178
+    }
+  ],
+  "files": [
+    {
+      "id": "sec_agents",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/AGENTS.md",
+      "git_blob": "8989df00ac58bfc9ae2dbb3acf89b73d665b9316",
+      "sha256": "fe6fb3931c49102c21cb097ca4802f181171322932d7e3d7b5cfffc43799963b",
+      "utf8_bytes": 52412,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_testing",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/TESTING.md",
+      "git_blob": "d513cfdd2f23f773a76bc0a0512320e4bce1bd8d",
+      "sha256": "1b27b1fa38cea65bff484704155b53cab6e46295636535eb894fc861333b448b",
+      "utf8_bytes": 135213,
+      "blob_verified": true
+    },
+    {
+      "id": "workflow_issue",
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/prompts/issue_agent.md",
+      "git_blob": "50aa37f93595f536c9cf4f9210dbdd6b9cdaed06",
+      "sha256": "4d223d297c9de9b817f435b37dac3922b233e2978859a9af354e0a0934246021",
+      "utf8_bytes": 1674,
+      "blob_verified": true
+    },
+    {
+      "id": "workflow_readme",
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/docs/development_workflow/README.md",
+      "git_blob": "4f65d8851f896431827bf3f327d14dd33384b8c8",
+      "sha256": "44cb352caa056c86b8f26fe13998bf1a90544f627f29f37de248a2e804ab52c0",
+      "utf8_bytes": 23347,
+      "blob_verified": true
+    },
+    {
+      "id": "workflow_bridge",
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/prompts/target_state_bridge.md",
+      "git_blob": "bbc772ec83eca2add3bca24383679ebcdddd46e5",
+      "sha256": "ae47aae10daf77e1f05f3aaf8eacf6410f48280a31ae2fb31cdf29df83c725b7",
+      "utf8_bytes": 2409,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_compare_readme",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/docs/d02_preparation_comparison.md",
+      "git_blob": "023fc1a552bed11cf8ad1675b8cb9d05b63cf5b3",
+      "sha256": "7ae5d8120ff328d71d5aeaed394c3e51eff83dba4d31d8f2e299b9a8030d1c82",
+      "utf8_bytes": 5383,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_compare_code",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/tools/compare_d02_preparation.py",
+      "git_blob": "b795f340c2b02d614007a7f4003b5cc54e9af11c",
+      "sha256": "53bba2d7345e749db4574570249fc82d33bf7c8dee87e51577d52433022a09b6",
+      "utf8_bytes": 31810,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_264_evidence",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/f461fe68f52eb281972c5c03690b1539c8399760/docs/evidence/receiver_d02_comparison_20261013/README.md",
+      "git_blob": "af2a48b75bed36b1142783a2f3803da3de59f650",
+      "sha256": "92fc68166a917147c46e98e3afadcf07311c5b0f14b238dfe571fef2fa4e9907",
+      "utf8_bytes": 3289,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_287_evidence",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/947ccbd01291b96a43afa87dd81eeda68fccaab8/docs/evidence/issue47_d04_history_consumer_20261010/supplied-route-receiving/README.md",
+      "git_blob": "a2f276e6be6bef9fe8b0a9dee27b282640b1faa2",
+      "sha256": "9b44c9eb2244d0d5350abde457fc1987f6db36a51b59091c7b3c4261dc5948cc",
+      "utf8_bytes": 6584,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_293_evidence",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/a8977a9de2bf4225d547dbd89700e6237b431a23/docs/evidence/issue28_history_call_allocation_20261014/README.md",
+      "git_blob": "93af13940dd041b34bbb2715c6709479426317ec",
+      "sha256": "cb7100ac77e6f22ec483a98de46c319efcbec9830d721a7319f57d59c4bbc24c",
+      "utf8_bytes": 7390,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_293_rules",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/a8977a9de2bf4225d547dbd89700e6237b431a23/scripts/vnext/continuous_semantic_calls.py",
+      "git_blob": "7f77449fa734e41a3fd2695cde90abcec4135cc6",
+      "sha256": "3604c7f2898d4ea1e375a1f99329dba907f8cd1e973ca004250a35c9c0dde8f9",
+      "utf8_bytes": 77368,
+      "blob_verified": true
+    },
+    {
+      "id": "sec_history_current",
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/scripts/vnext/historical_d04_case.py",
+      "git_blob": "c34bc12af08e54a91d5e7a95e8c2a0c6ba2b5e7c",
+      "sha256": "5eba9e9dad770b57353e7e6a442c4088b48be865a77a3a6fc0512f49c509ea4c",
+      "utf8_bytes": 1454,
+      "blob_verified": true
+    },
+    {
+      "id": "candidate_next",
+      "url": "https://github.com/wlvh/tongxu/blob/f23f32e67411b987935153a25d1b804fed077113/docs/CODEX_NEXT.md",
+      "git_blob": "5492a2e4b263bc79dd1cfa3cb73cfe638c59f42b",
+      "sha256": "2338e967e1b2f4dc610b1c846feb062b03a937baf49ba7f0b1684406ca4e71cc",
+      "utf8_bytes": 4327,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:README.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/README.md",
+      "git_blob": "ad7910bd2042bd30300ea2186d8e6c42425ff0fc",
+      "sha256": "665685ad870de66ef83998a8c2c64410e137e1bf1e261a3a119a47c149ec9d35",
+      "utf8_bytes": 2894,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:docs/CODEX_W0.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/docs/CODEX_W0.md",
+      "git_blob": "a3eb407b76377ba8b624db7304854c9823e5e9c0",
+      "sha256": "b6f07263d3f822801b91decc34ad0614a74c3194ef13c375fdab6d0e7e80b39b",
+      "utf8_bytes": 3095,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:docs/PRODUCT_GUIDE.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/docs/PRODUCT_GUIDE.md",
+      "git_blob": "8c53e2c6f195671ccd23b73537a6fad61361499e",
+      "sha256": "78c88b8c937dbebed8ab60008c2955099cbee9bd91057604e0cd07ad7c6f69fd",
+      "utf8_bytes": 8542,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:docs/tongxu_v2_plan.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/docs/tongxu_v2_plan.md",
+      "git_blob": "4fda5427525388c5d9cc708bcc6a243c41735bbe",
+      "sha256": "46cddbd2e64ecce8962d7215b3825841dc7fd3a965f461c8936dcc47ac79f69e",
+      "utf8_bytes": 23385,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:prompts/README.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/prompts/README.md",
+      "git_blob": "d10351f0580c04de3de78eba08ef408bad864543",
+      "sha256": "3b1d96e8561409588526f6858dd4dc7f80eb11607f4a9b0ab125fa6807d01b8e",
+      "utf8_bytes": 2212,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:prompts/runtime_contract.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/prompts/runtime_contract.md",
+      "git_blob": "0badc2b5bf3dfcf772008d49e6f1630080028272",
+      "sha256": "db10a22ae7f68b10c9d58092f6bac86c174c5a86cdba0a381545846c3cead55a",
+      "utf8_bytes": 3329,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:prompts/tool_policy.json",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/prompts/tool_policy.json",
+      "git_blob": "6550b57bc709ec0f58454ebe5b56ba6c51ebc3f6",
+      "sha256": "0c5bb5e523d1aed9c791f2333bc51a937e649c36fea77faa1a4a299c898c6efb",
+      "utf8_bytes": 2140,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:docs/issues/01_W0_baseline.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/docs/issues/01_W0_baseline.md",
+      "git_blob": "45ac24975fe74c25c7dacf3dee25e8434ff82478",
+      "sha256": "865da9f99d2e0e477b943370001f53fe245d24f8186f82897979187742144e08",
+      "utf8_bytes": 2747,
+      "blob_verified": true
+    },
+    {
+      "id": "tongxu-main:docs/issues/02_W1_facts_and_pr_handoff.md",
+      "url": "https://github.com/wlvh/tongxu/blob/1ba5ae893b49e5856a4e8d682139f70e5c907f5f/docs/issues/02_W1_facts_and_pr_handoff.md",
+      "git_blob": "f723a8b800ad8d21735d18b7b4edc3ab6ccc4c20",
+      "sha256": "71c27a026faa74781a2861cd5545183ef32781221f20ca5427ad8d1a0c2c7cc3",
+      "utf8_bytes": 1552,
+      "blob_verified": true
+    }
+  ],
+  "collections": [
+    {
+      "id": "SEC-PR-264-discussion",
+      "count": 39,
+      "source": "fetch_pr_comments: merged issue comments, inline comments and reviews"
+    },
+    {
+      "id": "SEC-PR-287-discussion",
+      "count": 9,
+      "source": "fetch_pr_comments: merged issue comments, inline comments and reviews"
+    },
+    {
+      "id": "SEC-PR-293-discussion",
+      "count": 13,
+      "source": "fetch_pr_comments: merged issue comments, inline comments and reviews"
+    },
+    {
+      "id": "SEC-ISSUE-153-comments",
+      "count": 21,
+      "sha256": "24232034cfb42f6d68a22be7097e71dbb99099095c32799d6d3c04c6a86a420f",
+      "hash_encoding": "UTF-8 JSON array of id/url/body, keys sorted, compact separators, connector order",
+      "coverage": "tool reports all pages; count agrees with issue metadata; page headers not exposed"
+    },
+    {
+      "id": "SEC-ISSUE-28-comments",
+      "count": 115,
+      "sha256": "75c4f37e9583994c398aa46bb6d4858fb0bb46123c0a1e0d6878a0c440e90efb",
+      "hash_encoding": "UTF-8 JSON array of id/url/body, keys sorted, compact separators, connector order",
+      "coverage": "tool reports all pages; count agrees with issue metadata; page headers not exposed"
+    },
+    {
+      "id": "SEC-ISSUE-47-comments",
+      "count": 154,
+      "sha256": "25e3a3f69b786f86fef37b1f34e1d08ec139538b43e27edcf438860d8e7cba1f",
+      "hash_encoding": "UTF-8 JSON array of id/url/body, keys sorted, compact separators, connector order",
+      "coverage": "tool reports all pages; count agrees with issue metadata; page headers not exposed"
+    }
+  ],
+  "ancestry_reads": [
+    {
+      "base": "17569516a8be63002f0a6336041421ac14d33459",
+      "head": "203bf4b0544222657e555212fd15cf92c5b1dce4",
+      "status": "ahead",
+      "ahead_by": 73,
+      "behind_by": 0,
+      "merge_base": "17569516a8be63002f0a6336041421ac14d33459"
+    },
+    {
+      "base": "6f8ba16698db2e2cfc78897e08ed0dbf0b7f770c",
+      "head": "203bf4b0544222657e555212fd15cf92c5b1dce4",
+      "status": "ahead",
+      "ahead_by": 15,
+      "behind_by": 0,
+      "merge_base": "6f8ba16698db2e2cfc78897e08ed0dbf0b7f770c"
+    }
+  ],
+  "unavailable_reads": [
+    {
+      "url": "https://github.com/wlvh/SEC_metrics/blob/203bf4b0544222657e555212fd15cf92c5b1dce4/scripts/vnext/continuous_call_allocation.py",
+      "status": 404,
+      "meaning": "Unavailable at this fixed main path; not a global absence or authority conclusion"
+    }
+  ]
+}
