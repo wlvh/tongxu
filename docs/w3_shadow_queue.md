@@ -47,7 +47,7 @@ node dist/src/cli.js queue evaluate --store /tmp/tongxu-queue-new --operation OP
 
 同候选的新实质材料产生新 packet；与**当前**材料相同，仅重收时间/运行编号改变时只存观察、推进观察水位、不重派。判断依据变化、样本失败、运行器变化会形成新材料；失败后新的成功即使与历史成功同语义，也产生新 packet 和评估资格。去重依据明确结果，不能理解任意日志语义；普通日志变化可归档而不触发评估，需把有意义的反例作为新来源或结构化结果导入。旧观察保留但不倒退当前 packet，状态分别显示 packet 原观察与最新水位。候选 H/B/target/S/r 改变产生新 item，不复用旧结论。
 
-采集观察与执行观察分别维护水位。一新一旧、缺少顺序或同一时刻的矛盾实质材料进入 `observationConflict` 待核，状态保留各原包，当前证据不再宣称完整，相关前置不能放行；不会因采集包较旧而吞掉较新的测试失败。只有同时覆盖两个水位的新联合观察才能解除，解除产生新的评估资格，旧原件重放不能清除冲突。原操作仍可按 ID 核查，无关目标继续。
+采集观察与执行观察分别维护水位。一新一旧、缺少顺序或同一时刻的矛盾实质材料进入 `observationConflict` 待核，状态保留各原包，当前证据不再宣称完整，相关前置不能放行；不会因采集包较旧而吞掉较新的测试失败。只有严格超过两个已知水位的新联合观察才能解除，解除产生新的评估资格；等水位、单维推进、JSON 重编码、新运行编号或旧原件重放都不能解除。需重新采集并产生新的执行观察；原字节 hash 只标识材料，不证明新鲜性。原操作仍可按 ID 核查，无关目标继续。
 
 ```bash
 node dist/src/cli.js queue control --store /tmp/tongxu-queue-new --scope project-g1 --kind investment --state stopped --source OPERATOR_REFERENCE

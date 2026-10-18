@@ -87,11 +87,16 @@ export class QueueStore {
       this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
       const incoming = [packet.summary.observation, packet.summary.sourceObservation], watermark = [item.latest_observation, item.latest_source_observation];
       const order = incoming.map((value, i) => !value || !watermark[i] ? null : value < watermark[i] ? -1 : value > watermark[i] ? 1 : 0);
-      // Source and execution observations form a partial order: one newer and one older
-      // is a counter-observation to reconcile, never proof that the whole packet is stale.
-      const conflict = Boolean(previous && (order.includes(null) || (order.includes(-1) && order.includes(1)) || (!item.observation_conflict && order.every(n => n === 0) && previous.fingerprint !== packet.fingerprint)));
+      // Conflict is a persistent state, not a property recomputed from the next pair.
+      // Only an observation strictly beyond BOTH known watermarks can replace it.
+      // Raw-byte novelty, equal times, new report IDs and one advancing dimension
+      // cannot prove reconciliation. Keep raw hashes as evidence, not freshness.
+      const jointlyNewer = incoming.every((value, i) => value && (!watermark[i] || value > watermark[i]));
+      const conflict = Boolean(previous && (item.observation_conflict
+        ? !jointlyNewer
+        : order.includes(null) || (order.includes(-1) && order.includes(1)) || (order.every(n => n === 0) && previous.fingerprint !== packet.fingerprint)));
       const older = Boolean(previous && !conflict && order.includes(-1));
-      const effectiveConflict = conflict || (older && Boolean(item.observation_conflict));
+      const effectiveConflict = conflict;
       const maximum = incoming.map((value, i) => value && (!watermark[i] || value > watermark[i]) ? value : watermark[i] ?? null);
       this.db.prepare('UPDATE items SET latest_observation=?,latest_source_observation=?,observation_conflict=? WHERE id=?').run(maximum[0], maximum[1], effectiveConflict ? 1 : 0, id);
       // Deduplication is relative to the current state, not every fingerprint in history.

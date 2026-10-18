@@ -257,3 +257,52 @@ test('mixed observations persist, block dependents, preserve original recovery, 
   const current = q.begin(parent.item, 'joint-evidence'); assert.notEqual(current.operation, original.operation); assert.equal(q.evaluate(current.operation).evidenceComplete, true);
   assert.ok(q.begin(child.item, 'child-can-review').operation);
 });
+
+test('a persisted conflict is cleared only beyond both watermarks, including every equal/older/newer combination', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const good = await f.fixture({ at: '2026-10-18T12:00:00.000Z', report: r => { r.startedAt = '2026-10-18T15:00:00.000Z'; } });
+  const contradictory = await f.fixture({ at: '2026-10-18T12:00:00.000Z', report: r => { r.startedAt = '2026-10-18T15:00:00.000Z'; r.executionComplete = false; } });
+  for (const sourceHour of [11, 12, 13]) for (const runHour of [14, 15, 16]) {
+    const store = join(f.root, `reconciliation-${sourceHour}-${runHour}`); let q = await QueueStore.create(store, 'example/project');
+    try {
+      const parent = q.import(await good.packet()); q.import(await contradictory.packet()); q.close(); q = await QueueStore.open(store);
+      const context = { ...good.context, requires: [{ item: parent.item, type: 'parent', version: good.candidate.H, blocks: 'shadow_review', source: 'fixture:parent', canContinue: 'independent work' }] };
+      const child = q.import(await (await f.fixture({ pr: 2, context })).packet());
+      const next = await f.fixture({ at: `2026-10-18T${sourceHour}:00:00.000Z`, report: r => { r.startedAt = `2026-10-18T${runHour}:00:00.000Z`; } });
+      const resolved = sourceHour > 12 && runHour > 15;
+      assert.equal(q.import(await next.packet()).observationConflict, !resolved);
+      assert.equal(q.status().items.find((i: any) => i.id === parent.item).summary.evidenceComplete, resolved);
+      const admission = q.begin(child.item, 'check-dependency');
+      if (resolved) assert.ok(admission.operation);
+      else assert.ok(admission.blocked.includes(`observation_order_conflict:${parent.item}`));
+    } finally { q.close(); }
+  }
+});
+
+test('JSON reencoding and report identifiers cannot reconcile unknown-order or same-time conflicts', async t => {
+  const f = await setup(t); t.after(() => f.q.close());
+  const good = await f.fixture(), original = await good.packet();
+  const unknown = await f.fixture({ report: r => { delete r.startedAt; r.executionComplete = false; } });
+  const contradictory = await f.fixture({ context: { ...good.context, decisionKind: 'fact' } });
+  for (const [name, conflict] of [['unknown', unknown], ['same-time', contradictory]] as const) {
+    const store = join(f.root, name); let q = await QueueStore.create(store, 'example/project');
+    try {
+      const parent = q.import(original); assert.equal(q.import(await conflict.packet()).observationConflict, true);
+      const childContext = { ...good.context, requires: [{ item: parent.item, type: 'development', version: good.candidate.H, blocks: 'shadow_review', source: 'fixture:parent', canContinue: 'independent work' }] };
+      const child = q.import(await (await f.fixture({ pr: 2, context: childContext })).packet());
+      const reportPath = join(good.verification, 'verification.json'), report = JSON.parse(await readFile(reportPath, 'utf8'));
+      for (const variant of ['context-format', 'report-format', 'report-id']) {
+        if (variant === 'context-format') await writeFile(good.contextPath, JSON.stringify(good.context, null, 2) + '\n');
+        else { if (variant === 'report-id') report.id += '-receipt-only'; await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n'); }
+        const replay = await good.packet(); assert.equal(replay.fingerprint, original.fingerprint);
+        q.import(replay); q.close(); q = await QueueStore.open(store);
+        const state = q.status().items.find((i: any) => i.id === parent.item);
+        assert.equal(state.observationConflict, true, variant); assert.equal(state.currentPacket, parent.packet);
+        assert.equal(state.summary.evidenceComplete, false); assert.ok(q.begin(child.item, variant).blocked.includes(`observation_order_conflict:${parent.item}`));
+      }
+      const fresh = await f.fixture({ at: '2026-10-18T18:00:00.000Z', report: r => { r.startedAt = '2026-10-18T19:00:00.000Z'; } });
+      assert.equal(q.import(await fresh.packet()).observationConflict, false);
+      assert.ok(q.begin(child.item, 'fresh-joint-observation').operation);
+    } finally { q.close(); }
+  }
+});
