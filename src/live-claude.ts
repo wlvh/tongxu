@@ -3,9 +3,15 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hash } from './snapshot.js';
-import { executable, LiveProcess, newStage, save } from './live-process.js';
+import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 
 const exec = promisify(execFile);
+function finalResult(events: any[]) {
+  const inits = events.filter(e => e.type === 'system' && e.subtype === 'init'), results = events.filter(e => e.type === 'result');
+  const result = results[0], init = inits[0];
+  if (inits.length !== 1 || results.length !== 1 || !init.session_id || init.claude_code_version !== '2.1.233' || result.session_id !== init.session_id || !Array.isArray(init.tools) || init.tools.length !== 0 || !Array.isArray(init.mcp_servers) || init.mcp_servers.length !== 0 || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || result.subtype !== 'success' || result.is_error !== false || result.terminal_reason !== 'completed' || result.stop_reason !== 'end_turn' || result.api_error_status != null || typeof result.result !== 'string' || !result.result.trim() || events.some(e => e.parent_tool_use_id != null || e.aborted === true || (e.type === 'assistant' && e.session_id !== init.session_id) || e.message?.content?.some((x: any) => x.type === 'tool_use'))) throw new Error('stage_raw_result_not_final');
+  return { init, result };
+}
 export async function runClaude(o: { executable: string; directory: string; system: string; input: string; timeoutMs: number }) {
   await newStage(o.directory);
   const identity = await executable(o.executable, '2.1.233 (Claude Code)'); save(join(o.directory, 'executable.json'), identity);
@@ -26,23 +32,20 @@ export async function runClaude(o: { executable: string; directory: string; syst
     await child.waitFor(m => m.type === 'result' && m.session_id === init.session_id, o.timeoutMs);
     await Promise.race([child.closed, new Promise<void>((_, reject) => { const t = setTimeout(() => reject(new Error('claude_exit_timeout')), 30_000); child.closed.then(() => clearTimeout(t)); })]);
   } finally { await child.close(); }
-  const inits = child.events.filter(m => m.type === 'system' && m.subtype === 'init');
-  const results = child.events.filter(m => m.type === 'result');
-  const result = results[0];
-  if (child.failure || child.exit?.code !== 0 || inits.length !== 1 || results.length !== 1 || result.session_id !== inits[0].session_id || result.subtype !== 'success' || result.is_error !== false || typeof result.result !== 'string' || !result.result.trim()) throw new Error('claude_final_result_unavailable');
-  if (child.events.some(e => e.parent_tool_use_id != null || e.message?.content?.some((x: any) => x.type === 'tool_use'))) throw new Error('unexpected_claude_tool_or_child_result');
-  const receipt = { kind: 'claude-execution-receipt', executable: identity, sessionId: result.session_id, model: inits[0].model, inputSha256: hash(o.input), systemPromptSha256: hash(o.system), rawSha256: hash(await readFile(join(o.directory, 'stdout.ndjson'))), processExit: child.exit, nativeBoundary: { tools: inits[0].tools, mcpServers: inits[0].mcp_servers, permissionMode: inits[0].permissionMode, safeMode: true }, finalText: result.result, reportedUsage: result.usage, clientCostEstimateUsd: result.total_cost_usd, costEstimateIsNotBillingProof: true };
+  if (child.failure || child.exit?.code !== 0) throw new Error('claude_final_result_unavailable');
+  const { init, result } = finalResult(child.events);
+  const receipt = { kind: 'claude-execution-receipt', executable: identity, sessionId: result.session_id, model: init.model, inputSha256: hash(o.input), systemPromptSha256: hash(o.system), rawSha256: hash(await readFile(join(o.directory, 'stdout.ndjson'))), processExit: child.exit, nativeBoundary: { tools: init.tools, mcpServers: init.mcp_servers, permissionMode: init.permissionMode, safeMode: true }, finalText: result.result, reportedUsage: result.usage, clientCostEstimateUsd: result.total_cost_usd, costEstimateIsNotBillingProof: true };
   save(join(o.directory, 'completed.json'), receipt); return receipt;
 }
 
 export async function readClaudeExecution(directory: string) {
+  await checkCapture(directory);
   const raw = await readFile(join(directory, 'stdout.ndjson'));
   if (!raw.length || raw[raw.length - 1] !== 10) throw new Error('stage_raw_result_not_final');
   const events = new TextDecoder('utf8', { fatal: true }).decode(raw).trim().split('\n').map(x => JSON.parse(x));
-  const inits = events.filter(e => e.type === 'system' && e.subtype === 'init'), results = events.filter(e => e.type === 'result');
   const exit = JSON.parse(await readFile(join(directory, 'exit.json'), 'utf8'));
-  const result = results[0], init = inits[0];
-  if (exit.code !== 0 || exit.signal != null || inits.length !== 1 || results.length !== 1 || !init.session_id || init.claude_code_version !== '2.1.233' || result.session_id !== init.session_id || !Array.isArray(init.tools) || init.tools.length !== 0 || !Array.isArray(init.mcp_servers) || init.mcp_servers.length !== 0 || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || result.subtype !== 'success' || result.is_error !== false || typeof result.result !== 'string' || !result.result.trim() || events.some(e => e.parent_tool_use_id != null || e.message?.content?.some((x: any) => x.type === 'tool_use'))) throw new Error('stage_raw_result_not_final');
+  if (exit.code !== 0 || exit.signal != null) throw new Error('stage_exit_not_successful');
+  const { init, result } = finalResult(events);
   const launch = JSON.parse(await readFile(join(directory, 'launch.json'), 'utf8'));
   const system = launch.args[launch.args.indexOf('--system-prompt') + 1];
   if (launch.args.indexOf('--system-prompt') < 0 || typeof system !== 'string' || !launch.args.includes('--safe-mode')) throw new Error('stage_launch_boundary_missing');

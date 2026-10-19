@@ -16,14 +16,15 @@ async function fixture(t: test.TestContext, mode = '') {
 import fs from 'node:fs'; import readline from 'node:readline';
 const trace=${JSON.stringify(trace)}, mode=${JSON.stringify(mode)}, claude=process.argv[1].includes('claude-fixture');
 fs.appendFileSync(trace,JSON.stringify({kind:'process',claude,args:process.argv.slice(2)})+'\\n');
-const emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+if(mode==='overflow')process.on('SIGTERM',()=>process.exit(0));
+const emit=x=>{process.stdout.write(JSON.stringify(x)+'\\n');if(mode==='overflow'&&x.method==='turn/completed'&&x.params.turn.id==='fixture-turn-2')process.stderr.write(Buffer.alloc(17*1024*1024,120));};
 if(process.argv.includes('--version')){console.log(claude?'2.1.233 (Claude Code)':'codex-cli 0.163.0-alpha.10.2');process.exit(0)}
 if(claude&&process.argv.includes('auth')){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'max'}));process.exit(0)}
 if(claude){let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{
 fs.appendFileSync(trace,JSON.stringify({kind:'fixture-model-input',claude})+'\\n');
 emit({type:'system',subtype:'init',session_id:'fixture-claude',model:'fixture',claude_code_version:'2.1.233',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});
-emit({type:'assistant',parent_tool_use_id:null,message:{content:[{type:'text',text:'fixture only'}]}});
-emit({type:'result',session_id:'fixture-claude',subtype:'success',is_error:false,result:'明确标注的 fixture 影响报告。',usage:{input_tokens:0,output_tokens:0},total_cost_usd:0});});
+emit({type:'assistant',session_id:'fixture-claude',aborted:mode==='aborted',parent_tool_use_id:null,message:{content:[{type:'text',text:'fixture only'}]}});
+emit({type:'result',session_id:'fixture-claude',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:'明确标注的 fixture 影响报告。',usage:{input_tokens:0,output_tokens:0},total_cost_usd:0});});
 }else{let thread,turn=0;const rl=readline.createInterface({input:process.stdin});rl.on('line',line=>{const m=JSON.parse(line);if(!('id'in m))return;let result={};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
@@ -66,6 +67,7 @@ test('partial, wrong-session/version, partial_answer and fatal-error raw results
     const changed = mutation === 'truncated' ? raw.slice(0, -1) : events.map(x => JSON.stringify(x) + '\n').join('');
     await writeFile(join(dest, 'stdout.ndjson'), changed);
     const receipt = JSON.parse(await readFile(join(dest, 'completed.json'), 'utf8')); receipt.rawSha256 = hash(changed); await writeFile(join(dest, 'completed.json'), JSON.stringify(receipt));
+    const capture = JSON.parse(await readFile(join(dest, 'capture-status.json'), 'utf8')); capture.files['stdout.ndjson'] = hash(changed); await writeFile(join(dest, 'capture-status.json'), JSON.stringify(capture));
     await assert.rejects(recoverStage(dest, 'codex'), /stage_raw_result_not_final/);
   }
   const unknown = join(f.root, 'unknown'); await mkdir(unknown); await writeFile(join(unknown, 'launch.json'), '{"status":"sent"}');
@@ -94,9 +96,41 @@ test('continuation rechecks checkpoint and complete handoff, repairing only miss
   await rm(join(stage, 'completed.json'));
   const rawPath = join(stage, 'stdout.ndjson'), raw = await readFile(rawPath, 'utf8');
   await writeFile(rawPath, raw.replace('"claude_code_version":"2.1.233"', '"claude_code_version":"2.1.299"'));
-  await assert.rejects(recoverStage(stage, 'claude'), /stage_raw_result_not_final/);
+  await assert.rejects(recoverStage(stage, 'claude'), /stage_capture_integrity_failed/);
   await writeFile(rawPath, raw.slice(0, -1));
-  await assert.rejects(recoverStage(stage, 'claude'), /stage_raw_result_not_final/);
+  await assert.rejects(recoverStage(stage, 'claude'), /stage_capture_integrity_failed/);
+});
+
+test('Claude success labels cannot promote aborted or incomplete terminal semantics', async t => {
+  const f = await fixture(t, 'aborted');
+  await assert.rejects(runRelay(f.path, f.output), /stage_raw_result_not_final/);
+  const before = await readFile(f.trace, 'utf8');
+  assert.equal(before.split('\n').filter(x => x.includes('fixture-model-input')).length, 3);
+  await assert.rejects(runRelay(f.path, f.output), /stage_raw_result_not_final/);
+  assert.equal(await readFile(f.trace, 'utf8'), before);
+});
+
+test('transport failure survives restart even with complete final messages and exit zero', async t => {
+  const f = await fixture(t, 'overflow');
+  await assert.rejects(runRelay(f.path, f.output), /executor_output_limit/);
+  assert.equal(JSON.parse(await readFile(join(f.output, 'codex-review/exit.json'), 'utf8')).code, 0);
+  assert.equal(JSON.parse(await readFile(join(f.output, 'codex-review/capture-failure.json'), 'utf8')).reason, 'executor_output_limit');
+  const before = await readFile(f.trace, 'utf8');
+  assert.equal(before.split('\n').filter(x => x.includes('fixture-model-input')).length, 2);
+  await assert.rejects(runRelay(f.path, f.output), /stage_capture_failed/);
+  assert.equal(await readFile(f.trace, 'utf8'), before);
+});
+
+test('recovery binds the entire submitted input and turn permission policy', async t => {
+  const f = await fixture(t); await runRelay(f.path, f.output);
+  const dir = join(f.output, 'codex-review'), path = join(dir, 'stdin.ndjson');
+  const sent = (await readFile(path, 'utf8')).trim().split('\n').map(x => JSON.parse(x));
+  const turn = sent.find(x => x.method === 'turn/start');
+  turn.params.input.push({ type: 'text', text: 'unregistered extra material' }); turn.params.approvalPolicy = 'on-request';
+  const bytes = sent.map(x => JSON.stringify(x) + '\n').join(''); await writeFile(path, bytes);
+  // Reproduce malformed original submissions beyond the byte-integrity guard.
+  const capture = JSON.parse(await readFile(join(dir, 'capture-status.json'), 'utf8')); capture.files['stdin.ndjson'] = hash(bytes); await writeFile(join(dir, 'capture-status.json'), JSON.stringify(capture));
+  await assert.rejects(recoverStage(dir, 'codex'), /stage_submitted_input_mismatch/);
 });
 
 test('native waiting and quota stop progression; repeated entry starts no replacement process', async t => {

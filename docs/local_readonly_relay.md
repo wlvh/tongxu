@@ -36,7 +36,7 @@ node dist/src/relay-cli.js run --plan /absolute/private/plan.json --output /abso
 
 Codex 使用已有 ChatGPT 认证；每个 turn 前检查普通用量可用。启动参数关闭 shell、浏览器、插件、MCP、自动记忆、子代理等能力，并核对有效配置。新线程和每个 turn 明确指定只读、禁止网络、never 审批。全局配置可能有不同默认值；判断依据是本线程返回的权限及实际 turn 请求。任何服务器批准/外部工具请求均拒绝。
 
-Claude 使用已有 claude.ai Max 认证，无 API key/token/base URL 覆盖。传入 `--safe-mode --tools '' --permission-mode dontAsk`，严格空 MCP、无 Chrome、无会话持久化。所有所需正文通过 stdin 传入；实际 init 的工具/MCP 必须为空，版本、身份、权限和最终 result 必须匹配。这里是原生工具能力限制，不宣称为 Linux/bubblewrap 的替代隔离。
+Claude 使用已有 claude.ai Max 认证，无 API key/token/base URL 覆盖。传入 `--safe-mode --tools '' --permission-mode dontAsk`，严格空 MCP、无 Chrome、无会话持久化。所有所需正文通过 stdin 传入；实际 init 的工具/MCP 必须为空，版本、身份、权限和最终 result 必须匹配。`success` 本身不够，必须同时是 `terminal_reason=completed`、`stop_reason=end_turn`，没有 aborted 消息或 API 错误。这里是原生工具能力限制，不宣称为 Linux/bubblewrap 的替代隔离。
 
 程序分别保存 CLI 版本/入口 hash、启动参数、输入、原始 stdout/stderr、退出状态、原生会话/turn、权限响应及最终收据。stdout 按原字节保存，再解释 JSON。单条模型报告不能选择下一条命令、角色、权限或输入范围。
 
@@ -53,7 +53,7 @@ Claude 使用已有 claude.ai Max 认证，无 API key/token/base URL 覆盖。�
 | claude-impact/ / delivery.json | 实际发送、匹配会话的完整影响报告与关联 |
 | codex-synthesis/ / result.json | 新的事实核实会话和完整综合原文 |
 
-重复入口先重读原 stdout、stdin、身份和终态；校验 packet 检查点和完整 handoff，不重新请求已完成模型。缺少派生收据/交接文件但原件完整时可以重建；已有文件内容变化会拒绝，不覆盖。模型 PASS、退出 0、文件存在、实际收到完整结果是不同记录。
+重复入口先重读原 stdout、stderr、stdin、身份、整个请求/权限和终态；校验 packet 检查点和完整 handoff，不重新请求已完成模型。捕获异常立即写入 `capture-failure.json`，进程结束时记录 `capture-status.json` 与三个流的摘要；超限/拒绝等失败不会因重新启动而遗忘。缺少派生收据/交接文件但原件完整时可以重建；已有文件内容变化会拒绝，不覆盖。没有新捕获状态的旧执行，只能在原完整 completed 收据有效时读取，不能推断丢失收据的旧捕获曾成功。模型 PASS、退出 0、文件存在、实际收到完整结果是不同记录。
 
 部分消息、等待、额度不足、错误版本/会话、矛盾终态不能交给下一角色。已有启动而缺少可验证终态时保存 unknown，绝不自动重发。仍活动的进程不能由第二个入口接管。进程被强杀可能留下 `active.lock`；当前版本不凭时间超时释放锁，也不自动恢复未完成的原生会话。负责人须先核原进程、原日志和是否已执行；无法确认就保留 unknown。这是当前明确缺口，不算完整中断续跑。
 

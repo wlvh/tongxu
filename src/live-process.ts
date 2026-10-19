@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { appendFileSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, writeFileSync, renameSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
@@ -42,6 +42,8 @@ export class LiveProcess {
     this.closed = new Promise(resolve => this.process.once('close', (code, signal) => {
       this.exit = { code, signal }; save(join(directory, 'exit.json'), { code, signal, at: new Date().toISOString() });
       if (this.partial.toString().trim()) this.fail('incomplete_output_frame');
+      save(join(directory, 'capture-status.json'), { status: this.failure ? 'failed' : 'complete', failure: this.failure,
+        files: Object.fromEntries(['stdout.ndjson', 'stderr.txt', 'stdin.ndjson'].map(name => [name, hash(readFileSync(join(directory, name)))])) });
       for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error('executor_closed')); } this.pending.clear(); resolve();
     }));
     this.process.on('error', () => this.fail('executor_spawn_error'));
@@ -71,7 +73,9 @@ export class LiveProcess {
     const p = this.pending.get(m?.id);
     if (p && !('method' in m)) { clearTimeout(p.timer); this.pending.delete(m.id); 'error' in m ? p.reject(new Error('executor_rpc_error')) : p.resolve(m.result); }
   }
-  private fail(reason: string) { this.failure ??= reason; }
+  private fail(reason: string) {
+    if (!this.failure) { this.failure = reason; save(join(this.directory, 'capture-failure.json'), { reason }); }
+  }
   send(message: unknown) {
     const line = JSON.stringify(message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
   }
@@ -105,3 +109,19 @@ export class LiveProcess {
 }
 
 export async function newStage(path: string) { await privateDirectory(path, true); return path; }
+
+/** A recorded transport rejection is not erased by an otherwise valid final.
+ * Old completed executions remain readable, but missing legacy completion
+ * receipts cannot establish that the old in-memory capture checks succeeded. */
+export async function checkCapture(directory: string) {
+  const optional = async (name: string) => { try { return JSON.parse(await readFile(join(directory, name), 'utf8')); } catch (e: any) { if (e.code === 'ENOENT') return null; throw e; } };
+  if (await optional('capture-failure.json')) throw new Error('stage_capture_failed');
+  const status = await optional('capture-status.json');
+  if (status) {
+    if (status.status !== 'complete' || status.failure !== null) throw new Error('stage_capture_failed');
+    for (const name of ['stdout.ndjson', 'stderr.txt', 'stdin.ndjson']) if (hash(await readFile(join(directory, name))) !== status.files?.[name]) throw new Error('stage_capture_integrity_failed');
+  } else {
+    const legacy = await optional('completed.json');
+    if (!legacy || hash(await readFile(join(directory, 'stdout.ndjson'))) !== legacy.rawSha256) throw new Error('legacy_capture_completion_unknown');
+  }
+}
