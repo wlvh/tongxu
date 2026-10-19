@@ -103,5 +103,18 @@ export async function readCodexExecution(directory: string) {
   if (starts.length !== 1 || turns.length !== binding.turnIds.length || turns.some(m => typeof m.params?.input?.[0]?.text !== 'string' || !isDeepStrictEqual(m.params, { threadId: binding.threadId, input: [{ type: 'text', text: m.params.input[0].text }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high' })) ||
       !isDeepStrictEqual(starts[0].params, { cwd: binding.workspace, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: starts[0].params.baseInstructions, developerInstructions, dynamicTools: [], environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [binding.workspace] }) ||
       hash(JSON.stringify({ system: starts[0].params.baseInstructions, inputs: turns.map(m => m.params.input[0].text) })) !== binding.promptSha256) throw new Error('stage_submitted_input_mismatch');
+  // A legacy capture has no stdin digest. Validate the whole request stream,
+  // including its order, instead of silently discarding steer/resume/other RPCs.
+  let id = 0;
+  const request = (method: string, params: unknown) => ({ id: ++id, method, params });
+  const expected = [
+    request('initialize', { clientInfo: { name: 'tongxu-readonly-relay', version: '0.1.0' }, capabilities: { experimentalApi: true } }),
+    { method: 'initialized', params: {} },
+    request('account/read', { refreshToken: false }),
+    request('config/read', { includeLayers: false, cwd: binding.workspace }),
+    request('account/rateLimits/read', {}), request('thread/start', starts[0].params),
+    ...turns.flatMap(m => [request('account/rateLimits/read', {}), request('turn/start', m.params)])
+  ];
+  if (!isDeepStrictEqual(sent, expected)) throw new Error('stage_submitted_request_sequence_mismatch');
   return parsed;
 }

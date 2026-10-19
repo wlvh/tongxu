@@ -133,6 +133,24 @@ test('recovery binds the entire submitted input and turn permission policy', asy
   await assert.rejects(recoverStage(dir, 'codex'), /stage_submitted_input_mismatch/);
 });
 
+test('legacy completed captures reject additional steering rather than discarding it', async t => {
+  const f = await fixture(t); await runRelay(f.path, f.output);
+  const dir = join(f.output, 'codex-review'), path = join(dir, 'stdin.ndjson');
+  // Explicit old-format fixture: completion receipt exists, per-stream capture
+  // digests did not exist in the earlier executor. No native model is invoked.
+  await rm(join(dir, 'capture-status.json'));
+  await runRelay(f.path, f.output);
+  const before = await readFile(f.trace, 'utf8'), original = await readFile(path, 'utf8');
+  const sent = original.trim().split('\n').map(x => JSON.parse(x));
+  const index = sent.findIndex(x => x.method === 'turn/start');
+  sent.splice(index + 1, 0, { id: 100, method: 'turn/steer', params: { threadId: sent[index].params.threadId, expectedTurnId: 'fixture-turn-1', input: [{ type: 'text', text: 'unregistered steering' }] } });
+  await writeFile(path, sent.map(x => JSON.stringify(x) + '\n').join(''));
+  await assert.rejects(runRelay(f.path, f.output), /stage_submitted_request_sequence_mismatch/);
+  assert.equal(await readFile(f.trace, 'utf8'), before);
+  await writeFile(path, original); await runRelay(f.path, f.output);
+  assert.equal(await readFile(f.trace, 'utf8'), before);
+});
+
 test('native waiting and quota stop progression; repeated entry starts no replacement process', async t => {
   for (const mode of ['waiting', 'quota']) {
     const f = await fixture(t, mode); await assert.rejects(runRelay(f.path, f.output), /ordinary_usage_unavailable|native_waiting_on_user_or_approval/);
