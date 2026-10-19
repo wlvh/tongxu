@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { hash } from '../../src/snapshot.js';
 import { prepareRepairFixture, runRepair, revokeRepair, type RepairConfig } from '../../src/repair.js';
 import { git, tree, treeHash, acquireWorkspace, releaseWorkspace, RepairTools, testClamp, safeEnv } from '../../src/repair-workspace.js';
+import { checkConfig, disabledFeatures } from '../../src/live-codex.js';
 
 const exec = promisify(execFile);
 async function fixture(t: test.TestContext, mode = '') {
@@ -21,17 +22,17 @@ log({kind:'process',claude,args:process.argv.slice(2)});
 if(process.argv.includes('--version')){console.log(claude?'2.1.233 (Claude Code)':'codex-cli 0.163.0-alpha.10.2');process.exit(0)}
 if(claude&&process.argv.includes('auth')){emit({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'max'});process.exit(0)}
 if(claude){let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{log({kind:'model-input',role:'impact'});emit({type:'system',subtype:'init',session_id:'fixture-impact-'+process.pid,claude_code_version:'2.1.233',model:'fixture',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});emit({type:'assistant',session_id:'fixture-impact-'+process.pid,parent_tool_use_id:null,message:{content:[{type:'text',text:'Fixture impact analysis'}]}});emit({type:'result',session_id:'fixture-impact-'+process.pid,subtype:'success',is_error:false,terminal_reason:'completed',stop_reason:'end_turn',result:'Synthetic impact verification: bounded clamp correction is supported. This is fixture evidence only.',usage:{},total_cost_usd:0});});}
-else{let thread,turn=0,context,current,stage,readHash;const rl=readline.createInterface({input:process.stdin});
+else{let thread,turn=0,context,current,stage,readHash,repairing=false;const rl=readline.createInterface({input:process.stdin});
 const finish=(report)=>{const item={id:current+'-final',type:'agentMessage',phase:'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:current,status:'completed',rootTurnId:current,items:[item],itemsView:'full',error:null}}});};
 const tool=(name,args)=>{stage=name;log({kind:'tool-request',name});emit({id:'tool-'+current+'-'+name,method:'item/tool/call',params:{threadId:thread.id,turnId:current,callId:'call-'+process.pid+'-'+turn+'-'+name,tool:name,namespace:null,arguments:args}})};
 rl.on('line',line=>{const m=JSON.parse(line);
-if(!m.method&&typeof m.id==='string'&&m.id.startsWith('tool-')){if(m.error)return;const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){readHash=v.sha256;tool('tongxu_replace_file',{path:mode==='outside'?'README.md':'clamp.mjs',expectedSha256:readHash,text:'// repaired by synthetic agent fixture\\nexport function clamp(value,low,high){return Math.min(high,Math.max(low,value));}\\n'});}else if(stage==='tongxu_replace_file'){if(mode.startsWith('interrupt')&&!fs.existsSync(trace+'.interrupted')){fs.writeFileSync(trace+'.interrupted','yes');process.exit(7)}else tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'repaired',report:'Synthetic agent used registered write and test tools.'});return;}
+if(!m.method&&typeof m.id==='string'&&m.id.startsWith('tool-')){if(m.error)return;const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){readHash=v.sha256;if(!repairing){tool('tongxu_run_tests',{});return;}tool('tongxu_replace_file',{path:mode==='outside'?'README.md':'clamp.mjs',expectedSha256:readHash,text:'// repaired by synthetic agent fixture\\nexport function clamp(value,low,high){return Math.min(high,Math.max(low,value));}\\n'});}else if(stage==='tongxu_replace_file'){if(mode.startsWith('interrupt')&&!fs.existsSync(trace+'.interrupted')){fs.writeFileSync(trace+'.interrupted','yes');process.exit(7)}else tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:repairing?'repaired':'confirmed',report:'Synthetic agent used registered tools in the allowed phase.'});return;}
 if(!('id'in m))return;let result={};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:true};
-if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],false]))}};
+if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){const id='fixture-thread-'+process.pid;thread={id,sessionId:id,cwd:m.params.cwd,source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};emit({id:m.id,result:{thread,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){current='fixture-turn-'+(++turn);const text=m.params.input[0].text;context=JSON.parse(text.slice(text.lastIndexOf('\\n')+1));log({kind:'model-input',role:m.params.outputSchema.properties.verdict?'review':'fact',turn});emit({id:m.id,result:{turn:{id:current}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:current,status:'inProgress',items:[],rootTurnId:current}}});if(m.params.outputSchema.properties.verdict){if((mode==='review-interrupt'||mode==='interrupt-twice')&&!fs.existsSync(trace+'.review-interrupted')){fs.writeFileSync(trace+'.review-interrupted','yes');process.exit(9)}if(mode==='empty-review'){finish({candidateH:context.candidate.H,verdict:'REWORK_REQUIRED',report:'Synthetic incomplete report; no owner choice.',findings:[]});}else if(mode==='interrupt-rework'&&!fs.existsSync(trace+'.rework')){fs.writeFileSync(trace+'.rework','yes');finish({candidateH:context.candidate.H,verdict:'REWORK_REQUIRED',report:'Synthetic valid rework control message, not a real product defect.',findings:[{id:'fixture-followup',priority:1,description:'Explicit fixture event exercising ordinary rework continuation.'}]});}else finish({candidateH:context.candidate.H,verdict:'PASS',report:'Independent synthetic review of current candidate.',findings:[]});}else if(text.startsWith('The host has now explicitly'))tool('tongxu_read_file',{path:'clamp.mjs'});else finish({candidateH:context.candidate.H,decision:'confirmed',report:'Synthetic fact verification confirms the fixture contract failure.'});return;}
+if(m.method==='turn/start'){current='fixture-turn-'+(++turn);const text=m.params.input[0].text;repairing=text.startsWith('The host has now explicitly');context=JSON.parse(text.slice(text.lastIndexOf('\\n')+1));log({kind:'model-input',role:m.params.outputSchema.properties.verdict?'review':'fact',turn});emit({id:m.id,result:{turn:{id:current}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:current,status:'inProgress',items:[],rootTurnId:current}}});if(mode==='host-unavailable'&&turn===1){emit({method:'warning',params:{threadId:thread.id,message:'Code Mode is unavailable because code-mode host is disabled.'}});return;}if(m.params.outputSchema.properties.verdict){if((mode==='review-interrupt'||mode==='interrupt-twice')&&!fs.existsSync(trace+'.review-interrupted')){fs.writeFileSync(trace+'.review-interrupted','yes');process.exit(9)}if(mode==='empty-review'){finish({candidateH:context.candidate.H,verdict:'REWORK_REQUIRED',report:'Synthetic incomplete report; no owner choice.',findings:[]});}else if(mode==='interrupt-rework'&&!fs.existsSync(trace+'.rework')){fs.writeFileSync(trace+'.rework','yes');finish({candidateH:context.candidate.H,verdict:'REWORK_REQUIRED',report:'Synthetic valid rework control message, not a real product defect.',findings:[{id:'fixture-followup',priority:1,description:'Explicit fixture event exercising ordinary rework continuation.'}]});}else finish({candidateH:context.candidate.H,verdict:'PASS',report:'Independent synthetic review of current candidate.',findings:[]});}else if(repairing||turn===1)tool('tongxu_read_file',{path:'clamp.mjs'});else finish({candidateH:context.candidate.H,decision:'confirmed',report:'Synthetic fact verification confirms the fixture contract failure.'});return;}
 emit({id:m.id,result});});}
 `;
   const codex = join(root, 'codex-fixture.mjs'), claude = join(root, 'claude-fixture.mjs'); await writeFile(codex, code, { mode: 0o700 }); await writeFile(claude, code, { mode: 0o700 });
@@ -48,7 +49,7 @@ test('one controlled entry performs tool writes, actual tests, a new commit and 
   const f = await fixture(t), before = await git(f.workspace, ['rev-parse', 'HEAD']), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true); assert.notEqual(result.after.H, before); assert.equal(result.after.kind, 'local-git'); assert.equal(result.after.pr, null);
   assert.equal(result.manualRepairRequired, false); assert.equal(result.manualReportCopyRequired, false);
-  const trace = await readFile(f.trace, 'utf8'); assert.equal(modelInputs(trace), 5); assert.equal(trace.split('\n').filter(x => x.includes('"kind":"tool-request"')).length, 3);
+  const trace = await readFile(f.trace, 'utf8'); assert.equal(modelInputs(trace), 5); assert.equal(trace.split('\n').filter(x => x.includes('"kind":"tool-request"')).length, 5);
   assert.deepEqual((result.data as any).changed, ['clamp.mjs']); assert.equal((result.data as any).tests.passed, true);
   const again = await runRepair(f.plan, f.operation); assert.deepEqual(again, result); assert.equal(await readFile(f.trace, 'utf8'), trace);
   await writeFile(join(f.operation, 'result.json'), JSON.stringify({ status: 'forged', automaticRepairImplemented: true }));
@@ -156,4 +157,19 @@ test('a recovered commit remains recoverable after its own review is interrupted
   assert.equal((result.data as any).writerTerminal, 'unknown_or_interrupted');
   const trace = await readFile(f.trace, 'utf8'); assert.equal(modelInputs(trace), 6);
   assert.equal(trace.split('\n').filter(x => x.includes('"name":"tongxu_replace_file"')).length, 1);
+});
+
+test('a missing native tool host stops before impact or repair, while read-only configuration stays strict', async t => {
+  const f = await fixture(t, 'host-unavailable');
+  await assert.rejects(runRepair(f.plan, f.operation), /native_tool_host_unavailable/);
+  assert.equal(modelInputs(await readFile(f.trace, 'utf8')), 1);
+  assert.equal(await git(f.workspace, ['rev-parse', 'HEAD']), f.candidate.H);
+  await assert.rejects(readFile(join(f.operation, 'attempt-1/fact-and-repair/completed.json')), { code: 'ENOENT' });
+  const config = { web_search: 'disabled', model_provider: 'openai', service_tier: 'default', features: Object.fromEntries(disabledFeatures.map(x => [x, false])), mcp_servers: {} };
+  checkConfig(config);
+  config.features.code_mode_host = true;
+  assert.throws(() => checkConfig(config), /native_feature_boundary_not_applied/);
+  checkConfig(config, true);
+  config.features.shell_tool = true;
+  assert.throws(() => checkConfig(config, true), /native_feature_boundary_not_applied/);
 });
