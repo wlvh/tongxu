@@ -20,20 +20,22 @@ export type ResultBinding = {
   role: 'reviewer' | 'verifier_fact' | 'protocol_probe'; run: string; sessionId: string; threadId: string;
   turnIds: string[]; workspace: string; scopeSource: string; arrangementSource: string;
   inputManifestSha256: string; promptSha256: string;
-  candidate: { repository: string; pr: number; H: string; B: string; target: string };
+  candidate: { repository: string; pr: number | null; H: string; B: string; target: string; kind?: 'github-pr' | 'local-git' };
 };
 export function validateBinding(x: any): ResultBinding {
   if (!object(x) || x.schemaVersion !== 1 || typeof x.protocol !== 'string' || !Object.hasOwn(protocols, x.protocol) || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
   if (['run', 'sessionId', 'threadId'].some(k => !text(x[k])) || !text(x.workspace, 4096) || !isAbsolute(x.workspace) || resolve(x.workspace) !== x.workspace || !text(x.scopeSource, 2048) || !text(x.arrangementSource, 2048) || !sha.test(x.inputManifestSha256) || !sha.test(x.promptSha256)) throw new Error('incomplete_result_binding');
   if (!Array.isArray(x.turnIds) || x.turnIds.length > 8 || x.turnIds.some((s: any) => !text(s)) || new Set(x.turnIds).size !== x.turnIds.length || (!x.turnIds.length && x.role !== 'protocol_probe')) throw new Error('invalid_expected_turns');
   const c = x.candidate;
-  if (!object(c) || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !Number.isSafeInteger(c.pr) || c.pr < 1 || !commit.test(c.H) || !commit.test(c.B) || !text(c.target, 256)) throw new Error('invalid_result_candidate');
+  if (!object(c) || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !(c.kind === 'local-git' ? c.pr === null && c.repository.startsWith('local/') : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr >= 1) || !commit.test(c.H) || !commit.test(c.B) || !text(c.target, 256)) throw new Error('invalid_result_candidate');
   return x as ResultBinding;
 }
 
 type TurnState = { id: string; started: boolean; terminal: string | null; final: { id: string; text: string } | null; errors: any[]; rootTurnId?: string | null };
-export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
+export type ReconciledToolCall = { request: any; response: any };
+export function parseCodexResult(bytes: Buffer, binding: ResultBinding, reconciled: ReconciledToolCall[] = []) {
   validateBinding(binding);
+  if (new Set(reconciled.map(x => JSON.stringify(x.request?.id))).size !== reconciled.length || reconciled.some(x => x.request?.method !== 'item/tool/call' || x.response?.id !== x.request.id || typeof x.response?.result?.success !== 'boolean' || !Array.isArray(x.response.result.contentItems))) throw new Error('invalid_tool_reconciliation');
   const protocol = protocols[binding.protocol];
   if (bytes.length > RESULT_BYTES) throw new Error('result_input_limit');
   const gaps = new Set<string>(), turns: TurnState[] = binding.turnIds.map(id => ({ id, started: false, terminal: null, final: null, errors: [] }));
@@ -61,7 +63,11 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
       continue;
     }
     if (p.threadId !== binding.threadId) { ignored++; continue; }
-    if ('id' in m) { invalid('native_server_request_requires_reconciliation'); continue; }
+    if ('id' in m) {
+      const matched = reconciled.find(x => isDeepStrictEqual(x.request, m));
+      if (!matched || !binding.turnIds.includes(p.turnId)) invalid('native_server_request_requires_reconciliation');
+      continue;
+    }
     if (m.method === 'thread/status/changed') {
       if (!object(p.status) || !['active', 'idle', 'notLoaded', 'systemError'].includes(p.status.type)) invalid('invalid_thread_status');
       else if (p.status.type === 'systemError') invalid('native_thread_system_error');

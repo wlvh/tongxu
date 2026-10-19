@@ -33,8 +33,11 @@ export class LiveProcess {
   private partial = Buffer.alloc(0);
   private bytes = 0;
   private sequence = 0;
+  private serving = Promise.resolve();
+  private closing = false;
+  private replies = new Map<string, { request: string; response: unknown }>();
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>) {
     for (const name of ['stdout.ndjson', 'stderr.txt', 'stdin.ndjson']) writeFileSync(join(directory, name), '', { flag: 'wx', mode: 0o600 });
     save(join(directory, 'launch.json'), { command, args, cwd, startedAt: new Date().toISOString(), status: 'launch_registered' });
     this.process = spawn(command, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -67,6 +70,16 @@ export class LiveProcess {
   private receive(m: any) {
     this.events.push(m);
     if (typeof m?.method === 'string' && 'id' in m) {
+      if (this.onRequest && m.method === 'item/tool/call') {
+        this.serving = this.serving.then(async () => {
+          if (this.closing || this.failure) throw new Error('executor_not_accepting_tools');
+          const key = JSON.stringify(m.id), prior = this.replies.get(key), encoded = JSON.stringify(m);
+          if (prior) { if (prior.request !== encoded) throw new Error('conflicting_tool_request_id'); this.send(prior.response); return; }
+          const result = await this.onRequest!(m), response = { id: m.id, result };
+          this.replies.set(key, { request: encoded, response }); this.send(response);
+        }).catch(e => { this.fail(e instanceof Error ? e.message : 'dynamic_tool_failed'); this.send({ id: m.id, error: { code: -32603, message: this.failure } }); });
+        return;
+      }
       this.send({ id: m.id, error: { code: -32601, message: 'This read-only relay grants no approval or external tool request.' } });
       this.fail('executor_request_denied'); return;
     }
@@ -98,6 +111,8 @@ export class LiveProcess {
     throw new Error('executor_wait_timeout');
   }
   async close() {
+    this.closing = true;
+    await this.serving;
     this.process.stdin.end();
     const wait = (ms: number) => new Promise<void>(resolve => { const t = setTimeout(resolve, ms); this.closed.then(() => { clearTimeout(t); resolve(); }); });
     await wait(1000);

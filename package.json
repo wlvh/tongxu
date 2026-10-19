@@ -9,6 +9,7 @@
     "test": "npm run build && node --test dist/tests/w1/*.test.js",
     "test:native": "npm run build && node --test dist/tests/w4/*.test.js",
     "test:relay": "npm run build && node --test dist/tests/w5/*.test.js",
+    "test:repair": "npm run build && node --test dist/tests/w5/repair.test.js",
     "start": "node dist/src/cli.js"
   },
   "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" }

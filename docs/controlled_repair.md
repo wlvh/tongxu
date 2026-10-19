@@ -1,0 +1,49 @@
+# 本机受控修复与独立再审
+
+本子版在 #17 已交付的只读角色链上增加受管测试工作区内的真实写入能力。默认只读入口不变；新增 `repair-cli` 明确选择修复模式。采用条款为原 #7 的 CW01—CW08，真实前置为 `6993276`，分支目标 `feat/w5-local-relay`。不把 #14/#15 当作已集成，也不操作真实 main 或 SEC_metrics。
+
+## 第一条可执行范围
+
+目前支持一个明确标注的私有本地 Git 测试仓库和 `clamp-contract-v1` 纯函数契约。它故意预置小缺陷，目的在于观察真实 Agent 的写入、测试和独立审核；不能称作 tongxu 产品漏洞或任意仓库自动修复已经可用。`clamp.mjs` 是唯一允许修改的文件，README、运行器、判定器、Git 管理文件和证据均不授予模型写权。
+
+可信配置固定已有 Codex/Claude/Node 绝对路径、完整 fact/impact/reviewer 角色提示、必要政策清单、禁用 MCP 名称、现有订阅边界及有界等待。配置由负责人提供，模型报告不能生成它。入口一次完成测试仓库准备、真实角色任务和后续转交：
+
+```sh
+node dist/src/repair-cli.js demo --config /private/config.json --root /private/new-managed-task
+```
+
+配置类型见 `RepairConfig`。准备器写完源文件后记录实际 Git H、全部文件 hash 和原写入结束，创建固定 grant，再由运行器取得该工作区的占用。所有示例提交留在本地，没有远端 PR 编号；原生结果使用明确 `kind=local-git, pr=null` 和真实 commit，不借用一个虚构 GitHub PR。
+
+## 谁真正执行写入
+
+一个新的 Codex 事实核实会话先检查源码及真实失败测试。独立 Claude 核影响与最小方案后，意见由程序传回原事实会话综合；确认问题且 grant 匹配时，程序明确把写入责任交给该**同一事实会话**。它通过原生动态工具读取文件、用预期原 hash 替换获准文件、运行固定测试。每个请求都核 thread/turn/call 与实际权限状态；任何越界请求不执行。
+
+动态工具是官方 App Server 的实验接口，依据本机 0.163.0-alpha.10.2 生成的 experimental schema 实现，另参考 [官方调用流程](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental)。它不是任意 shell：工具名称、输入形状和对应实现由程序固定。已核工具请求/回复单独关联，原 stdout 不删改；没有关联的服务器请求仍使原解析器拒绝。旧只读调用默认拒绝所有此类请求。
+
+测试由固定外层判定器启动独立进程。Mac Seatbelt 禁写文件、子进程和网络，拒绝读取其他 `/Users` 文件；Node 还限制模块文件读取。预期值由父进程计算，候选程序的退出码或自称 PASS 不足以通过。该受限纯函数测试不是 W2 Linux/bubblewrap 的替代品。
+
+测试通过后由程序冻结 diff 和新的本地 Git commit，所有 Git 写命令也保留启动、PID、退出和原输出。新鲜、无写工具的 Codex reviewer 审核新候选；旧 PASS 不复制。范围内返工最多三批，不能无限追加模型任务；无问题或 finding 被反证则跳过修复。当前版本仅支持上述小测试仓库，不自动推送修复提交或批准合并。
+
+## 原件与重入
+
+`operation/` 保留固定 plan/输入、原树、授权来源、角色原输入/输出、工具调用意图与写入前后全文、测试、Git 操作、各候选及独立报告。`terminal-record.json` 固定完成证据的 hash；`result.json` 只是可重建展示。重入会重新核原捕获、当前树、候选和审核结果，不能通过改派生 PASS 放行。
+
+```sh
+node dist/src/repair-cli.js run --plan /private/task/plan.json --output /private/task/operation
+```
+
+活动或未知的原控制器/子进程仍拒绝竞争写入。若原进程已结束，可明确选择已采用的恢复权限：
+
+```sh
+node dist/src/repair-cli.js run --plan /private/task/plan.json --output /private/task/operation --reconcile-ended
+```
+
+它必须核原工作区、进程 PID、已登记 Git/测试/原生进程、占用和写入意图，保留旧锁到历史后记录新一代交接；不按时间超时释放，不清空或换目录。已应用的部分代码与原记录一致、测试通过时，可固定这个实际候选并交新审核者；原修复模型仍标为中断/未知，绝不改成“原模型正常完成”。未完成原生会话不会冒称被恢复；需要新执行者时显式记录新身份和交接。无法证明的启动或副作用仍保留 unknown。最多三次控制器尝试，不用无限恢复绕过投入边界。
+
+撤销入口保存独立控制记录，阻止后续工具写入与新模型阶段；已发生修改保留，不静默回滚：
+
+```sh
+node dist/src/repair-cli.js revoke --output /private/task/operation --source '可信停止请求引用'
+```
+
+安全测试使用合成执行器，但实际执行文件边界、Git 和受限测试进程。真实模型链另留 native_capture 原件；两者分别报告。完整 W5/G2、通用工程测试、强制接管未知写者、生产接收和自动合并不由这个子版声明完成。
