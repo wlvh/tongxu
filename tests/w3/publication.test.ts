@@ -27,7 +27,7 @@ import {QueueStore} from ${JSON.stringify(new URL('../../src/queue-store.js', im
 const path=${JSON.stringify(remotePath)},store=${JSON.stringify(f.store)},args=process.argv.slice(2),method=args[args.indexOf('--method')+1],endpoint=args.at(-1);
 let input='';for await(const b of process.stdin)input+=b;
 let r=JSON.parse(fs.readFileSync(path,'utf8'));r.requests.push({method,endpoint});
-const base='repos/'+r.repository,save=()=>fs.writeFileSync(path,JSON.stringify(r));
+const base='repos/'+r.repository,save=()=>{const tmp=path+'.'+process.pid;fs.writeFileSync(tmp,JSON.stringify(r));fs.renameSync(tmp,path)};
 function emit(status,value){save();process.stdout.write('HTTP/2.0 '+status+' Fixture\\r\\ncontent-type: application/json\\r\\n\\r\\n'+JSON.stringify(value));process.exitCode=status>=400?1:0;}
 if(method==='GET'){
  if(endpoint==='user')emit(200,r.actor);
