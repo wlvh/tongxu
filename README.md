@@ -1,6 +1,6 @@
 # 同序｜人掌控目标，Agent 协作交付
 
-**v2.3 产品范围；开发分支已提供只读采集、隔离验证和本地影子接收 CLI。** 秘书、受管后台与生产界面仍是后续阶段。
+**v2.3 产品范围；本组合分支提供只读采集、隔离验证、本地影子接收、真实双工具只读协作和受控示例修复 CLI。** 秘书、生产接收与工作台界面仍是后续阶段。
 
 你主要对工作秘书说目标、顺序和边界。秘书联络和跟进，不做技术任务；开发者协调实现，独立审核者检查，PR 接收者判断最小安全合入，普通后台核权执行。任务自主联系、后台中转，GitHub保存正式记录，不让秘书成为消息或撤权瓶颈。
 
@@ -13,6 +13,10 @@
 - [隔离验证：固定树、逐前缀测试与结果对照](docs/w2_verification.md)
 - [影子接收：持久材料、控制、前置与原操作恢复](docs/w3_shadow_queue.md)
 - [已有 Codex 的无模型隔离自检](docs/w4_native_inspection.md)
+- [Codex 原结果：导入、追加、重放和交接输入](docs/codex_result_adapter.md)
+- [真实只读协作：两轮、Claude 接收与 Codex 综合](docs/local_readonly_relay.md)
+- [受控修复：限定写权、固定测试和新候选再审](docs/controlled_repair.md)
+- [本机组合：固定来源、统一入口与接收前边界](docs/local_reception_integration.md)
 - [角色 prompt 装配及工具权限](prompts/README.md)
 
 首页是本批目标、组织方式、委托与停止、成果验收、复盘抽查五项控制；秘书对话与原三工作区保留。人的采用、团队技术约定、代理依据委托作出的处置分别可查。可以并行，也可按阶段串行或统一负责人；不以更多Agent作为成功标准。
@@ -32,6 +36,19 @@ node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /absolute/priva
 `verify` 可选原 Linux/bubblewrap 或 [现有 Docker 的隔离执行器](docs/docker_verification.md)，读取已有包，在断网的新现场运行显式登记的现成测试，并保留基线和每个组合前缀的固定树、实际 HEAD、原输出与缺口。命令和测试计划见 [隔离验证文档](docs/w2_verification.md)。它不写远端，不自动安装依赖，也不执行 SEC_metrics。
 
 `queue` 把配对 W1/W2 材料导入私有 SQLite，跨进程保存精确前置、三类停止控制、同目标占用和可恢复的影子评估。用法见 [影子接收文档](docs/w3_shadow_queue.md)。它只产出本地状态与待核原因，没有生产接收、发布或合并能力。
+
+## 在同一目录使用本机协作能力
+
+本分支已将固定 W1 Mac 修补、W2 Docker/W3 和 W4/W5 源码组合到一个目录。使用现有 Node24 和依赖构建后，Mac 的适用验证为：
+
+```bash
+npm run test:docker -- /absolute/private/docker-config.json
+node --test dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js
+```
+
+配置必须指向已核的本地 Docker socket、现有程序和固定镜像 ID，完整格式见 [Docker 入口](docs/docker_verification.md)。无需再建虚拟机，也不嵌套 bubblewrap。`npm test` 继续保留原 Linux/bubblewrap 专属路线；`npm run test:mac` 提供不含 Docker 的 Mac 适用检查。
+
+`relay-cli` 可由一次入口完成真实 Codex 两轮、程序交给 Claude 并返回 Codex 综合；`repair-cli` 在已采用的纯函数测试仓库范围内完成接写权、修改、固定测试及新候选独立再审。已有完整操作优先回读，不为展示组合重复调用模型。W3 队列目前不自动调度这两个入口，组合源码不表示完整 G1/G2 或生产接收已成立；各自的契约与限制见上方对应文档。
 
 ## 离线 UI
 
