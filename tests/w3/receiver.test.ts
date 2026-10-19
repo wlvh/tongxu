@@ -227,9 +227,11 @@ test('a pre-opened legacy v4 dispatch cannot omit supplemental material binding;
   f.q.enableSupplements(); await supplementReception((await supplementPlan(f, first)).path);
   legacy.exec("DROP TRIGGER receiver_packet_material_guard; CREATE TRIGGER receiver_packet_material_guard BEFORE UPDATE ON operations WHEN 0 BEGIN SELECT RAISE(ABORT,'obsolete-guard'); END");
   await assert.rejects(runReception(f.path), /supplement_guard_missing/); assert.equal(await f.count(), 1);
-  assert.equal(f.q.enableSupplements().schemaVersion, 5); assert.equal(f.q.enableSupplements().duplicate, true);
+  assert.equal(f.q.enableSupplements().schemaVersion, 6); assert.equal(f.q.enableSupplements().duplicate, true);
+  assert.throws(() => legacy.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) SELECT item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at FROM packets WHERE id=?').run(first.packet), /supplement_lineage_must_be_retained/);
   const op = f.q.begin(f.item, 'fixture-legacy-client'), result = f.q.evaluate(op.operation);
   assert.throws(() => legacyReserve.run(100, JSON.stringify({ ...result, receiver: { bindingHash: 'a'.repeat(64) } }), op.operation), /packet_material_binding_required/);
+  assert.throws(() => legacyReserve.run(100, JSON.stringify({ ...result, receiver: { bindingHash: 'a'.repeat(64), packetFingerprint: f.q.receiverEvidence(op.operation).fingerprint } }), op.operation), /packet_material_binding_required/);
   assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
 });
 
