@@ -28,7 +28,7 @@ node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /absolute/priva
 
 输出目录须为仓库外的新绝对路径。默认使用已有 Git/gh 身份，只读固定候选和原记录，生成私人交接包与单独摘要；部分失败可 `collect --resume`。退出 0 不表示本人采用、业务 PASS 或可合并。完整命令与显式连接器传输见 [CLI 文档](docs/w1_cli.md)。
 
-在 Linux/bubblewrap 主机上，`verify` 可读取已有包，在断网的新现场运行显式登记的现成测试，并保留基线和每个组合前缀的固定树、实际 HEAD、原输出与缺口。命令和测试计划见 [隔离验证文档](docs/w2_verification.md)。它不写远端，不自动安装依赖，也不执行 SEC_metrics。
+`verify` 可选原 Linux/bubblewrap 或 [现有 Docker 的隔离执行器](docs/docker_verification.md)，读取已有包，在断网的新现场运行显式登记的现成测试，并保留基线和每个组合前缀的固定树、实际 HEAD、原输出与缺口。命令和测试计划见 [隔离验证文档](docs/w2_verification.md)。它不写远端，不自动安装依赖，也不执行 SEC_metrics。
 
 `queue` 把配对 W1/W2 材料导入私有 SQLite，跨进程保存精确前置、三类停止控制、同目标占用和可恢复的影子评估。用法见 [影子接收文档](docs/w3_shadow_queue.md)。它只产出本地状态与待核原因，没有生产接收、发布或合并能力。
 

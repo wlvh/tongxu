@@ -2,7 +2,7 @@
 
 `verify` 接收 W1 采集包，在私有的新 Git 仓库和断网现场运行明确登记的现成测试。它记录基线 B、每个有序组合的 T 和实际 HEAD，并保留失败的中间结果。执行完整不代表业务正确、独立审核通过或可以合并。
 
-需要 Linux、支持用户/挂载/网络隔离的 bubblewrap、Git（支持 `merge-tree --write-tree`）、Node 24。本机验证版本为 Git 2.52.0、bubblewrap 0.12.0、Node 24.19.0。依赖安装由操作者在运行前完成；运行器不装包、不联网，没有隔离能力则保存缺口。
+默认 schema1 入口需要 Linux、支持用户/挂载/网络隔离的 bubblewrap、Git（支持 `merge-tree --write-tree`）、Node 24。Mac 可显式选择 [Docker schema2 执行器](docker_verification.md)，复用现有本地引擎；不会自动切换后端或回退裸宿主。本机验证版本为 Git 2.52.0、bubblewrap 0.12.0、Node 24.19.0。依赖安装由操作者在运行前完成；运行器不装包、不联网，没有隔离能力则保存缺口。
 
 ## 运行
 

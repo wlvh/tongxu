@@ -3,7 +3,7 @@ import { realpath, lstat, readdir, readlink, readFile } from 'node:fs/promises';
 import { basename, dirname, join, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export type Execution = { status: 'completed' | 'failed' | 'timeout' | 'output_limit' | 'unavailable'; exitCode: number | null; signal: string | null; stdout: Buffer; stderr: Buffer; durationMs: number };
+export type Execution = { status: 'completed' | 'failed' | 'timeout' | 'output_limit' | 'unavailable' | 'unknown'; exitCode: number | null; signal: string | null; stdout: Buffer; stderr: Buffer; durationMs: number };
 export type SandboxOptions = { work: string; resultDirectory: string; dependencies?: string; timeoutMs: number; maxBytes: number; argv: string[]; onSpawn?: (pid: number) => Promise<void> };
 export async function runtimeResources(): Promise<{ node: string; bin: string; npm?: string; npmVersion?: string }> {
   const node = await realpath(process.execPath), bin = dirname(node);

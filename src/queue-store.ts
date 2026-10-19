@@ -70,7 +70,7 @@ export class QueueStore {
     if (report.failureOutput) references.push(report.failureOutput.stdout, report.failureOutput.stderr);
     for (const stage of report.stages) {
       if (stage.mergeOutput) references.push(stage.mergeOutput);
-      for (const tool of stage.tools) for (const key of ['stdout', 'stderr', 'result']) if (tool[key]) references.push(tool[key]);
+      for (const tool of stage.tools) for (const key of ['stdout', 'stderr', 'result', 'sandbox']) if (tool[key]) references.push(tool[key]);
     }
     for (const ref of references) this.blob(ref.sha256);
     return { context, manifest, report };

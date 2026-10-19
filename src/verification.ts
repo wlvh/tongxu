@@ -9,15 +9,17 @@ import { hash, privateDirectory } from './snapshot.js';
 import { canonical, compare, samples } from './comparison.js';
 import type { SampleSet, Comparison } from './comparison.js';
 import { runSandbox, validateDependencies, dependencyDigest, runtimeResources } from './sandbox.js';
+import { DockerRuntime, parseDockerConfig } from './docker-sandbox.js';
+import type { DockerConfig } from './docker-sandbox.js';
 
 const exec = promisify(execFile);
 type Tool = { id: string; argv: string[]; timeoutMs: number; expectedSampleIds?: string[] };
-type Plan = { schemaVersion: 1; tools: Tool[]; dependencyDirectory?: string; judgmentRefs?: string[] };
+type Plan = { schemaVersion: 1 | 2; tools: Tool[]; dependencyDirectory?: string; judgmentRefs?: string[]; executor?: DockerConfig };
 type Blob = { path: string; sha256: string; bytes: number };
 type Input = { candidate: Candidate; manifestHash: string; sourceGaps: string[]; manifest: Blob };
-type ToolResult = { id: string; argv: string[]; status: string; startedAt: string; finishedAt?: string; pid?: number; processGroup?: number; exitCode?: number | null; signal?: string | null; durationMs?: number; stdout?: Blob; stderr?: Blob; inputUnchanged?: boolean; dependencyHash?: string | null; dependenciesUnchanged?: boolean; sampleSet?: SampleSet; result?: Blob; gaps: string[] };
+type ToolResult = { id: string; argv: string[]; status: string; startedAt: string; finishedAt?: string; pid?: number; processGroup?: number; exitCode?: number | null; signal?: string | null; durationMs?: number; stdout?: Blob; stderr?: Blob; sandbox?: Blob; dockerExecutionDirectory?: string; inputUnchanged?: boolean; dependencyHash?: string | null; dependenciesUnchanged?: boolean; sampleSet?: SampleSet; result?: Blob; gaps: string[] };
 type Stage = { index: number; inputHead: string; parent: string; tree: string | null; head: string | null; status: string; tools: ToolResult[]; comparisons: { tool: string; results: Comparison[] }[]; gaps: string[]; mergeOutput?: Blob; preInputHash?: string };
-type Report = { schemaVersion: 1; kind: 'tongxu-verification'; id: string; startedAt: string; finishedAt?: string; status: string; repository: string; targetRef: string; inputs: Input[]; plan: Blob; planHash: string; judgmentRefs: string[]; toolVersions: Record<string, string>; stages: Stage[]; gaps: string[]; limitations: string[]; executionComplete: boolean; comparisonComplete: boolean | null; businessCorrectness: 'unverified'; observedSampleFailures: number; failureOutput?: { stdout: Blob; stderr: Blob }; dependencyHash: string | null };
+type Report = { schemaVersion: 1 | 2; kind: 'tongxu-verification'; id: string; startedAt: string; finishedAt?: string; status: string; repository: string; targetRef: string; inputs: Input[]; plan: Blob; planHash: string; judgmentRefs: string[]; toolVersions: Record<string, string>; stages: Stage[]; gaps: string[]; limitations: string[]; executionComplete: boolean; comparisonComplete: boolean | null; businessCorrectness: 'unverified'; observedSampleFailures: number; failureOutput?: { stdout: Blob; stderr: Blob }; dependencyHash: string | null };
 const safeCode = (e: unknown) => e instanceof Error && /^[a-z0-9_]+$/.test(e.message) ? e.message : 'local_or_tool_error';
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' });
 async function git(directory: string, ...args: string[]): Promise<Buffer> {
@@ -46,12 +48,14 @@ class Store {
 }
 export function parsePlan(value: unknown): Plan {
   const p = value as Plan;
-  if (!p || p.schemaVersion !== 1 || !Array.isArray(p.tools) || !p.tools.length || p.tools.length > 16 || new Set(p.tools.map(t => t.id)).size !== p.tools.length) throw new Error('invalid_test_plan');
+  if (!p || ![1, 2].includes(p.schemaVersion) || !Array.isArray(p.tools) || !p.tools.length || p.tools.length > 16 || new Set(p.tools.map(t => t.id)).size !== p.tools.length) throw new Error('invalid_test_plan');
   for (const t of p.tools) {
     if (typeof t.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(t.id) || !Array.isArray(t.argv) || !t.argv.length || t.argv.length > 100 || t.argv.some(a => typeof a !== 'string' || a.includes('\0')) || !isAbsolute(t.argv[0]!) || /\/(?:sh|bash|zsh|dash|fish|cmd|powershell)$/.test(t.argv[0]!) || !Number.isInteger(t.timeoutMs) || t.timeoutMs < 100 || t.timeoutMs > 300_000) throw new Error('invalid_registered_tool');
     if (t.expectedSampleIds && (!Array.isArray(t.expectedSampleIds) || !t.expectedSampleIds.length || t.expectedSampleIds.some(x => typeof x !== 'string' || !x) || new Set(t.expectedSampleIds).size !== t.expectedSampleIds.length)) throw new Error('invalid_expected_samples');
   }
   if (p.judgmentRefs && (!Array.isArray(p.judgmentRefs) || p.judgmentRefs.some(r => typeof r !== 'string'))) throw new Error('invalid_judgment_refs');
+  if (p.schemaVersion === 2) p.executor = parseDockerConfig(p.executor);
+  else if (p.executor !== undefined) throw new Error('docker_requires_plan_v2');
   return p;
 }
 export type VerifyOptions = { snapshots: string[]; objects: string; plan: string; output: string };
@@ -142,19 +146,26 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
   if (!isAbsolute(o.objects) || await realpath(o.objects) !== o.objects) throw new Error('invalid_object_source');
   await privateDirectory(o.output, true); await mkdir(join(o.output, 'raw'), { mode: 0o700 });
   const store = new Store(o.output);
-  const report: Report = { schemaVersion: 1, kind: 'tongxu-verification', id: randomUUID(), startedAt: now(), status: 'running', repository: first.candidate.repository, targetRef: first.candidate.targetRef, inputs: [], plan: await store.blob(planBytes), planHash: hash(planBytes), judgmentRefs: plan.judgmentRefs ?? [], toolVersions: { node: process.version, platform: process.platform, architecture: process.arch }, stages: [], gaps: [], executionComplete: false, comparisonComplete: null, businessCorrectness: 'unverified', observedSampleFailures: 0, dependencyHash: null, limitations: ['fixed_inputs_do_not_prove_current_remote_candidate', 'execution_success_is_not_business_correctness_or_merge_permission', 'no_independent_sample_count_from_repeated_runs', 'system_runtime_not_fully_hashed'] };
+  const report: Report = { schemaVersion: plan.schemaVersion, kind: 'tongxu-verification', id: randomUUID(), startedAt: now(), status: 'running', repository: first.candidate.repository, targetRef: first.candidate.targetRef, inputs: [], plan: await store.blob(planBytes), planHash: hash(planBytes), judgmentRefs: plan.judgmentRefs ?? [], toolVersions: { node: process.version, platform: process.platform, architecture: process.arch }, stages: [], gaps: [], executionComplete: false, comparisonComplete: null, businessCorrectness: 'unverified', observedSampleFailures: 0, dependencyHash: null, limitations: ['fixed_inputs_do_not_prove_current_remote_candidate', 'execution_success_is_not_business_correctness_or_merge_permission', 'no_independent_sample_count_from_repeated_runs', 'system_runtime_not_fully_hashed'] };
   for (const b of bundles) report.inputs.push({ candidate: b.candidate, manifestHash: hash(b.bytes), sourceGaps: b.sourceGaps, manifest: await store.blob(b.bytes) });
   const save = () => store.atomic('verification.json', JSON.stringify(report, null, 2) + '\n');
   await save();
   try {
-    for (const name of ['verification', 'sandbox', 'comparison', 'snapshot', 'contract', 'cli']) report.toolVersions[`runner_${name}_sha256`] = hash(await readFile(new URL(`./${name}.js`, import.meta.url)));
+    for (const name of ['verification', 'sandbox', 'docker-sandbox', 'comparison', 'snapshot', 'contract', 'cli']) report.toolVersions[`runner_${name}_sha256`] = hash(await readFile(new URL(`./${name}.js`, import.meta.url)));
     const runtime = await runtimeResources();
     if (runtime.npmVersion) report.toolVersions.npm = runtime.npmVersion;
     report.dependencyHash = await dependencyDigest(dependencies);
     if (dependencies) report.limitations.push('host_dependency_observation_is_not_atomic');
     report.toolVersions.host_git = (await exec('git', ['--version'], { env: gitEnv() })).stdout.trim();
     report.limitations.push('test_child_tool_versions_not_exhaustively_observed');
-    try { report.toolVersions.bwrap = (await exec('bwrap', ['--version'], { env: { PATH: '/usr/bin:/bin' } })).stdout.trim(); } catch { throw new Error('isolation_unavailable'); }
+    let docker: DockerRuntime | undefined;
+    if (plan.executor) {
+      docker = await DockerRuntime.prepare(plan.executor, join(o.output, 'docker-runtime'));
+      report.toolVersions.docker_engine = docker.connection.serverVersion; report.toolVersions.docker_image = docker.connection.config.image;
+      report.limitations.push('docker_image_is_operator_selected_trusted_runtime', 'docker_logs_after_interruption_are_not_complete_capture', 'host_disk_usage_not_quota_isolated');
+    } else {
+      try { report.toolVersions.bwrap = (await exec('bwrap', ['--version'], { env: { PATH: '/usr/bin:/bin' } })).stdout.trim(); } catch { throw new Error('isolation_unavailable'); }
+    }
     const cache = join(o.output, 'objects'); await mkdir(cache, { mode: 0o700 }); await git(cache, 'init', '--bare', '--template=');
     for (const b of bundles) await git(cache, 'fetch', '--no-tags', '--no-write-fetch-head', o.objects, b.candidate.B, b.candidate.H);
     let previous = first.candidate.B;
@@ -186,8 +197,12 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
         result.dependencyHash = await dependencyDigest(dependencies);
         if (current !== original || result.dependencyHash !== report.dependencyHash) { result.status = 'blocked'; result.gaps.push('input_changed_before_tool'); stage.gaps.push('input_changed'); break; }
         const resultDirectory = join(o.output, `result-${i}-${tool.id}-${randomUUID()}`); await mkdir(resultDirectory, { mode: 0o700 });
-        const execution = await runSandbox({ work, resultDirectory, dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, onSpawn: async pid => { result.pid = pid; result.processGroup = pid; await save(); } });
+        const common = { work, resultDirectory, dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, onSpawn: async (pid: number) => { result.pid = pid; if (!docker) result.processGroup = pid; await save(); } };
+        if (docker) { result.dockerExecutionDirectory = `docker-tool-${i}-${tool.id}-${randomUUID()}`; await save(); }
+        const execution = docker ? await docker.run({ ...common, directory: join(o.output, result.dockerExecutionDirectory!), binding: { run: report.id, stage: i, tool: tool.id, head: stage.head!, tree: stage.tree!, planHash: report.planHash } }) : await runSandbox(common);
         Object.assign(result, { status: execution.status, exitCode: execution.exitCode, signal: execution.signal, durationMs: execution.durationMs, stdout: await store.blob(execution.stdout), stderr: await store.blob(execution.stderr), finishedAt: now() });
+        if ('record' in execution) result.sandbox = await store.blob(execution.record as Buffer);
+        if (execution.status === 'unknown') { result.gaps.push('docker_original_execution_unknown'); await save(); throw new Error('docker_original_execution_unknown'); }
         try { result.inputUnchanged = await fingerprint(work, paths) === original; } catch { result.inputUnchanged = false; }
         try { result.dependenciesUnchanged = await dependencyDigest(dependencies) === report.dependencyHash; } catch { result.dependenciesUnchanged = false; }
         if (!result.dependenciesUnchanged) { result.gaps.push('dependencies_changed'); stage.gaps.push('dependencies_changed'); }

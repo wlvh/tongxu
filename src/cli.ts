@@ -17,7 +17,7 @@ tongxu collect --resume ABSOLUTE_EXISTING_DIR
 tongxu verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT --plan ABS_PLAN --output ABS_NEW_DIR [--with ABS_W1_BUNDLE ...]
 tongxu queue init|add|status|control|begin|evaluate --store ABS_PRIVATE_DIR ... (shadow only; docs/w3_shadow_queue.md)
 Transport: --transport gh (default), or --transport relay --relay-dir ABSOLUTE_PRIVATE_DIR
-Requires Node 24+, Git, and gh for default collection; verify also requires Linux/bubblewrap and existing tools.
+Requires Node 24+, Git, and gh for collection; verify uses Linux/bubblewrap unless the trusted plan explicitly selects the local Docker executor.
 Exit 0 = requested collection/verification complete; 2 = saved gaps or observed sample failure; 1 = invalid input/local error.
 An exit code never grants approval, merge permission or business PASS. See docs/w1_cli.md and docs/w2_verification.md.\n`;
 type Options = { command: 'inspect' | 'collect'; repo?: string; pr?: number; issues: number[]; output?: string; resume?: string; context?: string; format: string; transport: string; relayDir?: string };

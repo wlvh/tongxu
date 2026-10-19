@@ -5,6 +5,7 @@ import { loadBundle, parsePlan } from './verification.js';
 import { canonical, samples, compare } from './comparison.js';
 import { shaPattern } from './contract.js';
 import type { Candidate, Manifest } from './contract.js';
+import { dockerEvidenceMatches } from './docker-sandbox.js';
 
 type Reference = { id: string; version: string; source: string };
 export type Requirement = { item: string; type: 'development' | 'merge' | 'enablement' | 'parent'; version: string; blocks: 'shadow_review' | 'merge' | 'enablement'; source: string; canContinue: string };
@@ -36,7 +37,7 @@ export async function readPacket(snapshot: string, verification: string, context
   const contextBytes = await regular(contextPath, 1024 * 1024), context = parseQueueContext(JSON.parse(contextBytes.toString()));
   await privateDirectory(verification, false); await privateDirectory(join(verification, 'raw'), false);
   const reportBytes = await regular(join(verification, 'verification.json'), 64 * 1024 * 1024), r = JSON.parse(reportBytes.toString());
-  if (r?.schemaVersion !== 1 || r.kind !== 'tongxu-verification' || !text(r.id, 128) || !Array.isArray(r.inputs) || r.inputs.length < 1 || r.inputs.length > 8 || !Array.isArray(r.stages) || r.stages.length > 9 || !Array.isArray(r.gaps)) throw new Error('invalid_verification_report');
+  if (![1, 2].includes(r?.schemaVersion) || r.kind !== 'tongxu-verification' || !text(r.id, 128) || !Array.isArray(r.inputs) || r.inputs.length < 1 || r.inputs.length > 8 || !Array.isArray(r.stages) || r.stages.length > 9 || !Array.isArray(r.gaps)) throw new Error('invalid_verification_report');
   const blobs = new Map<string, Buffer>(); let total = 0;
   const remember = (bytes: Buffer) => { const h = hash(bytes); if (!blobs.has(h)) { total += bytes.length; if (total > 128 * 1024 * 1024) throw new Error('queue_evidence_limit'); blobs.set(h, bytes); } return h; };
   const manifestHash = remember(bundle.bytes), reportHash = remember(reportBytes), contextHash = remember(contextBytes);
@@ -45,7 +46,7 @@ export async function readPacket(snapshot: string, verification: string, context
   for (const s of r.stages) {
     if (!s || !Array.isArray(s.tools) || s.tools.length > 16 || !Array.isArray(s.gaps)) throw new Error('invalid_verification_stage');
     if (s.mergeOutput) references.push(s.mergeOutput);
-    for (const t of s.tools) { if (!t || !text(t.id, 64) || !Array.isArray(t.gaps)) throw new Error('invalid_verification_tool'); for (const name of ['stdout', 'stderr', 'result']) if (t[name]) references.push(t[name]); }
+    for (const t of s.tools) { if (!t || !text(t.id, 64) || !Array.isArray(t.gaps)) throw new Error('invalid_verification_tool'); for (const name of ['stdout', 'stderr', 'result', 'sandbox']) if (t[name]) references.push(t[name]); }
   }
   for (const [root, refs, pattern] of [[snapshot, manifest.artifacts, /^(raw\/[0-9a-f]{64}\.json|git\/[0-9a-f]{64}\.(patch|json))$/], [verification, references, /^raw\/[0-9a-f]{64}\.bin$/]] as const) {
     for (const ref of refs) {
@@ -71,6 +72,7 @@ export async function readPacket(snapshot: string, verification: string, context
   let plan: ReturnType<typeof parsePlan> | undefined;
   try { plan = parsePlan(JSON.parse(blobs.get(r.plan.sha256)!.toString())); } catch { gaps.push('invalid_verification_plan'); }
   if (plan) {
+    if (plan.schemaVersion !== r.schemaVersion) gaps.push('executor_report_version_mismatch');
     const structured = plan.tools.filter(t => t.expectedSampleIds), observedSets: any[][] = [];
     for (const [index, stage] of r.stages.entries()) {
       const parent = index === 0 ? c.B : r.stages[index - 1]?.head, inputHead = index === 0 ? c.B : r.inputs[index - 1]?.candidate?.H;
@@ -80,6 +82,8 @@ export async function readPacket(snapshot: string, verification: string, context
       const sets: any[] = []; observedSets.push(sets);
       for (const tool of stage.tools) {
         if (!tool.stdout || !tool.stderr) gaps.push('original_tool_output_missing');
+        if (plan.executor && (!/^docker-tool-[0-9]+-[a-zA-Z0-9_-]+-[0-9a-f-]{36}$/.test(tool.dockerExecutionDirectory ?? '') || !tool.sandbox || !dockerEvidenceMatches(blobs.get(tool.sandbox.sha256)!, plan.executor, { run: r.id, stage: index, tool: tool.id, head: stage.head, tree: stage.tree, planHash: r.planHash }, tool))) gaps.push('docker_execution_evidence_mismatch');
+        if (!plan.executor && tool.sandbox) gaps.push('unplanned_docker_execution');
         const expected = plan.tools.find(t => t.id === tool.id)?.expectedSampleIds;
         if (expected) {
           let raw: unknown; try { raw = JSON.parse(blobs.get(tool.result?.sha256)!.toString()); } catch { gaps.push('original_sample_result_missing_or_invalid'); }

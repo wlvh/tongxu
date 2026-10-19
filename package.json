@@ -3,11 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test dist/tests/w1/*.test.js dist/tests/w2/*.test.js dist/tests/w3/*.test.js",
-    "start": "node dist/src/cli.js"
+    "start": "node dist/src/cli.js",
+    "test:docker": "npm run build && node dist/tests/w2/docker-suite.js"
   },
-  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" }
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
 }
