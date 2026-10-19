@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, rename, lstat, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rename, lstat, rm, readdir, realpath, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -16,7 +16,7 @@ const cli = resolve('dist/src/cli.js');
 const H = 'a'.repeat(40), B = 'b'.repeat(40), M = 'c'.repeat(40);
 
 test('invalid scope/arguments/hosts never reach external tools', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-cli-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-cli-')); t.after(() => rm(root, { recursive: true, force: true }));
   const sentinel = join(root, 'called');
   for (const name of ['git', 'gh']) await writeFile(join(root, name), `#!/bin/sh\ntouch '${sentinel}'\nexit 9\n`, { mode: 0o700 });
   for (const args of [[], ['inspect', '--repo', 'x;touch/y', '--pr', '1'], ['inspect', '--repo', 'a/b', '--pr', '0'], ['collect', '--resume', '/tmp/x', '--repo', 'a/b'], ['inspect', '--repo', 'a/b', '--pr', '1', '--execute', 'rm'], ['inspect', '--repo', 'a/b', '--pr', '1', '--transport', 'relay']]) {
@@ -29,6 +29,21 @@ test('invalid scope/arguments/hosts never reach external tools', async t => {
   assert.equal(parseArgs(['inspect', '--repo', 'a/b', '--pr', '1', '--issue', '2', '--issue', '2']).issues.length, 1);
 });
 
+test('inspect resolves its system temporary-directory alias without relaxing explicit output paths', async t => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-temp-alias-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const physical = join(root, 'physical'), alias = join(root, 'alias'), called = join(root, 'called');
+  await mkdir(physical); await symlink(physical, alias);
+  await writeFile(join(root, 'gh'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(called)},'called');process.exit(9);\n`, { mode: 0o700 });
+  const env = { ...process.env, TMPDIR: alias, PATH: root };
+  await assert.rejects(exec(process.execPath, [cli, 'inspect', '--repo', 'example/project', '--pr', '12'], { env }), e => (e as any).code === 2);
+  assert.equal(await readFile(called, 'utf8'), 'called');
+  assert.deepEqual(await readdir(physical), []); // The owned inspect directory was cleaned.
+  await rm(called);
+  await assert.rejects(exec(process.execPath, [cli, 'collect', '--repo', 'example/project', '--pr', '12', '--output', join(alias, 'out')], { env }), e => (e as any).code === 1);
+  await assert.rejects(lstat(called), { code: 'ENOENT' });
+});
+
 test('gh preserves body bytes and selected coverage headers but drops authentication headers', () => {
   const body = '[ {"body": "verbatim\\ntext"} ]\n';
   const response = parseGh(`HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/a/b/issues/1/comments?per_page=100&page=2>; rel="next"\r\nAuthorization: secret\r\nSet-Cookie: secret\r\n\r\n${body}`);
@@ -37,7 +52,7 @@ test('gh preserves body bytes and selected coverage headers but drops authentica
 });
 
 test('gh fixes github.com even when GH_HOST selects another existing identity', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-gh-host-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-gh-host-')); t.after(() => rm(root, { recursive: true, force: true }));
   const record = join(root, 'args.json');
   await writeFile(join(root, 'gh'), `#!${process.execPath}\nconst fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv.slice(2),host:process.env.GH_HOST})); process.stdout.write('HTTP/2.0 200 OK\\r\\n\\r\\n{}');\n`, { mode: 0o700 });
   const path = process.env.PATH, host = process.env.GH_HOST;
@@ -51,7 +66,7 @@ test('gh fixes github.com even when GH_HOST selects another existing identity', 
 });
 
 test('fixed Git diff uses merge base and leaves an author checkout/index unchanged', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-git-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-git-')); t.after(() => rm(root, { recursive: true, force: true }));
   const g = async (...args: string[]) => (await exec('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args])).stdout.trim();
   await g('init', '-b', 'main'); await writeFile(join(root, 'file'), 'base\n'); await g('add', '.'); await g('commit', '-m', 'base');
   const mergeBase = await g('rev-parse', 'HEAD');
@@ -69,7 +84,7 @@ test('fixed Git diff uses merge base and leaves an author checkout/index unchang
 });
 
 test('real CLI process survives SIGKILL via a new relay session; old raw page stays immutable', { timeout: 15_000 }, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-process-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-process-')); t.after(() => rm(root, { recursive: true, force: true }));
   const bin = join(root, 'bin'); await mkdir(bin);
   // Only Git transport is a fixture here; production Git calculations have their own real fixture above.
   await writeFile(join(bin, 'git'), `#!${process.execPath}\nconst a=process.argv.slice(2); if(a.includes('rev-parse')) process.stdout.write(a.at(-1).slice(0,40)+'\\n'); else if(a.includes('merge-base')) process.stdout.write('${M}\\n'); else if(a.includes('--name-only')) process.stdout.write('file\\0'); else if(a.includes('rev-list')) process.stdout.write('${H}\\n'); else if(a.includes('diff')) process.stdout.write('patch');\n`, { mode: 0o700 });

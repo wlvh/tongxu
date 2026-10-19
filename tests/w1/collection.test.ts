@@ -1,6 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, symlink, lstat, readdir, rm, rename } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, symlink, lstat, readdir, rm, rename, realpath } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { Snapshot, hash } from '../../src/snapshot.js';
@@ -37,7 +37,7 @@ class Fixture implements Transport {
 }
 const git: GitReader = async () => ({ mergeBase: M, files: ['README.txt'], commits: [H], patch: Buffer.from('fixed patch') });
 async function setup(t: test.TestContext, notes: any[] = [], issues: number[] = []) {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-test-'));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-test-'));
   roots.push(root);
   const s = await Snapshot.create(join(root, 'out'), repository, 12, issues, notes);
   t.after(() => s.close());

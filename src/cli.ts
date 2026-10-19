@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, writeFile, unlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -62,7 +62,7 @@ export async function main(args: string[]): Promise<number> {
       relayLock = lock;
     }
     const transport = options.transport === 'relay' ? new RelayTransport(options.relayDir!) : new GhTransport();
-    if (options.command === 'inspect') temporary = await mkdtemp(join(tmpdir(), 'tongxu-inspect-'));
+    if (options.command === 'inspect') temporary = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-inspect-'));
     snapshot = options.resume ? await Snapshot.resume(options.resume) : await Snapshot.create(options.output ?? join(temporary!, 'snapshot'), options.repo!, options.pr!, options.issues, context);
     const exit = await collect(snapshot, transport);
     if (options.command === 'inspect') process.stdout.write(options.format === 'json' ? JSON.stringify(snapshot.manifest, null, 2) + '\n' : renderHandoff(snapshot.manifest));
