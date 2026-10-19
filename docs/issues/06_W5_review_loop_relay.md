@@ -29,3 +29,35 @@ Only-ready 条件由 #6 结果契约限定；unknown/waiting/failed/interrupted/
 Bridge：#6/schema→Codex 解析与持久原件→本条的 input.json；测试覆盖原件篡改、假派生 PASS、错误角色/候选、部分输入、重复输出与完整原文一致性。实测与 fixture 分开，自动链、模型两轮、实际工具限制及 Claude 适配未通过前不得标完整 W5。代码在原 PR #16 接续，真实 target 仍为 W1；#15 另属 W2 分支，不混称已集成。
 
 本地负责人先补独立 Claude 影响核实，再依据本机真实协议实现并验证程序发送与结果消费；不安装新服务或新增费用。收到真实反例按已授权普通修复处理，无需逐包重批；合并、自批、生产与管理权限未增加。原验收和三轮/三批以上反思规则不变。
+
+## 本机最小真实只读链（2026-10-19 接续）
+
+用户已明确要求本机在已有官方 CLI、本人订阅及既有用量边界内执行真实协作，不再停在迁移或离线输入生成。当前固定 W4 前置为 PR #16 `e42f257bbf6d1abb0fba8a431c4d915f6ddfcfb1`。W5 新实现使用独立 `feat/w5-local-relay` 分支，真实 base/target 为该 W4 提交／`feat/w4-native-inspection`；不含 #14/#15，不改 main 或既有 PR target。
+
+### 范围与接口
+
+先取得当前 W4 增量的独立 Claude 影响核实原报告；然后以单一入口 `node dist/src/relay-cli.js run --plan ABS_PLAN --output ABS_PRIVATE_RUN` 驱动一次有界只读链。可信 plan 固定候选 H/B/target、材料清单与 hash、单角色完整提示、两轮审核输入、已有可执行文件、用量证据和结束条件。模型报告只作为数据，不能选择命令、程序、URL、权限或角色。
+
+SU01 实际启动独立 Codex App Server，以准确根会话发送两个有意义的源码审核/补查输入，记录真实请求、turn ID、原事件、终态、进程及权限响应；使用已有 ChatGPT 认证，普通用量不可用即停止，不使用 API 覆盖。
+
+SU02 原始捕获经过既有 import/handoff，逐项核对本次候选、原输入与两轮最终全文。解析器的 `realModelExecutionVerified`、`toolRestrictionsVerified` 仍为 false；执行层另外记录启动、提交和实际响应，不能改字段冒充证明。handoff 原文件保留 `not_sent`，真实投递结果另有来源关联记录。
+
+SU03 程序把固定材料和原审核全文作为输入交给独立官方 Claude CLI，收取匹配该会话的完整 result。首条链把所需源文件正文随 stdin 交付，不给该角色运行时工具；safe-mode 禁止自动记忆/插件/hooks/MCP，实际 init 必须确认工具和 MCP 为空、权限 dontAsk、无 API key 来源。来源文字不能改变外层角色政策。
+
+SU04 程序将审核与 Claude 的原报告及同一固定源材料送入新的独立 Codex `verifier_fact` 会话，完成事实核对和综合并保存最终原文。没有 finding 时不制造返工；有 finding 时给出成立性和最小下一步。首条链不自动改源码、不合并，不把影响报告替代正式审核或事实核实。
+
+SU05 持久保存操作与每个阶段的意图、输入摘要、启动/退出、原字节及最终收据。重复入口复用同一固定输入和已核原结果；不信任派生 PASS。已有启动而结果不能确认时保留 unknown，不重新发同一模型任务；中断先读原现场。单写锁防止同时推进同一 operation。后续恢复不能改变候选、提示、材料或冒用另一个会话。
+
+### 本批验收与限制
+
+真实路径必须观察到一次入口启动、两轮 Codex 原结果正确消费、Claude 实际返回、正确 Codex 角色完成综合，且人工复制报告为零。再以明确标记的安全本地样例检查部分输出、等待/额度错误、错误身份/版本、重复调用、捕获中断与结果恢复；无需每种故障消耗真实模型额度。
+
+保留 CLI 原输出及自然语言报告；退出 0、JSON 有效、文件存在、模型 PASS、处理完成和用户接收分别记录。只读链成功不代表授权修复、接收执行、完整 W5/G2 或生产合并完成。W2/Linux/bubblewrap 保持原路线；本批不扩展 W6/W7、秘书首页或通用消息中心。
+
+### 本机执行记录：首条只读链已完成
+
+2026-10-19 已针对 #16 `e42f257bbf6d1abb0fba8a431c4d915f6ddfcfb1` / B `6c6640eebbcedcf19d8444c4a39c3843b3304cb2` / target `feat/w1-readonly-cli` 完成前置独立 Claude 影响核实。之后由一个入口实际完成 Codex 两轮 → 原捕获 import/handoff → 独立 Claude 接收并回传 → 新 Codex 事实核对与综合。两轮与两个下游会话均有完整原输入、原事件和最终报告，人工复制报告为零。综合纠正了来源报告的过宽断言，未确认本范围内 P0/P1，不强制制造修复。
+
+同一真实 operation 重入，模型阶段文件 hash/时间不变、没有新增模型请求；在原日志副本上模拟截断后，以原字节追加和 replay 恢复两轮全文。安全夹具另外覆盖等待/额度、错误身份/版本、非最终输出、篡改、重复操作及未知结果不重发。详细记录在 `verification/W5_READONLY_RELAY.md`，入口契约在 `docs/local_readonly_relay.md`；私人原件留在本机，不随 Issue 公开。
+
+新增发送/回读代码独立分支 `feat/w5-local-relay`，固定前置 e42f257，真实 target 为 `feat/w4-native-inspection`，另交 Draft PR 和独立代码审核；#16 的 W4 源码不因这次只读链改写。下一项仍是已有 W5 范围内的明确写权接续、受控修复与再审。当前强杀后的锁转移、未完成原生会话续跑及完整 G2 尚未具备；不把这条成功链等同整个 W5 完成，也不启动 W6/W7。
