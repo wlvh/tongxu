@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { hash } from '../../src/snapshot.js';
 import { runRelay, recoverStage, type RelayPlan } from '../../src/relay.js';
 import { LiveProcess, newStage } from '../../src/live-process.js';
+import { readCodexExecution } from '../../src/live-codex.js';
 
 // These are deliberately synthetic process executors. They never import a
 // vendor CLI, read credentials, or make network/model requests.
@@ -52,6 +53,28 @@ test('one entry hands actual fixture process results across roles and recovers w
   await rm(join(f.output, 'result.json')); await rm(join(f.output, 'claude-impact/completed.json'));
   const again = await runRelay(f.path, f.output); assert.deepEqual(again.synthesis, result.synthesis); assert.equal(await readFile(f.trace, 'utf8'), before);
   await writeFile(join(f.output, 'active.lock'), '{}'); await assert.rejects(runRelay(f.path, f.output), { code: 'EEXIST' }); assert.equal(await readFile(f.trace, 'utf8'), before);
+});
+
+test('historical empty-environment captures keep their original feature contract without weakening new launches', async t => {
+  const f = await fixture(t); await runRelay(f.path, f.output);
+  const path = join(f.root, 'historical-capture'); await cp(join(f.output, 'codex-review'), path, { recursive: true });
+  const config = JSON.parse(await readFile(join(path, 'effective-config.json'), 'utf8'));
+  delete config.config.features.stable_environment_tools;
+  await writeFile(join(path, 'effective-config.json'), JSON.stringify(config));
+  await assert.rejects(readCodexExecution(path), /unsupported_historical_feature_boundary/);
+  const launch = JSON.parse(await readFile(join(path, 'launch.json'), 'utf8'));
+  const index = launch.args.indexOf('features.stable_environment_tools=false');
+  assert.ok(index > 0); launch.args.splice(index - 1, 2);
+  await writeFile(join(path, 'launch.json'), JSON.stringify(launch));
+  const trace = await readFile(f.trace, 'utf8');
+  assert.equal((await readCodexExecution(path)).status, 'final_observed');
+  config.config.features.stable_environment_tools = true;
+  await writeFile(join(path, 'effective-config.json'), JSON.stringify(config));
+  await assert.rejects(readCodexExecution(path), /native_feature_boundary_not_applied/);
+  delete config.config.features.stable_environment_tools; delete config.config.features.shell_tool;
+  await writeFile(join(path, 'effective-config.json'), JSON.stringify(config));
+  await assert.rejects(readCodexExecution(path), /native_feature_boundary_not_applied/);
+  assert.equal(await readFile(f.trace, 'utf8'), trace);
 });
 
 test('partial, wrong-session/version, partial_answer and fatal-error raw results cannot be recovered as complete', async t => {

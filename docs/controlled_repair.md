@@ -34,6 +34,8 @@ node dist/src/repair-cli.js demo --config /private/config.json --root /private/n
 
 `operation/` 保留固定 plan/输入、原树、授权来源、角色原输入/输出、工具调用意图与写入前后全文、测试、Git 操作、各候选及独立报告。`terminal-record.json` 固定完成证据的 hash；`result.json` 只是可重建展示。重入会重新核原捕获、当前树、候选和审核结果，不能通过改派生 PASS 放行。
 
+新启动的配置限制与旧只读记录的核验分别处理。#17 的 0.163.0-alpha.10.2 原件可能没有后来新增的 `stable_environment_tools` 字段；只有完整原始 RPC 顺序、空执行环境、准确版本、未指定该新开关的原启动记录和原有关闭项全部相符时，才按当时的只读契约读取。显式开启、缺原有字段或请求不符仍拒绝；不为兼容而补写旧原件或放松新启动限制。
+
 ```sh
 node dist/src/repair-cli.js run --plan /private/task/plan.json --output /private/task/operation
 ```
