@@ -109,6 +109,24 @@ async function reconcile(q: QueueStore, operation: string, closeSource?: string)
   });
 }
 export async function reconcileReception(store: string, operation: string, closeSource?: string) { const q = await QueueStore.open(store); try { return await reconcile(q, operation, closeSource); } finally { q.close(); } }
+export async function supplementReception(planPath: string) {
+  const p = JSON.parse((await file(planPath, 1024 * 1024)).toString());
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-receiver-supplement' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !digest.test(p.bindingHash) || typeof p.store !== 'string' || !isAbsolute(p.store) || resolve(p.store) !== p.store || !Array.isArray(p.material) || !p.material.length || p.material.length > 30 || ['source', 'reason'].some(k => typeof p[k] !== 'string' || !p[k].trim() || p[k].length > 2048 || p[k].includes('\0'))) throw new Error('invalid_supplement_plan');
+  const material = [];
+  for (const ref of p.material) {
+    if (typeof ref.path !== 'string' || !digest.test(ref.sha256) || typeof ref.name !== 'string' || !ref.name.trim() || ref.name.length > 256 || ref.name.includes('\0')) throw new Error('invalid_supplement_reference');
+    const bytes = await file(ref.path, 768 * 1024); if (hash(bytes) !== ref.sha256) throw new Error('supplement_material_changed');
+    new TextDecoder('utf8', { fatal: true }).decode(bytes); material.push({ name: ref.name, bytes });
+  }
+  const q = await QueueStore.open(p.store);
+  try {
+    // Verify the original native capture without starting anything. Transactional
+    // currentness and predecessor checks run again before registering new bytes.
+    const original = await reconcile(q, p.operation);
+    if (original.status !== 'receiver_evaluated' || original.receiver?.phase !== 'returned') throw new Error('supplement_original_capture_unresolved');
+    return q.supplementReceiver(p.operation, { ...p, material });
+  } finally { q.close(); }
+}
 export async function runReception(planPath: string) {
   const bytes = await file(planPath), p = parsePlan(bytes), q = await QueueStore.open(p.store);
   try {

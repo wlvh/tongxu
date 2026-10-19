@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Snapshot, hash } from '../../src/snapshot.js';
 import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
-import { runReception, reconcileReception, type ReceiverPlan } from '../../src/receiver.js';
+import { runReception, reconcileReception, supplementReception, type ReceiverPlan } from '../../src/receiver.js';
 
 async function setup(t: test.TestContext, mode = 'complete') {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -45,7 +45,8 @@ if(process.argv.includes('--version')){console.log('2.1.233 (Claude Code)');proc
 if(process.argv.includes('auth')){setTimeout(()=>console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'max'})),mode==='auth-delay'?700:0)}
 else{let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>{const x=JSON.parse(text);fs.appendFileSync(trace,'model-dispatch\\n');
 emit({type:'system',subtype:'init',session_id:'fixture-receiver',model:'fixture',claude_code_version:'2.1.233',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});
-const j={schemaVersion:1,operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:[]};
+const missing=mode==='always-insufficient'||mode==='insufficient'&&!x.data.evidence.supplements?.length;
+const j={schemaVersion:1,operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:[]};
 setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:JSON.stringify(j),usage:{},total_cost_usd:0}),mode==='delay'?900:0);
 });}
 `;
@@ -159,4 +160,63 @@ test('recovery binds full original stdin and tool policy even when stream hashes
   await writeFile(join(stage, 'stdin.ndjson'), Buffer.concat([input, Buffer.from('unregistered extra material')])); const capture = JSON.parse(await readFile(join(stage, 'capture-status.json'), 'utf8')); capture.files['stdin.ndjson'] = hash(await readFile(join(stage, 'stdin.ndjson'))); await writeFile(join(stage, 'capture-status.json'), JSON.stringify(capture));
   await assert.rejects(runReception(f.path), /receiver_original_input_or_tool_policy_changed/); assert.equal(await f.count(), 1);
   await writeFile(f.path, JSON.stringify({ ...f.plan, timeoutMs: 4000 })); await assert.rejects(runReception(f.path), /receiver_plan_changed/); assert.equal(await f.count(), 1);
+});
+
+async function supplementPlan(f: Awaited<ReturnType<typeof setup>>, result: any, content = '{"rawFixtureEvidence":1}', name = 'new original evidence') {
+  const materialPath = join(f.root, `material-${hash(content)}.json`); await writeFile(materialPath, content);
+  const p = { schemaVersion: 1, kind: 'tongxu-receiver-supplement', store: f.store, operation: result.operation, judgmentId: result.receiver.judgmentId, bindingHash: result.receiver.bindingHash, source: 'fixture:authorized-continuation', reason: 'provide omitted original evidence', material: [{ name, path: materialPath, sha256: hash(Buffer.from(content)) }] };
+  const path = join(f.root, `supplement-${hash(JSON.stringify(p))}.json`); await writeFile(path, JSON.stringify(p)); return { path, plan: p, materialPath };
+}
+test('explicit supplement registers a new packet in the same queue and the next receiver consumes it without overwriting the first', async t => {
+  const f = await setup(t, 'insufficient'), first = await runReception(f.path), p = await supplementPlan(f, first);
+  const original = await readFile(join(first.receiver.directory, 'claude/stdout.ndjson'));
+  await assert.rejects(supplementReception(p.path), /supplements_not_enabled/); f.q.enableSupplements();
+  const added = await supplementReception(p.path); assert.equal(added.previousOperation, first.operation); assert.equal(added.item, f.item); assert.notEqual(added.packet, first.packet); assert.equal(added.modelDispatched, false); assert.equal(await f.count(), 1);
+  assert.equal((await supplementReception(p.path)).packet, added.packet); assert.equal((await supplementReception(p.path)).duplicate, true);
+  const next = await runReception(f.path); assert.notEqual(next.operation, first.operation); assert.equal(next.receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
+  const input = JSON.parse(await readFile(join(next.receiver.directory, 'binding-input.json'), 'utf8'));
+  assert.equal(input.data.evidence.supplements[0].previousOperation, first.operation); assert.equal(input.data.evidence.supplements[0].priorJudgment.verdict, 'INSUFFICIENT_EVIDENCE'); assert.equal(input.data.evidence.supplements[0].material[0].text, '{"rawFixtureEvidence":1}');
+  assert.equal(next.candidate.H, first.candidate.H); assert.equal(next.candidate.observedAt, first.candidate.observedAt); assert.equal(next.productionActionAllowed, false);
+  assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 2); assert.deepEqual(await readFile(join(first.receiver.directory, 'claude/stdout.ndjson')), original);
+  assert.equal(f.q.evaluate(first.operation).receiver.currentMaterialMatches, false); assert.equal(f.q.status().operations.length, 2);
+  const sameLogical = await supplementPlan(f, first, '{ \n "rawFixtureEvidence": 1 }', 'renamed'); assert.equal((await supplementReception(sameLogical.path)).packet, added.packet);
+  const db = new DatabaseSync(join(f.store, 'queue.sqlite'));
+  db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('corrupted supplementary original'), p.plan.material[0]!.sha256); db.close();
+  await assert.rejects(supplementReception(p.path), /stored_evidence_hash_mismatch/);
+});
+test('supplement needs a verified ended insufficient result, intact originals and a still-current candidate', async t => {
+  const f = await setup(t), accepted = await runReception(f.path); f.q.enableSupplements(); const p = await supplementPlan(f, accepted);
+  await assert.rejects(supplementReception(p.path), /requires_completed_insufficient_judgment/);
+  const g = await setup(t, 'insufficient'), first = await runReception(g.path); g.q.enableSupplements(); const next = await supplementPlan(g, first);
+  await writeFile(next.materialPath, 'changed'); await assert.rejects(supplementReception(next.path), /material_changed/); await writeFile(next.materialPath, '{"rawFixtureEvidence":1}');
+  await g.packet({ H: await g.newHead() }); await assert.rejects(supplementReception(next.path), /original_no_longer_current/); assert.equal(await g.count(), 1);
+  const h = await setup(t, 'insufficient'), r = await runReception(h.path); h.q.enableSupplements(); const intact = await supplementPlan(h, r);
+  await writeFile(join(r.receiver.directory, 'claude/stdout.ndjson'), 'corrupt'); await assert.rejects(supplementReception(intact.path)); assert.equal(await h.count(), 1);
+});
+test('active receiver cannot enable supplements or bypass the original process with a new evidence registration', async t => {
+  const f = await setup(t, 'delay'), running = runReception(f.path), op = await waitPhase(f.q, 'dispatch_registered');
+  assert.throws(() => f.q.enableSupplements(), /active_or_unknown/); const p = await supplementPlan(f, { operation: op.id, receiver: op.result.receiver }); await assert.rejects(supplementReception(p.path), /controller_active/);
+  await running; assert.equal(await f.count(), 1);
+});
+test('a stopped investment can store supplementary originals but cannot dispatch them; original material identity cannot manufacture new work', async t => {
+  const f = await setup(t, 'insufficient'), first = await runReception(f.path); f.q.enableSupplements();
+  const input = JSON.parse(await readFile(join(first.receiver.directory, 'binding-input.json'), 'utf8')), same = await supplementPlan(f, first, input.data.sources[0].text);
+  await assert.rejects(supplementReception(same.path), /no_new_material/);
+  f.q.control('scope', 'investment', 'stopped', 'fixture:stop'); const p = await supplementPlan(f, first); await supplementReception(p.path);
+  assert.ok((await runReception(f.path)).blocked.includes('new_investment_stopped')); assert.equal(await f.count(), 1);
+  f.q.control('scope', 'investment', 'open', 'fixture:resume'); assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
+});
+test('two supplementary packets exhaust the three-batch evidence boundary and keep all prior judgments', async t => {
+  const f = await setup(t, 'always-insufficient'); let result = await runReception(f.path); f.q.enableSupplements();
+  for (let n = 1; n <= 2; n++) { const p = await supplementPlan(f, result, JSON.stringify({ fixtureEvidenceBatch: n })); assert.equal((await supplementReception(p.path)).depth, n); result = await runReception(f.path); }
+  const p = await supplementPlan(f, result, '{"fixtureEvidenceBatch":3}'); await assert.rejects(supplementReception(p.path), /three_batch_limit/); assert.equal(await f.count(), 3); assert.equal(f.q.status().operations.length, 3);
+  const input = JSON.parse(await readFile(join(result.receiver.directory, 'binding-input.json'), 'utf8')); assert.equal(input.data.evidence.supplements.length, 2);
+});
+test('a pre-opened legacy v4 dispatch cannot omit supplemental material binding; valid new executor still succeeds', async t => {
+  const f = await setup(t, 'insufficient'), first = await runReception(f.path), legacy = new DatabaseSync(join(f.store, 'queue.sqlite')); t.after(() => legacy.close());
+  const legacyReserve = legacy.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?");
+  f.q.enableSupplements(); await supplementReception((await supplementPlan(f, first)).path);
+  const op = f.q.begin(f.item, 'fixture-legacy-client'), result = f.q.evaluate(op.operation);
+  assert.throws(() => legacyReserve.run(100, JSON.stringify({ ...result, receiver: { bindingHash: 'a'.repeat(64) } }), op.operation), /packet_material_binding_required/);
+  assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
 });
