@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { Snapshot, hash } from '../../src/snapshot.js';
 import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
@@ -17,20 +18,21 @@ async function setup(t: test.TestContext, mode = 'complete') {
   git(['init', '--initial-branch=fixture']); await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=1;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture']);
   const B = git(['rev-parse', 'HEAD']), baseTree = git(['rev-parse', 'HEAD^{tree}']);
   await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=2;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture candidate']);
-  const H = git(['rev-parse', 'HEAD']), tree = git(['rev-parse', 'HEAD^{tree}']);
+  const H = git(['rev-parse', 'HEAD']);
   const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', 1); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
-  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[] } = {}) {
+  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string } = {}) {
     const at = new Date(Date.parse('2026-10-19T00:00:00Z') + ++index * 2000).toISOString(), pr = options.pr ?? 1;
-    const candidate = { repository: 'fixture/reception', pr, H, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: at };
+    const selectedH = options.H ?? H, selectedTree = git(['rev-parse', `${selectedH}^{tree}`]);
+    const candidate = { repository: 'fixture/reception', pr, H: selectedH, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: options.sourceAt ?? at };
     const snapshot = join(root, 'snapshot-' + index), s = await Snapshot.create(snapshot, candidate.repository, pr, [], []); s.manifest.candidate = candidate;
     await s.artifact(JSON.stringify({ fixture: true, index }), { kind: 'pr', round: 1, retrievedAt: at, provenance: 'local_fixture', status: 200 }); s.manifest.rounds.push({ number: 1, startedAt: at, finishedAt: at, coverage: {}, sources: [], notes: [], gaps: [], limitations: ['fixture'], current: true }); await s.save(); await s.close();
     const manifest = await readFile(join(snapshot, 'manifest.json')), verification = join(root, 'verification-' + index); await mkdir(verification, { mode: 0o700 }); await mkdir(join(verification, 'raw'), { mode: 0o700 });
     const blob = async (b: Buffer) => { const sha256 = hash(b), path = `raw/${sha256}.bin`; await writeFile(join(verification, path), b, { mode: 0o600 }); return { sha256, path, bytes: b.length }; };
     const argv = ['/fixture/runner'], output = await blob(Buffer.from('explicit fixture output')), plan = await blob(Buffer.from(JSON.stringify({ schemaVersion: 1, tools: [{ id: 'fixture', argv, timeoutMs: 1000 }] })));
-    const stages = await Promise.all([0, 1].map(async i => ({ index: i, inputHead: i ? H : B, parent: B, head: i ? H : B, tree: i ? tree : baseTree, status: 'complete', gaps: [], comparisons: [], ...(i ? { mergeOutput: await blob(Buffer.from(tree + '\n')) } : {}), tools: [{ id: 'fixture', argv, status: 'completed', exitCode: 0, inputUnchanged: true, dependenciesUnchanged: true, gaps: [], stdout: output, stderr: output }] })));
+    const stages = await Promise.all([0, 1].map(async i => ({ index: i, inputHead: i ? selectedH : B, parent: B, head: i ? selectedH : B, tree: i ? selectedTree : baseTree, status: 'complete', gaps: [], comparisons: [], ...(i ? { mergeOutput: await blob(Buffer.from(selectedTree + '\n')) } : {}), tools: [{ id: 'fixture', argv, status: 'completed', exitCode: 0, inputUnchanged: true, dependenciesUnchanged: true, gaps: [], stdout: output, stderr: output }] })));
     const report = { schemaVersion: 1, kind: 'tongxu-verification', id: `fixture-${index}`, repository: candidate.repository, targetRef: candidate.targetRef, startedAt: at, finishedAt: at, status: options.incomplete ? 'partial' : 'complete', executionComplete: !options.incomplete, comparisonComplete: null, observedSampleFailures: 0, businessCorrectness: 'unverified', dependencyHash: null, plan, planHash: plan.sha256, judgmentRefs: [], inputs: [{ candidate, manifestHash: hash(manifest), manifest: await blob(manifest), sourceGaps: [] }], stages, gaps: options.incomplete ? ['fixture_missing_evidence'] : [] };
     await writeFile(join(verification, 'verification.json'), JSON.stringify(report), { mode: 0o600 });
-    const context = join(root, `context-${index}.json`); await writeFile(context, JSON.stringify({ schemaVersion: 1, scope: { id: 'scope', version: 'S1', source: 'fixture:scope' }, arrangement: { id: 'team', version: 'r1', source: 'fixture:arrangement' }, decisionKind: 'fact', requires: options.requires ?? [] }), { mode: 0o600 });
+    const context = join(root, `context-${index}.json`); await writeFile(context, JSON.stringify({ schemaVersion: 1, scope: { id: options.scopeId ?? 'scope', version: options.scopeVersion ?? 'S1', source: 'fixture:scope' }, arrangement: { id: 'team', version: options.arrangementVersion ?? 'r1', source: 'fixture:arrangement' }, decisionKind: 'fact', requires: options.requires ?? [] }), { mode: 0o600 });
     const loaded = await readPacket(snapshot, verification, context);
     if (!options.incomplete) assert.equal(loaded.summary.evidenceComplete, true, JSON.stringify(loaded.summary));
     return q.import(loaded);
@@ -51,7 +53,8 @@ setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'succes
   const plan: ReceiverPlan = { schemaVersion: 1, kind: 'tongxu-queue-receiver', store, item: item.item, objects, sourcePaths: ['sample.js'], material: [], claudeExecutable: executable, billing: { mode: 'existing_subscription_only', evidence: billing, evidenceSha256: hash(await readFile(billing)), observedAt: new Date().toISOString(), usageCreditsEnabled: false }, timeoutMs: 3000, executionKind: 'fixture' };
   const path = join(root, 'plan.json'); await writeFile(path, JSON.stringify(plan), { mode: 0o600 });
   const count = async () => (await readFile(trace, 'utf8')).split('\n').filter(Boolean).length;
-  return { root, q, store, item: item.item, plan, path, packet, trace, count };
+  const newHead = async () => { await writeFile(join(objects, 'sample.js'), '// explicit new candidate fixture\nexport const value=3;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'new candidate']); return git(['rev-parse', 'HEAD']); };
+  return { root, q, store, item: item.item, plan, path, packet, trace, count, newHead, H };
 }
 async function waitPhase(q: QueueStore, phase: string) {
   const deadline = Date.now() + 4000;
@@ -93,6 +96,37 @@ test('active receiver owns the target; duplicate, old evaluate and new competing
 test('new material while receiver runs is not silently covered by its old candidate judgment', async t => {
   const f = await setup(t, 'delay'), running = runReception(f.path); await waitPhase(f.q, 'dispatch_registered'); await f.packet();
   const done = await running; assert.equal(done.receiver.currentMaterialMatches, false); assert.ok(done.gaps.includes('newer_material_requires_own_reception')); assert.equal(done.productionActionAllowed, false); assert.equal(await f.count(), 1);
+});
+test('new H creates a different item but still blocks old-H dispatch and invalidates applicability of a late old-H result', async t => {
+  const f = await setup(t, 'auth-delay'), running = runReception(f.path), op = await waitPhase(f.q, 'reserved'); const next = await f.packet({ H: await f.newHead() }); assert.notEqual(next.item, f.item);
+  const stopped = await running; assert.equal(stopped.status, 'receiver_unknown'); assert.equal(stopped.newTaskSent, false); assert.equal(await f.count(), 0); await reconcileReception(f.store, op.id, 'fixture:ended-old-candidate');
+  const g = await setup(t, 'delay'), late = runReception(g.path); await waitPhase(g.q, 'dispatch_registered'); await g.packet({ H: await g.newHead() }); const result = await late;
+  assert.equal(result.receiver.currentMaterialMatches, false); assert.ok(result.gaps.includes('newer_material_requires_own_reception')); assert.equal(await g.count(), 1);
+});
+test('an older different-H source arriving later does not supersede the selected current candidate', async t => {
+  const f = await setup(t); await f.packet({ H: await f.newHead(), sourceAt: '2026-10-18T00:00:00.000Z' }); const r = await runReception(f.path);
+  assert.equal(r.receiver.currentMaterialMatches, true); assert.equal(await f.count(), 1);
+});
+test('new versions in the selected scope stop stale dispatch without adopting a different task scope', async t => {
+  const f = await setup(t, 'auth-delay'), running = runReception(f.path), op = await waitPhase(f.q, 'reserved'); await f.packet({ scopeVersion: 'S2', arrangementVersion: 'r2' }); assert.equal((await running).newTaskSent, false); assert.equal(await f.count(), 0); await reconcileReception(f.store, op.id, 'fixture:close-obsolete-context');
+  const g = await setup(t); await g.packet({ scopeId: 'separate-task', scopeVersion: 'S2' }); assert.equal((await runReception(g.path)).receiver.currentMaterialMatches, true); assert.equal(await g.count(), 1);
+});
+test('reading a completed judgment after a later H appears preserves the old report but does not copy its applicability', async t => {
+  const f = await setup(t), initial = await runReception(f.path); await f.packet({ H: await f.newHead() });
+  const reread = await runReception(f.path); assert.equal(reread.operation, initial.operation); assert.equal(reread.receiver.currentMaterialMatches, false); assert.equal(reread.receiver.materialMatchedAtReturn, true); assert.deepEqual(reread.receiver.judgment, initial.receiver.judgment); assert.equal(await f.count(), 1);
+  assert.equal(f.q.evaluate(initial.operation).receiver.currentMaterialMatches, false); assert.equal(f.q.status().operations[0].result.receiver.currentMaterialMatches, false);
+});
+test('SQL prepared by a v3 connection before enable cannot release or overwrite a native receiver', async t => {
+  const f = await setup(t, 'no-enable'), legacy = new DatabaseSync(join(f.store, 'queue.sqlite')); t.after(() => legacy.close());
+  // Exact old evaluate UPDATE predicate and DELETE shape, prepared before the
+  // schema transition. An old client would update zero rows then delete a claim.
+  const oldUpdate = legacy.prepare("UPDATE operations SET status='complete',finished_at=?,result=? WHERE id=? AND status='running'");
+  const oldDelete = legacy.prepare('DELETE FROM claims WHERE target=? AND operation=? AND generation=?');
+  f.q.enableReceiver(); let script = await readFile(f.plan.claudeExecutable, 'utf8'); script = script.replace("mode==='delay'?900:0", '900'); await writeFile(f.plan.claudeExecutable, script);
+  const running = runReception(f.path), op = await waitPhase(f.q, 'dispatch_registered');
+  legacy.exec('BEGIN IMMEDIATE'); try { oldUpdate.run(new Date().toISOString(), '{"status":"evaluated"}', op.id); assert.throws(() => oldDelete.run(op.target, op.id, op.generation), /receiver_claim_active/); } finally { legacy.exec('ROLLBACK'); }
+  assert.throws(() => legacy.prepare("UPDATE operations SET result='{}' WHERE id=?").run(op.id), /receiver_record_is_bound/);
+  assert.equal(f.q.status().claims.length, 1); assert.equal((await running).independentReception, 'fixture_judgment_recorded'); assert.equal(await f.count(), 1);
 });
 test('SIGKILL after complete capture releases only the controller mutex; recovery consumes the original without another dispatch', { timeout: 10000 }, async t => {
   const f = await setup(t), script = join(f.root, 'interrupted-controller.mjs');

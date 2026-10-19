@@ -54,15 +54,24 @@ export class QueueStore {
   enableReceiver(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if (version === 4) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
-      if (version !== 3 || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
+      if (version === 4 && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
+      if (![3, 4].includes(version) || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       // Same tables/ledger, explicit format opt-in. Older v3 clients must refuse
       // rather than evaluate and release a claim owned by a native receiver.
-      this.db.exec('PRAGMA user_version=4'); this.event('receiver_format_enabled', this.directory, { from: 3, to: 4 });
+      this.db.exec(`
+CREATE TRIGGER IF NOT EXISTS receiver_record_guard BEFORE UPDATE ON operations
+WHEN json_type(OLD.result,'$.receiver')='object' AND (NEW.packet!=OLD.packet OR json_extract(NEW.result,'$.receiver.bindingHash') IS NOT json_extract(OLD.result,'$.receiver.bindingHash'))
+BEGIN SELECT RAISE(ABORT,'receiver_record_is_bound'); END;
+CREATE TRIGGER IF NOT EXISTS receiver_claim_guard BEFORE DELETE ON claims
+WHEN EXISTS(SELECT 1 FROM operations WHERE id=OLD.operation AND status='receiving')
+BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
+PRAGMA user_version=4;`);
+      this.event('receiver_format_enabled', this.directory, { from: version, to: 4, guardsInstalled: true });
       return { receiverEnabled: true, schemaVersion: 4, productionActionAllowed: false };
     });
   }
   requireReceiverMode(): void { if ((this.db.prepare('PRAGMA user_version').get() as Row).user_version !== 4) throw new Error('receiver_mode_not_enabled'); }
+  private receiverGuardsInstalled(): boolean { return (this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='trigger' AND name IN ('receiver_record_guard','receiver_claim_guard')").get() as Row).n === 2; }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -182,7 +191,7 @@ export class QueueStore {
       const op = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row | undefined;
       if (!op) throw new Error('operation_not_found');
       if (op.status === 'receiving') throw new Error('original_receiver_pending');
-      if (op.status === 'complete') return { operation: id, duplicate: true, ...parse(op, 'result') };
+      if (op.status === 'complete') return { operation: id, duplicate: true, ...this.currentReceiverResult(op, parse(op, 'result')) };
       const claim = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
       if (!claim || claim.operation !== id || claim.generation !== op.generation) throw new Error('operation_claim_mismatch');
       const item = this.item(op.item), packet = this.packet(op.packet);
@@ -222,19 +231,20 @@ export class QueueStore {
     return this.transaction(() => {
       const { op, result, receiver } = this.receiverOperation(id);
       if (receiver) for (const ref of Object.values(receiver.blobs ?? {}) as Row[]) this.blob(ref.sha256);
-      return { operation: id, status: op.status, result, receiver, currentPacket: this.item(op.item).current_packet,
+      return { operation: id, status: op.status, result: this.currentReceiverResult(op, result), receiver, currentPacket: this.item(op.item).current_packet,
         ...(receiver ? { input: this.blob(receiver.inputSha256), system: this.blob(receiver.systemSha256), plan: this.blob(receiver.planSha256) } : {}) };
     });
   }
   private receiverGate(op: Row): void {
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
-    if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('receiver_current_material_unverified');
+    if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
     if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
   }
   /** Later phase of the same operation; no second queue or automatic retries. */
   reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
     this.requireReceiverMode();
+    if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
     return this.transaction(() => {
       const { op, result, receiver } = this.receiverOperation(id);
       if (receiver) {
@@ -258,6 +268,7 @@ export class QueueStore {
   }
   receiverDispatch(id: string, bindingHash: string): void {
     this.transaction(() => {
+      if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
       const { op, result, receiver } = this.receiverOperation(id);
       if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
       this.receiverGate(op); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
@@ -276,18 +287,39 @@ export class QueueStore {
     const c = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
     if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
   }
+  private receiverCandidateCurrent(item: Row): boolean {
+    const current = parse(item, 'candidate') as Candidate, context = parse(item, 'context') as QueueContext;
+    // H/B/target changes create another item. Compare source observations across
+    // the PR, never W2 completion/arrival time: a fresh test of old H is not new H.
+    const others = this.db.prepare("SELECT candidate,context,latest_source_observation FROM items WHERE id!=? AND lower(json_extract(candidate,'$.repository'))=? AND json_extract(candidate,'$.pr')=?").all(item.id, current.repository.toLowerCase(), current.pr) as Row[];
+    for (const other of others) {
+      const candidate = parse(other, 'candidate') as Candidate, otherContext = parse(other, 'context') as QueueContext;
+      // A new context version in this same scope can make the selected task
+      // ambiguous; it does not adopt another scope or grant any new permission.
+      const sameContext = context.scope.id !== otherContext.scope.id || context.scope.version === otherContext.scope.version && context.arrangement.id === otherContext.arrangement.id && context.arrangement.version === otherContext.arrangement.version;
+      if (candidate.H === current.H && candidate.B === current.B && candidate.targetRef === current.targetRef && sameContext) continue;
+      if (!item.latest_source_observation || !other.latest_source_observation || other.latest_source_observation >= item.latest_source_observation) return false;
+    }
+    return true;
+  }
+  private currentReceiverResult(op: Row, result: Row | null): Row | null {
+    if (!result?.receiver) return result;
+    const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item);
+    return { ...result, receiver: { ...result.receiver, materialMatchedAtReturn: result.receiver.currentMaterialMatches, currentMaterialMatches: current },
+      gaps: [...new Set([...result.gaps, ...(!current ? ['newer_material_requires_own_reception'] : [])])] };
+  }
   finishReceiver(id: string, bindingHash: string, judgment: Row | null, originals: Record<string, Buffer>, closeSource?: string): Row {
     return this.transaction(() => {
       const { op, result, receiver } = this.receiverOperation(id);
       if (!receiver || receiver.bindingHash !== bindingHash) throw new Error('receiver_binding_mismatch');
-      if (op.status === 'complete') return { operation: id, duplicate: true, ...result };
+      if (op.status === 'complete') return { operation: id, duplicate: true, ...this.currentReceiverResult(op, result) };
       if (op.status !== 'receiving' || (!judgment && !closeSource)) throw new Error('receiver_completion_unverified');
       this.receiverClaim(op); this.packetEvidence(this.packet(op.packet));
       const blobs: Record<string, Row> = {};
       for (const [name, bytes] of Object.entries(originals)) {
         const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); blobs[name] = { sha256, bytes: bytes.length };
       }
-      const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict;
+      const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item);
       const r = { ...receiver, phase: judgment ? 'returned' : 'closed_unresolved', finishedAt: now(), judgment, closeSource: closeSource ?? null, blobs,
         currentMaterialMatches: current, newTaskSentOnRecovery: false };
       const completed = { ...result, status: 'receiver_evaluated', receiver: r, independentReception: judgment ? receiver.executionKind === 'fixture' ? 'fixture_judgment_recorded' : 'judgment_recorded' : 'closed_without_judgment',
@@ -313,7 +345,7 @@ export class QueueStore {
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: (this.db.prepare('PRAGMA user_version').get() as Row).user_version === 4, mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: (this.db.prepare('PRAGMA user_version').get() as Row).user_version === 4, mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
