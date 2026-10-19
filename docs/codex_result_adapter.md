@@ -2,7 +2,9 @@
 
 这是 PR #16 在 #6/#7 已发布接续条款内的新增能力：读取已经保存的 Codex App Server 原 stdout，识别指定角色的结果，保存可恢复的私有证据，并准备下一位 `verifier_impact` 的输入。它不会启动执行器、发送消息、使用认证、运行仓库业务代码或合并 PR。原 `native-cli inspect` 的 Linux/bubblewrap 隔离策略保持原样。
 
-协议依据是已有 **codex-cli 0.159.2** 二进制生成的 JSON Schema。[来源索引](protocol/codex_0.159.2_source_index.json) 固定二进制、文件与哈希；完整原 schema 在私有补充交接包。当前只实现明确的通知子集，不是全部协议验证器。新版本或其他协议须先留存真实 version/help/schema 并核对差异，不改版本字符串来绕过检查。
+协议依据是已有 **codex-cli 0.159.2** 和本机 **0.163.0-alpha.10.2** 二进制生成的 JSON Schema。[原版本来源索引](protocol/codex_0.159.2_source_index.json)与[本机版本来源索引](protocol/codex_0.163.0-alpha.10.2_source_index.json)固定二进制、文件与哈希；完整原 schema 保留在私有证据中。只支持这两个精确版本，binding 声明的协议必须与原通知中的 `cliVersion` 相符。当前只实现明确的通知子集，不是全部协议验证器；其他版本须先留存真实 version/help/schema 并核对差异，不改原始版本字符串来绕过检查。
+
+两版六种通知的参数入口、根会话身份与 `agentMessage` 字段结构相同，但 0.163 的消息阶段新增了 `partial_answer`：它表示可能继续输出的部分回答，仍不能作为最终结果。新 `Turn.rootTurnId` 为可空的原始轮次来源，解析器保留已观察值并拒绝开始／结束间互相矛盾或类型错误的值；不凭这个字段推导 session、子代理身份或批准。新版错误类型允许未来的字符串／对象，原错误照实保留，仍由失败／等待／重试事件和明确的终态决定结果。这些兼容行为不放宽原来的准确 thread/turn、明确 `final_answer` 和终态一致性要求。
 
 ## 输入与识别
 
@@ -10,7 +12,7 @@
 
 | 字段 | 来源与约束 |
 |---|---|
-| schemaVersion / protocol | `1` / `codex-app-server/0.159.2` |
+| schemaVersion / protocol | `1` / `codex-app-server/0.159.2` 或 `codex-app-server/0.163.0-alpha.10.2`；必须对应实际捕获版本 |
 | sourceKind / role | `fixture` 或 `native_capture`；`reviewer`、`verifier_fact` 或仅负向回放用的 `protocol_probe` |
 | run / sessionId / threadId | 原运行、session 和准确根 thread；接受 schema 的 cli/vscode/exec/appServer 来源，拒绝 subAgent/unknown/custom 和非空 parent/fork；实际 App Server 元数据的来源是 vscode，来源枚举不是传输类型 |
 | turnIds | 原始通知中的有序 turn ID，最多 8 个；通常登记这次小任务的两轮。只有元数据探针可空 |
@@ -51,4 +53,4 @@ node dist/src/codex-result-cli.js handoff --packet /private/result-03 --output /
 
 `append` 接受完整的新日志文件，必须严格以旧原字节为前缀且更长；会话、候选和 binding 保持不变。日志截断、轮转或修改不能冒充原采集续接。新候选用全新 import/输出目录，不覆盖旧证据。所有恢复均为本地读写，没有模型重发或业务副作用。输入总量上限 16 MiB、单帧 1 MiB；超限不当作完整结果。
 
-Mac 上可使用这份离线 Node 工具；本轮实际只在 Linux 运行，macOS 的构建/测试仍须本机记录。`native-cli inspect` 和 W2 的实际隔离执行仍依赖 Linux/bubblewrap，不能为了 Mac 使用而关掉隔离。实际环境分工与本机停止点见 [接续说明](local_codex_handoff.md)。
+Mac 离线入口已在 macOS 27.0.1 / Node 24.19.0 验证：固定 `d93d791` 原套件 12/12；本机版本兼容候选把同一组场景按两个精确协议复用，并检查新版轮次来源与开放错误值，共 25/25。它们都是离线夹具及实际 Node CLI 测试，不是真实模型两轮结果。`native-cli inspect` 和 W2 的实际隔离执行仍依赖 Linux/bubblewrap，不能为了 Mac 使用而关掉隔离。实际环境分工与本机前置见 [接续说明](local_codex_handoff.md)。

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -10,13 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { importResult, parseCodexResult, prepareHandoff, validateBinding, RESULT_BYTES, type ResultBinding } from '../../src/codex-results.js';
 import { hash } from '../../src/snapshot.js';
 
-// Synthetic frames follow the retained 0.159.2 schema. They are not native model evidence.
-const binding = (): ResultBinding => ({ schemaVersion: 1, protocol: 'codex-app-server/0.159.2', sourceKind: 'fixture', role: 'reviewer', run: 'fixture-run', sessionId: 'session-root', threadId: 'thread-root', turnIds: ['turn-one', 'turn-two'], workspace: '/fixture', scopeSource: 'fixture:scope', arrangementSource: 'fixture:arrangement', inputManifestSha256: '1'.repeat(64), promptSha256: '2'.repeat(64), candidate: { repository: 'fixture/repo', pr: 16, H: 'a'.repeat(40), B: 'b'.repeat(40), target: 'fixture-base' } });
+// Reuse the complete offline scenarios for each retained exact schema. These are
+// synthetic frames, not native model evidence or rewritten native captures.
+for (const version of ['0.159.2', '0.163.0-alpha.10.2'] as const) describe(version, () => {
+const binding = (): ResultBinding => ({ schemaVersion: 1, protocol: `codex-app-server/${version}`, sourceKind: 'fixture', role: 'reviewer', run: 'fixture-run', sessionId: 'session-root', threadId: 'thread-root', turnIds: ['turn-one', 'turn-two'], workspace: '/fixture', scopeSource: 'fixture:scope', arrangementSource: 'fixture:arrangement', inputManifestSha256: '1'.repeat(64), promptSha256: '2'.repeat(64), candidate: { repository: 'fixture/repo', pr: 16, H: 'a'.repeat(40), B: 'b'.repeat(40), target: 'fixture-base' } });
 const notify = (method: string, params: any) => ({ method, params });
-const rootFrame = () => notify('thread/started', { thread: { id: 'thread-root', sessionId: 'session-root', cwd: '/fixture', source: 'appServer', cliVersion: '0.159.2', createdAt: 1, updatedAt: 2, ephemeral: true, modelProvider: 'fixture', preview: '', projectId: null, status: { type: 'idle' }, turns: [] } });
+const rootFrame = () => notify('thread/started', { thread: { id: 'thread-root', sessionId: 'session-root', cwd: '/fixture', source: 'appServer', cliVersion: version, createdAt: 1, updatedAt: 2, ephemeral: true, modelProvider: 'fixture', preview: '', projectId: null, status: { type: 'idle' }, turns: [] } });
 const finalText = '独立结果全文\n结论不由解析器解释。🙂\n';
 const finalItem = (id: string) => ({ id: id + '-answer', type: 'agentMessage', text: finalText + id, phase: 'final_answer' });
-function turnFrames(id: string): any[] { const item = finalItem(id); return [notify('turn/started', { threadId: 'thread-root', turn: { id, status: 'inProgress', items: [] } }), notify('item/completed', { threadId: 'thread-root', turnId: id, completedAtMs: 1000, item }), notify('turn/completed', { threadId: 'thread-root', turn: { id, status: 'completed', items: [structuredClone(item)], itemsView: 'full', error: null } })]; }
+function turnFrames(id: string): any[] { const item = finalItem(id), origin = version === '0.159.2' ? {} : { rootTurnId: id }; return [notify('turn/started', { threadId: 'thread-root', turn: { id, ...origin, status: 'inProgress', items: [] } }), notify('item/completed', { threadId: 'thread-root', turnId: id, completedAtMs: 1000, item }), notify('turn/completed', { threadId: 'thread-root', turn: { id, ...origin, status: 'completed', items: [structuredClone(item)], itemsView: 'full', error: null } })]; }
 const frames = () => [rootFrame(), ...turnFrames('turn-one'), ...turnFrames('turn-two')];
 const encode = (x: any[]) => Buffer.from(x.map(v => JSON.stringify(v) + '\n').join(''));
 const single = () => ({ ...binding(), turnIds: ['turn-one'] });
@@ -32,11 +34,12 @@ test('two explicitly registered ordered turns preserve exact top-level final tex
   assert.deepEqual(result.turns.map(t => t.final?.text), [finalText + 'turn-one', finalText + 'turn-two']);
   assert.equal(result.realModelExecutionVerified, false); assert.equal(result.toolRestrictionsVerified, false); assert.equal(result.productionActionAllowed, false);
   assert.equal(result.sourceAuthenticity, 'not_authenticated_by_parser'); assert.deepEqual(result.gaps, []);
+  assert.deepEqual(result.turns.map(t => t.rootTurnId), version === '0.159.2' ? [undefined, undefined] : ['turn-one', 'turn-two']);
   for (const source of ['cli', 'vscode', 'exec', 'appServer']) { const f = frames(); f[0].params.thread.source = source; assert.equal(parseCodexResult(encode(f), binding()).status, 'final_observed'); }
 });
 
 test('child-thread PASS, commentary, null/absent phase and RPC replies cannot become final', () => {
-  for (const phase of ['commentary', null, undefined, 'unknown']) {
+  for (const phase of ['commentary', 'partial_answer', null, undefined, 'unknown']) {
     const f = singleFrames(); f[2].params.item.phase = phase; f[3].params.turn.items[0].phase = phase;
     f.splice(3, 0, notify('item/completed', { threadId: 'child', turnId: 'turn-one', completedAtMs: 1, item: finalItem('child') }), { id: 99, result: { text: 'PASS' } });
     const result = parseCodexResult(encode(f), single()); assert.equal(result.handoffReady, false); assert.equal(result.turns[0]!.final, null);
@@ -55,6 +58,8 @@ test('binding/session/source/version/turn order mistakes and extra root turns bl
     f => { f[3].params.threadId = 'different'; }, f => { f.splice(2, 0, { id: 9, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-root' } }); }
   ];
   for (const mutate of cases) { const f = frames(); mutate(f); assert.equal(parseCodexResult(encode(f), binding()).handoffReady, false); }
+  const crossed = frames(); crossed[0].params.thread.cliVersion = version === '0.159.2' ? '0.163.0-alpha.10.2' : '0.159.2';
+  assert.ok(parseCodexResult(encode(crossed), binding()).gaps.includes('root_session_binding_mismatch'));
 });
 
 test('duplicate frames are idempotent; contradictions, missing full final and late errors fail closed', () => {
@@ -108,7 +113,24 @@ test('malformed/truncated/oversized UTF-8 frames and metadata-only probes never 
 });
 
 test('binding rejects missing scope, candidate, prompt identity and invalid expected turns', () => {
-  for (const patch of [{ scopeSource: '' }, { arrangementSource: '' }, { promptSha256: 'missing' }, { turnIds: [] }, { turnIds: ['same', 'same'] }, { workspace: '/foo/../bar' }, { candidate: { ...binding().candidate, H: 'main' } }]) assert.throws(() => validateBinding({ ...binding(), ...patch }));
+  for (const patch of [{ protocol: 'codex-app-server/0.164.0' }, { protocol: '__proto__' }, { scopeSource: '' }, { arrangementSource: '' }, { promptSha256: 'missing' }, { turnIds: [] }, { turnIds: ['same', 'same'] }, { workspace: '/foo/../bar' }, { candidate: { ...binding().candidate, H: 'main' } }]) assert.throws(() => validateBinding({ ...binding(), ...patch }));
+});
+
+if (version === '0.163.0-alpha.10.2') test('new nullable turn origins and open error values preserve identity without promoting unknown phases', () => {
+  for (const origin of [null, undefined, 'originating-turn']) {
+    const f = singleFrames(); f[1].params.turn.rootTurnId = origin; f[3].params.turn.rootTurnId = origin;
+    const r = parseCodexResult(encode(f), single()); assert.equal(r.status, 'final_observed'); assert.equal(r.turns[0]!.rootTurnId, origin ?? null);
+  }
+  for (const [start, end, gap] of [[42, 'turn-one', 'invalid_turn_root_id'], ['turn-one', {}, 'invalid_turn_root_id'], ['turn-one', 'other-origin', 'conflicting_turn_root_id']] as const) {
+    const f = singleFrames(); f[1].params.turn.rootTurnId = start; f[3].params.turn.rootTurnId = end;
+    const r = parseCodexResult(encode(f), single()); assert.equal(r.status, 'unknown'); assert.ok(r.gaps.includes(gap));
+  }
+  for (const error of ['futureProviderError', { futureProviderError: { reason: 'retained verbatim', retryAfter: 7 } }]) {
+    const f = singleFrames().slice(0, 2);
+    f.push(notify('error', { threadId: 'thread-root', turnId: 'turn-one', willRetry: false, error: { message: 'original error text', codexErrorInfo: error } }));
+    f.push(notify('turn/completed', { threadId: 'thread-root', turn: { id: 'turn-one', rootTurnId: 'turn-one', status: 'failed', items: [], error: { message: 'original error text', codexErrorInfo: error } } }));
+    const r = parseCodexResult(encode(f), single()); assert.equal(r.status, 'failed'); assert.equal(r.handoffReady, false); assert.deepEqual(r.turns[0]!.errors[0].codexErrorInfo, error);
+  }
 });
 
 test('CLI partial import, append, replay and handoff preserve originals and prepare exact input without sending', async t => {
@@ -174,4 +196,5 @@ test('SIGKILL after checkpoint publication can replay the same capture without e
     assert.equal(result.captureId, JSON.parse(saved.toString()).captureId); assert.equal(result.status, 'final_observed'); assert.equal(result.realModelExecutionVerified, false);
     assert.deepEqual(await readFile(join(output, 'capture.json')), saved);
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+});
 });

@@ -9,15 +9,21 @@ export const RESULT_BYTES = 16 * 1024 * 1024;
 const sha = /^[0-9a-f]{64}$/, commit = /^[0-9a-f]{40}$/;
 const object = (x: any): x is Record<string, any> => x !== null && typeof x === 'object' && !Array.isArray(x);
 const text = (x: any, max = 256): x is string => typeof x === 'string' && x.length > 0 && x.length <= max && !/[\x00-\x1f]/.test(x);
+// Exact versions whose consumed notification schemas were compared and retained in
+// docs/protocol/*. Do not accept a version range or relabel a captured stream.
+const protocols = {
+  'codex-app-server/0.159.2': { cliVersion: '0.159.2', turnRootId: false },
+  'codex-app-server/0.163.0-alpha.10.2': { cliVersion: '0.163.0-alpha.10.2', turnRootId: true }
+} as const;
 export type ResultBinding = {
-  schemaVersion: 1; protocol: 'codex-app-server/0.159.2'; sourceKind: 'fixture' | 'native_capture';
+  schemaVersion: 1; protocol: keyof typeof protocols; sourceKind: 'fixture' | 'native_capture';
   role: 'reviewer' | 'verifier_fact' | 'protocol_probe'; run: string; sessionId: string; threadId: string;
   turnIds: string[]; workspace: string; scopeSource: string; arrangementSource: string;
   inputManifestSha256: string; promptSha256: string;
   candidate: { repository: string; pr: number; H: string; B: string; target: string };
 };
 export function validateBinding(x: any): ResultBinding {
-  if (!object(x) || x.schemaVersion !== 1 || x.protocol !== 'codex-app-server/0.159.2' || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
+  if (!object(x) || x.schemaVersion !== 1 || typeof x.protocol !== 'string' || !Object.hasOwn(protocols, x.protocol) || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
   if (['run', 'sessionId', 'threadId'].some(k => !text(x[k])) || !text(x.workspace, 4096) || !isAbsolute(x.workspace) || resolve(x.workspace) !== x.workspace || !text(x.scopeSource, 2048) || !text(x.arrangementSource, 2048) || !sha.test(x.inputManifestSha256) || !sha.test(x.promptSha256)) throw new Error('incomplete_result_binding');
   if (!Array.isArray(x.turnIds) || x.turnIds.length > 8 || x.turnIds.some((s: any) => !text(s)) || new Set(x.turnIds).size !== x.turnIds.length || (!x.turnIds.length && x.role !== 'protocol_probe')) throw new Error('invalid_expected_turns');
   const c = x.candidate;
@@ -25,9 +31,10 @@ export function validateBinding(x: any): ResultBinding {
   return x as ResultBinding;
 }
 
-type TurnState = { id: string; started: boolean; terminal: string | null; final: { id: string; text: string } | null; errors: any[] };
+type TurnState = { id: string; started: boolean; terminal: string | null; final: { id: string; text: string } | null; errors: any[]; rootTurnId?: string | null };
 export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
   validateBinding(binding);
+  const protocol = protocols[binding.protocol];
   if (bytes.length > RESULT_BYTES) throw new Error('result_input_limit');
   const gaps = new Set<string>(), turns: TurnState[] = binding.turnIds.map(id => ({ id, started: false, terminal: null, final: null, errors: [] }));
   const starts = new Map<string, unknown>(), completions = new Map<string, unknown>(), items = new Map<string, any>();
@@ -49,7 +56,7 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
     if (m.method === 'thread/started') {
       const t = p.thread;
       if (!object(t) || t.id !== binding.threadId) { ignored++; continue; }
-      if ('id' in m || t.sessionId !== binding.sessionId || t.cwd !== binding.workspace || !['cli', 'vscode', 'exec', 'appServer'].includes(t.source) || t.cliVersion !== '0.159.2' || t.forkedFromId != null || t.parentThreadId != null) invalid('root_session_binding_mismatch');
+      if ('id' in m || t.sessionId !== binding.sessionId || t.cwd !== binding.workspace || !['cli', 'vscode', 'exec', 'appServer'].includes(t.source) || t.cliVersion !== protocol.cliVersion || t.forkedFromId != null || t.parentThreadId != null) invalid('root_session_binding_mismatch');
       else sessionObserved = true;
       continue;
     }
@@ -74,9 +81,11 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
     if (!sessionObserved) invalid('turn_before_root_session');
     if (m.method === 'turn/started') {
       if (!object(p.turn) || p.turn.status !== 'inProgress' || !Array.isArray(p.turn.items)) { invalid('invalid_turn_start'); continue; }
+      if (protocol.turnRootId && p.turn.rootTurnId != null && !text(p.turn.rootTurnId)) { invalid('invalid_turn_root_id'); continue; }
       if (starts.has(t.id)) { if (!isDeepStrictEqual(starts.get(t.id), p.turn)) invalid('conflicting_turn_start'); continue; }
       if (turns.slice(0, turns.indexOf(t)).some(prior => prior.terminal !== 'completed') || t.terminal) invalid('turn_order_mismatch');
       starts.set(t.id, p.turn); t.started = true;
+      if (protocol.turnRootId) t.rootTurnId = p.turn.rootTurnId ?? null;
     } else if (m.method === 'item/completed') {
       const item = p.item;
       if (!object(item) || !text(item.id) || !text(item.type) || !Number.isSafeInteger(p.completedAtMs)) { invalid('invalid_completed_item'); continue; }
@@ -97,6 +106,13 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
     } else if (m.method === 'turn/completed') {
       const terminal = p.turn;
       if (!object(terminal) || !['completed', 'failed', 'interrupted'].includes(terminal.status) || !Array.isArray(terminal.items) || !['full', 'summary', 'notLoaded'].includes(terminal.itemsView ?? 'full') || (terminal.error != null && (!object(terminal.error) || typeof terminal.error.message !== 'string'))) { invalid('invalid_turn_completion'); continue; }
+      if (protocol.turnRootId) {
+        if (terminal.rootTurnId != null && !text(terminal.rootTurnId)) invalid('invalid_turn_root_id');
+        else if (terminal.rootTurnId != null) {
+          if (t.rootTurnId != null && t.rootTurnId !== terminal.rootTurnId) invalid('conflicting_turn_root_id');
+          else t.rootTurnId = terminal.rootTurnId;
+        }
+      }
       if (completions.has(t.id)) { if (!isDeepStrictEqual(completions.get(t.id), terminal)) invalid('conflicting_turn_completion'); continue; }
       completions.set(t.id, terminal);
       if (!t.started) invalid('completion_without_start');
@@ -122,7 +138,7 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding) {
   return { schemaVersion: 1, kind: 'tongxu-codex-result', status, binding, sessionObserved, turns, waiting, gaps: [...gaps], frames, ignoredFrames: ignored,
     handoffReady: status === 'final_observed' && binding.role === 'reviewer', sourceAuthenticity: 'not_authenticated_by_parser',
     realModelExecutionVerified: false, toolRestrictionsVerified: false, productionActionAllowed: false,
-    limitations: ['operator_binding_is_not_authorization', 'fixture_is_not_native_execution', 'no_executor_started_or_message_sent', 'only_codex_app_server_0.159.2_schema_supported'] };
+    limitations: ['operator_binding_is_not_authorization', 'fixture_is_not_native_execution', 'no_executor_started_or_message_sent', 'only_explicitly_supported_codex_app_server_schemas'] };
 }
 
 async function readSafe(path: string, limit: number): Promise<Buffer> {
