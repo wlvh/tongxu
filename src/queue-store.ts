@@ -48,14 +48,22 @@ export class QueueStore {
     } catch (e) { db.close(); throw e; }
   }
   static async open(directory: string): Promise<QueueStore> {
+    return this.connect(directory, false);
+  }
+  static async observe(directory: string): Promise<Row> {
+    const q = await this.connect(directory, true);
+    try { return q.status(); } finally { q.close(); }
+  }
+  private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
     for (const name of ['queue.sqlite', 'queue.sqlite-wal', 'queue.sqlite-shm']) {
       try { const st = await lstat(join(directory, name)); if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || (st.mode & 0o077)) throw new Error('invalid_queue_storage'); }
       catch (e) { if (name === 'queue.sqlite' || (e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     }
-    const db = new DatabaseSync(join(directory, 'queue.sqlite'));
+    const db = new DatabaseSync(join(directory, 'queue.sqlite'), { readOnly });
     try {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
+      if (readOnly) db.exec('PRAGMA query_only=ON;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
       if (![3, 4, 5, 6].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
@@ -494,7 +502,7 @@ PRAGMA user_version=4;`);
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, historicalReceiverResultUnmodified: true }; });
+      const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
       const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }

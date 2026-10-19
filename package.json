@@ -16,7 +16,8 @@
     "test:repair": "npm run build && node --test dist/tests/w5/repair.test.js",
     "test:mac": "npm run build && node --test dist/tests/w1/*.test.js dist/tests/w3/*.test.js dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js",
     "test:receiver": "npm run build && node --test dist/tests/w3/receiver.test.js",
-    "test:publication": "npm run build && node --test dist/tests/w3/publication.test.js"
+    "test:publication": "npm run build && node --test dist/tests/w3/publication.test.js",
+    "test:secretary": "npm run build && node --test dist/tests/w4/secretary.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
