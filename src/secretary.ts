@@ -35,7 +35,9 @@ async function inputs(p: SecretaryPlan) {
     const bytes = await regular(ref.path); if (hash(bytes) !== ref.sha256) throw new Error('secretary_instruction_source_changed');
     if (p.prompts.includes(ref)) prompts.push(new TextDecoder('utf8', { fatal: true }).decode(bytes));
   }
-  if (hash(await regular(p.billing.evidence)) !== p.billing.evidenceSha256 || hash(await regular(p.codexExecutable, 128 * 1024 * 1024)) !== p.codexSha256) throw new Error('secretary_runtime_or_billing_changed');
+  // The already installed official macOS 0.163 package is about 250 MB.
+  // Keep a finite binary bound without applying a document-sized limit to it.
+  if (hash(await regular(p.billing.evidence)) !== p.billing.evidenceSha256 || hash(await regular(p.codexExecutable, 512 * 1024 * 1024)) !== p.codexSha256) throw new Error('secretary_runtime_or_billing_changed');
   return { system: prompts.join('\n\n'), promptParts: p.prompts.map((ref, i) => ({ sha256: ref.sha256, text: prompts[i] })), question: p.question, candidate: p.candidate, toolSpecs: secretaryToolSpecs, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource };
 }
 const questionInput = (p: SecretaryPlan) => 'Answer this progress question by actually using the registered task-state queries. Cite their observationIds. Recorded judgments and publication are distinct from your explanation, current remote truth, approval and product completion.\n' + JSON.stringify({ question: p.question, candidate: p.candidate, item: p.item });

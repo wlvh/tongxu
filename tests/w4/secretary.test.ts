@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setup } from '../w3/receiver-fixture.js';
 import { runReception } from '../../src/receiver.js';
@@ -121,4 +121,12 @@ test('identical RPC retries and semantic query retries consume the original resp
 test('a valid late final from the same original run can be recovered after waiting, without losing the waiting record', async t => {
   const f = await fixture(t, 'waiting-late-final'); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /native_waiting/); const logs = await f.logs();
   const recovered = await runSecretary(f.secretaryPlan, f.output); assert.equal(recovered.status, 'completed'); assert.equal(recovered.newModelTasks, 0); assert.deepEqual(await f.logs(), logs); assert.equal(JSON.parse(await readFile(join(f.output, 'outcome.json'), 'utf8')).reason, 'native_waiting');
+});
+
+test('pinned native binaries larger than 128 MB reach the stop gate without being executed', async t => {
+  const f = await fixture(t), path = join(f.root, 'large-binary-data-fixture');
+  const file = await open(path, 'wx', 0o700); try { await file.truncate(160 * 1024 * 1024); } finally { await file.close(); }
+  await writeFile(f.secretaryPlan, JSON.stringify({ ...f.p, codexExecutable: path, codexSha256: hash(await readFile(path)) }));
+  f.q.control('scope', 'investment', 'stopped', 'fixture:do-not-execute-data-file');
+  await assert.rejects(runSecretary(f.secretaryPlan, f.output), /new_investment_stopped/); assert.equal((await f.logs()).length, 0);
 });
