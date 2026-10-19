@@ -10,14 +10,14 @@
 npm ci --ignore-scripts
 npm run build
 node dist/src/cli.js inspect --repo wlvh/tongxu --pr 12 --issue 2 --format json
-node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --issue 2 --issue 3 --output /tmp/tongxu-pr12-new
-node dist/src/cli.js collect --resume /tmp/tongxu-pr12-new
+node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --issue 2 --issue 3 --output /absolute/private/tongxu-pr12-new
+node dist/src/cli.js collect --resume /absolute/private/tongxu-pr12-new
 npm test
 ```
 
-示例输出路径必须尚不存在且父目录存在；正式保存请选自己的持久私有位置，不依赖 `/tmp` 的保留时间。拒绝在任何 Git checkout、bare 仓库、`.git` 或符号链接穿透路径中保存。不会自动登录、安装 gh、迁移凭据、改 remote 或调用付费服务。私有仓库的 API 和 Git 读取均需原有可用权限，缺一部分就报告缺口。
+把示例中的 /absolute/private 替换为自己的真实私有目录。输出路径必须尚不存在且父目录存在；正式保存请选自己的持久私有位置，不依赖 `/tmp` 的保留时间。拒绝在任何 Git checkout、bare 仓库、`.git` 或符号链接穿透路径中保存。不会自动登录、安装 gh、迁移凭据、改 remote 或调用付费服务。私有仓库的 API 和 Git 读取均需原有可用权限，缺一部分就报告缺口。
 
-`inspect` 在私有临时目录采集，向 stdout 输出交接内容/JSON 后删除自己创建的临时目录，不留下交付包。`collect` 保存包并输出简短 JSON 状态。退出码：0 表示所请求事实取得完整且末次候选仍匹配；2 表示部分结果已保存、有待补缺口；1 表示参数或本地 I/O 错误。0 不证明技术正确、本人采用或可合并。
+`inspect` 先解析系统临时目录的真实路径（例如 macOS 的 /var、/tmp 别名），再在其中创建私有目录采集。这个归一化只用于程序自己分配的临时目录；显式输出、relay 和包内 raw/git 路径的符号链接检查不放宽。`inspect` 向 stdout 输出交接内容/JSON 后删除自己创建的临时目录，不留下交付包。`collect` 保存包并输出简短 JSON 状态。退出码：0 表示所请求事实取得完整且末次候选仍匹配；2 表示部分结果已保存、有待补缺口；1 表示参数或本地 I/O 错误。0 不证明技术正确、本人采用或可合并。
 
 ## 包与恢复
 
@@ -67,8 +67,8 @@ kind 可为 owner_adoption_report/team_agreement/delegated_action/proposal/fact/
 默认 gh 被环境网络策略阻断时，不改变代理或换身份。已经有可用只读连接器的调用者可显式选择：
 
 ```sh
-mkdir -m 700 /tmp/tongxu-relay-new
-node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /tmp/tongxu-pr12-relay-new --transport relay --relay-dir /tmp/tongxu-relay-new
+mkdir -m 700 /absolute/private/tongxu-relay-new
+node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /absolute/private/tongxu-pr12-relay-new --transport relay --relay-dir /absolute/private/tongxu-relay-new
 ```
 
 这是前台请求/响应信箱，不自动执行工具、运行后台队列或派发会话。调用者需同时服务该目录：读取 `request.json` 的 `{id,method:"GET",endpoint}`，用已有只读连接器访问 `https://api.github.com/<endpoint>`；将 `{id,status,body}` 写入私有临时文件，原子改名为 `response.json`。body 必须是连接器真实返回的 JSON 文本，不能自行拼成成功响应。失败应交回实际错误状态，或让 30 秒超时成为缺口。不从响应接受任意 host 或下一步命令。
@@ -78,3 +78,5 @@ relay 保存 `connector-json-no-http-headers` 出处，明确它不是 HTTP 原�
 ## 实现与验证入口
 
 `cli.ts` 参数/生命周期；`transport.ts` 两种 GET 传输；`collector.ts` 固定、分页和观察；`snapshot.ts` 私有存储、哈希和恢复；`git.ts` 固定对象读取；`handoff.ts` 私人/公开输出。Node test runner 包含真实 Git 分叉夹具、真实 CLI 进程中断恢复、偏移分页变化、漂移/截断/失败、同账号来源及路径/覆盖/私有摘要边界。真实 PR 结果另记在 `verification/W1_READONLY_CLI.md`，不以原型探针充当应用验收。
+
+本机接收补充：已在 macOS Node 24 上实测固定 W1 的默认 gh collect/resume；历史 Linux/bubblewrap 记录单独保留。Windows 未在本轮验证。使用 gh 已有身份，不从历史测试环境版本推导一个未经核实的最低版本。
