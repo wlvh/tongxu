@@ -21,3 +21,5 @@ SQ06 验收一次真实 Codex 秘书询问原任务的接收、发布和剩余�
 本角色只使用 Codex，费用依据也须对应 Codex。billing 保留 mode/evidence/evidenceSha256/observedAt，并固定 `ordinaryUsageRequired=true`。现有账号可以已有 credits；本字段不声称账号余额为零或额外额度已经关闭。新原生连接核 ChatGPT 认证，每次发送前核 `ordinaryUsageAllowed=true`，拒绝 API 覆盖，固定普通 service tier；不可用即停，不启用额度或切换新计费路径。证据超过24小时要求刷新相关只读预检，不重查全部认证路线。
 
 共享原生封装还修补了一个已复现的时序问题：turn 接受回复和首个工具请求可能同批到达。工具处理先等本程序已提交 turn 的准确回复，再核 thread/turn；不采用工具自报ID。原修复角色工具和提示保持原边界，回归保留修前失败和修后结果。
+
+恢复从固定计划重建完整 initialize/认证/配置/用量/thread/turn 请求、顺序、ID与参数，并核原始回复中的认证、配置、只读权限和准确接受的 session/turn。原 expected-requests 与 hash 只保字节，不自行证明权限。工具回复必须对应原服务端请求和已保存查询；相同请求的重传可严格复用同一响应，不能夹入无请求的响应或重做查询。历史等待记录保留；只有原进程后来确有完整匹配终态时，才允许只读恢复为完成，不发新 turn。

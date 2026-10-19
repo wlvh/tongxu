@@ -159,6 +159,25 @@ export class BoundedCodexSession {
 }
 export { BoundedCodexSession as RepairSession };
 
+/** Cache retransmission is delivery of the same response, not a new tool call.
+ * Normalize only replies backed by identical reconciled server requests.
+ * Old receipts intentionally retain their original canonical contract bytes. */
+function canonicalReplies(messages: any[], raw: Buffer, pairs: ReconciledToolCall[], requireAll: boolean) {
+  const counts = new Map<string, number>(), used = new Map<string, number>();
+  for (const message of raw.toString().trim().split('\n').map(x => JSON.parse(x)).filter(m => m.method === 'item/tool/call' && 'id' in m)) {
+    const pair = pairs.find(p => isDeepStrictEqual(p.request, message)); if (!pair) throw new Error('controlled_tool_request_unreconciled');
+    const key = JSON.stringify(message.id); counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const canonical = messages.filter(message => {
+    if (message.method) return true;
+    const pair = pairs.find(p => isDeepStrictEqual(p.response, message)); if (!pair) throw new Error('controlled_unmatched_response');
+    const key = JSON.stringify(message.id), n = (used.get(key) ?? 0) + 1; used.set(key, n);
+    if (n > (counts.get(key) ?? 0)) throw new Error('controlled_response_without_request');
+    return n === 1;
+  });
+  if (requireAll && [...counts].some(([key, count]) => used.get(key) !== count)) throw new Error('controlled_response_missing');
+  return canonical;
+}
 export async function readRepairSession(directory: string) {
   await checkCapture(directory);
   const read = async (name: string) => JSON.parse(await readFile(join(directory, name), 'utf8'));
@@ -166,6 +185,6 @@ export async function readRepairSession(directory: string) {
   const raw = await readFile(join(directory, 'stdout.ndjson')), input = await readFile(join(directory, 'stdin.ndjson'));
   if (exit.code !== 0 || exit.signal != null || hash(raw) !== receipt.rawSha256 || hash(input) !== receipt.inputSha256 || hash(await readFile(join(directory, 'expected-requests.json'))) !== receipt.contractSha256 || hash(await readFile(join(directory, 'reconciled-tools.json'))) !== receipt.reconciledSha256 || !isDeepStrictEqual(binding, receipt.binding)) throw new Error('controlled_capture_integrity_failed');
   const sent = input.toString().trim().split('\n').map(x => JSON.parse(x));
-  if (!isDeepStrictEqual(sent, contract) || pairs.some((x: any) => !sent.some(m => isDeepStrictEqual(m, x.response)))) throw new Error('controlled_request_contract_changed');
+  if (!isDeepStrictEqual(canonicalReplies(sent, raw, pairs, true), canonicalReplies(contract, raw, pairs, false)) || pairs.some((x: any) => !sent.some(m => isDeepStrictEqual(m, x.response)))) throw new Error('controlled_request_contract_changed');
   const parsed = parseCodexResult(raw, binding, pairs); if (parsed.status !== 'final_observed') throw new Error('controlled_result_not_final'); return parsed;
 }

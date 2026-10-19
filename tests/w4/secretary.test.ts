@@ -19,17 +19,17 @@ import fs from 'node:fs';import readline from 'node:readline';
 import {QueueStore} from ${JSON.stringify(new URL('../../src/queue-store.js', import.meta.url).href)};
 const trace=${JSON.stringify(trace)},mode=${JSON.stringify(mode)},store=${JSON.stringify(f.store)},log=x=>fs.appendFileSync(trace,JSON.stringify(x)+'\\n'),emit=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 if(process.argv.includes('--version')){console.log(mode==='version'?'codex-cli 0.1':'codex-cli 0.163.0-alpha.10.2');process.exit(0)}
-let thread,current,context,serial=0,observations=[],rateReads=0;
+let thread,current,context,serial=0,observations=[],rateReads=0,retransmitted=false;
 const tool=(name,args)=>emit({id:'query-'+(++serial),method:'item/tool/call',params:{threadId:mode==='wrong-thread'?'other-thread':thread.id,turnId:current,callId:'query-'+serial,tool:name,namespace:null,arguments:args}});
 const finish=()=>{const report={candidateH:context.candidate.H,report:'明确标注的秘书模拟回答；读到了真实测试队列，未批准或执行动作。',observationIds:mode==='false-reference'?['0'.repeat(64)]:observations.map(o=>o.observationId)};const item={id:'fixture-answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:current,status:'completed',rootTurnId:current,items:[item],itemsView:'full',error:null}}});};
 readline.createInterface({input:process.stdin}).on('line',async line=>{const m=JSON.parse(line);
-if(!m.method&&typeof m.id==='string'){if(m.error)return;const v=JSON.parse(m.result.contentItems[0].text);observations.push(v);log({kind:'observation',value:v});if(mode==='interrupt')process.exit(9);if(serial===1){if(mode==='change'){const q=await QueueStore.open(store);q.control('scope','merge','stopped','fixture:external-control-change');q.close();}tool('tongxu_operation_status',{operation:v.data.operations[0].id});}else finish();return;}
+if(!m.method&&typeof m.id==='string'){if(m.error)return;if(['retransmit','new-rpc-id'].includes(mode)&&!retransmitted&&m.id==='query-1'){retransmitted=true;emit({id:mode==='retransmit'?'query-1':'query-1-again',method:'item/tool/call',params:{threadId:thread.id,turnId:current,callId:'query-1',tool:'tongxu_task_status',namespace:null,arguments:{}}});return;}const v=JSON.parse(m.result.contentItems[0].text);observations.push(v);log({kind:'observation',value:v});if(mode==='interrupt')process.exit(9);if(serial===1){if(mode==='change'){const q=await QueueStore.open(store);q.control('scope','merge','stopped','fixture:external-control-change');q.close();}tool('tongxu_operation_status',{operation:v.data.operations[0].id});}else if(mode==='waiting-late-final'){emit({method:'thread/status/changed',params:{threadId:thread.id,status:{type:'active',activeFlags:['waitingOnUserInput']}}});setTimeout(()=>{finish();emit({method:'thread/status/changed',params:{threadId:thread.id,status:{type:'idle'}}});},300);}else finish();return;}
 if(!('id'in m))return;let result={};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read'){if(mode==='late-stop'&&++rateReads===2){const q=await QueueStore.open(store);q.control('scope','investment','stopped','fixture:late-stop-before-model');q.close();}result={ordinaryUsageAllowed:mode!=='quota'};}
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){const id='secretary-fixture-'+process.pid;thread={id,sessionId:id,cwd:m.params.cwd,source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',names:m.params.dynamicTools.map(x=>x.name)});emit({id:m.id,result:{thread,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){current='secretary-fixture-turn';const text=m.params.input[0].text;context=JSON.parse(text.slice(text.lastIndexOf('\\n')+1));log({kind:'model-input'});if(mode==='slow')await new Promise(r=>setTimeout(r,900));const reply={id:m.id,result:{turn:{id:current}}},started={method:'turn/started',params:{threadId:thread.id,turn:{id:current,status:'inProgress',items:[],rootTurnId:current}}};if(mode==='same-frame'){serial=1;process.stdout.write([reply,started,{id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:current,callId:'query-1',tool:'tongxu_task_status',namespace:null,arguments:{}}}].map(x=>JSON.stringify(x)).join('\\n')+'\\n');return;}emit(reply);emit(started);if(mode==='waiting'){emit({method:'thread/status/changed',params:{threadId:thread.id,status:{activeFlags:['waitingOnUserInput']}}});return;}if(mode==='forbidden')tool('tongxu_replace_file',{path:'sample.js',text:'not allowed'});else if(mode==='outside')tool('tongxu_operation_status',{operation:'another-task-operation'});else tool('tongxu_task_status',mode==='arguments'?{sql:'DROP TABLE operations'}:{});return;}
+if(m.method==='turn/start'){current='secretary-fixture-turn';const text=m.params.input[0].text;context=JSON.parse(text.slice(text.lastIndexOf('\\n')+1));log({kind:'model-input'});if(mode==='slow')await new Promise(r=>setTimeout(r,900));const reply={id:m.id,result:{turn:{id:current}}},started={method:'turn/started',params:{threadId:thread.id,turn:{id:current,status:'inProgress',items:[],rootTurnId:current}}};if(mode==='same-frame'){serial=1;process.stdout.write([reply,started,{id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:current,callId:'query-1',tool:'tongxu_task_status',namespace:null,arguments:{}}}].map(x=>JSON.stringify(x)).join('\\n')+'\\n');return;}emit(reply);emit(started);if(mode==='waiting'){emit({method:'thread/status/changed',params:{threadId:thread.id,status:{type:'active',activeFlags:['waitingOnUserInput']}}});return;}if(mode==='forbidden')tool('tongxu_replace_file',{path:'sample.js',text:'not allowed'});else if(mode==='outside')tool('tongxu_operation_status',{operation:'another-task-operation'});else tool('tongxu_task_status',mode==='arguments'?{sql:'DROP TABLE operations'}:{});return;}
 emit({id:m.id,result});});
 `;
   const exe = join(f.root, 'codex-secretary-fixture.mjs'); await writeFile(exe, code, { mode: 0o700 });
@@ -90,4 +90,35 @@ test('two actual CLI processes cannot start competing secretary turns for one op
   const start = () => { const p = spawn(process.execPath, [cli, 'run', '--plan', f.secretaryPlan, '--output', f.output], { stdio: ['ignore', 'pipe', 'pipe'] }); let stderr = ''; p.stdout.resume(); p.stderr.on('data', b => stderr += b); return once(p, 'close').then(([code]) => ({ code, stderr })); };
   const first = start(); for (let i = 0; i < 300 && !(await f.logs()).some(x => x.kind === 'model-input'); i++) await new Promise(r => setTimeout(r, 10));
   const second = await start(), done = await first; assert.equal(done.code, 0); assert.equal(second.code, 1); assert.match(second.stderr, /secretary_controller_active/); assert.equal((await f.logs()).filter(x => x.kind === 'model-input').length, 1);
+});
+
+async function reviseCapture(native: string, name: string, mutate: (messages: any[]) => void) {
+  const file = join(native, name), messages = (await readFile(file, 'utf8')).trim().split('\n').map(x => JSON.parse(x)); mutate(messages);
+  const bytes = Buffer.from(messages.map(x => JSON.stringify(x)).join('\n') + '\n'); await writeFile(file, bytes);
+  const capturePath = join(native, 'capture-status.json'), capture = JSON.parse(await readFile(capturePath, 'utf8')); capture.files[name] = hash(bytes); await writeFile(capturePath, JSON.stringify(capture));
+  const receiptPath = join(native, 'completed.json'), receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+  if (name === 'stdin.ndjson') { const contract = Buffer.from(JSON.stringify(messages)); await writeFile(join(native, 'expected-requests.json'), contract); receipt.inputSha256 = hash(bytes); receipt.contractSha256 = hash(contract); } else receipt.rawSha256 = hash(bytes);
+  await writeFile(receiptPath, JSON.stringify(receipt));
+}
+test('coherently rehashed capture cannot change thread permissions, client request IDs, bare replies or accepted turn identity', async t => {
+  for (const mode of ['permissions', 'request-id', 'bare-response', 'accepted-turn']) {
+    const f = await fixture(t); await runSecretary(f.secretaryPlan, f.output); const logs = await f.logs(), native = join(f.output, 'codex-secretary');
+    if (mode === 'accepted-turn') await reviseCapture(native, 'stdout.ndjson', messages => { messages.find(x => x.id === 7 && !x.method).result.turn.id = 'different-accepted-turn'; });
+    else await reviseCapture(native, 'stdin.ndjson', messages => {
+      if (mode === 'permissions') Object.assign(messages.find(x => x.method === 'thread/start').params, { approvalPolicy: 'on-request', sandbox: 'danger-full-access', ephemeral: false });
+      if (mode === 'request-id') messages.find(x => x.method === 'initialize').id = 900;
+      if (mode === 'bare-response') messages.push({ id: 'unmatched-response', result: { success: true, contentItems: [] } });
+    });
+    await assert.rejects(runSecretary(f.secretaryPlan, f.output)); assert.deepEqual(await f.logs(), logs);
+  }
+});
+test('identical RPC retries and semantic query retries consume the original response without another query or model turn', async t => {
+  for (const mode of ['retransmit', 'new-rpc-id']) {
+    const f = await fixture(t, mode), result = await runSecretary(f.secretaryPlan, f.output); assert.equal(result.status, 'completed'); assert.equal(result.queryCalls, 2); const logs = await f.logs();
+    assert.equal((await runSecretary(f.secretaryPlan, f.output)).newModelTasks, 0); assert.deepEqual(await f.logs(), logs);
+  }
+});
+test('a valid late final from the same original run can be recovered after waiting, without losing the waiting record', async t => {
+  const f = await fixture(t, 'waiting-late-final'); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /native_waiting/); const logs = await f.logs();
+  const recovered = await runSecretary(f.secretaryPlan, f.output); assert.equal(recovered.status, 'completed'); assert.equal(recovered.newModelTasks, 0); assert.deepEqual(await f.logs(), logs); assert.equal(JSON.parse(await readFile(join(f.output, 'outcome.json'), 'utf8')).reason, 'native_waiting');
 });

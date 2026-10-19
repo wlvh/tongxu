@@ -5,7 +5,8 @@ import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { save } from './live-process.js';
 import { exists, regular } from './repair-workspace.js';
-import { BoundedCodexSession, readRepairSession, secretarySchema, secretaryDeveloperInstructions } from './repair-native.js';
+import { BoundedCodexSession, readRepairSession, secretarySchema } from './repair-native.js';
+import { verifySecretaryCapture } from './secretary-capture.js';
 import { SecretaryTools, observeTask, secretaryToolSpecs } from './secretary-tools.js';
 import type { Candidate } from './live-codex.js';
 
@@ -48,17 +49,14 @@ async function lock<T>(output: string, fn: () => Promise<T>) {
 async function final(output: string, p: SecretaryPlan, inputSha256: string, frozen: any, duplicate: boolean) {
   const native = join(output, 'codex-secretary'), result = await readRepairSession(native);
   if (result.binding.role !== 'secretary' || result.binding.run !== output || result.binding.inputManifestSha256 !== inputSha256 || canonical(result.binding.candidate) !== canonical(p.candidate) || result.binding.turnIds.length !== 1) throw new Error('secretary_capture_binding_mismatch');
-  const submitted = JSON.parse((await regular(join(native, 'expected-requests.json'))).toString()), methods = submitted.filter((r: any) => r.method).map((r: any) => r.method);
-  if (canonical(methods) !== canonical(['initialize', 'initialized', 'account/read', 'config/read', 'account/rateLimits/read', 'thread/start', 'account/rateLimits/read', 'turn/start'])) throw new Error('secretary_submitted_sequence_changed');
-  const threadStart = submitted.find((r: any) => r.method === 'thread/start').params, turn = submitted.find((r: any) => r.method === 'turn/start').params;
-  if (threadStart.baseInstructions !== frozen.system || threadStart.developerInstructions !== secretaryDeveloperInstructions || canonical(threadStart.dynamicTools) !== canonical(secretaryToolSpecs) || canonical(turn.input) !== canonical([{ type: 'text', text: questionInput(p) }]) || canonical(turn.outputSchema) !== canonical(secretarySchema) || turn.threadId !== result.binding.threadId || turn.approvalPolicy !== 'never' || canonical(turn.sandboxPolicy) !== canonical({ type: 'readOnly', networkAccess: false })) throw new Error('secretary_submitted_input_changed');
   const tools = new SecretaryTools(p.store, p.item, p.candidate, output), observations = await tools.observations();
   const pairs = JSON.parse((await regular(join(native, 'reconciled-tools.json'))).toString());
-  if (!observations.length || observations.length > 8 || observations.length !== pairs.length) throw new Error('secretary_query_not_exercised');
+  if (!observations.length || observations.length > 8 || new Set(pairs.map((pair: any) => pair.request.params.callId)).size !== observations.length) throw new Error('secretary_query_not_exercised');
   for (const pair of pairs) {
     const q = observations.find(o => o.request.callId === pair.request.params.callId);
     if (!q || canonical(q.request) !== canonical({ tool: pair.request.params.tool, arguments: pair.request.params.arguments, callId: pair.request.params.callId }) || canonical(q.response) !== canonical(pair.response.result)) throw new Error('secretary_query_capture_mismatch');
   }
+  await verifySecretaryCapture(native, p, frozen, result.binding, questionInput(p), observations);
   const report = JSON.parse(result.turns[0]!.final!.text);
   if (report.candidateH !== p.candidate.H || typeof report.report !== 'string' || !report.report.trim() || Object.keys(report).sort().join() !== 'candidateH,observationIds,report' || !Array.isArray(report.observationIds) || !report.observationIds.length || report.observationIds.some((id: any) => !observations.some(o => o.observationId === id))) throw new Error('secretary_unobserved_reference');
   return { kind: 'tongxu-readonly-secretary-result', status: 'completed', executionKind: p.executionKind, candidate: p.candidate, item: p.item, sessionId: result.binding.sessionId, threadId: result.binding.threadId, turnId: result.binding.turnIds[0], report: report.report, observationIds: report.observationIds, observations: observations.map(o => ({ id: o.observationId, observedAt: o.observation.observedAt, eventRevision: o.observation.eventRevision, query: o.request.tool })), localLedgerOnly: true, modelExplanationIsNotApproval: true, productionActionAllowed: false, queryCalls: observations.length, duplicate, newModelTasks: duplicate ? 0 : 1 };
@@ -95,7 +93,6 @@ export async function runSecretary(planPath: string, output: string) {
     await beforeTurn(); let session: BoundedCodexSession | undefined;
     try {
       session = await BoundedCodexSession.start({ executable: p.codexExecutable, directory: native, operation: output, candidate: p.candidate, role: 'secretary', system: frozen.system, inputManifestSha256: inputSha256, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource, disabledMcpServers: p.disabledMcpServers, allowedInstructionSources: p.allowedInstructionSources, timeoutMs: p.timeoutMs, executionKind: p.executionKind, beforeTurn, gate });
-      await beforeTurn();
       await session.turn(questionInput(p), p.candidate, secretarySchema);
       await session.close();
       const r = await final(output, p, inputSha256, frozen, false); save(join(output, 'result.json'), r); return r;
