@@ -9,14 +9,14 @@ import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
 import type { ReceiverPlan } from '../../src/receiver.js';
 
-export async function setup(t: test.TestContext, mode = 'complete') {
+export async function setup(t: test.TestContext, mode = 'complete', seats = 1) {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
   const objects = join(root, 'objects'); await mkdir(objects); const git = (args: string[]) => execFileSync('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: objects, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '--initial-branch=fixture']); await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=1;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture']);
   const B = git(['rev-parse', 'HEAD']), baseTree = git(['rev-parse', 'HEAD^{tree}']);
   await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=2;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture candidate']);
   const H = git(['rev-parse', 'HEAD']);
-  const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', 1); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
+  const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', seats); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
   async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string; artifactIndex?: number } = {}) {
     const at = new Date(Date.parse('2026-10-19T00:00:00Z') + ++index * 2000).toISOString(), pr = options.pr ?? 1;
     const selectedH = options.H ?? H, selectedTree = git(['rev-parse', `${selectedH}^{tree}`]);
@@ -43,7 +43,7 @@ if(process.argv.includes('auth')){setTimeout(()=>console.log(JSON.stringify({log
 else{let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>{const x=JSON.parse(text);fs.appendFileSync(trace,'model-dispatch\\n');
 emit({type:'system',subtype:'init',session_id:'fixture-receiver',model:'fixture',claude_code_version:'2.1.233',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});
 const missing=mode==='always-insufficient'||mode==='insufficient'&&!x.data.evidence.supplements?.length;
-const j={schemaVersion:1,operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:[]};
+const j={schemaVersion:1,...(x.data.evidence.prerequisite?{consumedPrerequisite:x.data.evidence.prerequisite.receiptSha256}:{}),operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:[]};
 setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:JSON.stringify(j),usage:{},total_cost_usd:0}),mode==='delay'?900:0);
 });}
 `;
