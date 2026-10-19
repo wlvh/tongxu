@@ -56,18 +56,26 @@ function envArgs(c: Connection): string[] {
   return ['-i', 'HOME=/home/tongxu', 'TMPDIR=/tmp', `PATH=${dirname(c.config.node)}:/usr/bin:/bin`, 'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_TERMINAL_PROMPT=0', 'GIT_NO_REPLACE_OBJECTS=1', 'NPM_CONFIG_USERCONFIG=/dev/null', 'TONGXU_RESULT_FILE=/result/result.json'];
 }
 function createArgs(c: Connection, r: RecordData): string[] {
-  const args = ['create', '--pull=never', '--name', r.name, '--label', `io.tongxu.execution=${r.id}`, '--label', 'io.tongxu.executor=docker-v1', '--network=none', '--read-only', '--user', `${c.uid}:${c.gid}`, '--cap-drop=ALL', '--security-opt=no-new-privileges', '--security-opt=seccomp=builtin', '--ipc=private', '--cgroupns=private', '--pids-limit=128', '--memory=1g', '--memory-swap=1g', '--cpus=2', '--shm-size=16m', '--restart=no', '--no-healthcheck', '--log-driver=local', '--log-opt=max-size=4m', '--log-opt=max-file=1', '--log-opt=compress=false', '--tmpfs', '/tmp:rw,size=268435456,mode=1777', '--tmpfs', `/home/tongxu:rw,size=16777216,mode=700,uid=${c.uid},gid=${c.gid}`, '--entrypoint=/usr/bin/env', '--workdir', r.paths.work ? '/work' : '/tmp'];
+  const args = ['create', '--pull=never', '--name', r.name, '--label', `io.tongxu.execution=${r.id}`, '--label', 'io.tongxu.executor=docker-v1', '--network=none', '--read-only', '--user', `${c.uid}:${c.gid}`, '--cap-drop=ALL', '--security-opt=no-new-privileges', '--security-opt=seccomp=builtin', '--ipc=private', '--cgroupns=private', '--pids-limit=128', '--memory=1g', '--memory-swap=1g', '--cpus=2', '--shm-size=16m', '--restart=no', '--no-healthcheck', '--log-driver=local', '--log-opt=max-size=4m', '--log-opt=max-file=1', '--log-opt=compress=false', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=268435456,mode=1777', '--tmpfs', `/home/tongxu:rw,size=16777216,mode=700,uid=${c.uid},gid=${c.gid}`, '--entrypoint=/usr/bin/env', '--workdir', r.paths.work ? '/work' : '/tmp'];
   for (const [source, target, readonly] of [[r.paths.work, '/work', false], [r.paths.resultDirectory, '/result', false], [r.paths.dependencies, '/work/node_modules', true]] as const) if (source) args.push('--mount', `type=bind,source=${source},target=${target}${readonly ? ',readonly' : ''}`);
   return [...args, c.config.image, ...envArgs(c), '/usr/bin/timeout', '--signal=TERM', '--kill-after=1s', `${r.timeoutMs / 1000}s`, ...r.argv];
 }
+function assertRecord(r: RecordData) {
+  const c = r.connection;
+  parseDockerConfig(c.config);
+  // These constraints come from the executor contract, not from the record's
+  // self-reported expectation. A root record cannot validate a root container.
+  if (r.schemaVersion !== 1 || r.kind !== 'tongxu-docker-execution' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(r.id) || r.name !== `tongxu-${r.id}` || !cleanPath(r.directory) || !Number.isSafeInteger(r.controllerPid) || r.controllerPid < 1 || !Number.isSafeInteger(c.uid) || c.uid <= 0 || !Number.isSafeInteger(c.gid) || c.gid < 0 || !/^[0-9a-f]{64}$/.test(c.clientSha256) || !Number.isInteger(r.timeoutMs) || r.timeoutMs < 100 || r.timeoutMs > 300000 || !Number.isInteger(r.maxBytes) || r.maxBytes < 1 || r.maxBytes > 4 * 1024 * 1024 || !Array.isArray(r.argv) || !r.argv.length || r.argv.length > 100 || !cleanPath(r.argv[0]) || r.argv.some(a => typeof a !== 'string' || a.includes('\0')) || r.containerId !== undefined && !idPattern.test(r.containerId) || canonical(r.createArgs) !== canonical(createArgs(c, r))) throw new Error('invalid_docker_execution_record');
+}
 function assertContainer(r: RecordData, v: any) {
+  assertRecord(r);
   const c = r.connection, h = v?.HostConfig, config = v?.Config;
   const expectedMounts = [[r.paths.work, '/work', true], [r.paths.resultDirectory, '/result', true], [r.paths.dependencies, '/work/node_modules', false]].filter(row => row[0]).map(([source, destination, rw]) => ({ source, destination, rw }));
   const mounts = (v?.Mounts ?? []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: m.Source, destination: m.Destination, rw: m.RW }));
   const security = [...(h?.SecurityOpt ?? [])].sort();
   const expectedCommand = [...envArgs(c), '/usr/bin/timeout', '--signal=TERM', '--kill-after=1s', `${r.timeoutMs / 1000}s`, ...r.argv];
   if (!idPattern.test(v?.Id ?? '') || r.containerId && v.Id !== r.containerId || v.Name !== '/' + r.name || v.Image !== c.config.image || config?.Labels?.['io.tongxu.execution'] !== r.id || config?.Labels?.['io.tongxu.executor'] !== 'docker-v1' || config.User !== `${c.uid}:${c.gid}` || canonical(config.Entrypoint) !== canonical(['/usr/bin/env']) || canonical(config.Cmd) !== canonical(expectedCommand) || config.Tty || config.OpenStdin || config.WorkingDir !== (r.paths.work ? '/work' : '/tmp') || config.Healthcheck?.Test?.[0] !== 'NONE' || h?.Privileged !== false || h.ReadonlyRootfs !== true || h.NetworkMode !== 'none' || h.PidMode || h.UTSMode || h.IpcMode !== 'private' || h.CgroupnsMode !== 'private' || h.CapAdd?.length || canonical(h.CapDrop) !== canonical(['ALL']) || canonical(security) !== canonical(['no-new-privileges', 'seccomp=builtin'].sort()) || h.Devices?.length || h.DeviceRequests?.length || h.VolumesFrom?.length || h.PortBindings && Object.keys(h.PortBindings).length || h.PublishAllPorts || h.Memory !== 1073741824 || h.MemorySwap !== 1073741824 || h.NanoCpus !== 2000000000 || h.PidsLimit !== 128 || h.RestartPolicy?.Name !== 'no' || h.LogConfig?.Type !== 'local' || h.LogConfig.Config?.['max-size'] !== '4m' || h.LogConfig.Config?.['max-file'] !== '1' || h.LogConfig.Config?.compress !== 'false' || !h.MaskedPaths?.length || !h.ReadonlyPaths?.length || canonical(mounts.sort((a: any,b: any)=>a.destination.localeCompare(b.destination))) !== canonical(expectedMounts.sort((a: any,b: any)=>a.destination.localeCompare(b.destination))) || (v.Mounts ?? []).some((m: any) => !['bind', 'tmpfs'].includes(m.Type))) throw new Error('docker_container_contract_mismatch');
-  const expectedTmpfs = { '/tmp': 'rw,size=268435456,mode=1777', '/home/tongxu': `rw,size=16777216,mode=700,uid=${c.uid},gid=${c.gid}` };
+  const expectedTmpfs = { '/tmp': 'rw,exec,nosuid,nodev,size=268435456,mode=1777', '/home/tongxu': `rw,size=16777216,mode=700,uid=${c.uid},gid=${c.gid}` };
   if (canonical(h.Tmpfs) !== canonical(expectedTmpfs) || canonical(config.Env) !== canonical(c.imageEnv)) throw new Error('docker_container_environment_mismatch');
 }
 async function validateMounts(o: Options) {
@@ -105,7 +113,7 @@ export class DockerRuntime {
   async run(o: Options): Promise<Execution & { record: Buffer }> {
     await validateMounts(o); await privateDirectory(o.directory, true);
     const id = randomUUID(), r: RecordData = { schemaVersion: 1, kind: 'tongxu-docker-execution', id, name: `tongxu-${id}`, directory: o.directory, controllerPid: process.pid, startedAt: now(), connection: this.connection, binding: o.binding, argv: o.argv, timeoutMs: o.timeoutMs, maxBytes: o.maxBytes, paths: { work: o.work, resultDirectory: o.resultDirectory, dependencies: o.dependencies }, createArgs: [], phase: 'create_intent' };
-    r.createArgs = createArgs(this.connection, r); const save = () => atomic(o.directory, 'execution.json', r); await save();
+    r.createArgs = createArgs(this.connection, r); assertRecord(r); const save = () => atomic(o.directory, 'execution.json', r); await save();
     const stdoutFile = join(o.directory, 'stdout'), stderrFile = join(o.directory, 'stderr'); for (const p of [stdoutFile, stderrFile]) await writeFile(p, '', { flag: 'wx', mode: 0o600 });
     let status: Execution['status'] = 'completed', total = 0, captureError = false, writes = Promise.resolve(), stopPromise: Promise<void> | undefined;
     const started = Date.now();
@@ -157,7 +165,7 @@ export class DockerRuntime {
 
 export async function reconcileDocker(directory: string, action: 'inspect' | 'stop', trustedConfig: DockerConfig): Promise<any> {
   await privateDirectory(directory, false); const original = await regular(join(directory, 'execution.json')), r = JSON.parse(original.toString()) as RecordData;
-  if (r.schemaVersion !== 1 || r.kind !== 'tongxu-docker-execution' || r.directory !== directory || r.name !== `tongxu-${r.id}` || !/^[0-9a-f-]{36}$/.test(r.id) || !Number.isSafeInteger(r.controllerPid) || r.controllerPid < 1 || canonical(r.createArgs) !== canonical(createArgs(r.connection, r))) throw new Error('invalid_docker_execution_record');
+  assertRecord(r); if (r.directory !== directory) throw new Error('docker_execution_directory_mismatch');
   // A saved report may identify a run, but cannot supply a new executable or
   // engine authority. The caller explicitly supplies the original trusted plan.
   const config = parseDockerConfig(trustedConfig);
@@ -186,7 +194,10 @@ export async function reconcileDocker(directory: string, action: 'inspect' | 'st
       result.outcome = container.State.Running ? 'running_or_unknown' : container.State.Status === 'created' ? 'not_started' : container.State.Status === 'exited' ? 'ended' : 'unknown';
       await atomic(recovery, 'result.json', result);
       if (!container.State.Running && action === 'stop') { const removed = await call(config, settings, recovery, ['rm', container.Id]); result.cleanup = removed.exit === 0 && !(await inspect(c, settings, recovery, container.Id)) ? 'removed' : 'unknown'; }
-    } else if (r.phase === 'finished' && r.cleanup === 'removed' && result.originalCaptureComplete) result.outcome = 'original_completed_record';
+    } else if (r.phase === 'finished' && r.cleanup === 'removed' && result.originalCaptureComplete) {
+      if (!r.containerId || r.before?.Id !== r.containerId || r.after?.Id !== r.containerId || r.after?.State?.Running !== false || r.after?.State?.Status !== 'exited') throw new Error('docker_original_exit_unverified');
+      assertContainer(r, r.before); assertContainer(r, r.after); result.outcome = 'original_completed_record';
+    }
     else {
       result.outcome = 'container_absent_original_result_unknown';
       try {
@@ -207,10 +218,18 @@ export async function reconcileDocker(directory: string, action: 'inspect' | 'st
   } finally { mutex.exec('ROLLBACK'); mutex.close(); }
 }
 
-export function dockerEvidenceMatches(bytes: Buffer, config: DockerConfig, binding: Binding, tool: any): boolean {
+export function dockerEvidenceState(bytes: Buffer, config: DockerConfig, binding: Binding, tool: any, timeoutMs: number | undefined): 'complete' | 'incomplete' | 'mismatch' {
   try {
     const r = JSON.parse(bytes.toString()) as RecordData;
-    assertContainer(r, r.before); assertContainer(r, r.after);
-    return r.kind === 'tongxu-docker-execution' && r.schemaVersion === 1 && r.phase === 'finished' && r.cleanup === 'removed' && r.directory.endsWith('/' + tool.dockerExecutionDirectory) && canonical(r.connection.config) === canonical(config) && canonical(r.binding) === canonical(binding) && canonical(r.argv) === canonical(tool.argv) && r.status === tool.status && r.exitCode === tool.exitCode && r.after.State.Running === false && r.after.State.Status === 'exited' && r.after.State.ExitCode === tool.exitCode && r.capture?.complete === true && r.capture.stdoutSha256 === tool.stdout?.sha256 && r.capture.stderrSha256 === tool.stderr?.sha256;
-  } catch { return false; }
+    assertRecord(r);
+    if (!r.directory.endsWith('/' + tool.dockerExecutionDirectory) || canonical(r.connection.config) !== canonical(config) || canonical(r.binding) !== canonical(binding) || canonical(r.argv) !== canonical(tool.argv) || r.timeoutMs !== timeoutMs || r.maxBytes !== 4 * 1024 * 1024 || r.status !== tool.status || (r.exitCode ?? null) !== tool.exitCode) return 'mismatch';
+    if (r.before) assertContainer(r, r.before); if (r.after) assertContainer(r, r.after);
+    if (r.capture && (r.capture.stdoutSha256 !== tool.stdout?.sha256 || r.capture.stderrSha256 !== tool.stderr?.sha256 || r.capture.stdoutBytes !== tool.stdout?.bytes || r.capture.stderrBytes !== tool.stderr?.bytes || r.capture.stdoutBytes + r.capture.stderrBytes > r.maxBytes)) return 'mismatch';
+    if (!r.containerId || !r.before || !r.after || r.phase !== 'finished' || r.cleanup !== 'removed' || r.capture?.complete !== true) return 'incomplete';
+    if (r.before.Id !== r.containerId || r.after.Id !== r.containerId || r.after.State.Running !== false || r.after.State.Status !== 'exited' || r.after.State.ExitCode !== tool.exitCode || r.clientExit !== 0 && r.clientExit !== tool.exitCode) return 'mismatch';
+    return 'complete';
+  } catch { return 'mismatch'; }
+}
+export function dockerEvidenceMatches(bytes: Buffer, config: DockerConfig, binding: Binding, tool: any, timeoutMs: number): boolean {
+  return dockerEvidenceState(bytes, config, binding, tool, timeoutMs) === 'complete';
 }

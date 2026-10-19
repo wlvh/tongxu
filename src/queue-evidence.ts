@@ -5,7 +5,7 @@ import { loadBundle, parsePlan } from './verification.js';
 import { canonical, samples, compare } from './comparison.js';
 import { shaPattern } from './contract.js';
 import type { Candidate, Manifest } from './contract.js';
-import { dockerEvidenceMatches } from './docker-sandbox.js';
+import { dockerEvidenceState } from './docker-sandbox.js';
 
 type Reference = { id: string; version: string; source: string };
 export type Requirement = { item: string; type: 'development' | 'merge' | 'enablement' | 'parent'; version: string; blocks: 'shadow_review' | 'merge' | 'enablement'; source: string; canContinue: string };
@@ -82,7 +82,10 @@ export async function readPacket(snapshot: string, verification: string, context
       const sets: any[] = []; observedSets.push(sets);
       for (const tool of stage.tools) {
         if (!tool.stdout || !tool.stderr) gaps.push('original_tool_output_missing');
-        if (plan.executor && (!/^docker-tool-[0-9]+-[a-zA-Z0-9_-]+-[0-9a-f-]{36}$/.test(tool.dockerExecutionDirectory ?? '') || !tool.sandbox || !dockerEvidenceMatches(blobs.get(tool.sandbox.sha256)!, plan.executor, { run: r.id, stage: index, tool: tool.id, head: stage.head, tree: stage.tree, planHash: r.planHash }, tool))) gaps.push('docker_execution_evidence_mismatch');
+        if (plan.executor) {
+          const state = !tool.sandbox ? 'incomplete' : !/^docker-tool-[0-9]+-[a-zA-Z0-9_-]+-[0-9a-f-]{36}$/.test(tool.dockerExecutionDirectory ?? '') ? 'mismatch' : dockerEvidenceState(blobs.get(tool.sandbox.sha256)!, plan.executor, { run: r.id, stage: index, tool: tool.id, head: stage.head, tree: stage.tree, planHash: r.planHash }, tool, plan.tools.find(t => t.id === tool.id)?.timeoutMs);
+          if (state !== 'complete') gaps.push(`docker_execution_evidence_${state}`);
+        }
         if (!plan.executor && tool.sandbox) gaps.push('unplanned_docker_execution');
         const expected = plan.tools.find(t => t.id === tool.id)?.expectedSampleIds;
         if (expected) {

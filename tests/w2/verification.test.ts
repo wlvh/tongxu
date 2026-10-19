@@ -67,9 +67,9 @@ test('real verify creates matching T/HEAD in a private checkout and preserves di
     if (executor) {
       const tool = stage.tools[0]!, bytes = await readFile(join(f.root, 'result', tool.sandbox!.path));
       const binding = { run: r.report.id, stage: stage.index, tool: tool.id, head: stage.head!, tree: stage.tree!, planHash: r.report.planHash };
-      assert.equal(dockerEvidenceMatches(bytes, executor, binding, tool), true);
+      assert.equal(dockerEvidenceMatches(bytes, executor, binding, tool, f.tools[0]!.timeoutMs), true);
       for (const mutate of [(record: any) => { record.binding.head = 'a'.repeat(40); }, (record: any) => { record.after.HostConfig.NetworkMode = 'host'; }, (record: any) => { record.capture.stdoutSha256 = 'b'.repeat(64); }]) {
-        const bad = JSON.parse(bytes.toString()); mutate(bad); assert.equal(dockerEvidenceMatches(Buffer.from(JSON.stringify(bad)), executor, binding, tool), false);
+        const bad = JSON.parse(bytes.toString()); mutate(bad); assert.equal(dockerEvidenceMatches(Buffer.from(JSON.stringify(bad)), executor, binding, tool, f.tools[0]!.timeoutMs), false);
       }
     }
   }
@@ -81,7 +81,30 @@ test('real verify creates matching T/HEAD in a private checkout and preserves di
     assert.equal((await readPacket(input, join(f.root, 'result'), contextPath)).summary.evidenceComplete, true);
     const altered = join(f.root, 'missing-container-evidence'); await cp(join(f.root, 'result'), altered, { recursive: true });
     const report = JSON.parse(await readFile(join(altered, 'verification.json'), 'utf8')); delete report.stages[1].tools[0].sandbox; await writeFile(join(altered, 'verification.json'), JSON.stringify(report));
-    const packet = await readPacket(input, altered, contextPath); assert.equal(packet.summary.evidenceComplete, false); assert.ok(packet.summary.gaps.includes('docker_execution_evidence_mismatch'));
+    const packet = await readPacket(input, altered, contextPath); assert.equal(packet.summary.evidenceComplete, false); assert.ok(packet.summary.gaps.includes('docker_execution_evidence_incomplete'));
+    const mutations: [string, (r: any) => void][] = [
+      ['longer-than-plan', record => {
+        record.timeoutMs = 10000;
+        record.createArgs = record.createArgs.map((v: string) => v === '5s' ? '10s' : v);
+        for (const view of [record.before, record.after]) { view.Config.Cmd = view.Config.Cmd.map((v: string) => v === '5s' ? '10s' : v); view.Args = [...view.Config.Cmd]; }
+      }],
+      ['root-user', record => {
+        const old = `${record.connection.uid}:${record.connection.gid}`; record.connection.uid = 0;
+        const home = `rw,size=16777216,mode=700,uid=0,gid=${record.connection.gid}`;
+        record.createArgs = record.createArgs.map((v: string) => v === old ? `0:${record.connection.gid}` : v.startsWith('/home/tongxu:rw,') ? `/home/tongxu:${home}` : v);
+        for (const view of [record.before, record.after]) { view.Config.User = `0:${record.connection.gid}`; view.HostConfig.Tmpfs['/home/tongxu'] = home; }
+      }],
+      ['changed-creation-intent', record => { record.createArgs.push('--unexpected-intent'); }],
+      ['different-container', record => { record.after.Id = 'a'.repeat(64); }]
+    ];
+    for (const [label, mutate] of mutations) {
+      const variant = join(f.root, label); await cp(join(f.root, 'result'), variant, { recursive: true });
+      const report = JSON.parse(await readFile(join(variant, 'verification.json'), 'utf8')), tool = report.stages[1].tools[0];
+      const record = JSON.parse(await readFile(join(variant, tool.sandbox.path), 'utf8')); mutate(record);
+      const bytes = Buffer.from(JSON.stringify(record)), sha256 = hash(bytes); tool.sandbox = { path: `raw/${sha256}.bin`, sha256, bytes: bytes.length };
+      await writeFile(join(variant, tool.sandbox.path), bytes); await writeFile(join(variant, 'verification.json'), JSON.stringify(report));
+      const rejected = await readPacket(input, variant, contextPath); assert.equal(rejected.summary.evidenceComplete, false, label); assert.ok(rejected.summary.gaps.includes('docker_execution_evidence_mismatch'), label);
+    }
   }
   await assert.rejects(() => verify({ snapshots: [input], objects: f.repo, plan: f.planPath, output: join(f.root, 'result') }), { code: 'EEXIST' });
 });
