@@ -101,6 +101,62 @@ PRAGMA user_version=4;`);
     catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
   private event(kind: string, object: string, data: unknown): void { this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind, object, JSON.stringify(data), now()); }
+  private publicationHistory(id: string): Row {
+    const events = (this.db.prepare("SELECT kind,data,observed_at FROM events WHERE object=? AND kind LIKE 'publication_%' ORDER BY id").all(`publication:${id}`) as Row[]).map(e => ({ ...parse(e, 'data'), kind: e.kind.slice(12), at: e.observed_at }));
+    const preparedIndex = events.findLastIndex(e => e.kind === 'prepared'), prepared = events[preparedIndex];
+    if (!prepared) return { operation: id, prepared: null, stages: {}, events };
+    for (const e of events) for (const ref of Object.values(e.blobs ?? {}) as Row[]) this.blob(ref.sha256);
+    const stages: Row = {};
+    for (const name of ['comment', 'status']) {
+      const stage: Row = { attempts: 0 };
+      for (const event of events.slice(preparedIndex + 1).filter(e => e.stage === name)) {
+        if (event.kind === 'intent') { Object.keys(stage).filter(k => k !== 'attempts').forEach(k => delete stage[k]); stage.attempts++; }
+        stage[event.kind] = event;
+        if (['verified', 'problem'].includes(event.kind)) stage.lastState = event.kind;
+      }
+      stages[name] = stage;
+    }
+    return { operation: id, prepared, plan: JSON.parse(this.blob(prepared.planSha256).toString()), document: JSON.parse(this.blob(prepared.documentSha256).toString()), stages, events };
+  }
+  publicationState(id: string): Row { return this.transaction(() => this.publicationHistory(id)); }
+  preparePublication(id: string, plan: Buffer, document: Buffer, allowUnsentRevision = false): Row {
+    return this.transaction(() => {
+      const { op, receiver } = this.receiverOperation(id), existing = this.publicationHistory(id);
+      if (existing.prepared) {
+        if (existing.prepared.planSha256 === hash(plan) && existing.prepared.documentSha256 === hash(document)) return existing;
+        if (!allowUnsentRevision || existing.events.some((e: Row) => e.kind === 'intent')) throw new Error('publication_plan_or_result_changed');
+      }
+      if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.executionKind !== 'native_capture') throw new Error('publication_requires_complete_native_judgment');
+      const body = JSON.parse(document.toString());
+      if (body.operation !== id || body.inputSha256 !== receiver.inputSha256 || body.bindingHash !== receiver.bindingHash) throw new Error('publication_source_binding_mismatch');
+      for (const b of [plan, document]) { this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(b), b); this.blob(hash(b)); }
+      this.event('publication_prepared', `publication:${id}`, { publicationId: body.publicationId, planSha256: hash(plan), documentSha256: hash(document), packet: op.packet, bindingHash: receiver.bindingHash, priorUnsentPlanSha256: existing.prepared?.planSha256 ?? null });
+      return this.publicationHistory(id);
+    });
+  }
+  publicationEvent(id: string, kind: 'intent' | 'started' | 'response' | 'problem' | 'verified', stage: 'comment' | 'status', data: Row, originals: Record<string, Buffer> = {}, retrySource?: string): Row {
+    return this.transaction(() => {
+      const state = this.publicationHistory(id), prior = state.stages[stage];
+      if (!state.prepared) throw new Error('publication_not_prepared');
+      if (kind === 'intent') {
+        const { op, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet), context = this.packetEvidence(packet).context;
+        if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.bindingHash !== state.prepared.bindingHash || item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('publication_source_no_longer_current');
+        if (this.prerequisites(item).length) throw new Error('publication_prerequisites_unmet');
+        if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
+        if (this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
+        if (stage === 'status' && state.stages.comment.lastState !== 'verified') throw new Error('publication_detail_not_verified');
+        if (prior.intent && (!retrySource?.trim() || retrySource.length > 2048 || !prior.response?.rejected || prior.lastState === 'verified' || prior.attempts >= 3)) throw new Error('publication_request_already_registered');
+      } else if (!prior.intent && kind !== 'problem') throw new Error('publication_intent_required');
+      if (kind === 'started' && prior.started) throw new Error('publication_child_already_registered');
+      if (kind === 'verified' && prior.lastState === 'verified' && canonical(prior.verified.remote) === canonical(data.remote)) return state;
+      if (kind === 'problem' && prior.lastState === 'problem' && prior.problem.reason === data.reason) return state;
+      if (kind === 'response' && prior.response) throw new Error('publication_response_already_recorded');
+      const blobs: Row = {};
+      for (const [name, b] of Object.entries(originals)) { const sha256 = hash(b); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, b); this.blob(sha256); blobs[name] = { sha256, bytes: b.length }; }
+      this.event(`publication_${kind}`, `publication:${id}`, { ...data, stage, ...(retrySource ? { retrySource } : {}), blobs });
+      return this.publicationHistory(id);
+    });
+  }
   private blob(h: string): Buffer {
     const row = this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row | undefined;
     if (!row || hash(Buffer.from(row.bytes)) !== h) throw new Error('stored_evidence_hash_mismatch');
@@ -438,7 +494,8 @@ PRAGMA user_version=4;`);
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, historicalReceiverResultUnmodified: true }; });
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }

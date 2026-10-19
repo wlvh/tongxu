@@ -19,6 +19,7 @@
 - [本机组合：固定来源、统一入口与接收前边界](docs/local_reception_integration.md)
 - [独立接收：从原队列实际派发、回读和恢复](docs/native_reception.md)
 - [证据补充：保留首次判断，在原任务登记新增原件后补核](docs/reception_supplement.md)
+- [结果发布：固定公开摘要、提交状态、读回与中断恢复](docs/result_publication.md)
 - [角色 prompt 装配及工具权限](prompts/README.md)
 
 首页是本批目标、组织方式、委托与停止、成果验收、复盘抽查五项控制；秘书对话与原三工作区保留。人的采用、团队技术约定、代理依据委托作出的处置分别可查。可以并行，也可按阶段串行或统一负责人；不以更多Agent作为成功标准。
