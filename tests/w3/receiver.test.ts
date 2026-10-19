@@ -11,6 +11,7 @@ import { Snapshot, hash } from '../../src/snapshot.js';
 import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
 import { runReception, reconcileReception, supplementReception, type ReceiverPlan } from '../../src/receiver.js';
+import { canonical } from '../../src/comparison.js';
 
 async function setup(t: test.TestContext, mode = 'complete') {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -175,6 +176,7 @@ test('explicit supplement registers a new packet in the same queue and the next 
   assert.equal((await supplementReception(p.path)).packet, added.packet); assert.equal((await supplementReception(p.path)).duplicate, true);
   const next = await runReception(f.path); assert.notEqual(next.operation, first.operation); assert.equal(next.receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
   const input = JSON.parse(await readFile(join(next.receiver.directory, 'binding-input.json'), 'utf8'));
+  assert.equal(input.binding.materialSha256, hash(canonical(input.data)), 'material digest must be reproducible from the actual submitted JSON');
   assert.equal(input.data.evidence.supplements[0].previousOperation, first.operation); assert.equal(input.data.evidence.supplements[0].priorJudgment.verdict, 'INSUFFICIENT_EVIDENCE'); assert.equal(input.data.evidence.supplements[0].material[0].text, '{"rawFixtureEvidence":1}');
   assert.equal(next.candidate.H, first.candidate.H); assert.equal(next.candidate.observedAt, first.candidate.observedAt); assert.equal(next.productionActionAllowed, false);
   assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 2); assert.deepEqual(await readFile(join(first.receiver.directory, 'claude/stdout.ndjson')), original);
