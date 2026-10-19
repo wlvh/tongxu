@@ -194,12 +194,14 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       // Recover already applied code, not an unfinished model answer. The old
       // verified context and exact raw prefix remain independently checkable.
       let context: any;
-      for (const prior of attempts) for (const name of await readdir(join(operation, prior))) if (/^repair-context-\d+\.json$/.test(name)) {
-        const x = JSON.parse((await regular(join(operation, prior, name))).toString());
+      for (const prior of attempts) for (const name of await readdir(join(operation, prior))) if (/^repair-context-\d+\.json$/.test(name) || name === 'recovered-commit-intent.json') {
+        const saved = JSON.parse((await regular(join(operation, prior, name))).toString());
+        const recovered = name === 'recovered-commit-intent.json';
+        const x = recovered ? saved.context : saved;
         if (x.grantId !== grant.id) continue;
         if (x.candidate.H === candidate.H) context = x;
         else {
-          const round = name.match(/\d+/)![0], intentPath = join(operation, prior, 'commit-intent-' + round + '.json');
+          const intentPath = recovered ? join(operation, prior, name) : join(operation, prior, 'commit-intent-' + name.match(/\d+/)![0] + '.json');
           if (await exists(intentPath)) {
             const intent = JSON.parse((await regular(intentPath)).toString());
             if (intent.parent === x.candidate.H && await git(plan.workspace, ['rev-parse', 'HEAD^']) === x.candidate.H && intent.treeSha256 === treeHash(original) && !await git(plan.workspace, ['status', '--porcelain=v1'])) context = x;
