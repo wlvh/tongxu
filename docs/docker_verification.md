@@ -63,3 +63,6 @@ npm run test:docker -- ABS_TRUSTED_EXECUTOR_CONFIG
 ```
 
 该入口使用真实 Docker，运行 W1、W2 通用语义、Docker 边界和 W3 消费者测试，自动规范化 Mac 临时目录。缺镜像/引擎会失败，不将用例跳过后计为通过。原 `npm test` 保留 Linux/bubblewrap 专属套件；两套执行结果分别记录。真实 tongxu 候选运行和独立审核记录见 [Docker 验证记录](../verification/W2_DOCKER_EXECUTOR.md)。
+
+
+需要验证控制器强杀后孤儿子进程恢复时，可信 `executor` 可显式增加 `"init": true`。Docker 自带 init 只负责容器内信号转发和退出进程回收；不新装服务、不放宽隔离或自动处理同序的未知操作。创建参数、原运行配置和实际 `HostConfig.Init` 必须一致。旧计划省略字段保持原参数和原证据。新计划的原件需要支持该字段的消费者，旧消费者拒绝它，不删除字段迎合旧版本。

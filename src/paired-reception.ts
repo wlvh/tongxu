@@ -49,11 +49,10 @@ export async function runPairedReception(path: string) {
     let independent: any, independentError: string | null = null;
     try {
       while (!settled && !q.pairedStatus(id).operations.some((o: any) => o.item === first.plan.item && o.status === 'receiving')) await new Promise(r => setTimeout(r, 25));
-      const started = q.begin(second.plan.item, 'paired-independent-material-inspection');
-      independent = started.blocked ? started : q.receiverState(started.operation).receiver ? { operation: started.operation, duplicate: true, inspectionPreviouslyCompleted: true } : q.evaluate(started.operation);
-      q.pairNote(id, 'independent_inspection', { operation: independent.operation ?? null, blocked: independent.blocked ?? [], predecessorAtObservation: q.pairedStatus(id).operations.find((o: any) => o.item === first.plan.item)?.status ?? 'not_started' });
+      independent = q.inspectPairedMaterial(id);
+      q.pairNote(id, 'independent_inspection', { item: independent.item, packet: independent.packet, localMaterialInspected: true, predecessorAtObservation: q.pairedStatus(id).operations.find((o: any) => o.item === first.plan.item)?.status ?? 'not_started' });
       const gate = q.pairedStatus(id);
-      if (gate.blocked) q.pairNote(id, 'shared_waiting', { reason: gate.blocked, independentOperation: independent.operation ?? null, newDownstreamModelSent: false });
+      if (gate.blocked) q.pairNote(id, 'shared_waiting', { reason: gate.blocked, independentPacket: independent.packet, newDownstreamModelSent: false });
     } catch (e) { independentError = e instanceof Error ? e.message : 'independent_inspection_failed'; }
     const a = await upstream, state = q.pairedStatus(id);
     let downstream: any = null, downstreamError: string | null = null;
@@ -64,8 +63,8 @@ export async function runPairedReception(path: string) {
         if (consumed && downstream.receiver.currentMaterialMatches && consumed === state.prerequisite?.receiptSha256) q.pairNote(id, 'shared_consumed', { operation: downstream.operation, prerequisiteReceiptSha256: consumed, judgmentId: downstream.receiver.judgmentId });
       } catch (e) { downstreamError = e instanceof Error ? e.message : 'downstream_failed'; }
     }
-    const current = q.pairedStatus(id), accepted = downstream?.receiver?.phase === 'returned' && downstream.receiver.currentMaterialMatches && downstream.receiver.judgment?.consumedPrerequisite === current.prerequisite?.receiptSha256;
-    const result = { kind: 'tongxu-paired-reception-result', pair: id, executionKind: first.plan.executionKind, status: accepted ? 'completed' : 'waiting_or_unresolved', first: a.value, firstError: a.error, independent, independentError, second: downstream, secondError: downstreamError, blocked: current.blocked, directory, sharedResultConsumed: !!accepted, productionActionAllowed: false, automaticResend: false, duplicateRegistration: pair.duplicate };
+    const current = q.pairedStatus(id), consumedComplete = downstream?.receiver?.phase === 'returned' && downstream.receiver.currentMaterialMatches && downstream.receiver.judgment?.consumedPrerequisite === current.prerequisite?.receiptSha256;
+    const result = { kind: 'tongxu-paired-reception-result', pair: id, executionKind: first.plan.executionKind, status: consumedComplete ? 'completed' : 'waiting_or_unresolved', first: a.value, firstError: a.error, independent, independentError, second: downstream, secondError: downstreamError, blocked: current.blocked, directory, sharedResultConsumed: !!consumedComplete, productionActionAllowed: false, automaticResend: false, duplicateRegistration: pair.duplicate };
     save(join(directory, 'result.json'), result); return result;
   } finally { if (lock) { lock.exec('ROLLBACK'); lock.close(); } q.close(); }
 }

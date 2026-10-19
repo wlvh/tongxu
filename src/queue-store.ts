@@ -23,6 +23,13 @@ export function materialIdentity(bytes: Buffer): string {
 }
 // A pre-opened older receiver cannot send the dependent stage without its
 // bound upstream judgment. Same database/operations, no competing scheduler.
+const pairPlanGuard = `CREATE TRIGGER pair_receiver_plan_guard BEFORE UPDATE ON operations
+WHEN NEW.status='receiving' AND (OLD.status!='receiving' OR (json_extract(OLD.result,'$.receiver.phase')='reserved' AND json_extract(NEW.result,'$.receiver.phase')='dispatch_registered'))
+AND EXISTS(SELECT 1 FROM events p WHERE p.kind='pair_registered' AND (json_extract(p.data,'$.first.item')=NEW.item OR json_extract(p.data,'$.second.item')=NEW.item))
+AND NOT EXISTS(SELECT 1 FROM events p WHERE p.kind='pair_registered'
+ AND ((json_extract(p.data,'$.first.item')=NEW.item AND json_extract(p.data,'$.first.planSha256')=json_extract(NEW.result,'$.receiver.planSha256') AND json_extract(p.data,'$.first.packet')=NEW.packet)
+ OR (json_extract(p.data,'$.second.item')=NEW.item AND json_extract(p.data,'$.second.planSha256')=json_extract(NEW.result,'$.receiver.planSha256') AND json_extract(p.data,'$.second.packet')=NEW.packet)))
+BEGIN SELECT RAISE(ABORT,'paired_receiver_plan_changed'); END`;
 const pairGuard = `CREATE TRIGGER pair_receiver_stage_guard BEFORE UPDATE ON operations
 WHEN NEW.status='receiving' AND (OLD.status!='receiving' OR (json_extract(OLD.result,'$.receiver.phase')='reserved' AND json_extract(NEW.result,'$.receiver.phase')='dispatch_registered'))
 AND EXISTS(SELECT 1 FROM events p WHERE p.kind='pair_registered' AND json_extract(p.data,'$.second.item')=NEW.item)
@@ -33,6 +40,7 @@ AND NOT EXISTS(
  WHERE p.kind='pair_registered' AND bi.id=NEW.item
  AND ai.current_packet=a.packet AND bi.current_packet=NEW.packet AND NEW.packet=json_extract(p.data,'$.second.packet')
  AND ai.observation_conflict=0 AND bi.observation_conflict=0 AND a.status='complete'
+ AND json_extract(a.result,'$.receiver.planSha256')=json_extract(p.data,'$.first.planSha256')
  AND json_extract(a.result,'$.receiver.phase')='returned'
  AND json_extract(a.result,'$.receiver.judgment.verdict')='ACCEPT_WITHIN_SCOPE'
  AND json_extract(NEW.result,'$.receiver.prerequisite.operation')=a.id
@@ -399,15 +407,21 @@ PRAGMA user_version=4;`);
       if (!source?.trim() || source.length > 2048 || firstItem === secondItem) throw new Error('invalid_pair_scope');
       const first = this.item(firstItem), second = this.item(secondItem), ac = parse(first, 'context'), bc = parse(second, 'context');
       if (canonical(ac.scope) !== canonical(bc.scope) || targetKey(parse(first, 'candidate')) === targetKey(parse(second, 'candidate'))) throw new Error('pair_requires_same_scope_distinct_targets');
-      if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n || Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value) < 2) throw new Error('pair_requires_idle_two_seat_queue');
+      if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('pair_requires_idle_queue');
       const fixed = (i: Row) => {
         const p = this.packet(i.current_packet); this.packetEvidence(p);
         if (i.observation_conflict || !this.receiverCandidateCurrent(i) || !this.effectiveSummary(i, p).evidenceComplete) throw new Error('pair_current_material_unverified');
         return { item: i.id, packet: p.id, fingerprint: p.fingerprint, candidate: parse(i, 'candidate') };
       };
-      const record = { id, source, first: fixed(first), second: fixed(second), schemaVersion: 1, scope: ac.scope };
+      const requested = JSON.parse(plan.toString());
+      if (![requested.first?.sha256, requested.second?.sha256].every(h => typeof h === 'string' && /^[a-f0-9]{64}$/.test(h))) throw new Error('pair_receiver_plan_binding_missing');
+      const record = { id, source, first: { ...fixed(first), planSha256: requested.first.sha256 }, second: { ...fixed(second), planSha256: requested.second.sha256 }, schemaVersion: 1, scope: ac.scope };
+      for (const f of [record.first, record.second]) {
+        const prior = this.db.prepare('SELECT result FROM operations WHERE item=? AND packet=?').get(f.item, f.packet) as Row | undefined, r = parse(prior, 'result')?.receiver;
+        if (r && r.planSha256 !== f.planSha256) throw new Error('paired_existing_receiver_plan_changed');
+      }
       this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(id, plan);
-      this.db.exec(pairGuard + '; PRAGMA user_version=7;'); this.event('pair_registered', 'pair:' + id, record);
+      this.db.exec(pairPlanGuard + ';' + pairGuard + '; PRAGMA user_version=7;'); this.event('pair_registered', 'pair:' + id, record);
       return { ...record, duplicate: false };
     });
   }
@@ -415,7 +429,7 @@ PRAGMA user_version=4;`);
     const r = this.db.prepare("SELECT data FROM events WHERE kind='pair_registered' AND (json_extract(data,'$.first.item')=? OR json_extract(data,'$.second.item')=?)").get(item, item) as Row | undefined;
     if (!r) return undefined;
     const p = parse(r, 'data'); this.blob(p.id);
-    if ((this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='pair_receiver_stage_guard'").get() as Row | undefined)?.sql !== pairGuard) throw new Error('pair_storage_guard_missing');
+    for (const [name, sql] of [['pair_receiver_stage_guard', pairGuard], ['pair_receiver_plan_guard', pairPlanGuard]]) if ((this.db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(name!) as Row | undefined)?.sql !== sql) throw new Error('pair_storage_guard_missing');
     return p;
   }
   private pairFixed(p: Row, side: 'first' | 'second'): Row {
@@ -432,8 +446,9 @@ PRAGMA user_version=4;`);
     const r = op && parse(op, 'result')?.receiver;
     if (!op || op.status !== 'complete' || r?.phase !== 'returned' || r.judgment?.verdict !== 'ACCEPT_WITHIN_SCOPE') throw new Error('paired_upstream_reception_pending_or_not_accepted');
     for (const ref of Object.values(r.blobs ?? {}) as Row[]) this.blob(ref.sha256);
+    if (r.planSha256 !== p.first.planSha256) throw new Error('paired_upstream_plan_changed');
     this.blob(r.inputSha256); this.blob(r.systemSha256); this.blob(r.planSha256);
-    const receipt = { pair: p.id, item: p.first.item, packet: op.packet, candidate: p.first.candidate, operation: op.id, bindingHash: r.bindingHash, judgment: r.judgment, inputSha256: r.inputSha256, executionKind: r.executionKind, reportSha256: hash(r.judgment.report) };
+    const receipt = { pair: p.id, item: p.first.item, packet: op.packet, candidate: p.first.candidate, operation: op.id, bindingHash: r.bindingHash, planSha256: r.planSha256, judgment: r.judgment, inputSha256: r.inputSha256, executionKind: r.executionKind, reportSha256: hash(r.judgment.report) };
     return { ...receipt, receiptSha256: hash(canonical(receipt)) };
   }
   pairedStatus(id: string): Row {
@@ -446,6 +461,20 @@ PRAGMA user_version=4;`);
       return { ...p, prerequisite: prerequisite ?? null, blocked, operations, productionActionAllowed: false };
     });
   }
+  inspectPairedMaterial(id: string): Row {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT data FROM events WHERE kind='pair_registered' AND object=?").get('pair:' + id) as Row | undefined;
+      if (!row) throw new Error('pair_not_found');
+      const p = parse(row, 'data'), item = this.pairFixed(p, 'second'), packet = this.packet(p.second.packet);
+      const summary = this.effectiveSummary(item, packet);
+      return { kind: 'paired-local-material-inspection', item: item.id, packet: packet.id, fingerprint: packet.fingerprint, candidate: parse(item, 'candidate'), evidenceComplete: summary.evidenceComplete, gaps: [...summary.gaps, ...this.prerequisites(item)], localMaterialInspected: true, newModelTasks: 0, productionActionAllowed: false };
+    });
+  }
+  private pairPlanCheck(op: Row, planSha256: string): void {
+    const p = this.pairFor(op.item); if (!p) return;
+    const f = p.first.item === op.item ? p.first : p.second;
+    if (op.packet !== f.packet || planSha256 !== f.planSha256) throw new Error('paired_receiver_plan_changed');
+  }
   pairNote(id: string, phase: 'independent_inspection' | 'shared_waiting' | 'shared_consumed', data: Row): void {
     this.transaction(() => {
       const object = 'pair:' + id, kind = 'pair_' + phase;
@@ -455,7 +484,7 @@ PRAGMA user_version=4;`);
     });
   }
   private pairedApplicability(op: Row, receiver: Row): boolean {
-    try { return canonical(this.pairedPrerequisite(op.item) ?? null) === canonical(receiver.prerequisite ?? null); } catch { return false; }
+    try { this.pairPlanCheck(op, receiver.planSha256); return canonical(this.pairedPrerequisite(op.item) ?? null) === canonical(receiver.prerequisite ?? null); } catch { return false; }
   }
   private receiverOperation(id: string): { op: Row; result: Row; receiver: Row | undefined } {
     const op = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row | undefined;
@@ -497,6 +526,7 @@ PRAGMA user_version=4;`);
       }
       if (op.status !== 'complete' || result?.status !== 'evaluated' || this.packet(op.packet).fingerprint !== fixed.fingerprint) throw new Error('receiver_shadow_evaluation_required');
       this.receiverGate(op);
+      this.pairPlanCheck(op, hash(fixed.plan));
       const prerequisite = this.pairedPrerequisite(op.item);
       if (prerequisite && (prerequisite.executionKind !== fixed.executionKind || canonical(JSON.parse(fixed.input.toString()).data.evidence.prerequisite) !== canonical(prerequisite))) throw new Error('paired_input_prerequisite_mismatch');
       if (this.db.prepare('SELECT operation FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
@@ -517,7 +547,7 @@ PRAGMA user_version=4;`);
       if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
       const { op, result, receiver } = this.receiverOperation(id);
       if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
-      this.receiverGate(op); if (!this.pairedApplicability(op, receiver)) throw new Error('paired_prerequisite_changed_before_dispatch'); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
+      this.pairPlanCheck(op, receiver.planSha256); this.receiverGate(op); if (!this.pairedApplicability(op, receiver)) throw new Error('paired_prerequisite_changed_before_dispatch'); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
       result.externalActionSent = receiver.executionKind === 'fixture' ? false : 'unknown'; result.externalActionKind = 'readonly_model_request'; result.externalProductionActionSent = false;
       this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
     });

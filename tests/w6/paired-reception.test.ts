@@ -48,7 +48,7 @@ test('a pre-opened old SQL client cannot reserve B without its bound prerequisit
   f.register(); const b = f.q.begin(f.b, 'fixture:independent'); f.q.evaluate(b.operation);
   const op = f.q.status().operations.find((o: any) => o.id === b.operation), packet = f.q.status().items.find((i: any) => i.id === f.b).currentPacket;
   const fingerprint = (legacy.prepare('SELECT fingerprint FROM packets WHERE id=?').get(packet) as any).fingerprint;
-  const forgedOldRecord = JSON.stringify({ ...op.result, receiver: { contractVersion: 6, packetFingerprint: fingerprint, phase: 'reserved' } });
+  const forgedOldRecord = JSON.stringify({ ...op.result, receiver: { contractVersion: 6, packetFingerprint: fingerprint, phase: 'reserved', planSha256: f.pair.second.sha256 } });
   const old = legacy.prepare("UPDATE operations SET status='receiving',result=? WHERE id=?");
   assert.throws(() => old.run(forgedOldRecord, op.id), /paired_reception_stage_blocked/);
   await runReception(f.path); assert.throws(() => old.run(forgedOldRecord, op.id), /paired_reception_stage_blocked/);
@@ -63,7 +63,7 @@ test('investment stop prevents new calls while original results can be read and 
 });
 test('upstream insufficient result keeps only the shared stage waiting; repeat never replaces it', async t => {
   const f = await fixture(t, 'always-insufficient'); const r = await runPairedReception(f.pairPath);
-  assert.equal(r.status, 'waiting_or_unresolved'); assert.match(r.blocked!, /paired_upstream/); assert.ok(r.independent.operation); assert.equal(r.second, null); assert.equal(await f.count(), 1);
+  assert.equal(r.status, 'waiting_or_unresolved'); assert.match(r.blocked!, /paired_upstream/); assert.equal(r.independent.item, f.b); assert.equal(r.independent.localMaterialInspected, true); assert.equal(r.second, null); assert.equal(await f.count(), 1);
   await runPairedReception(f.pairPath); assert.equal(await f.count(), 1);
 });
 test('missing B consumption reference remains unresolved and is not resent', async t => {
@@ -99,4 +99,17 @@ const original=QueueStore.prototype.pairedStatus;QueueStore.prototype.pairedStat
   const result = await runPairedReception(f.pairPath); assert.equal(result.status, 'completed'); assert.equal(result.first.operation, receipt.operation); assert.equal(await f.count(), 2);
   assert.deepEqual(await readFile(join(f.store, 'receiver-' + receipt.operation, 'claude/stdout.ndjson')), before);
   await runPairedReception(f.pairPath); assert.equal(await f.count(), 2);
+});
+
+test('the standalone receiver cannot substitute either frozen plan after registration and investment resume', async t => {
+  const f = await fixture(t); f.q.control('scope', 'investment', 'stopped', 'fixture:stop-before-registration');
+  const stopped = await runPairedReception(f.pairPath); assert.equal(stopped.independent.localMaterialInspected, true); assert.equal(await f.count(), 0);
+  f.q.control('scope', 'investment', 'open', 'fixture:resume');
+  for (const [name, original] of [['a', f.path], ['b', f.secondPath]]) {
+    const plan = JSON.parse(await readFile(original!, 'utf8')), changed = join(f.root, name + '-changed.json'); await writeFile(changed, JSON.stringify({ ...plan, timeoutMs: plan.timeoutMs + 1 }));
+    await assert.rejects(runReception(changed), name === 'a' ? /paired_receiver_plan_changed/ : /paired_upstream/); assert.equal(await f.count(), 0);
+  }
+  const a = await runReception(f.path); assert.equal(a.receiver.planSha256, f.pair.first.sha256);
+  await assert.rejects(runReception(join(f.root, 'b-changed.json')), /paired_receiver_plan_changed/); assert.equal(await f.count(), 1);
+  assert.equal((await runPairedReception(f.pairPath)).status, 'completed'); assert.equal(await f.count(), 2);
 });

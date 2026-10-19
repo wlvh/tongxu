@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { DockerRuntime, parseDockerConfig, reconcileDocker } from '../../src/docker-sandbox.js';
+import { DockerRuntime, parseDockerConfig, reconcileDocker, dockerEvidenceState } from '../../src/docker-sandbox.js';
 import type { DockerConfig } from '../../src/docker-sandbox.js';
 
 // This suite is explicitly selected by test:docker. A missing runtime is a
@@ -45,4 +45,19 @@ test('timeout and output limit terminate the exact container and retain bounded 
     assert.equal(r.status, kind, r.record.toString()); assert.ok(r.stdout.length + r.stderr.length <= maxBytes);
     const receipt = JSON.parse(r.record.toString()); assert.equal(receipt.after.State.Running, false); assert.equal(receipt.cleanup, 'removed'); assert.equal(receipt.capture.complete, false);
   }
+});
+
+test('explicit Docker init reaps an orphan after controller death and its actual setting is bound to the evidence', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-init-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const selected: DockerConfig = { ...config, init: true }, runtime = await DockerRuntime.prepare(selected, join(root, 'runtime'));
+  const childCode = "const cp=require('node:child_process');const c=cp.spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),100)'],{stdio:'ignore'});console.log(c.pid);process.kill(process.pid,'SIGKILL');";
+  const code = `const fs=require('node:fs'),cp=require('node:child_process');const c=cp.spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:['ignore','pipe','ignore']});let out='';c.stdout.on('data',b=>out+=b);c.on('close',()=>setTimeout(()=>console.log(JSON.stringify({orphanGone:!fs.existsSync('/proc/'+Number(out.trim()))})),1500));`;
+  const binding = { run: 'fixture-orphan-reaping', stage: 0, tool: 'reaping', head: 'a'.repeat(40), tree: 'b'.repeat(40), planHash: 'c'.repeat(64) }, argv = [config.node, '-e', code], directory = join(root, 'execution');
+  const result = await runtime.run({ directory, argv, timeoutMs: 5000, maxBytes: 4 * 1024 * 1024, binding });
+  assert.equal(result.exitCode, 0); assert.deepEqual(JSON.parse(result.stdout.toString()), { orphanGone: true });
+  const record = JSON.parse(result.record.toString()), c = record.capture; assert.equal(record.before.HostConfig.Init, true); assert.ok(record.createArgs.includes('--init'));
+  const tool = { dockerExecutionDirectory: 'execution', argv, status: result.status, exitCode: 0, stdout: { sha256: c.stdoutSha256, bytes: c.stdoutBytes }, stderr: { sha256: c.stderrSha256, bytes: c.stderrBytes } };
+  assert.equal(dockerEvidenceState(result.record, selected, binding, tool, 5000), 'complete');
+  record.after.HostConfig.Init = false; assert.equal(dockerEvidenceState(Buffer.from(JSON.stringify(record)), selected, binding, tool, 5000), 'mismatch');
+  assert.throws(() => parseDockerConfig({ ...config, init: 'true' }), /invalid_docker_executor/);
 });
