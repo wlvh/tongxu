@@ -20,12 +20,12 @@ async function setup(t: test.TestContext, mode = 'complete') {
   await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=2;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture candidate']);
   const H = git(['rev-parse', 'HEAD']);
   const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', 1); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
-  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string } = {}) {
+  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string; artifactIndex?: number } = {}) {
     const at = new Date(Date.parse('2026-10-19T00:00:00Z') + ++index * 2000).toISOString(), pr = options.pr ?? 1;
     const selectedH = options.H ?? H, selectedTree = git(['rev-parse', `${selectedH}^{tree}`]);
     const candidate = { repository: 'fixture/reception', pr, H: selectedH, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: options.sourceAt ?? at };
     const snapshot = join(root, 'snapshot-' + index), s = await Snapshot.create(snapshot, candidate.repository, pr, [], []); s.manifest.candidate = candidate;
-    await s.artifact(JSON.stringify({ fixture: true, index }), { kind: 'pr', round: 1, retrievedAt: at, provenance: 'local_fixture', status: 200 }); s.manifest.rounds.push({ number: 1, startedAt: at, finishedAt: at, coverage: {}, sources: [], notes: [], gaps: [], limitations: ['fixture'], current: true }); await s.save(); await s.close();
+    await s.artifact(JSON.stringify({ fixture: true, index: options.artifactIndex ?? index }), { kind: 'pr', round: 1, retrievedAt: at, provenance: 'local_fixture', status: 200 }); s.manifest.rounds.push({ number: 1, startedAt: at, finishedAt: at, coverage: {}, sources: [], notes: [], gaps: [], limitations: ['fixture'], current: true }); await s.save(); await s.close();
     const manifest = await readFile(join(snapshot, 'manifest.json')), verification = join(root, 'verification-' + index); await mkdir(verification, { mode: 0o700 }); await mkdir(join(verification, 'raw'), { mode: 0o700 });
     const blob = async (b: Buffer) => { const sha256 = hash(b), path = `raw/${sha256}.bin`; await writeFile(join(verification, path), b, { mode: 0o600 }); return { sha256, path, bytes: b.length }; };
     const argv = ['/fixture/runner'], output = await blob(Buffer.from('explicit fixture output')), plan = await blob(Buffer.from(JSON.stringify({ schemaVersion: 1, tools: [{ id: 'fixture', argv, timeoutMs: 1000 }] })));
@@ -202,6 +202,10 @@ test('a stopped investment can store supplementary originals but cannot dispatch
   const f = await setup(t, 'insufficient'), first = await runReception(f.path); f.q.enableSupplements();
   const input = JSON.parse(await readFile(join(first.receiver.directory, 'binding-input.json'), 'utf8')), same = await supplementPlan(f, first, input.data.sources[0].text);
   await assert.rejects(supplementReception(same.path), /no_new_material/);
+  for (const key of ['manifest', 'report', 'plan', 'context']) {
+    const repeated = await supplementPlan(f, first, JSON.stringify(input.data.evidence[key], null, 2), `reencoded prior ${key}`);
+    await assert.rejects(supplementReception(repeated.path), /no_new_material/);
+  }
   f.q.control('scope', 'investment', 'stopped', 'fixture:stop'); const p = await supplementPlan(f, first); await supplementReception(p.path);
   assert.ok((await runReception(f.path)).blocked.includes('new_investment_stopped')); assert.equal(await f.count(), 1);
   f.q.control('scope', 'investment', 'open', 'fixture:resume'); assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
@@ -211,11 +215,19 @@ test('two supplementary packets exhaust the three-batch evidence boundary and ke
   for (let n = 1; n <= 2; n++) { const p = await supplementPlan(f, result, JSON.stringify({ fixtureEvidenceBatch: n })); assert.equal((await supplementReception(p.path)).depth, n); result = await runReception(f.path); }
   const p = await supplementPlan(f, result, '{"fixtureEvidenceBatch":3}'); await assert.rejects(supplementReception(p.path), /three_batch_limit/); assert.equal(await f.count(), 3); assert.equal(f.q.status().operations.length, 3);
   const input = JSON.parse(await readFile(join(result.receiver.directory, 'binding-input.json'), 'utf8')); assert.equal(input.data.evidence.supplements.length, 2);
+  const refreshed = await f.packet({ artifactIndex: 1 }); assert.equal(refreshed.duplicate, true); assert.equal(refreshed.packet, result.packet);
+  assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 3);
+  const changed = await f.packet({ artifactIndex: 9 }); assert.equal(changed.duplicate, false);
+  await assert.rejects(runReception(f.path), /receiver_three_batch_limit/); assert.equal(await f.count(), 3);
+  const pending = f.q.status().operations.find((o: any) => o.packet === changed.packet); assert.equal(f.q.receiverEvidence(pending.id).supplements.length, 2);
 });
 test('a pre-opened legacy v4 dispatch cannot omit supplemental material binding; valid new executor still succeeds', async t => {
   const f = await setup(t, 'insufficient'), first = await runReception(f.path), legacy = new DatabaseSync(join(f.store, 'queue.sqlite')); t.after(() => legacy.close());
   const legacyReserve = legacy.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?");
   f.q.enableSupplements(); await supplementReception((await supplementPlan(f, first)).path);
+  legacy.exec("DROP TRIGGER receiver_packet_material_guard; CREATE TRIGGER receiver_packet_material_guard BEFORE UPDATE ON operations WHEN 0 BEGIN SELECT RAISE(ABORT,'obsolete-guard'); END");
+  await assert.rejects(runReception(f.path), /supplement_guard_missing/); assert.equal(await f.count(), 1);
+  assert.equal(f.q.enableSupplements().schemaVersion, 5); assert.equal(f.q.enableSupplements().duplicate, true);
   const op = f.q.begin(f.item, 'fixture-legacy-client'), result = f.q.evaluate(op.operation);
   assert.throws(() => legacyReserve.run(100, JSON.stringify({ ...result, receiver: { bindingHash: 'a'.repeat(64) } }), op.operation), /packet_material_binding_required/);
   assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);

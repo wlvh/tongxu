@@ -11,6 +11,9 @@ import { canonical } from './comparison.js';
 
 type Row = Record<string, any>;
 const parse = (row: Row | undefined, key: string): any => row ? JSON.parse(row[key]) : undefined;
+const supplementGuard = `CREATE TRIGGER receiver_packet_material_guard BEFORE UPDATE ON operations
+WHEN NEW.status='receiving' AND EXISTS(SELECT 1 FROM packets WHERE id=NEW.packet AND fingerprint IS NOT json_extract(NEW.result,'$.receiver.packetFingerprint'))
+BEGIN SELECT RAISE(ABORT,'receiver_packet_material_binding_required'); END`;
 export function materialIdentity(bytes: Buffer): string {
   const text = new TextDecoder('utf8', { fatal: true }).decode(bytes);
   try { return hash('json:' + canonical(JSON.parse(text))); } catch { return hash('text:' + text); }
@@ -81,16 +84,13 @@ PRAGMA user_version=4;`);
       if (version === 5 && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![4, 5].includes(version) || !this.receiverGuardsInstalled()) throw new Error('enable_receiver_before_supplements');
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
-      this.db.exec(`CREATE TRIGGER IF NOT EXISTS receiver_packet_material_guard BEFORE UPDATE ON operations
-WHEN NEW.status='receiving' AND EXISTS(SELECT 1 FROM packets WHERE id=NEW.packet AND json_type(summary,'$.supplement')='object' AND fingerprint IS NOT json_extract(NEW.result,'$.receiver.packetFingerprint'))
-BEGIN SELECT RAISE(ABORT,'receiver_packet_material_binding_required'); END;
-PRAGMA user_version=5;`);
+      this.db.exec(`DROP TRIGGER IF EXISTS receiver_packet_material_guard; ${supplementGuard}; PRAGMA user_version=5;`);
       this.event('receiver_supplements_enabled', this.directory, { from: version, to: 5 });
       return { supplementsEnabled: true, schemaVersion: 5, productionActionAllowed: false };
     });
   }
   requireReceiverMode(): void { if (![4, 5].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
-  private supplementGuardInstalled(): boolean { return Boolean(this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='receiver_packet_material_guard'").get()); }
+  private supplementGuardInstalled(): boolean { return (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='receiver_packet_material_guard'").get() as Row | undefined)?.sql === supplementGuard; }
   private receiverGuardsInstalled(): boolean { return (this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='trigger' AND name IN ('receiver_record_guard','receiver_claim_guard')").get() as Row).n === 2; }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -136,8 +136,9 @@ PRAGMA user_version=5;`);
       if (known) { this.packetEvidence(this.packet(known.packet)); return { ...known, duplicate: true, currentPacket: item.current_packet, modelDispatched: false }; }
       if (item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item)) throw new Error('supplement_original_no_longer_current');
       if (this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
-      if ((summary.supplement?.depth ?? 0) >= 2) throw new Error('supplement_three_batch_limit');
+      if ((summary.supplement?.depth ?? 0) >= 2 || this.receiverDispatchCount(item.id) >= 3) throw new Error('supplement_three_batch_limit');
       const oldInput = JSON.parse(this.blob(receiver.inputSha256).toString()), delivered = new Set<string>();
+      for (const object of [oldInput, oldInput.data, ...Object.values(oldInput.data.evidence), receiver.judgment]) delivered.add(materialIdentity(Buffer.from(JSON.stringify(object))));
       for (const m of [...oldInput.data.material, ...oldInput.data.sources]) delivered.add(materialIdentity(Buffer.from(m.text)));
       for (const output of oldInput.data.evidence.outputs) for (const ref of Object.values(output.originals) as Row[]) if (ref.encoding === 'utf8') delivered.add(materialIdentity(Buffer.from(ref.text)));
       for (let s = summary.supplement; s; s = s.previous) for (const m of s.material) delivered.add(m.identity);
@@ -146,7 +147,7 @@ PRAGMA user_version=5;`);
       for (const bytes of [judgment, ...fixed.material.map(m => m.bytes)]) { this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes); this.blob(hash(bytes)); }
       const supplement = { depth: (summary.supplement?.depth ?? 0) + 1, previous: summary.supplement ?? null, previousPacket: op.packet, previousOperation: id, priorJudgmentSha256, priorInputSha256: receiver.inputSha256, priorBindingHash: receiver.bindingHash, priorJudgmentId: receiver.judgmentId, source: fixed.source, reason: fixed.reason, material, identity };
       const fingerprint = hash(canonical({ previous: packet.fingerprint, added: identity }));
-      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, supplement }), now());
+      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, baseFingerprint: summary.baseFingerprint ?? packet.fingerprint, supplement }), now());
       const packetId = Number(inserted.lastInsertRowid);
       this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId, item.id);
       const result = { item: item.id, packet: packetId, previousPacket: op.packet, previousOperation: id, identity, fingerprint, depth: supplement.depth, mode: 'shadow', productionActionAllowed: false };
@@ -161,6 +162,7 @@ PRAGMA user_version=5;`);
       for (const [digest, bytes] of packet.blobs) { if (hash(bytes) !== digest) throw new Error('invalid_import_blob'); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(digest, bytes); this.blob(digest); }
       this.db.prepare('INSERT OR IGNORE INTO items(id,candidate,context,created_at) VALUES(?,?,?,?)').run(id, JSON.stringify(packet.candidate), JSON.stringify(packet.context), now());
       const item = this.item(id), previous = item.current_packet ? this.packet(item.current_packet) : undefined;
+      const priorSummary = parse(previous, 'summary'), previousBase = priorSummary?.baseFingerprint ?? previous?.fingerprint;
       const known = this.db.prepare('SELECT 1 FROM observations WHERE item=? AND manifest_hash=? AND report_hash=? AND context_hash=?').get(id, packet.manifestHash, packet.reportHash, packet.contextHash);
       if (known) return { item: id, packet: item.current_packet, duplicate: true, currentPacket: item.current_packet, mode: 'shadow' };
       this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
@@ -173,17 +175,22 @@ PRAGMA user_version=5;`);
       const jointlyNewer = incoming.every((value, i) => value && (!watermark[i] || value > watermark[i]));
       const conflict = Boolean(previous && (item.observation_conflict
         ? !jointlyNewer
-        : order.includes(null) || (order.includes(-1) && order.includes(1)) || (order.every(n => n === 0) && previous.fingerprint !== packet.fingerprint)));
+        : order.includes(null) || (order.includes(-1) && order.includes(1)) || (order.every(n => n === 0) && previousBase !== packet.fingerprint)));
       const older = Boolean(previous && !conflict && order.includes(-1));
       const effectiveConflict = conflict;
       const maximum = incoming.map((value, i) => value && (!watermark[i] || value > watermark[i]) ? value : watermark[i] ?? null);
       this.db.prepare('UPDATE items SET latest_observation=?,latest_source_observation=?,observation_conflict=? WHERE id=?').run(maximum[0], maximum[1], effectiveConflict ? 1 : 0, id);
       // Deduplication is relative to the current state, not every fingerprint in history.
-      if (previous?.fingerprint === packet.fingerprint && !item.observation_conflict && !conflict) {
+      if (previous && previousBase === packet.fingerprint && !item.observation_conflict && !conflict) {
         this.event(older ? 'older_duplicate_archived' : 'duplicate_observation_recorded', id, { packet: previous.id, observation: packet.summary.observation, sourceObservation: packet.summary.sourceObservation });
         return { item: id, packet: previous.id, duplicate: true, archived: older, currentPacket: item.current_packet, mode: 'shadow' };
       }
-      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(packet.summary), now());
+      // A fresh W1/W2 observation of this same candidate must not erase received
+      // supplementary originals or reset the candidate's registered call budget.
+      const supplement = priorSummary?.supplement;
+      const fingerprint = supplement ? hash(canonical({ base: packet.fingerprint, supplement })) : packet.fingerprint;
+      const summary = supplement ? { ...packet.summary, baseFingerprint: packet.fingerprint, supplement } : packet.summary;
+      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(summary), now());
       const packetId = Number(inserted.lastInsertRowid);
       if (!older && !conflict) this.db.prepare('UPDATE items SET current_packet=?,candidate=?,context=? WHERE id=?').run(packetId, JSON.stringify(packet.candidate), JSON.stringify(packet.context), id);
       this.event(conflict ? 'conflicting_observation_retained' : older ? 'older_observation_archived' : 'material_changed', id, { packet: packetId, fingerprint: packet.fingerprint });
@@ -301,6 +308,10 @@ PRAGMA user_version=5;`);
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
     if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
+    if ((this.db.prepare('PRAGMA user_version').get() as Row).user_version === 5 && this.receiverDispatchCount(item.id) >= 3) throw new Error('receiver_three_batch_limit');
+  }
+  private receiverDispatchCount(item: string): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE item=? AND json_extract(result,'$.receiver.dispatchRegisteredAt') IS NOT NULL").get(item) as Row).n;
   }
   /** Later phase of the same operation; no second queue or automatic retries. */
   reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
