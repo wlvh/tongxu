@@ -14,4 +14,40 @@ NR05 中断先核原控制器和原CLI，活跃/未知时不接管。确认结�
 
 NR06 验收取得一次真实的“已登记候选→程序交给独立Claude→完整判断返回→原队列实际关联”及重复入口零新派发。故障样例覆盖停止/前置/占用、发送前候选变化、返回时材料变化、并发入口、错误结果、捕获中断、完整原件恢复和明确关闭；样例与真实调用分开。独立审核必须针对准确候选。接收者的技术判断、真实发送/返回、生产授权、发布和合并分别记录，完整G1/G2不据此全部通过。
 
-拟定入口：`node dist/src/receiver-cli.js run --plan ABS_TRUSTED_PLAN`；恢复用 `reconcile --store ABS_QUEUE --operation ID`；关闭已结束但未决的一次接收用 `close-ended --store ABS_QUEUE --operation ID --source REFERENCE`。所有输入由可信操作者给出，接收模型无调用这些控制入口的工具。原 schema3 库保持可读，不自动迁移；新增状态保存在既有表与事件中。
+入口：`node dist/src/receiver-cli.js run --plan ABS_TRUSTED_PLAN`；恢复用 `reconcile --store ABS_QUEUE --operation ID`；关闭已结束但未决的一次接收用 `close-ended --store ABS_QUEUE --operation ID --source REFERENCE`。所有输入由可信操作者给出，接收模型无调用这些控制入口的工具。原 schema3 库保持可读，不自动迁移；新增状态保存在既有表与事件中。接入前显式执行 `enable --store ABS_QUEUE`，确认没有活跃/未知操作后，仅将格式标记改为4并登记事件。这样旧版程序会拒绝新格式，不能误把接收占用当旧影子评价释放；不复制库或新增表。默认建库仍为3，run不隐式启用。
+
+## 执行计划与结果
+
+`run` 使用以下明确计划（占位值需要替换成已有现场）：
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "tongxu-queue-receiver",
+  "store": "/absolute/private/existing-queue",
+  "item": "64_HEX_ITEM_FROM_QUEUE_ADD",
+  "claudeExecutable": "/absolute/existing/claude",
+  "objects": "/absolute/existing/git-repository",
+  "sourcePaths": ["src/relevant.ts", "docs/relevant-contract.md"],
+  "material": [{"path": "/absolute/private/fixed-review.txt", "sha256": "64_HEX_DIGEST"}],
+  "billing": {
+    "mode": "existing_subscription_only",
+    "evidence": "/absolute/private/existing-usage-evidence.txt",
+    "evidenceSha256": "64_HEX_DIGEST",
+    "observedAt": "EXISTING_OBSERVATION_TIME",
+    "usageCreditsEnabled": false
+  },
+  "timeoutMs": 900000,
+  "executionKind": "native_capture"
+}
+```
+
+费用字段只引用既有核实材料，填JSON本身不证明订阅或允许新增费用；程序还核既有文件hash、观察时效、实际CLI版本/认证路线及API覆盖。接收角色不获得这些控制入口。`fixture` 仅供明确标注的无模型测试进程，结果不记成真实独立接收。
+
+程序从原队列核原blob，交付完整manifest/report/plan和各工具原输出；W1其他材料只提供原件索引，选定源码按H读取、额外审阅报告按hash固定。输入明确列出这个范围，未提供的材料不能当成已审核。输入总上限1MiB，单源码文件最多2MiB，不能为了运行而静默截断；超限时先缩小真实审核范围和固定材料。
+
+接收结果为 `ACCEPT_WITHIN_SCOPE`、`RETURN_FOR_WORK` 或 `INSUFFICIENT_EVIDENCE`，包含完整自然语言判断。其operation、判断ID和bindingHash必须与程序登记一致。`independentReception=judgment_recorded` 仅说明匹配原件的角色判断已保存；`productionActionAllowed=false` 不变。`externalActionSent` 只在真实角色已返回时确认模型请求送达，未知派发保留unknown；`externalProductionActionSent=false` 明确没有发布/合并请求。原普通影子评价仍不派发模型。
+
+控制器使用原operation目录内的SQLite事务互斥；这个文件只作可由操作系统释放的互斥，不存第二份任务账本。强杀后先看准确原CLI及捕获。已完整退出而尚未关联的原结果可以恢复，活跃CLI不能关闭占用；结果未决且CLI已核结束时，显式close-ended保留未决结果和原件后释放席位。关闭不会让同一packet重发。返回时若队列已有新材料，旧判断保留但明确不覆盖新材料。
+
+专项测试入口为 `npm run test:receiver`。它使用明确测试进程，不访问供应商认证或发模型请求；实际原生验收另保存版本、init/最终消息、完整输入/输出、队列操作和重复读取记录。

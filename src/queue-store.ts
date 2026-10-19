@@ -46,11 +46,23 @@ export class QueueStore {
     try {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (version.user_version !== 3 || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (![3, 4].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
   close(): void { this.db.close(); }
+  enableReceiver(): Row {
+    return this.transaction(() => {
+      const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+      if (version === 4) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
+      if (version !== 3 || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
+      // Same tables/ledger, explicit format opt-in. Older v3 clients must refuse
+      // rather than evaluate and release a claim owned by a native receiver.
+      this.db.exec('PRAGMA user_version=4'); this.event('receiver_format_enabled', this.directory, { from: 3, to: 4 });
+      return { receiverEnabled: true, schemaVersion: 4, productionActionAllowed: false };
+    });
+  }
+  requireReceiverMode(): void { if ((this.db.prepare('PRAGMA user_version').get() as Row).user_version !== 4) throw new Error('receiver_mode_not_enabled'); }
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -149,7 +161,7 @@ export class QueueStore {
       const item = this.item(id);
       const existing = this.db.prepare('SELECT * FROM operations WHERE packet=?').get(item.current_packet) as Row | undefined;
       if (item.observation_conflict) return { blocked: ['observation_order_conflict'], originalOperation: existing?.id ?? null, next: existing?.status === 'running' ? 'evaluate_original_operation' : 'import_jointly_current_observation', mode: 'shadow' };
-      if (existing) return { operation: existing.id, status: existing.status, duplicate: true, next: existing.status === 'running' ? 'evaluate_original_operation' : 'read_saved_result', mode: 'shadow' };
+      if (existing) return { operation: existing.id, status: existing.status, duplicate: true, next: existing.status === 'receiving' ? 'reconcile_original_receiver' : existing.status === 'running' ? 'evaluate_original_operation' : 'read_saved_result', mode: 'shadow' };
       const context = parse(item, 'context') as QueueContext;
       if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) return { blocked: ['new_investment_stopped'], mode: 'shadow' };
       const blocked = this.prerequisites(item); if (blocked.length) return { blocked, mode: 'shadow' };
@@ -169,6 +181,7 @@ export class QueueStore {
     return this.transaction(() => {
       const op = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row | undefined;
       if (!op) throw new Error('operation_not_found');
+      if (op.status === 'receiving') throw new Error('original_receiver_pending');
       if (op.status === 'complete') return { operation: id, duplicate: true, ...parse(op, 'result') };
       const claim = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
       if (!claim || claim.operation !== id || claim.generation !== op.generation) throw new Error('operation_claim_mismatch');
@@ -185,6 +198,111 @@ export class QueueStore {
       return { operation: id, ...result };
     });
   }
+  receiverEvidence(id: string): Row {
+    return this.transaction(() => {
+      const { op } = this.receiverOperation(id), packet = this.packet(op.packet);
+      const { context, manifest, report } = this.packetEvidence(packet);
+      const outputs = report.stages.flatMap((stage: Row) => stage.tools.map((tool: Row) => ({ stage: stage.index, tool: tool.id,
+        originals: Object.fromEntries(['stdout', 'stderr', 'result', 'sandbox'].filter(k => tool[k]).map(k => {
+          const bytes = this.blob(tool[k].sha256); let text: string, encoding: string;
+          try { text = new TextDecoder('utf8', { fatal: true }).decode(bytes); encoding = 'utf8'; } catch { text = bytes.toString('base64'); encoding = 'base64'; }
+          return [k, { ...tool[k], encoding, text }];
+        })) })));
+      return { operation: id, packet: op.packet, fingerprint: packet.fingerprint, context, manifest, report, plan: JSON.parse(this.blob(report.plan.sha256).toString()), outputs,
+        sourceArtifactScope: 'W1 artifact index included; selected exact-H source and reports supplied separately. Unprovided artifacts are not reviewed.' };
+    });
+  }
+  private receiverOperation(id: string): { op: Row; result: Row; receiver: Row | undefined } {
+    const op = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row | undefined;
+    if (!op) throw new Error('operation_not_found');
+    const result = parse(op, 'result'); return { op, result, receiver: result?.receiver };
+  }
+  receiverState(id: string): Row {
+    this.requireReceiverMode();
+    return this.transaction(() => {
+      const { op, result, receiver } = this.receiverOperation(id);
+      if (receiver) for (const ref of Object.values(receiver.blobs ?? {}) as Row[]) this.blob(ref.sha256);
+      return { operation: id, status: op.status, result, receiver, currentPacket: this.item(op.item).current_packet,
+        ...(receiver ? { input: this.blob(receiver.inputSha256), system: this.blob(receiver.systemSha256), plan: this.blob(receiver.planSha256) } : {}) };
+    });
+  }
+  private receiverGate(op: Row): void {
+    const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
+    if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('receiver_current_material_unverified');
+    if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
+    if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
+  }
+  /** Later phase of the same operation; no second queue or automatic retries. */
+  reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
+    this.requireReceiverMode();
+    return this.transaction(() => {
+      const { op, result, receiver } = this.receiverOperation(id);
+      if (receiver) {
+        if (receiver.planSha256 !== hash(fixed.plan)) throw new Error('receiver_plan_changed');
+        return { duplicate: true, receiver };
+      }
+      if (op.status !== 'complete' || result?.status !== 'evaluated' || this.packet(op.packet).fingerprint !== fixed.fingerprint) throw new Error('receiver_shadow_evaluation_required');
+      this.receiverGate(op);
+      if (this.db.prepare('SELECT operation FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
+      const seats = Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value);
+      if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
+      const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
+      for (const bytes of [fixed.plan, fixed.input, fixed.system]) this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes);
+      const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+        executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
+      this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
+      this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
+      this.event('receiver_reserved', id, { generation, judgmentId: record.judgmentId, bindingHash: record.bindingHash });
+      return { duplicate: false, receiver: record };
+    });
+  }
+  receiverDispatch(id: string, bindingHash: string): void {
+    this.transaction(() => {
+      const { op, result, receiver } = this.receiverOperation(id);
+      if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
+      this.receiverGate(op); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
+      result.externalActionSent = receiver.executionKind === 'fixture' ? false : 'unknown'; result.externalActionKind = 'readonly_model_request'; result.externalProductionActionSent = false;
+      this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
+    });
+  }
+  receiverControllerReturned(id: string): void {
+    this.transaction(() => {
+      const { result, receiver } = this.receiverOperation(id);
+      if (receiver?.controllerPid !== process.pid) throw new Error('receiver_controller_mismatch');
+      receiver.controllerReturned = true; this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id);
+    });
+  }
+  private receiverClaim(op: Row): void {
+    const c = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
+    if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
+  }
+  finishReceiver(id: string, bindingHash: string, judgment: Row | null, originals: Record<string, Buffer>, closeSource?: string): Row {
+    return this.transaction(() => {
+      const { op, result, receiver } = this.receiverOperation(id);
+      if (!receiver || receiver.bindingHash !== bindingHash) throw new Error('receiver_binding_mismatch');
+      if (op.status === 'complete') return { operation: id, duplicate: true, ...result };
+      if (op.status !== 'receiving' || (!judgment && !closeSource)) throw new Error('receiver_completion_unverified');
+      this.receiverClaim(op); this.packetEvidence(this.packet(op.packet));
+      const blobs: Record<string, Row> = {};
+      for (const [name, bytes] of Object.entries(originals)) {
+        const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); blobs[name] = { sha256, bytes: bytes.length };
+      }
+      const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict;
+      const r = { ...receiver, phase: judgment ? 'returned' : 'closed_unresolved', finishedAt: now(), judgment, closeSource: closeSource ?? null, blobs,
+        currentMaterialMatches: current, newTaskSentOnRecovery: false };
+      const completed = { ...result, status: 'receiver_evaluated', receiver: r, independentReception: judgment ? receiver.executionKind === 'fixture' ? 'fixture_judgment_recorded' : 'judgment_recorded' : 'closed_without_judgment',
+        productionActionAllowed: false, externalProductionActionSent: false, externalActionKind: 'readonly_model_request',
+        externalActionSent: receiver.executionKind === 'fixture' ? false : judgment ? true : receiver.phase === 'dispatch_registered' ? 'unknown' : false,
+        modelDispatchStatus: judgment ? 'returned_final' : receiver.phase === 'dispatch_registered' ? 'submitted_or_unknown' : 'not_dispatched', modelRequestRegistered: receiver.phase === 'dispatch_registered',
+        controlsAtReturn: this.db.prepare('SELECT kind,stopped,revision FROM controls WHERE scope=? ORDER BY kind').all(parse(item, 'context').scope.id),
+        gaps: [...result.gaps.filter((g: string) => g !== 'independent_receiver_unavailable' || !judgment || receiver.executionKind === 'fixture'), ...(!current ? ['newer_material_requires_own_reception'] : []), ...(!judgment ? ['original_receiver_result_unresolved'] : [])],
+        next: judgment ? 'read_scoped_judgment_no_automatic_merge' : 'retain_unresolved_original_no_automatic_retry' };
+      this.db.prepare("UPDATE operations SET status='complete',finished_at=?,result=? WHERE id=?").run(now(), JSON.stringify(completed), id);
+      this.db.prepare('DELETE FROM claims WHERE target=? AND operation=? AND generation=?').run(op.target, id, op.generation);
+      this.event(judgment ? 'receiver_judgment_recorded' : 'receiver_closed_unresolved', id, { bindingHash, currentMaterialMatches: current, closeSource: closeSource ?? null });
+      return { operation: id, ...completed };
+    });
+  }
   private effectiveSummary(item: Row, packet: Row): Row {
     const summary = parse(packet, 'summary');
     return { ...summary, evidenceComplete: summary.evidenceComplete && !item.observation_conflict, gaps: [...summary.gaps, ...(item.observation_conflict ? ['observation_order_conflict'] : [])] };
@@ -195,7 +313,7 @@ export class QueueStore {
   status(): Row {
     this.db.exec('BEGIN');
     try {
-      const result = { mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'unavailable', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: (this.db.prepare('PRAGMA user_version').get() as Row).user_version === 4, mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'pending_publish', independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: parse(o, 'result') ?? null, recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }

@@ -12,7 +12,10 @@ function finalResult(events: any[]) {
   if (inits.length !== 1 || results.length !== 1 || !init.session_id || init.claude_code_version !== '2.1.233' || result.session_id !== init.session_id || !Array.isArray(init.tools) || init.tools.length !== 0 || !Array.isArray(init.mcp_servers) || init.mcp_servers.length !== 0 || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || result.subtype !== 'success' || result.is_error !== false || result.terminal_reason !== 'completed' || result.stop_reason !== 'end_turn' || result.api_error_status != null || typeof result.result !== 'string' || !result.result.trim() || events.some(e => e.parent_tool_use_id != null || e.aborted === true || (e.type === 'assistant' && e.session_id !== init.session_id) || e.message?.content?.some((x: any) => x.type === 'tool_use'))) throw new Error('stage_raw_result_not_final');
   return { init, result };
 }
-export async function runClaude(o: { executable: string; directory: string; system: string; input: string; timeoutMs: number }) {
+export function claudeArgs(system: string): string[] {
+  return ['-p', '--safe-mode', '--setting-sources', '', '--tools', '', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome', '--no-session-persistence', '--disable-slash-commands', '--output-format', 'stream-json', '--verbose', '--system-prompt', system];
+}
+export async function runClaude(o: { executable: string; directory: string; system: string; input: string; timeoutMs: number; beforeDispatch?: () => void }) {
   await newStage(o.directory);
   const identity = await executable(o.executable, '2.1.233 (Claude Code)'); save(join(o.directory, 'executable.json'), identity);
   for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) if (process.env[key]) throw new Error('api_billing_override_present');
@@ -22,7 +25,9 @@ export async function runClaude(o: { executable: string; directory: string; syst
   save(join(o.directory, 'auth-route.json'), { loggedIn: auth.loggedIn, authMethod: auth.authMethod, apiProvider: auth.apiProvider, subscriptionType: auth.subscriptionType });
   // All curated source and prior results are delivered as data in stdin. This
   // role needs no filesystem, shell, web, MCP, or subagent tool at runtime.
-  const args = ['-p', '--safe-mode', '--setting-sources', '', '--tools', '', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome', '--no-session-persistence', '--disable-slash-commands', '--output-format', 'stream-json', '--verbose', '--system-prompt', o.system];
+  const args = claudeArgs(o.system);
+  // Last synchronous queue gate, after preflight and immediately before spawn.
+  o.beforeDispatch?.();
   const child = new LiveProcess(o.directory, o.executable, args, o.directory, { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
   try {
     child.writeText(o.input);
