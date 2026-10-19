@@ -19,3 +19,5 @@ NS05 验证相同任务补原件→下一 packet→独立接收→新判断的�
 补充计划使用 `schemaVersion:1`、`kind:"tongxu-receiver-supplement"`、`store`、`operation`、`judgmentId`、`bindingHash`、`source`、`reason` 和 `material:[{name,path,sha256}]`。身份须来自原操作的完整已存判断；path 是现有私有普通文件的绝对路径。最多30份UTF-8文件，合计768KiB；最终模型输入仍受既有1MiB上限约束，不静默删减。名字和说明仅为数据；不变更候选、S/r、工具或权限。原输入hash/绑定、完整原判断和新材料一起进入新接收的绑定，原输入全文继续保存在同一库中。
 
 首次独立审核在c491951发现两处P1：完整已交付W2报告重编码误作新证据；同候选仅刷新观察时间会覆盖补充链并重置批次。修补将已交付manifest/report/plan/context纳入内容去重；导入继续分别比较原W1/W2语义和新增材料，时间变化不产生新接收。真正新增W1/W2材料保留原补充链，schema5下同一候选item的三批派发上限按原operations累计，无法通过导入或新packet重置。新H/S/r是新的候选，旧判断不自动继承。原REWORK与反例保留，补核应针对修补后的准确提交。
+
+6e3aa60补核又确认旧c491实验schema5数据没有baseFingerprint，单补触发保护仍会误分新材料。后续修补从同item、同原manifest/report/context的previousPacket链核回原W1/W2身份，不改历史报告；缺链、跨对象或旧导入已丢失链时明确保留错误并拒绝新派发，不自动推测来源。实际旧版本写库的反例与本轮再核分别保存。

@@ -105,6 +105,20 @@ PRAGMA user_version=4;`);
   }
   private item(id: string): Row { const r = this.db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined; if (!r) throw new Error('queue_item_not_found'); return r; }
   private packet(id: number): Row { const r = this.db.prepare('SELECT * FROM packets WHERE id=?').get(id) as Row | undefined; if (!r) throw new Error('queue_packet_not_found'); return r; }
+  private basePacketFingerprint(packet: Row, depth = 0): string {
+    if (depth > 2) throw new Error('supplement_lineage_unverified');
+    const summary = parse(packet, 'summary');
+    if (summary.baseFingerprint) return summary.baseFingerprint;
+    if (!summary.supplement) {
+      // An old buggy importer could already have discarded a received chain.
+      // Keep that history readable, but do not treat it as a new blank budget.
+      if (this.db.prepare("SELECT 1 FROM packets WHERE item=? AND id<? AND json_type(summary,'$.supplement')='object'").get(packet.item, packet.id)) throw new Error('supplement_lineage_unverified');
+      return packet.fingerprint;
+    }
+    const previous = this.packet(summary.supplement.previousPacket);
+    if (previous.id >= packet.id || previous.item !== packet.item || ['manifest_hash', 'report_hash', 'context_hash'].some(k => previous[k] !== packet[k])) throw new Error('supplement_lineage_unverified');
+    return this.basePacketFingerprint(previous, depth + 1);
+  }
   private packetEvidence(packet: Row): { context: QueueContext; manifest: any; report: any } {
     const context = parseQueueContextBlob(this.blob(packet.context_hash)), manifest = JSON.parse(this.blob(packet.manifest_hash).toString()), report = JSON.parse(this.blob(packet.report_hash).toString());
     const references = [report.plan, ...report.inputs.map((i: any) => i.manifest), ...manifest.artifacts];
@@ -147,7 +161,7 @@ PRAGMA user_version=4;`);
       for (const bytes of [judgment, ...fixed.material.map(m => m.bytes)]) { this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes); this.blob(hash(bytes)); }
       const supplement = { depth: (summary.supplement?.depth ?? 0) + 1, previous: summary.supplement ?? null, previousPacket: op.packet, previousOperation: id, priorJudgmentSha256, priorInputSha256: receiver.inputSha256, priorBindingHash: receiver.bindingHash, priorJudgmentId: receiver.judgmentId, source: fixed.source, reason: fixed.reason, material, identity };
       const fingerprint = hash(canonical({ previous: packet.fingerprint, added: identity }));
-      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, baseFingerprint: summary.baseFingerprint ?? packet.fingerprint, supplement }), now());
+      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, baseFingerprint: this.basePacketFingerprint(packet), supplement }), now());
       const packetId = Number(inserted.lastInsertRowid);
       this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId, item.id);
       const result = { item: item.id, packet: packetId, previousPacket: op.packet, previousOperation: id, identity, fingerprint, depth: supplement.depth, mode: 'shadow', productionActionAllowed: false };
@@ -162,7 +176,7 @@ PRAGMA user_version=4;`);
       for (const [digest, bytes] of packet.blobs) { if (hash(bytes) !== digest) throw new Error('invalid_import_blob'); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(digest, bytes); this.blob(digest); }
       this.db.prepare('INSERT OR IGNORE INTO items(id,candidate,context,created_at) VALUES(?,?,?,?)').run(id, JSON.stringify(packet.candidate), JSON.stringify(packet.context), now());
       const item = this.item(id), previous = item.current_packet ? this.packet(item.current_packet) : undefined;
-      const priorSummary = parse(previous, 'summary'), previousBase = priorSummary?.baseFingerprint ?? previous?.fingerprint;
+      const priorSummary = parse(previous, 'summary'), previousBase = previous ? this.basePacketFingerprint(previous) : undefined;
       const known = this.db.prepare('SELECT 1 FROM observations WHERE item=? AND manifest_hash=? AND report_hash=? AND context_hash=?').get(id, packet.manifestHash, packet.reportHash, packet.contextHash);
       if (known) return { item: id, packet: item.current_packet, duplicate: true, currentPacket: item.current_packet, mode: 'shadow' };
       this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?)').run(id, packet.fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, now());
@@ -305,6 +319,7 @@ PRAGMA user_version=4;`);
   }
   private receiverGate(op: Row): void {
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
+    this.basePacketFingerprint(packet);
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
     if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');

@@ -232,3 +232,17 @@ test('a pre-opened legacy v4 dispatch cannot omit supplemental material binding;
   assert.throws(() => legacyReserve.run(100, JSON.stringify({ ...result, receiver: { bindingHash: 'a'.repeat(64) } }), op.operation), /packet_material_binding_required/);
   assert.equal((await runReception(f.path)).receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE'); assert.equal(await f.count(), 2);
 });
+
+test('legacy supplemented packets without a base fingerprint reuse verified predecessor identity instead of redispatching', async t => {
+  const f = await setup(t, 'always-insufficient'), first = await runReception(f.path); f.q.enableSupplements();
+  await supplementReception((await supplementPlan(f, first)).path); const second = await runReception(f.path);
+  const db = new DatabaseSync(join(f.store, 'queue.sqlite')); t.after(() => db.close());
+  const saved = db.prepare('SELECT summary FROM packets WHERE id=?').get(second.packet) as any, legacy = JSON.parse(saved.summary); delete legacy.baseFingerprint;
+  // Shape compatibility fixture; independent review additionally runs the actual
+  // archived c491 writer to create this historical data without editing SQL.
+  db.prepare('UPDATE packets SET summary=? WHERE id=?').run(JSON.stringify(legacy), second.packet);
+  const refreshed = await f.packet({ artifactIndex: 1 }); assert.equal(refreshed.duplicate, true); assert.equal(refreshed.packet, second.packet);
+  assert.equal((await runReception(f.path)).operation, second.operation); assert.equal(await f.count(), 2);
+  await supplementReception((await supplementPlan(f, second, '{"newOriginalEvidence":2}')).path); const third = await runReception(f.path); assert.equal(await f.count(), 3);
+  const after = await f.packet({ artifactIndex: 1 }); assert.equal(after.packet, third.packet); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 3);
+});
