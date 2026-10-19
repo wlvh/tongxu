@@ -208,6 +208,26 @@ test('intact structured original results are accepted, while a forged summary is
   assert.equal((await source.packet()).summary.evidenceComplete, true);
   report.stages[1].tools[0].sampleSet.samples = [{ ...rows[0], content: 'unsupported summary' }]; await writeFile(path, JSON.stringify(report));
   const altered = await source.packet(); assert.equal(altered.summary.evidenceComplete, false); assert.ok(altered.summary.gaps.includes('sample_result_evidence_mismatch'));
+  // An honest missing sample stays incomplete without falsely alleging changed
+  // evidence. W2 records its sampleSet before appending these derived tool gaps.
+  plan.tools[0].expectedSampleIds = ['sample', 'missing']; report.plan = await blob(plan); report.planHash = report.plan.sha256;
+  report.status = 'partial'; report.executionComplete = false; report.comparisonComplete = false; report.gaps = ['tool_evidence_incomplete'];
+  for (const stage of report.stages) {
+    stage.status = 'partial'; stage.gaps = ['tool_evidence_incomplete'];
+    stage.tools[0].sampleSet = { complete: false, samples: rows, gaps: ['sample_coverage_mismatch'] };
+    stage.tools[0].gaps = ['sample_coverage_mismatch'];
+    stage.comparisons = [{ tool: 'fixture', results: ['sample', 'missing'].map(id => ({ id, result: 'NOT_COMPARED' })) }];
+  }
+  await writeFile(path, JSON.stringify(report));
+  const incomplete = await source.packet(); assert.equal(incomplete.summary.evidenceComplete, false);
+  assert.ok(incomplete.summary.gaps.includes('sample_result_incomplete')); assert.ok(!incomplete.summary.gaps.includes('sample_result_evidence_mismatch'));
+  const parent = f.q.import(incomplete), context = { ...source.context, requires: [{ item: parent.item, type: 'development', version: source.candidate.H, blocks: 'shadow_review', source: 'fixture:incomplete-parent', canContinue: 'independent work' }] };
+  const child = f.q.import(await (await f.fixture({ pr: 2, context })).packet());
+  assert.ok(f.q.begin(child.item, 'must-wait-for-complete-parent').blocked.includes(`dependency_evidence_incomplete:${parent.item}`));
+  for (const falsify of [() => { report.stages[1].tools[0].sampleSet.complete = true; }, () => { report.stages[1].tools[0].sampleSet.complete = false; report.stages[1].tools[0].sampleSet.samples = [{ ...rows[0], content: 'unsupported summary' }]; }, () => { report.stages[1].tools[0].sampleSet.samples = rows; report.stages[1].tools[0].sampleSet.gaps = ['invented_gap']; }]) {
+    falsify(); await writeFile(path, JSON.stringify(report)); const forged = await source.packet();
+    assert.equal(forged.summary.evidenceComplete, false); assert.ok(forged.summary.gaps.includes('sample_result_evidence_mismatch'));
+  }
 });
 
 test('duplicate observations advance the watermark, and a newer return to historical content is reevaluated', async t => {

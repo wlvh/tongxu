@@ -83,9 +83,13 @@ export async function readPacket(snapshot: string, verification: string, context
         const expected = plan.tools.find(t => t.id === tool.id)?.expectedSampleIds;
         if (expected) {
           let raw: unknown; try { raw = JSON.parse(blobs.get(tool.result?.sha256)!.toString()); } catch { gaps.push('original_sample_result_missing_or_invalid'); }
-          const set = samples(raw, expected, tool.status === 'completed' && tool.exitCode === 0 && tool.inputUnchanged === true && tool.dependenciesUnchanged === true && tool.gaps.length === 0);
+          // W2 appends sample-derived gaps after computing sampleSet. Replaying
+          // those same gaps as an execution failure would invent a mismatch.
+          const dataGaps = samples(raw, expected, true).gaps;
+          const set = samples(raw, expected, tool.status === 'completed' && tool.exitCode === 0 && tool.inputUnchanged === true && tool.dependenciesUnchanged === true && tool.gaps.every((gap: string) => dataGaps.includes(gap)));
           sets.push({ id: tool.id, set });
-          if (!set.complete || canonical(set) !== canonical(tool.sampleSet)) gaps.push('sample_result_evidence_mismatch');
+          if (!set.complete) gaps.push('sample_result_incomplete');
+          if (canonical(set) !== canonical(tool.sampleSet)) gaps.push('sample_result_evidence_mismatch');
         } else if (tool.sampleSet || tool.result) gaps.push('unplanned_structured_result');
       }
       const comparisons = structured.map(t => ({ tool: t.id, results: compare(observedSets[index - 1]?.find(s => s.id === t.id)?.set, sets.find(s => s.id === t.id)?.set, t.expectedSampleIds!) }));

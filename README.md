@@ -21,8 +21,10 @@
 ```bash
 npm ci --ignore-scripts
 npm run build
-node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /tmp/tongxu-pr12-new
+node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /absolute/private/tongxu-pr12-new
 ```
+
+请将 `/absolute/private` 换成仓库外、已存在的真实私有父目录，新输出目录必须不存在；macOS `/tmp` 别名不适合作为显式输出。
 
 输出目录须为仓库外的新绝对路径。默认使用已有 Git/gh 身份，只读固定候选和原记录，生成私人交接包与单独摘要；部分失败可 `collect --resume`。退出 0 不表示本人采用、业务 PASS 或可合并。完整命令与显式连接器传输见 [CLI 文档](docs/w1_cli.md)。
 
