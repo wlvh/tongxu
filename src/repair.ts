@@ -155,6 +155,13 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     const path = attempt + '/' + stage; codexStages.push(path);
     return RepairSession.start({ executable: plan.codexExecutable, directory: join(operation, path), operation, candidate, role, system, inputManifestSha256: fixedSha256, scopeSource: plan.scopeSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, executionKind: plan.executionKind ?? 'native_capture', ...(tools ? { gate } : {}) });
   };
+  const askReview = async (session: RepairSession, input: string, candidate: Candidate) => {
+    let review = await session.turn(input, candidate, reviewSchema);
+    const inconsistent = (x: any) => x.verdict === 'REWORK_REQUIRED' ? !x.findings.some((f: any) => f.priority < 2) : x.verdict === 'PASS' && x.findings.some((f: any) => f.priority < 2);
+    if (inconsistent(review)) review = await session.turn(evidence('Clarify this technical report, without inventing work or escalating it to the owner. REWORK_REQUIRED needs concrete supported P0/P1 findings; if there are none return PASS. Only an actual goal, cost or permission choice can require OWNER_DECISION_REQUIRED. Preserve the full reasoning and exact candidateH.', { candidate, originalReport: review }), candidate, reviewSchema);
+    if (inconsistent(review)) throw new Error('review_evidence_missing');
+    return review;
+  };
   const finish = async (status: string, after: Candidate, data: unknown) => {
     gate.phase = 'closed'; await reviewer?.close(); await fact?.close();
     const result = { kind: 'tongxu-controlled-repair-result', status, before: plan.candidate, after, treeSha256: treeHash(await tree(plan.workspace)), demonstrationFixture: true, executionKind: plan.executionKind ?? 'native_capture', automaticRepairImplemented: true, actualRepairPerformed: after.H !== plan.candidate.H, manualReportCopyRequired: false, manualRepairRequired: false, productionActionAllowed: false, codexStages, claudeStages, data };
@@ -178,49 +185,86 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       save(join(operation, attempt, 'recovery.json'), { ...reconciliation, previousAttempts: attempts, newExecutorHandoff: true, originalNativeSessionNotResumed: true, authorization: grant.id });
     }
     const baseline = await testClamp(plan.workspace, join(operation, attempt, 'baseline'), plan.nodeExecutable);
-    if (baseline.failure || baseline.exit.code !== 0) throw new Error('test_environment_or_execution_failed');
+    // Rejected candidate syntax is an ordinary repairable test failure. It was
+    // never executed; unlike a broken test environment it can safely be read.
+    if (!('candidateExecuted' in baseline && baseline.candidateExecuted === false) && (baseline.failure || baseline.exit.code !== 0)) throw new Error('test_environment_or_execution_failed');
     let candidate = await localCandidate(plan.workspace, plan.candidate.B);
+    let findingsForVerification: unknown = plan.findings;
     if (attempts.length && baseline.passed && scopeChanges(initial, original, grant.allowedPaths).length) {
       // Recover already applied code, not an unfinished model answer. The old
       // verified context and exact raw prefix remain independently checkable.
       let context: any;
       for (const prior of attempts) for (const name of await readdir(join(operation, prior))) if (/^repair-context-\d+\.json$/.test(name)) {
         const x = JSON.parse((await regular(join(operation, prior, name))).toString());
-        if (x.candidate.H === candidate.H && x.grantId === grant.id) context = x;
+        if (x.grantId !== grant.id) continue;
+        if (x.candidate.H === candidate.H) context = x;
+        else {
+          const round = name.match(/\d+/)![0], intentPath = join(operation, prior, 'commit-intent-' + round + '.json');
+          if (await exists(intentPath)) {
+            const intent = JSON.parse((await regular(intentPath)).toString());
+            if (intent.parent === x.candidate.H && await git(plan.workspace, ['rev-parse', 'HEAD^']) === x.candidate.H && intent.treeSha256 === treeHash(original) && !await git(plan.workspace, ['status', '--porcelain=v1'])) context = x;
+          }
+        }
       }
       if (!context) throw new Error('partial_repair_context_missing');
       const raw = await readFile(join(operation, context.factStage, 'stdout.ndjson'));
       if (hash(raw.subarray(0, context.rawPrefixBytes)) !== context.rawPrefixSha256) throw new Error('partial_repair_context_changed');
       await recoverStage(join(operation, context.impactStage), 'claude');
+      let writerTerminal = 'unknown_or_interrupted';
+      try { await readRepairSession(join(operation, context.factStage)); writerTerminal = 'completed'; } catch { /* a verified earlier prefix is not a final writer result */ }
       const diff = await git(plan.workspace, ['diff', '--binary', plan.candidate.H, '--', ...grant.allowedPaths]);
-      save(join(operation, attempt, 'recovered-commit-intent.json'), { parent: candidate.H, treeSha256: treeHash(original), diffSha256: hash(diff), writerTerminal: 'unknown_or_interrupted', context });
-      await mutateGit(plan.workspace, ['add', '--', ...grant.allowedPaths], join(operation, attempt, 'git-add-recovered'));
-      await gate.check();
-      await mutateGit(plan.workspace, ['-c', 'user.name=tongxu controlled repair runner', '-c', 'user.email=runner@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', 'repair: validate preserved partial fixture changes'], join(operation, attempt, 'git-commit-recovered'));
+      save(join(operation, attempt, 'recovered-commit-intent.json'), { parent: candidate.H, treeSha256: treeHash(original), diffSha256: hash(diff), writerTerminal, context });
+      if (await git(plan.workspace, ['diff', 'HEAD', '--', ...grant.allowedPaths])) {
+        await gate.check();
+        await mutateGit(plan.workspace, ['add', '--', ...grant.allowedPaths], join(operation, attempt, 'git-add-recovered'));
+        await gate.check();
+        await mutateGit(plan.workspace, ['-c', 'user.name=tongxu controlled repair runner', '-c', 'user.email=runner@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', 'repair: validate preserved partial fixture changes'], join(operation, attempt, 'git-commit-recovered'));
+      }
       candidate = await localCandidate(plan.workspace, plan.candidate.B); gate.adoptCommittedHead(candidate.H);
-      reviewer = await start('review-recovered', 'reviewer', inputs.prompts.reviewer, candidate);
-      const review = await reviewer.turn(evidence('Independently review this exact new candidate recovered from an ended interrupted writer. The old partial model answer is NOT a final result. Review the actual preserved code/diff and independently executed current tests. No tools, no old PASS reuse. Return the full report and exact candidateH.', { candidate, before: initial, source: original, diff, tests: baseline, contract: 'Finite numbers low<=high: inclusive clamp preserving fractions.', writerTerminal: 'unknown_or_interrupted', demonstrationFixture: true }), candidate, reviewSchema);
-      return await finish(review.verdict === 'PASS' && !review.findings.some((x: any) => x.priority < 2) ? 'completed_recovered_candidate' : 'recovered_candidate_requires_work', candidate, { review, tests: baseline, writerTerminal: 'unknown_or_interrupted', noOriginalModelTaskResent: true, sourceContext: context });
+      let review: any;
+      for (const prior of attempts) for (const stage of await readdir(join(operation, prior))) if (/^review-(\d+|recovered)$/.test(stage) && await exists(join(operation, prior, stage, 'completed.json'))) {
+        const parsed = await readRepairSession(join(operation, prior, stage));
+        if (parsed.binding.candidate.H === candidate.H && parsed.binding.inputManifestSha256 === fixedSha256) {
+          review = JSON.parse(parsed.turns.at(-1)!.final!.text); codexStages.push(prior + '/' + stage);
+        }
+      }
+      if (!review || review.verdict === 'REWORK_REQUIRED' && !review.findings?.some((x: any) => x.priority < 2)) {
+        reviewer = await start('review-recovered', 'reviewer', inputs.prompts.reviewer, candidate);
+        review = await askReview(reviewer, evidence('Independently review this exact candidate recovered after an ended operation. An old partial model answer is NOT a final result. Review actual preserved code/diff and current tests. No tools, no old PASS reuse. Return the full report and exact candidateH.', { candidate, before: initial, source: original, diff, tests: baseline, contract: 'Finite numbers low<=high: inclusive clamp preserving fractions.', writerTerminal, demonstrationFixture: true }), candidate);
+        await reviewer.close(); reviewer = undefined;
+      }
+      if (review.verdict === 'PASS' && !review.findings.some((x: any) => x.priority < 2)) return await finish('completed_recovered_candidate', candidate, { review, tests: baseline, writerTerminal, originalRepairTaskResent: false, sourceContext: context });
+      if (review.verdict === 'OWNER_DECISION_REQUIRED') return await finish('owner_decision_required', candidate, { review });
+      findingsForVerification = review;
+      save(join(operation, attempt, 'recovered-review-requires-work.json'), { candidate, review, next: 'verify the new findings under the same fixed grant; not a terminal completion' });
     }
     if (!plan.findings.length && !attempts.length) return await finish('skipped_no_finding', candidate, { baseline });
     if (baseline.passed && !attempts.length) return await finish('skipped_refuted_by_fixed_contract', candidate, { baseline, findings: plan.findings });
+    // A registered handoff consumes one batch even if its model was interrupted.
+    // Recovery shares the original grant's limit instead of resetting it.
+    let usedRepairRounds = 0;
+    for (const prior of attempts) usedRepairRounds += (await readdir(join(operation, prior))).filter(name => /^repair-context-\d+\.json$/.test(name)).length;
+    if (usedRepairRounds >= grant.maxRepairRounds) return await finish('repair_round_budget_reached', candidate, { usedRepairRounds, pendingFindings: findingsForVerification, next: 'retain evidence and use the adopted simplification/reflection boundary; no automatic further retry' });
     fact = await start('fact-and-repair', 'verifier_fact', inputs.prompts.fact, candidate, true);
-    let factReport = await fact.turn(evidence('Verify the finding against this explicitly labelled TEST FIXTURE, source and actual baseline results. Do not edit. Output confirmed, refuted or needs_owner and a full report. The candidateH must match the current local Git candidate.', { candidate, findings: plan.findings, source: await tree(plan.workspace), baseline, recovery: attempts.length > 0 }), candidate, findingSchema);
-    if (factReport.decision !== 'confirmed' && !attempts.length) return await finish(factReport.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { baseline, factReport });
-    for (let round = 1; round <= grant.maxRepairRounds; round++) {
+    let factReport = await fact.turn(evidence('Verify the finding against this explicitly labelled TEST FIXTURE, source and actual baseline results. Do not edit. Output confirmed, refuted or needs_owner and a full report. The candidateH must match the current local Git candidate.', { candidate, findings: findingsForVerification, source: await tree(plan.workspace), baseline, recovery: attempts.length > 0 }), candidate, findingSchema);
+    if (!['confirmed', 'refuted', 'needs_owner'].includes(factReport.decision)) throw new Error('unexpected_fact_decision');
+    if (factReport.decision !== 'confirmed') return await finish(factReport.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { baseline, factReport });
+    for (let round = 1; round <= grant.maxRepairRounds - usedRepairRounds; round++) {
       progress('impact', { round, candidate }); gate.phase = 'read';
       beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
       const impactDir = attempt + '/impact-' + round; claudeStages.push(impactDir);
       const impact = await runClaude({ executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs,
         input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. This is an explicitly labelled isolated test repository, not a product vulnerability. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: await tree(plan.workspace), factReport, fixedContract: 'Finite numbers, low<=high: clamp returns value bounded inclusively to [low,high]. Preserve fractions.', baseline }) });
       const decision = await fact.turn(evidence('Synthesize your factual findings with the independent Claude impact report. Do not write yet. Return confirmed/refuted/needs_owner plus the full analysis and exact candidateH. No finding means no repair.', { candidate, originalFindingsOrReview: factReport, impactSession: impact.sessionId, impactReport: impact.finalText, source: await tree(plan.workspace) }), candidate, findingSchema);
+      if (!['confirmed', 'refuted', 'needs_owner'].includes(decision.decision)) throw new Error('unexpected_fact_decision');
       if (decision.decision !== 'confirmed') return await finish(decision.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { factReport, impact, decision });
       const rawPrefix = await readFile(join(operation, attempt, 'fact-and-repair', 'stdout.ndjson'));
-      save(join(operation, attempt, 'repair-context-' + round + '.json'), { candidate, grantId: grant.id, decision, factStage: attempt + '/fact-and-repair', impactStage: impactDir, rawPrefixBytes: rawPrefix.length, rawPrefixSha256: hash(rawPrefix) });
+      save(join(operation, attempt, 'repair-context-' + round + '.json'), { candidate, grantId: grant.id, globalRepairRound: usedRepairRounds + round, decision, factStage: attempt + '/fact-and-repair', impactStage: impactDir, rawPrefixBytes: rawPrefix.length, rawPrefixSha256: hash(rawPrefix) });
       progress('writer_handoff', { round, candidate }); await gate.handoff(fact.sessionId);
-      const repairReport = await fact.turn(evidence('The host has now explicitly transferred the scoped write responsibility to this SAME fact-verifier session. Apply the verified minimal repair using tongxu_read_file/tongxu_replace_file. Only the listed allowed files can be modified. Then call tongxu_run_tests and inspect its actual result. Do not change the checker, grant, Git metadata or other files. Return repaired/no_change/needs_owner with the full report and the BEFORE candidateH (the host will freeze the new commit after you finish).', { candidate, grant, currentSource: await tree(plan.workspace), verifiedDecision: decision, test: plan.test }), candidate, findingSchema);
+      const repairReport = await fact.turn(evidence('The host has now explicitly transferred the scoped write responsibility to this SAME fact-verifier session. Apply the verified minimal repair using tongxu_read_file/tongxu_replace_file. Only the listed allowed files can be modified. The adopted test contract accepts a single exported clamp function with three numeric parameters and one pure return expression: parameters/numbers/basic arithmetic/comparisons/conditional expressions/Math.min or Math.max only. Imports, assignment, system globals and top-level side effects are rejected before execution. Then call tongxu_run_tests and inspect its actual result. Do not change the checker, grant, Git metadata or other files. Return repaired/no_change/needs_owner with the full report and the BEFORE candidateH (the host will freeze the new commit after you finish).', { candidate, grant, currentSource: await tree(plan.workspace), verifiedDecision: decision, test: plan.test }), candidate, findingSchema);
       gate.phase = 'read';
-      if (repairReport.decision !== 'repaired') return await finish('repair_not_completed', candidate, { repairReport });
+      if (repairReport.decision === 'needs_owner') return await finish('owner_decision_required', candidate, { repairReport });
+      if (!['repaired', 'no_change'].includes(repairReport.decision)) throw new Error('unexpected_repair_decision');
       progress('tests_and_candidate', { round });
       const current = await gate.check(), changed = scopeChanges(initial, current, grant.allowedPaths);
       const tests = await testClamp(plan.workspace, join(operation, attempt, 'post-repair-' + round), plan.nodeExecutable);
@@ -242,11 +286,11 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       save(join(operation, attempt, 'candidate-' + round + '.json'), { candidate, tree: current, diff, tests, repairReport });
       progress('independent_review', { round, candidate });
       reviewer = await start('review-' + round, 'reviewer', inputs.prompts.reviewer, candidate);
-      const review = await reviewer.turn(evidence('Independently review this NEW fixed local Git candidate against the stated test-fixture contract, complete current source, actual diff and trusted test result. You have no runtime tools or writer context. This is a fresh reviewer role. Do not reuse an old PASS. A PASS must have no P0/P1 findings; if something is wrong, provide concrete findings, not manufactured work. Return the complete report inside the schema with exact current candidateH.', { candidate, source: current, before: initial, diff, tests, contract: 'Finite numbers, low<=high: clamp returns the value bounded inclusively to [low,high], preserving fractional values.', demonstrationFixture: true }), candidate, reviewSchema);
+      const review = await askReview(reviewer, evidence('Independently review this NEW fixed local Git candidate against the stated test-fixture contract, complete current source, actual diff and trusted test result. You have no runtime tools or writer context. This is a fresh reviewer role. Do not reuse an old PASS. A PASS must have no P0/P1 findings; if something is wrong, provide concrete findings, not manufactured work. Return the complete report inside the schema with exact current candidateH.', { candidate, source: current, before: initial, diff, tests, contract: 'Finite numbers, low<=high: clamp returns the value bounded inclusively to [low,high], preserving fractional values.', demonstrationFixture: true }), candidate);
       await reviewer.close(); reviewer = undefined;
       save(join(operation, attempt, 'review-result-' + round + '.json'), review);
       if (review.verdict === 'PASS' && !review.findings.some((x: any) => x.priority === 0 || x.priority === 1)) return await finish('completed', candidate, { round, changed, tests, review, factSessionId: fact.sessionId, impactSessionId: impact.sessionId });
-      if (review.verdict === 'OWNER_DECISION_REQUIRED' || !review.findings.length) return await finish('owner_decision_required', candidate, { review });
+      if (review.verdict === 'OWNER_DECISION_REQUIRED') return await finish('owner_decision_required', candidate, { review });
       factReport = review;
     }
     return await finish('repair_round_budget_reached', candidate, { next: 'retain evidence and use the adopted simplification/reflection boundary; no automatic further retry' });

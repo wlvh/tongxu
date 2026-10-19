@@ -96,6 +96,7 @@ export class RepairSession {
     const final = parsed.turns[index - 1]!.final!, report = JSON.parse(final.text);
     if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
     if (schema === reviewSchema ? !['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'].includes(report.verdict) || !Array.isArray(report.findings) : !['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'].includes(report.decision)) throw new Error('invalid_structured_judgment');
+    if (schema === reviewSchema && (report.findings.length > 20 || report.findings.some((f: any) => typeof f?.id !== 'string' || !f.id || ![0, 1, 2].includes(f.priority) || typeof f.description !== 'string' || !f.description.trim()))) throw new Error('invalid_structured_findings');
     save(join(this.o.directory, `turn-${index}-final.json`), { turnId: currentTurn, subjectCandidate: candidate, final, report }); return report;
   }
   async close() {

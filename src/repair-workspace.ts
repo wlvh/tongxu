@@ -7,6 +7,7 @@ import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
 import type { Candidate } from './live-codex.js';
+import ts from 'typescript';
 
 const exec = promisify(execFile);
 export const safeEnv = { PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1' };
@@ -100,15 +101,50 @@ export async function releaseWorkspace(workspace: string, lease: Lease, outcome:
   await rename(lock, join(lease.operation, 'ownership-history', lease.generation + '-lock.json'));
 }
 
+export function validateClampExpression(source: string) {
+  if (Buffer.byteLength(source) > 16 * 1024) throw new Error('expression_source_limit');
+  const file = ts.createSourceFile('clamp.mjs', source, ts.ScriptTarget.ES2023, true, ts.ScriptKind.JS);
+  if ((file as any).parseDiagnostics?.length || file.statements.length !== 1) throw new Error('pure_expression_module_required');
+  const fn = file.statements[0]!;
+  if (!ts.isFunctionDeclaration(fn) || fn.name?.text !== 'clamp' || fn.modifiers?.length !== 1 || fn.modifiers[0]!.kind !== ts.SyntaxKind.ExportKeyword || fn.asteriskToken || fn.type || fn.typeParameters?.length || fn.parameters.length !== 3 || fn.parameters.some(p => !ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken || p.type || p.questionToken) || fn.body?.statements.length !== 1) throw new Error('pure_clamp_signature_required');
+  const parameters = new Set(fn.parameters.map(p => (p.name as ts.Identifier).text));
+  if (parameters.size !== 3 || parameters.has('Math')) throw new Error('invalid_clamp_parameters');
+  const statement = fn.body.statements[0]!;
+  if (!ts.isReturnStatement(statement) || !statement.expression) throw new Error('single_return_required');
+  const operators = new Set([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken, ts.SyntaxKind.PercentToken, ts.SyntaxKind.AsteriskAsteriskToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken]);
+  let nodes = 0;
+  const expression = (n: ts.Expression, depth = 0): boolean => {
+    if (++nodes > 500 || depth > 40) return false;
+    if (ts.isNumericLiteral(n)) return Number.isFinite(Number(n.text));
+    if (ts.isIdentifier(n)) return parameters.has(n.text);
+    if (ts.isParenthesizedExpression(n)) return expression(n.expression, depth + 1);
+    if (ts.isPrefixUnaryExpression(n)) return [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.ExclamationToken].includes(n.operator) && expression(n.operand, depth + 1);
+    if (ts.isBinaryExpression(n)) return operators.has(n.operatorToken.kind) && expression(n.left, depth + 1) && expression(n.right, depth + 1);
+    if (ts.isConditionalExpression(n)) return expression(n.condition, depth + 1) && expression(n.whenTrue, depth + 1) && expression(n.whenFalse, depth + 1);
+    if (ts.isCallExpression(n)) return !n.typeArguments?.length && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression) && n.expression.expression.text === 'Math' && ['min', 'max'].includes(n.expression.name.text) && n.arguments.length > 0 && n.arguments.length <= 16 && n.arguments.every(a => expression(a, depth + 1));
+    return false;
+  };
+  if (!expression(statement.expression)) throw new Error('expression_capability_not_allowed');
+  return { kind: 'clamp-expression-v1', accepted: true, sourceSha256: hash(source), nodes };
+}
+
 /** Runs only the adopted pure-function contract. Candidate code cannot write,
  * spawn, network or change the parent-side expected values/checker. */
 export async function testClamp(workspace: string, directory: string, node: string) {
   if (process.platform !== 'darwin') throw new Error('repair_test_requires_macos_seatbelt');
   await privateDirectory(directory, true);
+  const source = (await regular(join(workspace, 'clamp.mjs'))).toString();
+  try { save(join(directory, 'source-validation.json'), validateClampExpression(source)); }
+  catch (e) {
+    const failure = e instanceof Error ? e.message : 'invalid_expression_source';
+    save(join(directory, 'source-validation.json'), { accepted: false, failure, sourceSha256: hash(source) });
+    const result = { kind: 'fixed-clamp-contract-v1', passed: false, failure, exit: { code: null, signal: null }, candidateExecuted: false, candidateTreeSha256: treeHash(await tree(workspace)) };
+    save(join(directory, 'result.json'), result); return result;
+  }
   node = await realpath(node);
   if (!/^[A-Za-z0-9_./ -]+$/.test(node + workspace)) throw new Error('unsupported_sandbox_path');
   const quote = JSON.stringify;
-  const profile = `(version 1)(allow default)(deny file-write*)(deny network*)(deny process-fork)(deny process-exec (require-not (literal ${quote(node)})))\n(deny file-read-data (require-all (subpath "/Users") (require-not (subpath ${quote(workspace)})) (require-not (subpath ${quote(dirname(dirname(node)))}))))`;
+  const profile = `(version 1)(allow default)(deny file-write*)(deny network*)(deny signal)(deny process-fork)(deny process-exec (require-not (literal ${quote(node)})))\n(deny file-read-data (require-all (subpath "/Users") (require-not (subpath ${quote(workspace)})) (require-not (subpath ${quote(dirname(dirname(node)))}))))`;
   await writeFile(join(directory, 'sandbox.sb'), profile, { mode: 0o600 });
   const cases = [[5, 0, 10], [-4, 0, 10], [14, 0, 10], [0, 0, 10], [10, 0, 10], [0.25, 0, 1], [-3, -5, -1], [-9, -5, -1], [4, 2, 2], [7, -10, 20], [3.5, 3, 4], [1e6, -100, 100]];
   const code = `import {clamp} from './clamp.mjs';const cases=${JSON.stringify(cases)};process.stdout.write(JSON.stringify({values:cases.map(x=>clamp(...x))})+'\\n');`;
