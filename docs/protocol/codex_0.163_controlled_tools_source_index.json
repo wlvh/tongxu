@@ -1,0 +1,33 @@
+{
+  "version": "0.163.0-alpha.10.2",
+  "source": "Installed official Codex CLI: app-server generate-json-schema --experimental",
+  "officialDocumentation": "https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental",
+  "files": [
+    {
+      "path": "v2/ThreadStartParams.json",
+      "bytes": 13453,
+      "sha256": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de"
+    },
+    {
+      "path": "v2/TurnStartParams.json",
+      "bytes": 26212,
+      "sha256": "abf0d6d29d223b38c650ff1155cb9c9f9b4211e6d0e20c57d750a9e1babfdb41"
+    },
+    {
+      "path": "DynamicToolCallParams.json",
+      "bytes": 519,
+      "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc"
+    },
+    {
+      "path": "DynamicToolCallResponse.json",
+      "bytes": 2010,
+      "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02"
+    },
+    {
+      "path": "ServerRequest.json",
+      "bytes": 52047,
+      "sha256": "3d7bc481f84dc042984a74420e65c5a8d3c423f37a91b7d5df2365c903a12ac6"
+    }
+  ],
+  "limitations": "Exact consumed schema only. Actual role execution and tool constraints require native execution evidence; this index does not certify them."
+}

@@ -12,6 +12,7 @@
 - [只读 CLI：安装、采集、缺口与恢复](docs/w1_cli.md)
 - [隔离验证：固定树、逐前缀测试与结果对照](docs/w2_verification.md)
 - [影子接收：持久材料、控制、前置与原操作恢复](docs/w3_shadow_queue.md)
+- [已有 Codex 的无模型隔离自检](docs/w4_native_inspection.md)
 - [角色 prompt 装配及工具权限](prompts/README.md)
 
 首页是本批目标、组织方式、委托与停止、成果验收、复盘抽查五项控制；秘书对话与原三工作区保留。人的采用、团队技术约定、代理依据委托作出的处置分别可查。可以并行，也可按阶段串行或统一负责人；不以更多Agent作为成功标准。
