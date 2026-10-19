@@ -75,7 +75,9 @@ async function findRemote(http: PublicationHttp, p: Plan, d: Row, stage: string,
     remember(r);
     if (r.status !== 200 || !Array.isArray(r.value) || r.value.length > 100) return { matches, complete: false, conflict, originals, observations };
     for (const value of r.value) {
-      const selected = stage === 'comment' ? typeof value.body === 'string' && value.body.includes(`<!-- tongxu-publication:${d.publicationId} -->`) : value.context === d.status.context;
+      // GitHub compares status contexts without case. A case variant belongs
+      // to this same effective status and must reach the conflict checks.
+      const selected = stage === 'comment' ? typeof value.body === 'string' && value.body.includes(`<!-- tongxu-publication:${d.publicationId} -->`) : typeof value.context === 'string' && value.context.toLowerCase() === d.status.context.toLowerCase();
       if (!selected) continue;
       const match = stage === 'comment' ? commentMatches(value, p, d) : statusMatches(value, p, d, comment!);
       if (!match || expectedId && value.id !== expectedId) conflict = true;

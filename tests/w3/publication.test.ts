@@ -139,3 +139,13 @@ test('a malformed exit record is not evidence that an uncertain original publish
   await writeFile(exit, '{}'); await assert.rejects(publication(f.pubPath, 'reconcile'), /exit_record_invalid/); assert.equal((await f.remote()).posts.length, 1);
   await writeFile(exit, saved); assert.equal((await publication(f.pubPath, 'reconcile')).status, 'publication_pending_or_unknown'); assert.equal((await f.remote()).posts.length, 1);
 });
+
+test('GitHub context names differing only in case are conflicting effective statuses, including lost-response recovery', async t => {
+  for (const mode of ['normal', 'lose-status-response']) {
+    const f = await fixture(t, mode);
+    if (mode === 'normal') await publication(f.pubPath, 'publish'); else await assert.rejects(publication(f.pubPath, 'publish'), /response_unknown/);
+    const remote = await f.remote(), original = remote.statuses[0];
+    await f.change({ statuses: [{ ...original, id: original.id + 1, context: original.context.toUpperCase(), creator: { id: 999, login: 'other-publisher' }, state: 'failure' }, original] });
+    const recovered = await publication(f.pubPath, 'reconcile'); assert.equal(recovered.status, 'publication_pending_or_unknown'); assert.equal(recovered.stages.status.problem.reason, 'remote_identity_or_content_conflict'); assert.equal((await f.remote()).posts.length, 2); assert.equal(await f.count(), 1);
+  }
+});
