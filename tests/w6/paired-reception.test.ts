@@ -69,7 +69,7 @@ test('upstream insufficient result keeps only the shared stage waiting; repeat n
 test('missing B consumption reference remains unresolved and is not resent', async t => {
   const f = await fixture(t); const exe = f.plan.claudeExecutable, code = await readFile(exe, 'utf8');
   await writeFile(exe, code.replace('x.data.evidence.prerequisite.receiptSha256', "'0'.repeat(64)"));
-  const r = await runPairedReception(f.pairPath); assert.equal(r.status, 'waiting_or_unresolved'); assert.equal(r.second.status, 'receiver_unknown'); assert.match(r.second.reason, /not_consumed/); assert.equal(await f.count(), 2);
+  const r = await runPairedReception(f.pairPath); assert.equal(r.status, 'waiting_or_unresolved'); assert.equal(r.second.status, 'receiver_invalid_result'); assert.match(r.second.receiver.invalidResult.reason, /not_consumed/); assert.equal(await f.count(), 2);
   const again = await runPairedReception(f.pairPath); assert.equal(again.status, 'waiting_or_unresolved'); assert.equal(await f.count(), 2);
 });
 test('a newer upstream candidate blocks B and makes a prior B judgment inapplicable without changing either original', async t => {

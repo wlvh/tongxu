@@ -27,7 +27,7 @@ function subjectProjection(subject: Composition['subject'] | undefined, sha256: 
 function operation(o: Row, publications: Row[]) {
   const r = o.result?.receiver, j = r?.judgment;
   return { id: o.id, packet: o.packet, status: o.status, startedAt: o.started_at, finishedAt: o.finished_at, recovery: o.recovery, ...subjectProjection(r?.subject, r?.subjectSha256),
-    receiver: r ? { phase: r.phase, executionKind: r.executionKind, dispatchRegistered: !!r.dispatchRegisteredAt, currentMaterialMatches: r.currentMaterialMatches, judgment: j ? { id: j.judgmentId, verdict: j.verdict, reportSha256: hash(j.report), findings: Object.fromEntries([0, 1, 2].map(n => [`P${n}`, j.findings.filter((f: Row) => f.priority === n).length])) } : null } : null,
+    receiver: r ? { phase: r.phase, executionKind: r.executionKind, dispatchRegistered: !!r.dispatchRegisteredAt, currentMaterialMatches: r.currentMaterialMatches, ...(r.invalidResult?{invalidResult:r.invalidResult}:{}), ...(r.correctionOf?{correctionOf:r.correctionOf}:{}), judgment: j ? { id: j.judgmentId, verdict: j.verdict, reportSha256: hash(j.report), findings: Object.fromEntries([0, 1, 2].map(n => [`P${n}`, j.findings.filter((f: Row) => f.priority === n).length])) } : null } : null,
     publication: publications.find(p => p.operation === o.id) ?? null, productionActionAllowed: false };
 }
 export async function observeTask(store: string, itemId: string, candidate: Candidate) {

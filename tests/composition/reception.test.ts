@@ -7,7 +7,7 @@ import {Snapshot,hash} from '../../src/snapshot.js';
 import {git} from '../../src/repair-workspace.js';
 import {verify} from '../../src/verification.js';
 import {readPacket} from '../../src/queue-evidence.js';
-import {runReception} from '../../src/receiver.js';
+import {runReception,correctReception} from '../../src/receiver.js';
 import {workbenchState,parseWorkbenchPlan} from '../../src/workbench.js';
 import {DatabaseSync} from 'node:sqlite';
 import {SecretaryTools,observeTask} from '../../src/secretary-tools.js';
@@ -18,8 +18,8 @@ function test(name:string,body:(t:TestContext)=>Promise<void>){return nodeTest(n
 
 // The W2 execution, Git composition and SQLite are real. Every model response
 // is an explicitly generated fixture; no supplier request is made here.
-async function composition(t:TestContext){
-  const f=await setup(t,'complete',2,false);roots.get(t)!.push(f.root);const objects=f.plan.objects,B=await git(objects,['rev-parse',f.H+'^']);
+async function composition(t:TestContext,mode='complete'){
+  const f=await setup(t,mode,2,false);roots.get(t)!.push(f.root);const objects=f.plan.objects,B=await git(objects,['rev-parse',f.H+'^']);
   const member=async(name:string,file:string,value:string)=>{await git(objects,['switch','-c',name,B]);await writeFile(join(objects,file),value);await git(objects,['add','.']);await git(objects,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m',name]);return git(objects,['rev-parse','HEAD']);};
   const H1=await member('component-a','a.txt','A\n'),H2=await member('component-b','b.txt','B\n'),snapshots:string[]=[],at=new Date().toISOString();
   for(const [i,H] of [H1,H2].entries()){
@@ -90,9 +90,9 @@ test('updating any earlier member invalidates only the related composite judgmen
   await f.addPacket({pr:1,H:newer,sourceAt:new Date(Date.now()+30000).toISOString()});assert.equal(f.q.receiverState(r.operation).result.receiver.currentMaterialMatches,false);
   const other=await f.addPacket({pr:3,H:f.H2,sourceAt:new Date(Date.now()+31000).toISOString(),target:'unrelated'}),path=join(f.root,'unrelated.json');await writeFile(path,JSON.stringify({...f.plan,item:other.item,sourcePaths:['b.txt']}));const result=await runReception(path);assert.equal(result.receiver.phase,'returned');assert.equal(result.receiver.currentMaterialMatches,true);
 });
-test('wrong returned subject remains unresolved and an old sender cannot reserve without the subject binding',async t=>{
+test('wrong returned subject is recorded invalid and an old sender cannot reserve without the subject binding',async t=>{
   const f=await composition(t);await writeFile(f.plan.claudeExecutable,(await readFile(f.plan.claudeExecutable,'utf8')).replace('reviewedSubjectSha256:x.binding.subjectSha256',"reviewedSubjectSha256:'0'.repeat(64)"));
-  const r=await runReception(f.receiverPath);assert.equal(r.status,'receiver_unknown');assert.equal(f.q.status().claims.length,1);const before=await f.count();assert.equal((await runReception(f.receiverPath)).status,'receiver_unknown');assert.equal(await f.count(),before);
+  const r=await runReception(f.receiverPath);assert.equal(r.status,'receiver_invalid_result');assert.equal(f.q.status().claims.length,0);const before=await f.count();assert.equal((await runReception(f.receiverPath)).status,'receiver_invalid_result');assert.equal(await f.count(),before);
   const db=new DatabaseSync(join(f.store,'queue.sqlite'));try{const row=db.prepare('SELECT result FROM operations WHERE id=?').get(r.operation) as any,old=JSON.parse(row.result);delete old.receiver.subjectSha256;delete old.receiver.subject;assert.throws(()=>db.prepare("UPDATE operations SET status='receiving',result=? WHERE id=?").run(JSON.stringify(old),r.operation),/composition_receiver_subject_required/);}finally{db.close();}
   assert.equal(f.q.receiverState(r.operation).receiver.subjectSha256,f.packet.summary.composition!.sha256);
 });
@@ -106,4 +106,10 @@ test('moving identical raw artifacts between members changes semantic identity; 
   const rebind=async()=>{for(const [i,m] of manifests.entries()){const b=Buffer.from(JSON.stringify(m)),sha256=hash(b);await writeFile(join(paths[i]!,'manifest.json'),b);await writeFile(join(verification,'raw',sha256+'.bin'),b);report.inputs[i]={...report.inputs[i],candidate:m.candidate,manifestHash:sha256,manifest:{path:'raw/'+sha256+'.bin',sha256,bytes:b.length}};}await writeFile(join(verification,'verification.json'),JSON.stringify(report));};
   await rebind();const moved=await readPacket(paths[1]!,verification,f.context,paths);assert.equal(moved.summary.evidenceComplete,true);assert.notEqual(moved.fingerprint,f.packet.fingerprint);
   manifests[0].candidate.observedAt='unknown';await rebind();const missing=await readPacket(paths[1]!,verification,f.context,paths);assert.equal(missing.summary.evidenceComplete,false);assert.equal(missing.summary.sourceObservation,null);assert.ok(missing.summary.gaps.includes('member:0:observation_time_unavailable'));
+});
+
+test('one bounded correction preserves the exact ordered subject and delivers the full invalid schema2 result',async t=>{
+  const f=await composition(t,'contradictory'),first=await runReception(f.receiverPath);assert.equal(first.status,'receiver_invalid_result');
+  const path=join(f.root,'correct-composite.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-ended-result-correction',store:f.store,operation:first.operation,bindingHash:first.receiver.bindingHash,receiverPlan:f.receiverPath,source:'fixture:bounded-correction',reason:'Explain result consistency without dropping concerns.',material:[]}));
+  const second=await correctReception(path);assert.equal(second.receiver.phase,'returned');assert.equal(second.receiver.subjectSha256,first.receiver.subjectSha256);assert.deepEqual(second.receiver.subject,first.receiver.subject);assert.equal(second.receiver.judgment.schemaVersion,2);assert.equal(second.receiver.judgment.reviewedSubjectSha256,first.receiver.subjectSha256);assert.equal(second.receiver.correctionOf,first.operation);assert.equal(await f.count(),2);assert.equal((await correctReception(path)).duplicate,true);assert.equal(await f.count(),2);
 });

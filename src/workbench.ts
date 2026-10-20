@@ -26,6 +26,7 @@ export function receptionStage(o: Row) {
   const r = o.result?.receiver;
   if (!r) return o.status === 'running' ? 'local_inspection_pending' : 'not_dispatched';
   if (r.phase === 'returned' && r.judgment) return r.currentMaterialMatches === false ? 'historical_result' : 'returned';
+  if (r.invalidResult) return 'returned_invalid';
   if (r.phase === 'closed_unresolved') return 'closed_unresolved';
   return r.phase === 'reserved' ? 'preparing' : 'submitted_or_unknown';
 }
@@ -60,6 +61,8 @@ export async function workbenchState(p: WorkbenchPlan) {
     const operations = ops.map((o: Row) => ({
       id: o.id, packet: o.packet, currentPacket: o.packet === item.currentPacket, stage: receptionStage(o),
       startedAt: o.started_at, finishedAt: o.finished_at, judgment: judgment(o),
+      invalidOutput: o.result?.receiver?.invalidResult ?? null,
+      correctionOf: o.result?.receiver?.correctionOf ?? null,
       consumedPrerequisite: o.result?.receiver?.judgment?.consumedPrerequisite ?? null,
       nativeExecution: o.nativeExecution,
       ...(o.result?.receiver?.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}),
@@ -72,7 +75,7 @@ export async function workbenchState(p: WorkbenchPlan) {
       scope: item.context.scope, arrangement: item.context.arrangement, dependencyGaps: item.dependencyGaps,
       controls: q.controls.filter((c: Row) => c.scope === item.context.scope.id).map((c: Row) => ({ kind: c.kind, stopped: !!c.stopped, revision: c.revision, effectiveAt: c.effective_at })),
       operations, eventRevision: q.events.at(-1)?.id ?? 0, productionActionAllowed: false });
-    for (const e of q.events.filter((e: Row) => ops.some((o: Row) => o.id === e.object) && ['receiver_reserved', 'receiver_dispatch_registered', 'receiver_judgment_recorded', 'receiver_closed_unresolved'].includes(e.kind))) events.push({ id: s.id + ':' + e.id, source: s.id, title: s.title, kind: e.kind, observedAt: e.observed_at });
+    for (const e of q.events.filter((e: Row) => ops.some((o: Row) => o.id === e.object) && ['receiver_reserved', 'receiver_dispatch_registered', 'receiver_judgment_recorded', 'receiver_closed_unresolved','receiver_invalid_result_recorded','receiver_correction_registered'].includes(e.kind))) events.push({ id: s.id + ':' + e.id, source: s.id, title: s.title, kind: e.kind, observedAt: e.observed_at });
   }
   for (const [store, snapshot] of snapshots) {
     if (!('value' in snapshot)) continue;
@@ -87,7 +90,8 @@ export async function workbenchState(p: WorkbenchPlan) {
 }
 async function workbenchReport(p: WorkbenchPlan, source: string, operation: string) {
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
-  const q = await QueueStore.observe(s.store, [s.item]), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
+  const q = await QueueStore.observe(s.store, [s.item], [operation]), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
+  if (o?.invalidOutput !== undefined) return { source,operation,judgmentId:null,verdict:'INVALID_RESULT',report:o.invalidOutput,reportSha256:hash(o.invalidOutput), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}),stage:receptionStage(o),nativeExecution:o.nativeExecution,invalidResult:o.result.receiver.invalidResult,findings:[],productionActionAllowed:false };
   if (!j) throw new Error('report_not_found');
   return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
 }

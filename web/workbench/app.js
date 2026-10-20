@@ -2,9 +2,9 @@
 const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0;
-const stages = { local_inspection_pending: ['本地材料待核', 'wait'], not_dispatched: ['尚未派发接收', 'neutral'], preparing: ['接收准备中', 'wait'], submitted_or_unknown: ['已登记发送，结果待核', 'wait'], historical_result: ['历史判断，当前不适用', 'neutral'], returned: ['报告已返回', ''], closed_unresolved: ['原结果未解决', 'wait'] };
-const verdicts = { ACCEPT_WITHIN_SCOPE: '限定范围内接受', RETURN_FOR_WORK: '退回处理', INSUFFICIENT_EVIDENCE: '证据不足' };
-const eventNames = { receiver_reserved: '接收准备已登记', receiver_dispatch_registered: '原发送已登记', receiver_judgment_recorded: '完整接收判断已保存', receiver_closed_unresolved: '原操作保留未解决结果', pair_registered: '两个任务与阶段安排已固定', pair_independent_inspection: '下游已核对独立本地材料', pair_shared_waiting: '共享接收等待上游判断', pair_shared_consumed: '下游已返回上游结果的消费引用' };
+const stages = { local_inspection_pending: ['本地材料待核', 'wait'], not_dispatched: ['尚未派发接收', 'neutral'], preparing: ['接收准备中', 'wait'], submitted_or_unknown: ['已登记发送，结果待核', 'wait'], historical_result: ['历史判断，当前不适用', 'neutral'], returned: ['报告已返回', ''], returned_invalid: ['执行已结束，判断无效', 'wait'], closed_unresolved: ['原结果未解决', 'wait'] };
+const verdicts = { ACCEPT_WITHIN_SCOPE: '限定范围内接受', RETURN_FOR_WORK: '退回处理', INSUFFICIENT_EVIDENCE: '证据不足', INVALID_RESULT: '原输出无效，未形成接收判断' };
+const eventNames = { receiver_reserved: '接收准备已登记', receiver_dispatch_registered: '原发送已登记', receiver_judgment_recorded: '完整接收判断已保存', receiver_closed_unresolved: '原操作保留未解决结果', receiver_invalid_result_recorded: '原执行已结束，完整输出无效', receiver_correction_registered: '一次有界结果纠正已登记', pair_registered: '两个任务与阶段安排已固定', pair_independent_inspection: '下游已核对独立本地材料', pair_shared_waiting: '共享接收等待上游判断', pair_shared_consumed: '下游已返回上游结果的消费引用' };
 function el(tag, value, className) { const n = document.createElement(tag); if (value !== undefined && value !== null) n.textContent = String(value); if (className) n.className = className; return n; }
 function append(parent, ...nodes) { nodes.filter(Boolean).forEach(n => parent.append(n)); return parent; }
 function pill(text, kind = '') { return el('span', text, 'pill ' + kind); }
@@ -30,7 +30,7 @@ function metric(number, label, note) { return append(el('div', null, 'metric'), 
 function openTask(id) { selected = id; view = 'tasks'; render(); $('content').focus({ preventScroll: true }); }
 function card(t) {
   const [label, kind] = statusOf(t), n = el('button', null, 'task-card'); n.type = 'button'; n.dataset.task = t.id; n.dataset.stage = label; n.onclick = () => openTask(t.id);
-  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? '登记 H ' + t.candidate.H.slice(0, 8) + ' · ' + t.operations.filter(o => o.judgment).length + ' 份原报告' : t.error), el('span', '↗', 'arrow'))); return n;
+  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? '登记 H ' + t.candidate.H.slice(0, 8) + ' · ' + t.operations.filter(o => o.judgment).length + ' 份有效判断 · ' + t.operations.filter(o => o.invalidOutput).length + ' 份无效输出' : t.error), el('span', '↗', 'arrow'))); return n;
 }
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage));
@@ -70,7 +70,8 @@ function taskView() {
     left.append(el('p', executionText(o.nativeExecution), 'small'));
     if (o.subject) left.append(el('p', subjectText(o.subject) + ' · 组合判断，非逐成员放行', 'small'));
     if (o.publication) left.append(el('p', publicationText(o.publication), 'small'));
-    row.append(left); if (o.judgment) { const b = el('button', '阅读完整报告', 'outline'); b.type = 'button'; b.onclick = () => openReport(t, o); row.append(b); } panel.append(row);
+    if (o.correctionOf) left.append(el('p', '纠正原操作 ' + o.correctionOf + ' 的无效输出；原文保留。', 'small'));
+    row.append(left); if (o.judgment || o.invalidOutput) { const b = el('button', o.invalidOutput ? '阅读无效原输出' : '阅读完整报告', 'outline'); b.type = 'button'; b.onclick = () => openReport(t, o); row.append(b); } panel.append(row);
   });
   const details = append(el('details'), el('summary', '已有停止状态与观察边界'));
   append(details, el('p', t.controls.length ? t.controls.map(c => ({ investment: '新增投入', implementation: '新增实施', merge: '新合并' }[c.kind] || c.kind) + '：' + (c.stopped ? '已登记停止' : '本机记录开放') + '（修订 ' + c.revision + '）').join('；') : '该任务范围没有登记停止条目。这不等于取得了额外权限。', 'small'), el('p', '本页没有改写控制或生产动作的接口。来源与测试观察来自不同时间，本次查看不刷新远端事实。', 'small')); panel.append(details); return n;

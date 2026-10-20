@@ -103,9 +103,9 @@ test('SIGKILL during capture cannot release an active original CLI or promote it
   assert.equal((await reconcileReception(f.store, op.id, 'fixture:close-confirmed-ended')).independentReception, 'closed_without_judgment'); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 1); assert.deepEqual(await readFile(join(stage, 'stdout.ndjson')), raw);
 });
 for (const mode of ['bad-binding', 'aborted']) test(`fixture ${mode} cannot become a judgment or trigger a replacement`, async t => {
-  const f = await setup(t, mode), r = await runReception(f.path); assert.equal(r.status, 'receiver_unknown'); assert.equal(await f.count(), 1);
-  const restored = await reconcileReception(f.store, r.operation); assert.equal(restored.status, 'receiver_unknown'); assert.equal(await f.count(), 1);
-  const closed = await reconcileReception(f.store, r.operation, 'fixture:close-ended-unresolved'); assert.equal(closed.independentReception, 'closed_without_judgment'); assert.equal(closed.receiver.judgment, null); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 1);
+  const f = await setup(t, mode), r = await runReception(f.path); assert.equal(r.status, mode === 'aborted' ? 'receiver_unknown' : 'receiver_invalid_result'); assert.equal(await f.count(), 1);
+  const restored = await reconcileReception(f.store, r.operation); assert.equal(restored.status, mode === 'aborted' ? 'receiver_unknown' : 'receiver_invalid_result'); assert.equal(await f.count(), 1);
+  const closed = await reconcileReception(f.store, r.operation, 'fixture:close-ended-unresolved'); assert.equal(closed.independentReception, mode === 'aborted' ? 'closed_without_judgment' : 'completed_output_not_a_valid_judgment'); assert.equal(closed.receiver.judgment, null); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 1);
 });
 test('recovery binds full original stdin and tool policy even when stream hashes are rewritten; changed plan never resends', async t => {
   const f = await setup(t), r = await runReception(f.path), stage = join(r.receiver.directory, 'claude'), input = await readFile(join(stage, 'stdin.ndjson'));
@@ -202,10 +202,10 @@ test('legacy supplemented packets without a base fingerprint reuse verified pred
   const after = await f.packet({ artifactIndex: 1 }); assert.equal(after.packet, third.packet); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 3);
 });
 
-test('a single complete fenced JSON native final is consumed from the original capture; prose and multiple fences stay unresolved', async t => {
+test('a single complete fenced JSON native final is consumed from the original capture; prose and multiple fences remain invalid without resend', async t => {
   const f = await setup(t, 'fenced'), r = await runReception(f.path); assert.equal(r.receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE');
   const original = await readFile(join(r.receiver.directory, 'claude/stdout.ndjson'));
   assert.ok(original.toString().includes('```json'));
   const again = await reconcileReception(f.store, r.operation); assert.equal(again.duplicate, true); assert.deepEqual(again.receiver.judgment, r.receiver.judgment); assert.equal(await f.count(), 1); assert.deepEqual(await readFile(join(r.receiver.directory, 'claude/stdout.ndjson')), original);
-  for (const mode of ['fenced-prose','fenced-double']) { const g = await setup(t, mode), bad = await runReception(g.path); assert.equal(bad.status, 'receiver_unknown'); assert.equal((await reconcileReception(g.store, bad.operation)).status, 'receiver_unknown'); assert.equal(await g.count(), 1); }
+  for (const mode of ['fenced-prose','fenced-double']) { const g = await setup(t, mode), bad = await runReception(g.path); assert.equal(bad.status, 'receiver_invalid_result'); assert.equal((await reconcileReception(g.store, bad.operation)).status, 'receiver_invalid_result'); assert.equal(await g.count(), 1); }
 });
