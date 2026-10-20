@@ -13,6 +13,7 @@ function date(value) { if (!value || Number.isNaN(Date.parse(value))) return '�
 function statusOf(task) {
   if (!task.available) return ['来源无法读取', 'problem'];
   if (task.observationConflict) return ['材料观察有冲突', 'wait'];
+  if (task.compositionCurrent === false) return ['组合成员状态待核实', 'wait'];
   const o = task.operations.filter(o => o.currentPacket).at(-1);
   if (!o) return ['尚未派发接收', 'neutral'];
   if (o.stage === 'returned') return [verdicts[o.judgment?.verdict] || '未知判断', o.judgment?.verdict === 'ACCEPT_WITHIN_SCOPE' ? '' : 'wait'];

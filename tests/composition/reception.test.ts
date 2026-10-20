@@ -10,6 +10,7 @@ import {readPacket} from '../../src/queue-evidence.js';
 import {runReception} from '../../src/receiver.js';
 import {workbenchState,parseWorkbenchPlan} from '../../src/workbench.js';
 import {DatabaseSync} from 'node:sqlite';
+import {SecretaryTools,observeTask} from '../../src/secretary-tools.js';
 const dockerPath=process.env.TONGXU_TEST_DOCKER_CONFIG;
 if(!dockerPath)throw new Error('TONGXU_TEST_DOCKER_CONFIG required');
 const docker=JSON.parse(await readFile(dockerPath,'utf8')),roots=new WeakMap<TestContext,string[]>();
@@ -44,6 +45,30 @@ test('complete ordered W2 originals are delivered with all exact member sources 
   const single=await readPacket(f.snapshots[1]!,f.verification,f.context);assert.equal(single.summary.evidenceComplete,false);assert.ok(single.summary.gaps.includes('additional_members_require_independent_reception'));
   const plan=parseWorkbenchPlan(Buffer.from(JSON.stringify({schemaVersion:1,kind:'tongxu-local-workbench',title:'组合夹具',goal:'不是真实模型',sources:[{id:'composition',title:'两个成员',store:f.store,item:f.imported.item}]}))),view=await workbenchState(plan);
   assert.equal(view.tasks[0]!.composition.sha256,r.receiver.subjectSha256);assert.equal(view.tasks[0]!.operations[0]!.subject.members.length,2);assert.equal(view.tasks[0]!.operations[0]!.subject.testedTree,f.packet.summary.tree);
+  const candidate={repository:r.candidate.repository,pr:r.candidate.pr,H:r.candidate.H,B:r.candidate.B,target:r.candidate.targetRef},state=await observeTask(f.store,f.imported.item,candidate);
+  assert.equal(state.candidateRole,'routing_anchor');assert.equal(state.originalSubjectSha256,r.receiver.subjectSha256);assert.equal(state.subject!.testedTree,f.packet.summary.tree);assert.equal(state.subject!.individualAcceptanceInferred,false);assert.equal(state.subject!.members.length,2);assert.equal(state.compositionCurrent,true);
+  const tools=new SecretaryTools(f.store,f.imported.item,candidate,join(f.root,'secretary-queries'));
+  for(const [tool,args] of [['tongxu_task_status',{}],['tongxu_operation_status',{operation:r.operation}]] as const){const response=await tools.call({tool,arguments:args,callId:tool}),data=JSON.parse(response.contentItems[0]!.text).data;assert.equal(data.originalSubjectSha256,r.receiver.subjectSha256);assert.equal(data.subject.testedTree,f.packet.summary.tree);assert.deepEqual(data.subject.members.map((m:any)=>m.candidate.H),[f.H1,f.H2]);assert.equal(data.subject.individualAcceptanceInferred,false);assert.ok(!JSON.stringify(data).includes(r.receiver.judgment.report));assert.ok(!JSON.stringify(data).includes(f.root));assert.ok(!('sourceGaps'in data.subject.members[0]));}
+});
+test('non-anchor conflicts wait without a claim; both later observations allow recovery and later conflicts withdraw the old judgment',async t=>{
+  const f=await composition(t),time=Date.now()+60000,at=(offset:number)=>new Date(time+offset).toISOString();
+  const conflict=async(offset:number)=>{const options={pr:1,H:f.H1,sourceAt:at(offset),executionAt:at(offset)};await f.addPacket({...options,artifactIndex:81});const result=await f.addPacket({...options,artifactIndex:82});assert.equal(result.observationConflict,true);return result;};
+  await conflict(0);
+  const blocked=await runReception(f.receiverPath);assert.deepEqual(blocked.blocked,['composition_member_currentness_unverified']);assert.equal(await f.count(),0);assert.equal(f.q.status().claims.length,0);assert.equal(f.q.status().operations.length,0);assert.equal(f.q.status().items.find((i:any)=>i.id===f.imported.item).compositionCurrent,false);
+  // These are explicitly synthetic observation times. Existing real Docker
+  // outputs stay unchanged; this tests ordering, not a fresh execution claim.
+  const refresh=async(label:string,sourceAt:string,executionAt:string)=>{
+    const paths=[join(f.root,label+'-a'),join(f.root,label+'-b')],verification=join(f.root,label+'-verification');await cp(f.verification,verification,{recursive:true});const report=JSON.parse(await readFile(join(verification,'verification.json'),'utf8'));
+    for(const [i,path] of paths.entries()){await cp(f.snapshots[i]!,path,{recursive:true});const m=JSON.parse(await readFile(join(path,'manifest.json'),'utf8'));m.candidate.observedAt=sourceAt;const ref=m.artifacts[0],raw=Buffer.from(JSON.stringify({fixture:true,observationTag:label,member:i}));await writeFile(join(path,ref.path),raw);ref.sha256=hash(raw);ref.bytes=raw.length;const bytes=Buffer.from(JSON.stringify(m)),sha256=hash(bytes);await writeFile(join(path,'manifest.json'),bytes);await writeFile(join(verification,'raw',sha256+'.bin'),bytes);report.inputs[i]={...report.inputs[i],candidate:m.candidate,manifestHash:sha256,manifest:{path:'raw/'+sha256+'.bin',sha256,bytes:bytes.length}};}
+    report.startedAt=executionAt;report.finishedAt=executionAt;await writeFile(join(verification,'verification.json'),JSON.stringify(report));const packet=await readPacket(paths[1]!,verification,f.context,paths);assert.equal(packet.summary.evidenceComplete,true);f.q.import(packet);return packet;
+  };
+  await refresh('source-only',at(1000),at(0));assert.equal(f.q.status().items.find((i:any)=>i.id===f.imported.item).compositionCurrent,false);assert.deepEqual((await runReception(f.receiverPath)).blocked,['composition_member_currentness_unverified']);
+  const packet=await refresh('jointly-later',at(2000),at(2000));assert.equal(f.q.status().items.find((i:any)=>i.id===f.imported.item).compositionCurrent,true);
+  await writeFile(f.receiverPath,JSON.stringify({...f.receiverPlan,memberSources:f.receiverPlan.memberSources.map((m:any,i:number)=>({...m,manifestHash:packet.summary.composition!.subject.members[i]!.manifestHash}))}));
+  const returned=await runReception(f.receiverPath);assert.equal(returned.receiver.currentMaterialMatches,true);assert.equal(await f.count(),1);
+  await conflict(3000);assert.equal(f.q.receiverState(returned.operation).result.receiver.currentMaterialMatches,false);const old=await runReception(f.receiverPath);assert.equal(old.duplicate,true);assert.equal(old.receiver.currentMaterialMatches,false);assert.equal(await f.count(),1);
+  const candidate={repository:returned.candidate.repository,pr:returned.candidate.pr,H:returned.candidate.H,B:returned.candidate.B,target:returned.candidate.targetRef},before=await observeTask(f.store,f.imported.item,candidate);
+  await refresh('new-current-material',at(4000),at(4000));const after=await observeTask(f.store,f.imported.item,candidate);assert.notEqual(after.originalSubjectSha256,before.originalSubjectSha256);assert.equal(after.operations[0]!.originalSubjectSha256,returned.receiver.subjectSha256);assert.equal(after.operations[0]!.subject!.testedTree,returned.receiver.subject.testedTree);
 });
 test('missing or reordered member snapshots and tampered prefix identities never become complete evidence',async t=>{
   const f=await composition(t);

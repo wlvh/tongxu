@@ -372,6 +372,7 @@ PRAGMA user_version=4;`);
       const existing = this.db.prepare('SELECT * FROM operations WHERE packet=?').get(item.current_packet) as Row | undefined;
       if (item.observation_conflict) return { blocked: ['observation_order_conflict'], originalOperation: existing?.id ?? null, next: existing?.status === 'running' ? 'evaluate_original_operation' : 'import_jointly_current_observation', mode: 'shadow' };
       if (existing) return { operation: existing.id, status: existing.status, duplicate: true, next: existing.status === 'repairing' ? 'reconcile_original_repair' : existing.status === 'receiving' ? 'reconcile_original_receiver' : existing.status === 'running' ? 'evaluate_original_operation' : 'read_saved_result', mode: 'shadow' };
+      if (parse(this.packet(item.current_packet), 'summary').composition && !this.receiverCandidateCurrent(item)) return { blocked: ['composition_member_currentness_unverified'], next: 'import_jointly_current_observation', mode: 'shadow' };
       const context = parse(item, 'context') as QueueContext;
       if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) return { blocked: ['new_investment_stopped'], mode: 'shadow' };
       const blocked = this.prerequisites(item); if (blocked.length) return { blocked, mode: 'shadow' };
@@ -604,12 +605,18 @@ PRAGMA user_version=4;`);
     const selected=(composition?currentMembers(composition):[primary]).map(c=>effective(c,item.latest_source_observation));
     // H/B/target changes create another item. Compare source observations across
     // the PR, never W2 completion/arrival time: a fresh test of old H is not new H.
-    const others = this.db.prepare("SELECT items.candidate,items.context,items.latest_source_observation,packets.summary FROM items JOIN packets ON packets.id=items.current_packet WHERE items.id!=? AND lower(json_extract(candidate,'$.repository'))=?").all(item.id, primary.repository.toLowerCase()) as Row[];
+    const others = this.db.prepare("SELECT items.candidate,items.context,items.latest_source_observation,items.latest_observation,items.observation_conflict,packets.summary FROM items JOIN packets ON packets.id=items.current_packet WHERE items.id!=? AND lower(json_extract(candidate,'$.repository'))=?").all(item.id, primary.repository.toLowerCase()) as Row[];
     for(const current of selected){
     for (const other of others) {
       const otherComposition=parse(other,'summary').composition as Composition|undefined, otherCandidates=(otherComposition?currentMembers(otherComposition):[parse(other,'candidate') as Candidate]).map(c=>effective(c,other.latest_source_observation)),otherContext=parse(other,'context') as QueueContext;
       for(const candidate of otherCandidates){
       if(candidate.pr!==current.pr)continue;
+      // Equal candidate/context identities do not settle contradictory originals.
+      // Reuse the joint source/execution ordering rule: only a later complete
+      // observation can supersede a related conflict, never arrival time alone.
+      if (other.observation_conflict && context.scope.id === otherContext.scope.id &&
+        (!current.observedAt || !other.latest_source_observation || current.observedAt <= other.latest_source_observation ||
+         !item.latest_observation || !other.latest_observation || item.latest_observation <= other.latest_observation)) return false;
       // A new context version in this same scope can make the selected task
       // ambiguous; it does not adopt another scope or grant any new permission.
       const sameContext = context.scope.id !== otherContext.scope.id || context.scope.version === otherContext.scope.version && context.arrangement.id === otherContext.arrangement.id && context.arrangement.version === otherContext.arrangement.version;
@@ -658,8 +665,9 @@ PRAGMA user_version=4;`);
     return { ...summary, evidenceComplete: summary.evidenceComplete && !item.observation_conflict, gaps: [...summary.gaps, ...(item.observation_conflict ? ['observation_order_conflict'] : [])] };
   }
   private itemStatus(item: Row): Row {
-    if(parse(this.packet(item.current_packet),'summary').composition)this.packetEvidence(this.packet(item.current_packet));
-    return { id: item.id, candidate: parse(item, 'candidate'), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+    const composition = parse(this.packet(item.current_packet), 'summary').composition;
+    if(composition)this.packetEvidence(this.packet(item.current_packet));
+    return { id: item.id, candidate: parse(item, 'candidate'), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.

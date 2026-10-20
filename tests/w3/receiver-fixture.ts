@@ -17,8 +17,9 @@ export async function setup(t: test.TestContext, mode = 'complete', seats = 1, c
   await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=2;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture candidate']);
   const H = git(['rev-parse', 'HEAD']);
   const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', seats); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
-  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string; artifactIndex?: number } = {}) {
-    const at = new Date(Date.parse('2026-10-19T00:00:00Z') + ++index * 2000).toISOString(), pr = options.pr ?? 1;
+  async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; executionAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string; artifactIndex?: number } = {}) {
+    ++index;
+    const at = options.executionAt ?? new Date(Date.parse('2026-10-19T00:00:00Z') + index * 2000).toISOString(), pr = options.pr ?? 1;
     const selectedH = options.H ?? H, selectedTree = git(['rev-parse', `${selectedH}^{tree}`]);
     const candidate = { repository: 'fixture/reception', pr, H: selectedH, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: options.sourceAt ?? at };
     const snapshot = join(root, 'snapshot-' + index), s = await Snapshot.create(snapshot, candidate.repository, pr, [], []); s.manifest.candidate = candidate;
