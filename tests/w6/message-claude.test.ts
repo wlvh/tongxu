@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,link,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {messageFixture} from './message-fixture.js';
 import {runMessages} from '../../src/messages.js';
@@ -33,4 +33,9 @@ test('304 lifecycle has one matching terminal command and no concealed tool, err
   const lifecycle=(state:string)=>({type:'command_lifecycle',state,command_uuid:'u',session_id:'s'}),base=[lifecycle('queued'),lifecycle('started'),result,lifecycle('completed')];assert.equal(messageClaudeFinal(base,'s','2.1.304','u'),'fixture');
   const variants=[[...base,{type:'assistant',session_id:'s',message:{content:[{type:'text',text:'late text'}]}}],base.slice(0,-1),[...base,lifecycle('completed')],[...base,{type:'control_request',session_id:'s'}],base.map(x=>({...x,session_id:'other'})),[base[0]!,base[1]!,{...result,terminal_reason:'aborted_streaming'},base[3]!],[base[0]!,base[1]!,{...result,is_error:true},base[3]!],[base[0]!,base[1]!,{...result,api_error_status:429},base[3]!],[base[0]!,base[1]!,{...result,permission_denials:[{tool:'Read'}]},base[3]!],[base[0]!,base[1]!,{type:'assistant',session_id:'s',message:{content:[{type:'tool_use'}]}},result,base[3]!]];
   for(const key of ['killed','refused'] as const){const e=structuredClone(base),r=e.find(x=>x.type==='result') as any;r.subagent_stats[key][key==='killed'?'user':'budget']=1;variants.push(e);}for(const events of variants)assert.throws(()=>messageClaudeFinal(events,'s','2.1.304','u'),/not_complete/);
+});
+test('readonly vendor executables may have hard links while symlinks and changed content remain rejected',async t=>{
+  const f=await messageFixture(t,'304');await link(f.claude,join(f.root,'vendor-hardlink'));await link(f.codex,join(f.root,'codex-hardlink'));const r=await runMessages(f.store,f.path);assert.equal(r.completed,true,JSON.stringify(r.problems));assert.equal(r.newModelRequests,4);const trace=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),trace);
+  const linked=await messageFixture(t,'304'),alias=join(linked.root,'symlink-codex');await symlink(linked.codex,alias);linked.plan.participants[0]!.executable=alias;await linked.write();const refused=await runMessages(linked.store,linked.path);assert.equal(refused.newModelRequests,0);assert.match(JSON.stringify(refused.problems),/executor_file_invalid/);assert.equal((await linked.calls()).length,0);
+  const changed=await messageFixture(t,'304');changed.plan.participants[0]!.executableSha256='a'.repeat(64);await changed.write();const mismatch=await runMessages(changed.store,changed.path);assert.equal(mismatch.newModelRequests,0);assert.match(JSON.stringify(mismatch.problems),/executor_changed/);assert.equal((await changed.calls()).length,0);
 });
