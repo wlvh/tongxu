@@ -32,8 +32,9 @@ export class CoordinationRecords {
     this.event(id,'registered',{name:plan.name,planSha256:this.blob(Buffer.from(canonical(plan))),originalPlanSha256:this.blob(raw),bindings,parts,scope:first.context.scope,registeredAt:now()});return {...this.statusValue(id),duplicate:false};
   });}
   private ancestry(f:ReturnType<CoordinationRecords['fixed']>){const all=[f];let p=f.plan.previous;while(p){if(all.length>=64||all.some(x=>x.id===p))throw new Error('coordination_history_limit_or_cycle');const old=this.fixed(p);if(old.plan.name!==f.plan.name)throw new Error('coordination_history_name_changed');all.push(old);p=old.plan.previous;}return all;}
+  private staleSharedTasks(f:ReturnType<CoordinationRecords['fixed']>,part:string){const shared=f.plan.shared.find(p=>p.id===part);if(!shared)throw new Error('coordination_shared_part_missing');return shared.tasks.filter(task=>{try{this.currentTask(f,task);return false;}catch{return true;}});}
   private feedbackFor(f:ReturnType<CoordinationRecords['fixed']>,part:string,task:string){
-    for(const version of this.ancestry(f)){const result=version.events.findLast(e=>e.kind==='coordination_feedback'&&e.data.task===task&&e.data.part===part&&e.data.partHash===f.registration.parts[part]);if(result){this.verifiedReply(result.data.run,result.data.messageId);return {...result.data,recordedRevision:version.plan.revision,reusedFromPrevious:version.id!==f.id};}}return null;
+    for(const version of this.ancestry(f)){const result=version.events.findLast(e=>e.kind==='coordination_feedback'&&e.data.task===task&&e.data.part===part&&e.data.partHash===f.registration.parts[part]);if(result){this.verifiedReply(result.data.run,result.data.messageId);const staleTasks=this.staleSharedTasks(f,part);return {...result.data,recordedRevision:version.plan.revision,reusedFromPrevious:version.id!==f.id,currentApplicable:staleTasks.length===0,staleTasks};}}return null;
   }
   private stageState(f:ReturnType<CoordinationRecords['fixed']>,taskId:string,stage:CoordinationStage){
     const {task,binding}=this.currentTask(f,taskId);if(!task.stages.includes(stage))throw new Error('coordination_stage_not_planned');const blockers:string[]=[];
@@ -41,9 +42,10 @@ export class CoordinationRecords {
     if(stage==='implement'&&this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='implementation' AND stopped=1").get(binding.context.scope.id))blockers.push('implementation_stopped');
     if(stage!=='investigate'){
       if(this.latest(f.plan.name)?.id!==f.id)blockers.push('new_arrangement_requires_current_stage_binding');
-      for(const part of f.plan.shared.filter(p=>p.tasks.includes(taskId)&&p.blockedStages.includes(stage)))for(const source of part.feedbackFrom){const feedback=this.feedbackFor(f,part.id,source);if(feedback?.position!=='agreed')blockers.push('shared_feedback:'+part.id+':'+source+':'+(feedback?.position??'missing'));}
+      for(const part of f.plan.shared.filter(p=>p.tasks.includes(taskId)&&p.blockedStages.includes(stage))){for(const stale of this.staleSharedTasks(f,part.id))blockers.push('shared_candidate_or_material_changed:'+part.id+':'+stale);for(const source of part.feedbackFrom){const feedback=this.feedbackFor(f,part.id,source);if(feedback?.position!=='agreed')blockers.push('shared_feedback:'+part.id+':'+source+':'+(feedback?.position??'missing'));}}
     }
     for(const dependency of f.plan.dependencies.filter(d=>d.task===taskId&&d.stage===stage)){
+      try{this.currentTask(f,dependency.producer);}catch{blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability);continue;}
       const output=f.events.findLast(e=>e.kind==='coordination_output'&&e.data.task===dependency.producer&&e.data.capability===dependency.capability)?.data;
       if(!output)blockers.push('capability_missing:'+dependency.producer+':'+dependency.capability);
       else if(!f.events.some(e=>e.kind==='coordination_consumed'&&e.data.task===taskId&&e.data.stage===stage&&e.data.outputSha256===output.sha256))blockers.push('capability_not_consumed:'+dependency.producer+':'+dependency.capability);
@@ -105,7 +107,15 @@ export class CoordinationRecords {
   /** Called inside the same queue transaction as message runtime registration
    * or send intent. A different task cannot race an active/unknown actor. */
   messageGate(run:string,messageId?:string,participant?:string){return this.transaction(()=>{
-    const links=this.db.prepare("SELECT object FROM events WHERE kind='coordination_messages_bound' AND json_extract(data,'$.value.run')=?").all(run) as Row[];if(!links.length)return;
+    const links=this.db.prepare("SELECT object FROM events WHERE kind='coordination_messages_bound' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
+    if(!links.length){
+      // A caller can change source text (or role/id) to obtain another hash.
+      // Coordination follows the actual item/assigned actor, not only a known
+      // run hash; the ordinary public message entry must enforce it too.
+      const state=this.message(run).state,names=this.db.prepare("SELECT DISTINCT json_extract(data,'$.value.name') AS name FROM events WHERE kind='coordination_registered'").all() as Row[];
+      for(const {name} of names){const known=this.latest(name)!;for(const p of state.plan.participants){const binding=state.registration.bindings[p.id];if(known.plan.tasks.some(t=>t.item===p.item)||p.role==='issue_owner'&&canonical(binding.context.scope)===canonical(known.registration.scope)&&known.plan.tasks.some(t=>t.actor===p.id))throw new Error('coordinated_item_or_actor_requires_registered_message_binding');}}
+      return;
+    }
     if(links.length!==1)throw new Error('coordination_message_binding_ambiguous');const f=this.fixed(links[0]!.object.slice(13)),bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===run)!.data;
     if(this.latest(f.plan.name)?.id!==f.id)throw new Error('coordination_new_dispatch_requires_current_revision');
     const selected=bound.mapping.filter((m:Row)=>messageId?m.messageId===messageId:participant?f.plan.tasks.find(t=>t.id===m.task)?.actor===participant:true);if(!selected.length)throw new Error('coordination_message_not_planned');
