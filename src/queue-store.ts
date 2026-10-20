@@ -13,7 +13,7 @@ import { AuthorityRecords } from './authority-store.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
 import { MergeRecords } from './merge-store.js';
 import { EventRecords } from './event-store.js';
-import { currentEventSource,storedEventMaterial } from './event-gates.js';
+import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
 import { composeSubject, currentMembers, type Composition } from './composition.js';
 
@@ -776,7 +776,7 @@ PRAGMA user_version=4;`);
     const c = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
     if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
   }
-  private eventSourceStates(item:Row):Row[]{const composition=parse(this.packet(item.current_packet),'summary').composition;return (composition?currentMembers(composition):[parse(item,'candidate')]).map((c:Candidate)=>currentEventSource(this.db,c,item.id,item.current_packet));}
+  private eventSourceStates(item:Row):Row[]{const composition=parse(this.packet(item.current_packet),'summary').composition;return (composition?currentMembers(composition):[parse(item,'candidate')]).map((c:Candidate)=>currentEventSource(this.db,effectiveEventCandidate(c,item.latest_source_observation),item.id,item.current_packet));}
   private eventSourceGaps(item:Row):string[]{return this.eventSourceStates(item).filter(s=>s.registered&&(!s.current||!s.materialBound)).map(s=>s.reason??'current_event_source_and_material_required');}
   private receiverCandidateCurrent(item: Row): boolean {
     if(this.eventSourceGaps(item).length)return false;

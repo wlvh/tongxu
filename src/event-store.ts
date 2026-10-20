@@ -5,8 +5,8 @@ import { now } from './contract.js';
 import { eventKey,parseEventProfile,parseEventHint,parseQueuePreference,type EventProfile } from './event-contract.js';
 import type { OwnerObservation } from './authority-source.js';
 import { requireEventSource,eventMaterialHash,type EventSourceObservation } from './event-source.js';
-import { currentEventSource,eventGuards,eventGuardsPresent,packetSourceMaterial,storedEventMaterial } from './event-gates.js';
-import { currentMembers } from './composition.js';
+import { currentEventSource,effectiveEventCandidate,eventGuards,legacyEventGuards,eventGuardsPresent,packetSourceMaterial,storedEventMaterial } from './event-gates.js';
+import { currentMembers,composeSubject } from './composition.js';
 import { targetKey } from './queue-evidence.js';
 import { dirname,basename } from 'node:path';
 
@@ -27,7 +27,18 @@ export class EventRecords {
   private save(pr:number,s:Row){this.db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify(s),sourceKey(this.profile().repository,pr));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseEventProfile(raw),sha=hash(canonical(p));if(p.repository.toLowerCase()!==(this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value)throw new Error('event_repository_mismatch');
-    const old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;if(old){if(old.value!==sha)throw new Error('event_profile_is_fixed');if(!eventGuardsPresent(this.db))throw new Error('event_storage_guards_missing');return {duplicate:true,profileSha256:sha,modelTasksStarted:0};}
+    const old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;if(old){
+      if(old.value!==sha)throw new Error('event_profile_is_fixed');
+      if(!eventGuardsPresent(this.db)){
+        if(!legacyEventGuards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===g.sql))throw new Error('event_storage_guards_missing_or_unknown');
+        if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('event_guard_upgrade_requires_idle_queue');
+        for(const guard of eventGuards)this.db.exec(`DROP TRIGGER ${guard.name};`+guard.sql);
+        for(const pr of p.prs){const state=this.state(pr);state.bindings={};this.save(pr,state);}
+        this.event('guards_upgraded','event-profile',{profileSha256:sha,from:'629cd5b',materialReconciliationRequired:true});
+        return {duplicate:false,upgraded:true,profileSha256:sha,modelTasksStarted:0};
+      }
+      return {duplicate:true,profileSha256:sha,modelTasksStarted:0};
+    }
     if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
     const owner=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value;
     if(owner&&(JSON.parse(this.bytes(owner).toString()).executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('event_owner_profile_kind_mismatch');
@@ -105,7 +116,7 @@ export class EventRecords {
     for(const item of items){
       const packet=this.db.prepare('SELECT * FROM packets WHERE id=?').get(item.current_packet) as Row,summary=JSON.parse(packet.summary),candidate=JSON.parse(item.candidate);
       const members=summary.composition?currentMembers(summary.composition):[candidate];
-      const sources=members.map(c=>({candidate:c,source:currentEventSource(this.db,c,item.id,packet.id)})).filter(x=>x.source.registered);
+      const sources=members.map(c=>({candidate:c,source:currentEventSource(this.db,effectiveEventCandidate(c,item.latest_source_observation),item.id,packet.id)})).filter(x=>x.source.registered);
       if(!sources.length)continue;
       const reasons=sources.filter(x=>!x.source.current).map(x=>`${x.candidate.pr}:${x.source.reason}`);
       if(item.observation_conflict)reasons.push('observation_order_conflict');
@@ -113,11 +124,19 @@ export class EventRecords {
       if(sources.every(x=>x.source.materialBound)){results.push({item:item.id,packet:packet.id,changed:false});continue;}
       if(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(targetKey(candidate))){results.push({item:item.id,packet:packet.id,waiting:['original_execution_active_or_unknown']});continue;}
       const manifest=JSON.parse(this.bytes(packet.manifest_hash).toString()),report=JSON.parse(this.bytes(packet.report_hash).toString());
+      if(summary.composition&&canonical(composeSubject(report,h=>this.bytes(h)))!==canonical(summary.composition))throw new Error('stored_composition_changed');
       const previous=summary.eventSources??[],references:Row[]=[];let changed=false;
       for(const {candidate:c,source} of sources){
         const materialSha256=eventMaterialHash(source.index.result.semantic),prior=previous.find((r:Row)=>r.pr===c.pr);
         if(prior)storedEventMaterial(this.db,prior);
-        const memberManifest=summary.composition?JSON.parse(this.bytes(report.inputs.find((i:Row)=>i.candidate.pr===c.pr)?.manifest.sha256).toString()):manifest;
+        let memberManifest=manifest;
+        if(summary.composition){
+          // A1 -> B1 -> A2 may contain two versions of the same PR. Only the
+          // exact final member's source is a baseline for its current material.
+          const member=summary.composition.subject.members.findLast((m:Row)=>m.candidate.pr===c.pr),input=member&&report.inputs[member.index];
+          if(!member||!input||canonical(member.candidate)!==canonical(c)||canonical(input.candidate)!==canonical(c)||input.manifestHash!==member.manifestHash||input.manifest.sha256!==member.manifestHash)throw new Error('current_composition_member_source_unverified');
+          memberManifest=JSON.parse(this.bytes(member.manifestHash).toString());
+        }
         const baseline=prior?.materialSha256??packetSourceMaterial(this.db,memberManifest,source.index.knownPublished);
         if(baseline!==materialSha256){changed=true;references.push({pr:c.pr,projectionSha256:source.state.projectionSha256,materialSha256});}
         else if(prior)references.push(prior);
