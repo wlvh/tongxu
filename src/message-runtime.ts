@@ -1,4 +1,4 @@
-import { mkdir,readFile,lstat } from 'node:fs/promises';
+import { mkdir,readFile,lstat,realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -52,7 +52,7 @@ export class ReadonlyDialog {
     // never edits it; the single-link rule for repairable source is unrelated.
     // Keep canonical plan paths, no symlinks, executable mode, size and exact
     // content/version checks. No repair-file guard is relaxed.
-    const file=await lstat(o.participant.executable);if(!file.isFile()||!(file.mode&0o111)||file.size>512*1024*1024)throw new Error('message_executor_file_invalid');
+    const file=await lstat(o.participant.executable);if(!file.isFile()||!(file.mode&0o111)||file.size>512*1024*1024||await realpath(o.participant.executable)!==o.participant.executable)throw new Error('message_executor_file_invalid');
     if(hash(await readFile(o.participant.executable))!==o.participant.executableSha256)throw new Error('message_executor_changed');
     const identity=await executable(o.participant.executable,o.participant.tool==='codex'?'codex-cli 0.163.0-alpha.10.2':messageClaudeExecutables);if(identity.sha256!==o.participant.executableSha256)throw new Error('message_executor_changed');save(join(o.directory,'executable.json'),identity);
     for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_BASE_URL','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'])if(process.env[k])throw new Error('api_billing_override_present');
