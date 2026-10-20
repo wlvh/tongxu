@@ -80,6 +80,13 @@ test('actual target ref, actor and late stop changes prevent the first POST', as
     await assert.rejects(publication(f.pubPath, 'publish'), /remote_candidate_changed|actor_changed|new_investment_stopped/); assert.equal((await f.remote()).posts.length, 0); assert.equal(await f.count(), 1);
   }
 });
+test('publication binds the stable direct target and retains a historical REST base separately', async t => {
+  const f=await fixture(t),original=f.result.candidate.B;
+  await f.change({B:'a'.repeat(40),refB:original});
+  const r=await publication(f.pubPath,'publish');assert.equal(r.status,'published_verified');assert.equal(r.remoteCurrent,true);
+  assert.equal(r.stages.comment.intent.remotePreflight.B,original);assert.equal(r.stages.comment.intent.remotePreflight.prReportedBase,'a'.repeat(40));
+  assert.equal((await f.remote()).posts.length,2);
+});
 test('unknown status response is recovered from its unique remote record; no second POST or model request', async t => {
   const f = await fixture(t, 'lose-status-response'); await assert.rejects(publication(f.pubPath, 'publish'), /response_unknown/); assert.equal((await f.remote()).posts.length, 2);
   const recovered = await publication(f.pubPath, 'reconcile'); assert.equal(recovered.status, 'published_verified'); assert.equal(recovered.stages.status.verified.recovered, true); assert.equal((await f.remote()).posts.length, 2); assert.equal(await f.count(), 1);

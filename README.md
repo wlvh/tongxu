@@ -91,3 +91,5 @@ W6 两个固定接收任务的阶段协作入口：见 [paired_reception.md](doc
 本机真实只读工作台：见 [local_workbench.md](docs/local_workbench.md)。已有队列的任务、完整报告和协作事件可在浏览器查看；刷新不调用模型，页面没有写入或批准入口。
 
 现有工程的受控修复入口：见 [project_repair.md](docs/project_repair.md)。固定已有Git候选、材料/可写路径和现有Docker测试计划，在受管副本内核实、修复、测试和独立再审，原作者现场保持。原clamp示例和历史记录仍可读取。
+
+受管合并的独立入口：见 [managed_merge.md](docs/managed_merge.md)。在原队列后续阶段绑定 Owner 意图、已有资源、独立接收和唯一目标写者；有限发布协议先登记再发送，实际版本回读与失回执恢复分别记录。当前正向执行为明确本地 HTTP 假服务测试；真实发布身份、治理和合并未启用，组合锚点不会被当作完整集成候选。

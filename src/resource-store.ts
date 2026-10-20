@@ -19,16 +19,16 @@ export class ResourceRecords {
   private events(key:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'resource_%' ORDER BY id").all('resource:'+key) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('resource_original_missing_or_changed');return b;}
-  private profile(ledgerId:string){if((this.db.prepare('PRAGMA user_version').get() as Row).user_version!==13)throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
+  private profile(ledgerId:string){if(![13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version))throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseLedgerProfile(raw),h=hash(canonical(p)),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-    if(![12,13].includes(version))throw new Error('enable_owner_authority_before_resources');
+    if(![12,13,14].includes(version))throw new Error('enable_owner_authority_before_resources');
     const ownerRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value;if(!ownerRef)throw new Error('resource_owner_profile_required');const owner=JSON.parse(this.bytes(ownerRef).toString());
     if(owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('resource_authority_profile_mismatch');
     const key='resource-ledger:'+p.ledgerId,old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row;
     if(old){if(old.value!==h)throw new Error('resource_ledger_profile_is_fixed');return {ledgerId:p.ledgerId,profileSha256:h,duplicate:true,credentialState:'not_observed',resourceBalanceStored:false};}
     if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
-    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(key,h);this.db.exec('PRAGMA user_version=13');
+    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(key,h);if(version<13)this.db.exec('PRAGMA user_version=13');
     this.event('resource_profile_configured','resource-profile:'+p.ledgerId,{ledgerId:p.ledgerId,profileSha256:h,originalSha256:hash(raw),executionKind:p.executionKind,capabilityVerified:false});return {ledgerId:p.ledgerId,profileSha256:h,duplicate:false,credentialState:'not_observed',resourceBalanceStored:false};
   });}
   configuration(id:string){return this.transaction(()=>this.profile(id));}
@@ -63,9 +63,16 @@ export class ResourceRecords {
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(request.operation) as Row;
     if(!op||action.requestSha256!==request.actionSha256||action.role!==request.role||!action.request.resourceRefs.includes(request.resourceRef)||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||action.request.item!==op.item||action.binding?.packet!==op.packet)throw new Error('resource_original_action_or_operation_mismatch');
     const result=JSON.parse(op.result??'null'),stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
-    if(op.status!=='complete'||!stage||result?.[stage])throw new Error('resource_claim_requires_unstarted_exact_action');
-    if(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target))throw new Error('resource_target_execution_active_or_unknown');
+    const claim=this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row;
+    const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim.generation===op.generation;
+    if(!ownMerge&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
+    if(claim&&!ownMerge)throw new Error('resource_target_execution_active_or_unknown');
   }
+  requireHeldForExecution(id:string,operation:string,intent:string){return this.transaction(()=>{
+    const f=this.fixed(id),s=this.statusOf(id),last=f.events.findLast(e=>e.kind==='resource_reply_observed');
+    if(f.request.operation!==operation||f.request.authorityIntent!==intent||s.state!=='held'||s.claim?.state!=='held'||last?.data.reply.result.state!=='present'||last.data.reply.result.claim.state!=='held'||!['claim','lookup'].includes(last.data.command)||Date.now()-Date.parse(last.data.capturedAt)>60000)throw new Error('fresh_original_held_resource_claim_required');
+    return s;
+  });}
   command(id:string,kind:LedgerCommand['command']):LedgerCommand{return this.transaction(()=>{
     const f=this.fixed(id),state=this.statusOf(id);
     if(kind==='record_result')this.validateOutcome(state);

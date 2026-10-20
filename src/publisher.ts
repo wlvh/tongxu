@@ -45,13 +45,14 @@ async function lock<T>(directory: string, action: () => Promise<T>): Promise<T> 
 function actorMatches(actor: Row | undefined, p: Plan) { return actor?.id === p.actor.id && typeof actor.login === 'string' && actor.login.toLowerCase() === p.actor.login.toLowerCase(); }
 function repoPath(d: Row) { return `repos/${d.candidate.repository}`; }
 async function current(http: PublicationHttp, p: Plan, d: Row): Promise<Row> {
-  const actor = await http.request('GET', 'user'), repo = await http.request('GET', repoPath(d)), pr = await http.request('GET', `${repoPath(d)}/pulls/${d.candidate.pr}`), ref = await http.request('GET', `${repoPath(d)}/git/ref/heads/${encodeURIComponent(d.candidate.targetRef)}`);
-  if ([actor, repo, pr, ref].some(x => x.status !== 200)) throw new Error('publication_preflight_unavailable');
+  const targetPath = `${repoPath(d)}/git/ref/heads/${encodeURIComponent(d.candidate.targetRef)}`;
+  const before = await http.request('GET', targetPath), actor = await http.request('GET', 'user'), repo = await http.request('GET', repoPath(d)), pr = await http.request('GET', `${repoPath(d)}/pulls/${d.candidate.pr}`), ref = await http.request('GET', targetPath);
+  if ([before, actor, repo, pr, ref].some(x => x.status !== 200)) throw new Error('publication_preflight_unavailable');
   if (!actorMatches(actor.value, p)) throw new Error('publication_actor_changed');
   if (repo.value.id !== p.repositoryId || repo.value.full_name?.toLowerCase() !== d.candidate.repository.toLowerCase() || repo.value.permissions?.push !== true) throw new Error('publication_repository_permission_unverified');
   const v = pr.value, c = d.candidate;
-  if (v.number !== c.pr || v.state !== 'open' || v.head?.repo?.id !== p.repositoryId || v.base?.repo?.id !== p.repositoryId || v.head.sha !== c.H || v.base.sha !== c.B || v.base.ref !== c.targetRef || ref.value.ref !== `refs/heads/${c.targetRef}` || ref.value.object?.type !== 'commit' || ref.value.object.sha !== c.B) throw new Error('publication_remote_candidate_changed');
-  return { actor: { id: actor.value.id, login: actor.value.login }, repositoryId: repo.value.id, H: v.head.sha, B: v.base.sha, target: v.base.ref, observedAt: new Date().toISOString(), nonAtomicRemoteObservation: true };
+  if (v.number !== c.pr || v.state !== 'open' || v.head?.repo?.id !== p.repositoryId || v.base?.repo?.id !== p.repositoryId || v.head.sha !== c.H || v.base.ref !== c.targetRef || [before,ref].some(r=>r.value.ref !== `refs/heads/${c.targetRef}` || r.value.object?.type !== 'commit' || r.value.object.sha !== c.B)) throw new Error('publication_remote_candidate_changed');
+  return { actor: { id: actor.value.id, login: actor.value.login }, repositoryId: repo.value.id, H: v.head.sha, B: ref.value.object.sha, prReportedBase: v.base.sha, target: v.base.ref, observedAt: new Date().toISOString(), nonAtomicRemoteObservation: true };
 }
 function commentMatches(v: Row, p: Plan, d: Row) {
   return Number.isSafeInteger(v.id) && v.id > 0 && actorMatches(v.user, p) && v.body === d.commentBody && v.issue_url === `https://api.github.com/${repoPath(d)}/issues/${d.candidate.pr}` && v.html_url === `https://github.com/${d.candidate.repository}/pull/${d.candidate.pr}#issuecomment-${v.id}`;

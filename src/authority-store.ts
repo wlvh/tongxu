@@ -27,7 +27,7 @@ export class AuthorityRecords {
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row;const b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('authority_original_changed');return b;}
-  private mode(){if(![12,13].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===g.sql))throw new Error('owner_authority_not_enabled');}
+  private mode(){if(![12,13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===g.sql))throw new Error('owner_authority_not_enabled');}
   private profile(){this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!isAuthorityDigest(ref))throw new Error('owner_authority_profile_missing');const p=parseAuthorityProfile(this.bytes(ref));if(hash(canonical(p))!==ref)throw new Error('authority_profile_changed');return {profile:p,profileSha256:ref};}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseAuthorityProfile(raw),encoded=Buffer.from(canonical(p)),profileSha256=hash(encoded),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;

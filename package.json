@@ -25,7 +25,8 @@
     "test:review-records": "npm run build && node --test dist/tests/review-records/*.test.js",
     "test:composition": "npm run build && node --test dist/tests/composition/*.test.js",
     "test:authority": "npm run build && node --test dist/tests/authority/*.test.js",
-    "test:resources": "npm run build && node --test dist/tests/resources/*.test.js"
+    "test:resources": "npm run build && node --test dist/tests/resources/*.test.js",
+    "test:merge": "npm run build && node --test dist/tests/merge/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
