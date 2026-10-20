@@ -7,9 +7,9 @@ import { save } from './live-process.js';
 import { runClaude } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
-import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, type Grant, type Tree } from './repair-workspace.js';
+import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
 import type { Candidate } from './live-codex.js';
-import { validateProjectContract, projectTestPlan, projectMaterial, testProject, reconcileProjectTests, type ProjectContract } from './project-repair.js';
+import { validateProjectContract, projectTestPlan, projectMaterial, projectModelTestResult, testProject, reconcileProjectTests, type ProjectContract } from './project-repair.js';
 
 export type RepairConfig = {
   codexExecutable: string; claudeExecutable: string; nodeExecutable: string;
@@ -86,17 +86,23 @@ async function checkFinished(operation: string, workspace: string, result: any, 
 }
 async function sealResult(operation: string, result: any) {
   const files: Record<string, string> = {};
+  const disposableTestCopies: string[] = [];
   const walk = async (directory: string, relative = '') => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const name = relative + entry.name;
       if (!relative && ['result.json', 'status.json', 'terminal-record.json'].includes(entry.name)) continue;
+      if (result.projectRepair && entry.isDirectory() && (entry.name === 'work' || /^generated-\d+$/.test(entry.name)) && projectTestNamespace(operation, directory)) {
+        const intent = JSON.parse((await regular(join(directory, 'test-intent.json'))).toString());
+        if (intent.directory !== directory || intent.kind !== 'registered-project-tests-v1' || entry.name !== 'work' && Number(entry.name.slice(10)) >= intent.generatedDirectories.length) throw new Error('project_test_intent_unverified');
+        disposableTestCopies.push(name); continue;
+      }
       if (entry.isSymbolicLink()) throw new Error('unsafe_completion_entry');
       if (entry.isDirectory()) await walk(join(directory, entry.name), name + '/');
       else files[name] = hash(await readFile(join(directory, entry.name)));
     }
   };
   await walk(operation);
-  await writeFile(join(operation, 'terminal-record.json'), json({ result, files }), { flag: 'wx', mode: 0o600 });
+  await writeFile(join(operation, 'terminal-record.json'), json({ result, files, ...(result.projectRepair ? { disposableTestCopies, sourceProof: 'initial-tree, committed candidate/diff, test input H/T, generated-state manifests and runtime fingerprints; disposable copies are not immutable evidence' } : {}) }), { flag: 'wx', mode: 0o600 });
   save(join(operation, 'result.json'), result); return result;
 }
 
@@ -105,13 +111,14 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const project = plan.test === 'registered-project-tests-v1';
   const readTree = () => tree(plan.workspace, project);
   const material = (t: Tree) => project ? projectMaterial(t, plan.project!) : t;
+  const modelTests = (t: any) => project ? projectModelTestResult(t) : t;
   const contract = project ? plan.project!.contract : 'Finite numbers, low<=high: clamp returns the value bounded inclusively to [low,high], preserving fractional values.';
   const runTests = (directory: string) => project ? testProject(plan.workspace, directory, plan.project!) : testClamp(plan.workspace, directory, plan.nodeExecutable);
   const checkTests = (result: any) => { if (project && !result.executionHealthy) throw new Error('project_test_environment_or_capture_failed'); };
   const currentCandidate = () => localCandidate(plan.workspace, plan.candidate.B, project);
   const inputs = await fixedInputs(plan), grant = inputs.grant, fixedSha256 = hash(JSON.stringify({ planSha256: hash(planBytes), inputs }));
   const marker = JSON.parse((await regular(join(plan.workspace, '.git', 'tongxu-managed.json'))).toString());
-  if (marker.kind !== (project ? 'owned-project-workspace' : 'owned-test-workspace') || project && !isDeepStrictEqual(marker.sourceCandidate, plan.project!.sourceCandidate) || marker.initialH !== plan.candidate.H || marker.initialTreeSha256 !== grant.treeSha256 || marker.preparerSourceWritesFinished !== true) throw new Error('unmanaged_or_unreleased_workspace');
+  if (marker.kind !== (project ? 'owned-project-workspace' : 'owned-test-workspace') || project && (!isDeepStrictEqual(marker.sourceCandidate, plan.project!.sourceCandidate) || marker.executionRoot !== resolve(plan.workspace, '..') || marker.requestSha256 !== hash(await regular(join(marker.executionRoot, 'request.json')))) || marker.initialH !== plan.candidate.H || marker.initialTreeSha256 !== grant.treeSha256 || marker.preparerSourceWritesFinished !== true) throw new Error('unmanaged_or_unreleased_workspace');
   if (plan.candidate.B !== plan.candidate.H || await git(plan.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== plan.candidate.B || await git(plan.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
   const original = await readTree();
   if (!await exists(operation)) {
@@ -125,7 +132,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     if (await exists(join(operation, 'terminal-record.json'))) {
       const terminal = JSON.parse((await regular(join(operation, 'terminal-record.json'), 4 * 1024 * 1024)).toString());
       for (const [path, digest] of Object.entries(terminal.files)) {
-        if (typeof path !== 'string' || path.startsWith('/') || path.split('/').includes('..') || hash(await regular(join(operation, path), 20 * 1024 * 1024)) !== digest) throw new Error('completion_evidence_changed');
+        if (typeof path !== 'string' || path.startsWith('/') || path.split('/').includes('..') || hash(await regular(join(operation, path), (project ? 32 : 20) * 1024 * 1024)) !== digest) throw new Error('completion_evidence_changed');
       }
       await checkFinished(operation, plan.workspace, terminal.result, project);
       save(join(operation, 'result.json'), terminal.result); return terminal.result;
@@ -138,7 +145,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     let known = false;
     for (const prior of (await readdir(operation)).filter(x => /^attempt-\d+$/.test(x))) for (const name of await readdir(join(operation, prior))) {
       if (/^candidate-\d+\.json$/.test(name)) {
-        const c = JSON.parse((await regular(join(operation, prior, name), 2 * 1024 * 1024)).toString()); if (c.candidate?.H === observedHead) known = true;
+        const c = JSON.parse((await regular(join(operation, prior, name), (project ? 32 : 2) * 1024 * 1024)).toString()); if (c.candidate?.H === observedHead) known = true;
       }
       if (/commit-intent.*\.json$/.test(name)) {
         const intent = JSON.parse((await regular(join(operation, prior, name))).toString());
@@ -158,7 +165,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const attempts = (await readdir(operation)).filter(x => /^attempt-\d+$/.test(x));
   if (attempts.length >= 3) throw new Error('recovery_attempt_budget_reached');
   const attempt = 'attempt-' + (attempts.length + 1); await mkdir(join(operation, attempt), { mode: 0o700 });
-  const gate = new RepairTools(plan.workspace, operation, grant, lease, plan.nodeExecutable, original, await git(plan.workspace, ['rev-parse', 'HEAD']), project ? async directory => { const result = await runTests(directory); checkTests(result); return result; } : undefined);
+  const gate = new RepairTools(plan.workspace, operation, grant, lease, plan.nodeExecutable, original, await git(plan.workspace, ['rev-parse', 'HEAD']), project ? async directory => { const result = await runTests(directory); checkTests(result); return modelTests(result); } : undefined);
   const progress = (stage: string, data: unknown = {}) => save(join(operation, 'status.json'), { stage, attempt, at: new Date().toISOString(), data });
   const start = async (stage: string, role: 'reviewer' | 'verifier_fact', system: string, candidate: Candidate, tools = false) => {
     beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
@@ -242,7 +249,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       }
       if (!review || review.verdict === 'REWORK_REQUIRED' && !review.findings?.some((x: any) => x.priority < 2)) {
         reviewer = await start('review-recovered', 'reviewer', inputs.prompts.reviewer, candidate);
-        review = await askReview(reviewer, evidence('Independently review this exact candidate recovered after an ended operation. An old partial model answer is NOT a final result. Review actual preserved code/diff and current tests. No tools, no old PASS reuse. Return the full report and exact candidateH.', { candidate, before: material(initial), source: material(original), diff, tests: baseline, contract, writerTerminal, demonstrationFixture: plan.demonstrationFixture }), candidate);
+        review = await askReview(reviewer, evidence('Independently review this exact candidate recovered after an ended operation. An old partial model answer is NOT a final result. Review actual preserved code/diff and current tests. No tools, no old PASS reuse. Return the full report and exact candidateH.', { candidate, before: material(initial), source: material(original), diff, tests: modelTests(baseline), contract, writerTerminal, demonstrationFixture: plan.demonstrationFixture }), candidate);
         await reviewer.close(); reviewer = undefined;
       }
       if (review.verdict === 'PASS' && !review.findings.some((x: any) => x.priority < 2)) return await finish('completed_recovered_candidate', candidate, { review, tests: baseline, writerTerminal, originalRepairTaskResent: false, sourceContext: context });
@@ -258,7 +265,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     for (const prior of attempts) usedRepairRounds += (await readdir(join(operation, prior))).filter(name => /^repair-context-\d+\.json$/.test(name)).length;
     if (usedRepairRounds >= grant.maxRepairRounds) return await finish('repair_round_budget_reached', candidate, { usedRepairRounds, pendingFindings: findingsForVerification, next: 'retain evidence and use the adopted simplification/reflection boundary; no automatic further retry' });
     fact = await start('fact-and-repair', 'verifier_fact', inputs.prompts.fact, candidate, true);
-    let factReport = await fact.turn(evidence('Verify the finding against the fixed contract, supplied source and actual baseline results. First actually call tongxu_read_file on an allowed material path and tongxu_run_tests to verify the registered tools. Passing existing tests alone does not refute a finding outside their coverage. Do not edit. Output confirmed, refuted or needs_owner and a full report with exact candidateH.', { candidate, findings: findingsForVerification, source: material(await readTree()), baseline, contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, recovery: attempts.length > 0 }), candidate, findingSchema);
+    let factReport = await fact.turn(evidence('Verify the finding against the fixed contract, supplied source and actual baseline results. First actually call tongxu_read_file on an allowed material path and tongxu_run_tests to verify the registered tools. Passing existing tests alone does not refute a finding outside their coverage. Do not edit. Output confirmed, refuted or needs_owner and a full report with exact candidateH.', { candidate, findings: findingsForVerification, source: material(await readTree()), baseline: modelTests(baseline), contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, recovery: attempts.length > 0 }), candidate, findingSchema);
     if (!['tongxu_read_file', 'tongxu_run_tests'].every(name => fact!.exercisedTools.includes(name))) throw new Error('native_tools_not_exercised');
     if (!['confirmed', 'refuted', 'needs_owner'].includes(factReport.decision)) throw new Error('unexpected_fact_decision');
     if (factReport.decision !== 'confirmed') return await finish(factReport.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { baseline, factReport });
@@ -267,7 +274,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
       const impactDir = attempt + '/impact-' + round; claudeStages.push(impactDir);
       const impact = await runClaude({ executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs,
-        input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. The demonstrationFixture field distinguishes an explicit fixture from a fixed project source; preserve that provenance. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: material(await readTree()), factReport, fixedContract: contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, baseline }) });
+        input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. The demonstrationFixture field distinguishes an explicit fixture from a fixed project source; preserve that provenance. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: material(await readTree()), factReport, fixedContract: contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, baseline: modelTests(baseline) }) });
       const decision = await fact.turn(evidence('Synthesize your factual findings with the independent Claude impact report. Do not write yet. Return confirmed/refuted/needs_owner plus the full analysis and exact candidateH. No finding means no repair.', { candidate, originalFindingsOrReview: factReport, impactSession: impact.sessionId, impactReport: impact.finalText, source: material(await readTree()) }), candidate, findingSchema);
       if (!['confirmed', 'refuted', 'needs_owner'].includes(decision.decision)) throw new Error('unexpected_fact_decision');
       if (decision.decision !== 'confirmed') return await finish(decision.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { factReport, impact, decision });
@@ -282,7 +289,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       const current = await gate.check(), changed = scopeChanges(initial, current, grant.allowedPaths);
       const tests = await runTests(join(operation, attempt, 'post-repair-' + round)); checkTests(tests);
       await gate.check();
-      if (!tests.passed || !changed.length) { factReport = { confirmedFinding: decision, actualTestFailure: tests, unchanged: !changed.length }; progress('test_rework_required', { round, tests }); continue; }
+      if (!tests.passed || !changed.length) { factReport = { confirmedFinding: decision, actualTestFailure: modelTests(tests), unchanged: !changed.length }; progress('test_rework_required', { round, tests }); continue; }
       const callRecords = await Promise.all((await readdir(join(operation, 'calls'))).filter(x => x.endsWith('.json')).map(async x => JSON.parse((await regular(join(operation, 'calls', x))).toString())));
       if (!callRecords.some(x => x.request?.tool === 'tongxu_run_tests' && x.response && JSON.parse(x.response.contentItems[0].text).passed === true && JSON.parse(x.response.contentItems[0].text).candidateTreeSha256 === treeHash(current))) throw new Error('agent_did_not_run_current_tests');
       if (await git(plan.workspace, ['rev-parse', 'HEAD']) !== candidate.H) throw new Error('candidate_changed_before_commit');
@@ -299,7 +306,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       save(join(operation, attempt, 'candidate-' + round + '.json'), { candidate, tree: current, diff, tests, repairReport });
       progress('independent_review', { round, candidate });
       reviewer = await start('review-' + round, 'reviewer', inputs.prompts.reviewer, candidate);
-      const review = await askReview(reviewer, evidence('Independently review this NEW fixed local Git candidate against the stated contract and supplied material scope, complete current authorized source, actual diff and trusted test result. You have no runtime tools or writer context. This is a fresh reviewer role. Do not reuse an old PASS. A PASS must have no P0/P1 findings; if something is wrong, provide concrete findings, not manufactured work. Return the complete report inside the schema with exact current candidateH.', { candidate, source: material(current), before: material(initial), diff, tests, contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate }), candidate);
+      const review = await askReview(reviewer, evidence('Independently review this NEW fixed local Git candidate against the stated contract and supplied material scope, complete current authorized source, actual diff and trusted test result. You have no runtime tools or writer context. This is a fresh reviewer role. Do not reuse an old PASS. A PASS must have no P0/P1 findings; if something is wrong, provide concrete findings, not manufactured work. Return the complete report inside the schema with exact current candidateH.', { candidate, source: material(current), before: material(initial), diff, tests: modelTests(tests), contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate }), candidate);
       await reviewer.close(); reviewer = undefined;
       save(join(operation, attempt, 'review-result-' + round + '.json'), review);
       if (review.verdict === 'PASS' && !review.findings.some((x: any) => x.priority === 0 || x.priority === 1)) return await finish('completed', candidate, { round, changed, tests, review, factSessionId: fact.sessionId, impactSessionId: impact.sessionId });

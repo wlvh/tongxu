@@ -37,7 +37,7 @@ export async function regular(path: string, limit = 1024 * 1024) {
 export type Tree = Record<string, { sha256: string; bytes: number; text: string; executable?: number }>;
 export async function tree(workspace: string, project = false): Promise<Tree> {
   if (await realpath(workspace) !== workspace) throw new Error('noncanonical_workspace');
-  const result: Tree = {};
+  const result: Tree = Object.create(null);
   const walk = async (sub: string) => {
     for (const name of (await readdir(join(workspace, sub))).sort()) {
       if (!sub && name === '.git') continue;
@@ -62,6 +62,9 @@ export function processState(pid: unknown): 'alive' | 'ended' | 'unknown' {
 }
 export type Grant = { id: string; source: string; workspace: string; H: string; treeSha256: string; allowedPaths: string[]; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number; profile?: 'project-v1'; materialPaths?: string[] };
 export type Lease = { operation: string; controllerPid: number; generation: string; status: 'held' };
+export function projectTestNamespace(operation: string, directory: string) {
+  return directory.startsWith(operation + '/') && /^(?:attempt-[1-3]\/(?:baseline|post-repair-[1-3])|tests\/tool-[A-Za-z0-9_-]{1,128})$/.test(directory.slice(operation.length + 1));
+}
 
 export async function acquireWorkspace(workspace: string, operation: string, reconcileEnded: boolean, grant: Grant, beforeReconcile?: () => Promise<void>) {
   if (await realpath(join(workspace, '.git')) !== join(workspace, '.git') || !(await lstat(join(workspace, '.git'))).isDirectory()) throw new Error('unsafe_managed_git_directory');
@@ -73,9 +76,17 @@ export async function acquireWorkspace(workspace: string, operation: string, rec
     // Every registered process must be known ended; absence of a PID after a
     // launch intent is unknown, not permission to create a replacement.
     const walk = async (dir: string) => {
+      const projectTest = grant.profile === 'project-v1' && projectTestNamespace(operation, dir);
+      const testDataDirectories = new Set<string>();
+      if (projectTest) {
+        const intent = JSON.parse((await regular(join(dir, 'test-intent.json'))).toString());
+        if (intent.directory !== dir || intent.workspace !== workspace || intent.kind !== 'registered-project-tests-v1' || !Array.isArray(intent.generatedDirectories) || intent.generatedDirectories.length > 16) throw new Error('project_test_intent_unverified');
+        testDataDirectories.add('work'); testDataDirectories.add('output');
+        intent.generatedDirectories.forEach((_: unknown, i: number) => testDataDirectories.add('generated-' + i));
+      }
       for (const e of await readdir(dir, { withFileTypes: true })) {
         if (e.isSymbolicLink()) throw new Error('unsafe_operation_entry');
-        if (e.isDirectory() && e.name !== 'workspace') await walk(join(dir, e.name));
+        if (e.isDirectory() && e.name !== 'workspace' && !testDataDirectories.has(e.name)) await walk(join(dir, e.name));
         else if (e.isFile() && e.name === 'launch.json') {
           const p = join(dir, 'process.json');
           if (!await exists(p) || processState(JSON.parse((await regular(p)).toString()).pid) !== 'ended') throw new Error('child_active_or_unknown');

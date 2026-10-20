@@ -18,12 +18,13 @@ export function parseDockerConfig(value: unknown): DockerConfig {
   return { kind: 'docker', client: c.client, endpoint: c.endpoint, image: c.image, node: c.node, ...(c.init === true ? { init: true } : {}) };
 }
 type Binding = { run: string; stage: number; tool: string; head: string; tree: string; planHash: string };
-type Options = { directory: string; work?: string; resultDirectory?: string; dependencies?: string; argv: string[]; timeoutMs: number; maxBytes: number; binding?: Binding; onSpawn?: (pid: number) => Promise<void> };
+type OutputMount = { source: string; path: string; writable: boolean };
+type Options = { directory: string; work?: string; resultDirectory?: string; dependencies?: string; readOnlyWork?: true; outputMounts?: OutputMount[]; argv: string[]; timeoutMs: number; maxBytes: number; binding?: Binding; onSpawn?: (pid: number) => Promise<void> };
 type Connection = { config: DockerConfig; clientSha256: string; engineId: string; serverVersion: string; imageEnv: string[]; uid: number; gid: number };
 type RecordData = {
   schemaVersion: 1; kind: 'tongxu-docker-execution'; id: string; name: string; directory: string;
   controllerPid: number; startedAt: string; connection: Connection; binding?: Binding;
-  argv: string[]; timeoutMs: number; maxBytes: number; paths: { work?: string; resultDirectory?: string; dependencies?: string };
+  argv: string[]; timeoutMs: number; maxBytes: number; paths: { work?: string; resultDirectory?: string; dependencies?: string; readOnlyWork?: true; outputMounts?: OutputMount[] };
   createArgs: string[]; phase: string; containerId?: string; clientPid?: number; clientExit?: number | null;
   before?: any; after?: any; status?: Execution['status']; exitCode?: number | null; reason?: string;
   capture?: { complete: boolean; stdoutSha256: string; stderrSha256: string; stdoutBytes: number; stderrBytes: number };
@@ -55,15 +56,23 @@ async function inspect(c: Connection, settings: string, audit: string, id: strin
 function envArgs(c: Connection): string[] {
   return ['-i', 'HOME=/home/tongxu', 'TMPDIR=/tmp', `PATH=${dirname(c.config.node)}:/usr/bin:/bin`, 'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_TERMINAL_PROMPT=0', 'GIT_NO_REPLACE_OBJECTS=1', 'NPM_CONFIG_USERCONFIG=/dev/null', 'TONGXU_RESULT_FILE=/result/result.json'];
 }
+function outputMountShape(paths: RecordData['paths']) {
+  if (paths.readOnlyWork !== undefined && paths.readOnlyWork !== true || paths.readOnlyWork && !paths.work || paths.outputMounts && (!paths.readOnlyWork || !Array.isArray(paths.outputMounts) || paths.outputMounts.length > 16)) throw new Error('invalid_docker_output_mounts');
+  const mounts = paths.outputMounts ?? [];
+  for (const m of mounts) if (!cleanPath(m.source) || typeof m.writable !== 'boolean' || typeof m.path !== 'string' || !/^[A-Za-z0-9_./-]{1,512}$/.test(m.path) || m.path.split('/').some(p => !p || ['.', '..', '.git', 'node_modules'].includes(p)) || mounts.some(other => other !== m && (other.path === m.path || other.path.startsWith(m.path + '/') || m.path.startsWith(other.path + '/')))) throw new Error('invalid_docker_output_mounts');
+  for (const m of mounts) if ([paths.work, paths.resultDirectory, paths.dependencies].some(p => p && (m.source === p || m.source.startsWith(p + '/') || p.startsWith(m.source + '/')))) throw new Error('overlapping_docker_output_mounts');
+}
 function createArgs(c: Connection, r: RecordData): string[] {
   const args = ['create', '--pull=never', '--name', r.name, '--label', `io.tongxu.execution=${r.id}`, '--label', 'io.tongxu.executor=docker-v1', '--network=none', '--read-only', '--user', `${c.uid}:${c.gid}`, '--cap-drop=ALL', '--security-opt=no-new-privileges', '--security-opt=seccomp=builtin', '--ipc=private', '--cgroupns=private', '--pids-limit=128', '--memory=1g', '--memory-swap=1g', '--cpus=2', '--shm-size=16m', '--restart=no', '--no-healthcheck', '--log-driver=local', '--log-opt=max-size=4m', '--log-opt=max-file=1', '--log-opt=compress=false', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=268435456,mode=1777', '--tmpfs', `/home/tongxu:rw,size=16777216,mode=700,uid=${c.uid},gid=${c.gid}`, '--entrypoint=/usr/bin/env', '--workdir', r.paths.work ? '/work' : '/tmp'];
   if (c.config.init === true) args.push('--init');
-  for (const [source, target, readonly] of [[r.paths.work, '/work', false], [r.paths.resultDirectory, '/result', false], [r.paths.dependencies, '/work/node_modules', true]] as const) if (source) args.push('--mount', `type=bind,source=${source},target=${target}${readonly ? ',readonly' : ''}`);
+  for (const [source, target, readonly] of [[r.paths.work, '/work', r.paths.readOnlyWork === true], [r.paths.resultDirectory, '/result', false], [r.paths.dependencies, '/work/node_modules', true]] as const) if (source) args.push('--mount', `type=bind,source=${source},target=${target}${readonly ? ',readonly' : ''}`);
+  for (const m of r.paths.outputMounts ?? []) args.push('--mount', `type=bind,source=${m.source},target=/work/${m.path}${m.writable ? '' : ',readonly'}`);
   return [...args, c.config.image, ...envArgs(c), '/usr/bin/timeout', '--signal=TERM', '--kill-after=1s', `${r.timeoutMs / 1000}s`, ...r.argv];
 }
 function assertRecord(r: RecordData) {
   const c = r.connection;
   parseDockerConfig(c.config);
+  outputMountShape(r.paths);
   // These constraints come from the executor contract, not from the record's
   // self-reported expectation. A root record cannot validate a root container.
   if (r.schemaVersion !== 1 || r.kind !== 'tongxu-docker-execution' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(r.id) || r.name !== `tongxu-${r.id}` || !cleanPath(r.directory) || !Number.isSafeInteger(r.controllerPid) || r.controllerPid < 1 || !Number.isSafeInteger(c.uid) || c.uid <= 0 || !Number.isSafeInteger(c.gid) || c.gid < 0 || !/^[0-9a-f]{64}$/.test(c.clientSha256) || !Number.isInteger(r.timeoutMs) || r.timeoutMs < 100 || r.timeoutMs > 300000 || !Number.isInteger(r.maxBytes) || r.maxBytes < 1 || r.maxBytes > 4 * 1024 * 1024 || !Array.isArray(r.argv) || !r.argv.length || r.argv.length > 100 || !cleanPath(r.argv[0]) || r.argv.some(a => typeof a !== 'string' || a.includes('\0')) || r.containerId !== undefined && !idPattern.test(r.containerId) || canonical(r.createArgs) !== canonical(createArgs(c, r))) throw new Error('invalid_docker_execution_record');
@@ -71,7 +80,8 @@ function assertRecord(r: RecordData) {
 function assertContainer(r: RecordData, v: any) {
   assertRecord(r);
   const c = r.connection, h = v?.HostConfig, config = v?.Config;
-  const expectedMounts = [[r.paths.work, '/work', true], [r.paths.resultDirectory, '/result', true], [r.paths.dependencies, '/work/node_modules', false]].filter(row => row[0]).map(([source, destination, rw]) => ({ source, destination, rw }));
+  const expectedMounts = [[r.paths.work, '/work', r.paths.readOnlyWork !== true], [r.paths.resultDirectory, '/result', true], [r.paths.dependencies, '/work/node_modules', false]].filter(row => row[0]).map(([source, destination, rw]) => ({ source, destination, rw }));
+  for (const m of r.paths.outputMounts ?? []) expectedMounts.push({ source: m.source, destination: '/work/' + m.path, rw: m.writable });
   const mounts = (v?.Mounts ?? []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: m.Source, destination: m.Destination, rw: m.RW }));
   const security = [...(h?.SecurityOpt ?? [])].sort();
   const expectedCommand = [...envArgs(c), '/usr/bin/timeout', '--signal=TERM', '--kill-after=1s', `${r.timeoutMs / 1000}s`, ...r.argv];
@@ -80,6 +90,7 @@ function assertContainer(r: RecordData, v: any) {
   if (canonical(h.Tmpfs) !== canonical(expectedTmpfs) || canonical(config.Env) !== canonical(c.imageEnv)) throw new Error('docker_container_environment_mismatch');
 }
 async function validateMounts(o: Options) {
+  outputMountShape(o);
   if (Boolean(o.work) !== Boolean(o.resultDirectory)) throw new Error('invalid_docker_mounts');
   for (const p of [o.work, o.resultDirectory, o.dependencies].filter((p): p is string => Boolean(p))) if (!cleanPath(p) || await realpath(p) !== p || !(await lstat(p)).isDirectory()) throw new Error('invalid_docker_mount_path');
   for (const p of [o.work, o.resultDirectory].filter((p): p is string => Boolean(p))) if (o.directory === p || o.directory.startsWith(p + '/')) throw new Error('docker_evidence_inside_candidate');
@@ -87,6 +98,11 @@ async function validateMounts(o: Options) {
   if (o.dependencies) {
     if (!o.work || !o.dependencies.endsWith('/node_modules')) throw new Error('invalid_dependency_directory');
     try { const s = await lstat(join(o.work, 'node_modules')); if (!s.isDirectory() || s.isSymbolicLink()) throw new Error('invalid_dependency_mount_target'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+  }
+  const roots = [o.work, o.resultDirectory, o.dependencies, ...(o.outputMounts ?? []).map(m => m.source)].filter((x): x is string => Boolean(x));
+  for (const m of o.outputMounts ?? []) {
+    if (await realpath(m.source) !== m.source || !(await lstat(m.source)).isDirectory() || await realpath(join(o.work!, m.path)) !== join(o.work!, m.path) || !(await lstat(join(o.work!, m.path))).isDirectory() || o.directory === m.source || o.directory.startsWith(m.source + '/') || m.source.startsWith(o.directory + '/') || roots.some(p => p !== m.source && (m.source.startsWith(p + '/') || p.startsWith(m.source + '/')))) throw new Error('invalid_docker_output_mount_path');
+    if ((o.outputMounts ?? []).filter(other => other.source === m.source).length !== 1) throw new Error('duplicate_docker_output_source');
   }
 }
 
@@ -113,7 +129,7 @@ export class DockerRuntime {
   }
   async run(o: Options): Promise<Execution & { record: Buffer }> {
     await validateMounts(o); await privateDirectory(o.directory, true);
-    const id = randomUUID(), r: RecordData = { schemaVersion: 1, kind: 'tongxu-docker-execution', id, name: `tongxu-${id}`, directory: o.directory, controllerPid: process.pid, startedAt: now(), connection: this.connection, binding: o.binding, argv: o.argv, timeoutMs: o.timeoutMs, maxBytes: o.maxBytes, paths: { work: o.work, resultDirectory: o.resultDirectory, dependencies: o.dependencies }, createArgs: [], phase: 'create_intent' };
+    const id = randomUUID(), r: RecordData = { schemaVersion: 1, kind: 'tongxu-docker-execution', id, name: `tongxu-${id}`, directory: o.directory, controllerPid: process.pid, startedAt: now(), connection: this.connection, binding: o.binding, argv: o.argv, timeoutMs: o.timeoutMs, maxBytes: o.maxBytes, paths: { work: o.work, resultDirectory: o.resultDirectory, dependencies: o.dependencies, ...(o.readOnlyWork ? { readOnlyWork: true } : {}), ...(o.outputMounts?.length ? { outputMounts: o.outputMounts } : {}) }, createArgs: [], phase: 'create_intent' };
     r.createArgs = createArgs(this.connection, r); assertRecord(r); const save = () => atomic(o.directory, 'execution.json', r); await save();
     const stdoutFile = join(o.directory, 'stdout'), stderrFile = join(o.directory, 'stderr'); for (const p of [stdoutFile, stderrFile]) await writeFile(p, '', { flag: 'wx', mode: 0o600 });
     let status: Execution['status'] = 'completed', total = 0, captureError = false, writes = Promise.resolve(), stopPromise: Promise<void> | undefined;

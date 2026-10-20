@@ -105,7 +105,7 @@ async function safeFile(root: string, path: string): Promise<string> {
   }
   throw new Error('unsafe_tracked_path');
 }
-export async function fingerprint(directory: string, paths: string[]): Promise<string> {
+export async function fingerprint(directory: string, paths: string[], observe?: (entries: unknown[]) => void): Promise<string> {
   const items = [];
   for (const p of paths) items.push([p, await safeFile(directory, p)]);
   // HEAD/index/config alone miss replace refs, grafts, alternates and changed objects.
@@ -125,6 +125,7 @@ export async function fingerprint(directory: string, paths: string[]): Promise<s
   const gitDirectory = await lstat(join(directory, '.git'));
   if (!gitDirectory.isDirectory() || gitDirectory.isSymbolicLink()) throw new Error('input_git_directory_replaced');
   await walk('.git');
+  observe?.(items);
   return hash(canonical(items));
 }
 async function checkout(cache: string, destination: string, head: string): Promise<string[]> {

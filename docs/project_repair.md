@@ -18,16 +18,20 @@ EP07 所有修复留在独立受管候选，产物包含实际diff、新commit/�
 
 ## 已实现入口与明确限制
 
-沿用原`RepairConfig`中的官方程序、完整角色提示、既有订阅证据及停止条件。工程请求是独立可信JSON，类型见`ProjectRequest`，包含本地`objects`、原`candidate`、`allowedPaths`、`materialPaths`、`protectedPaths`、问题和契约、W2 v2 Docker测试计划路径/hash及授权来源。源PR身份保存在`sourceCandidate`；受管副本的候选类型为`local-git`，目标为该副本的`project-base`，不伪造新远端PR或改变原target。
+沿用原`RepairConfig`中的官方程序、完整角色提示、既有订阅证据及停止条件。工程请求是独立可信JSON，类型见`ProjectRequest`，包含固定的`executionRoot`、本地`objects`、原`candidate`、`allowedPaths`、`materialPaths`、`protectedPaths`、问题和契约、W2 v2 Docker测试计划路径/hash、`generatedDirectories`及授权来源。源PR身份保存在`sourceCandidate`；受管副本的候选类型为`local-git`，目标为该副本的`project-base`，不伪造新远端PR或改变原target。
 
 ```sh
 node dist/src/repair-cli.js project --config /private/existing-config.json --request /private/project-request.json --root /private/new-managed-project
 node dist/src/repair-cli.js run --plan /private/new-managed-project/plan.json --output /private/new-managed-project/operation --reconcile-ended
 ```
 
-首命令完成准备和执行；相同请求再次进入同一root复用原plan/operation。变更固定请求会拒绝，原执行未知时保留原件；不能换root重发来绕过。恢复须先确认原执行者、所有登记子进程以及测试容器已结束，原Docker记录缺失时继续未知。新原生模型仍要求未过期的现有用量证据，不更换计费方式。
+首命令完成准备和执行；相同请求再次进入同一root复用原plan/operation。请求中的规范绝对`executionRoot`在准备前校验，并绑定到固定请求和受管标记；换root的调用在启动模型前拒绝。变更固定请求会拒绝，原执行未知时保留原件。不同可信请求是否属于同一个队列任务，仍需后续队列责任集成判定，本入口不宣称全局去重。恢复须先确认原执行者、所有登记子进程以及测试容器已结束，原Docker记录缺失时继续未知。新原生模型仍要求未过期的现有用量证据，不更换计费方式。
 
 本版允许明确列出的现有文本文件替换，最多32个可写、64个模型可读材料；工作区最多2048个普通UTF-8文件、每文件256KiB、完整快照16MiB，送模型的材料768KiB。拒绝symlink、submodule、路径跳转、改文件集合以及未列出的读取/写入；不会静默截掉这些材料。新文件/删除和二进制修改尚未开放。测试代码只能在隔离副本执行，依赖只读挂载且前后hash一致；已登记结构化覆盖缺失不能因退出0通过。
+
+测试中的源代码、测试文件、Git管理文件始终以只读挂载保护。需要构建时，可信请求先登记不与源文件重叠的输出目录，各工具再用`writableOutputs`明确登记自己可以写的目录；最后一个核验工具不得取得可写构建目录。产物在后续核验中只读；不允许在产物里放置`node_modules`、`.git`或符号链接来替换依赖与输入。工具的原始stdout/stderr和样例原文只留在私人测试证据中；跨角色只传控制器计算的状态、hash及登记样例ID/结果，避免测试输出带出未登记的工程材料。
+
+恢复检查只在控制器登记的测试目录内，将`work`和构建输出识别为候选数据；项目普通的`.vscode/launch.json`不会被当成进程记录，真实Git准备命令和模型/容器进程仍逐个检查。项目初始树与新候选使用匹配16MiB快照的读取上限。终态清单保留源快照、候选diff、真实Git身份、输入指纹、产物摘要与原始执行记录，不重复收录可重建的测试副本和构建产物；原目录仍保留，不删除未知现场。
 
 现有测试全绿时仍核实finding；按测试覆盖之外的事实形成修复或反证。测试结果保留`businessCorrectness=requires_independent_review`，新候选还须新鲜独立审核。模型报告、测试输出及当前页面不赋予权限。判断反馈、已发布返工批次的独立计数和按需整体复盘继续按原#7另行补齐，不因本子范围交付消失。
 
