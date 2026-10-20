@@ -27,6 +27,12 @@ export function messageClaudeFinal(events:Row[],session:string,version:MessageCl
   const results=events.filter(e=>e.type==='result'),r=results[0];
   if(!r||results.length!==1||r.session_id!==session||r.subtype!=='success'||r.is_error!==false||r.terminal_reason!=='completed'||r.stop_reason!=='end_turn'||r.api_error_status!=null||typeof r.result!=='string'||!r.result.trim()||events.some(e=>e.parent_tool_use_id!=null||e.aborted===true||e.type==='assistant'&&e.session_id!==session||Array.isArray(e.message?.content)&&e.message.content.some((x:Row)=>x.type==='tool_use')))throw new Error('message_claude_final_not_complete');
   if(version==='2.1.304'){
+    // 304 emits a new init for each composed input in the SAME session.
+    // Check each command's boundary; neither a global one-init assumption nor
+    // accepting arbitrary repeated init messages matches that protocol.
+    const inits=events.filter(e=>e.type==='system'&&e.subtype==='init');
+    if(inits.length!==1)throw new Error('message_claude_initialization_ambiguous');
+    checkMessageClaudeInit(inits[0]!,session,version);
     const lifecycle=events.filter(e=>e.type==='command_lifecycle'),stats=r.subagent_stats;
     if(events.some(e=>!['system','user','assistant','result','command_lifecycle','rate_limit_event'].includes(e.type)||e.session_id!==session)||canonical(lifecycle.map(e=>e.state))!==canonical(['queued','started','completed'])||lifecycle.some(e=>e.command_uuid!==uuid)||events.indexOf(lifecycle[1]!)>events.indexOf(r)||events.indexOf(lifecycle[2]!)<events.indexOf(r)||events.at(-1)!==lifecycle[2]||r.user_message_uuid!==uuid||canonical(r.user_message_uuids)!==canonical([uuid])||r.queued_turn_count!==0||!Number.isSafeInteger(r.result_index)||r.result_index<0||!Array.isArray(r.permission_denials)||r.permission_denials.length||r.safety_stops!==0||!stats||[stats.spawned,stats.spawned_by_subagents,stats.started_in_background,stats.completed,stats.failed,stats.max_depth,stats.requested?.background,stats.requested?.foreground,stats.requested?.unset,stats.killed?.parent,stats.killed?.user,stats.killed?.system,stats.refused?.depth_limit,stats.refused?.concurrency_limit,stats.refused?.budget].some(x=>x!==0)||!stats.by_type||typeof stats.by_type!=='object'||Array.isArray(stats.by_type)||Object.keys(stats.by_type).length)throw new Error('message_claude_304_command_not_complete');
   }
