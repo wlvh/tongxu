@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
-import { emptyCoverage, now, shaPattern } from './contract.js';
+import { emptyCoverage, now, shaPattern, validBranchRef } from './contract.js';
 import type { Candidate, Coverage, GitReader, Response, Round, Source, Transport } from './contract.js';
 import { Snapshot, hash } from './snapshot.js';
 import { readGit } from './git.js';
@@ -15,7 +15,7 @@ function object(value: unknown): RecordValue {
   return value;
 }
 function candidate(value: RecordValue, repository: string, pr: number): Candidate {
-  if (value.number !== pr || value.base?.repo?.full_name?.toLowerCase() !== repository.toLowerCase() || !shaPattern.test(value.head?.sha) || !shaPattern.test(value.base?.sha) || typeof value.base?.ref !== 'string' || !value.base.ref || /[\x00-\x20\x7f]/.test(value.base.ref)) throw new Gap('invalid_candidate_metadata');
+  if (value.number !== pr || value.base?.repo?.full_name?.toLowerCase() !== repository.toLowerCase() || !shaPattern.test(value.head?.sha) || !shaPattern.test(value.base?.sha) || !validBranchRef(value.base?.ref)) throw new Gap('invalid_candidate_metadata');
   return { repository, pr, H: value.head.sha, B: value.base.sha, targetRef: value.base.ref, mergeBase: null, observedAt: now() };
 }
 function same(a: Candidate, b: Candidate): boolean { return a.H === b.H && a.B === b.B && a.targetRef === b.targetRef; }
@@ -120,12 +120,29 @@ export async function collect(snapshot: Snapshot, transport: Transport, gitReade
     return [...items.values()].map(v => v.item);
   };
 
+  const target = async (ref: string, key: string) => {
+    const c = coverage(key);
+    try {
+      const result = await request(`${prefix}/git/ref/heads/${encodeURIComponent(ref)}`, key), data = object(result.data);
+      if (data.ref !== `refs/heads/${ref}` || data.object?.type !== 'commit' || !shaPattern.test(data.object?.sha)) throw new Gap('invalid_target_ref_object');
+      Object.assign(c, { state: 'complete', pages: 1, records: 1, ids: [data.ref], nextPage: null, termination: 'exact_target_ref' });
+      return { sha: data.object.sha as string, artifact: result.path, observedAt: now() };
+    } catch (e) { c.errors.push(errorCode(e)); c.termination = 'failed'; gap(`${key}_incomplete`); return null; }
+    finally { await snapshot.save(); }
+  };
+
   await snapshot.save();
   const pr = await single(`${prefix}/pulls/${m.pr}`, 'pr', `pr:${m.pr}`);
   if (!pr) return finish();
   let observed: Candidate;
   try { observed = candidate(pr, m.repository, m.pr); }
   catch (e) { gap(errorCode(e)); return finish(); }
+  round.targetObservation = { ref: observed.targetRef, reportedBase: observed.B };
+  const initialTarget = await target(observed.targetRef, 'target_ref');
+  if (!initialTarget) return finish();
+  round.targetObservation.initial = initialTarget;
+  observed = { ...observed, B: initialTarget.sha, observedAt: initialTarget.observedAt };
+  if (pr.base.sha !== observed.B) round.limitations.push('pr_reported_base_differs_from_observed_target_ref');
   if (m.candidate && !same(m.candidate, observed)) { gap('candidate_changed_create_new_output'); return finish(); }
   m.candidate ??= observed;
   await snapshot.save();
@@ -162,8 +179,15 @@ export async function collect(snapshot: Snapshot, transport: Transport, gitReade
   } catch { gitCoverage.errors.push('fixed_git_objects_unavailable'); gitCoverage.termination = 'failed'; gap('git_incomplete'); }
   await snapshot.save();
   const end = await single(`${prefix}/pulls/${m.pr}`, 'pr_verify');
+  const finalTarget = await target(observed.targetRef, 'target_ref_verify');
+  if (finalTarget) round.targetObservation.final = finalTarget;
   if (end) {
-    try { round.current = same(m.candidate, candidate(end, m.repository, m.pr)); }
+    try {
+      const last = candidate(end, m.repository, m.pr); round.targetObservation.reportedBaseAtEnd = last.B;
+      round.current = Boolean(finalTarget && same(m.candidate, { ...last, B: finalTarget.sha }));
+      if (round.current) m.candidate.observedAt = finalTarget!.observedAt;
+      if (finalTarget && last.B !== finalTarget.sha && !round.limitations.includes('pr_reported_base_differs_from_observed_target_ref')) round.limitations.push('pr_reported_base_differs_from_observed_target_ref');
+    }
     catch { gap('invalid_final_candidate'); }
     if (!round.current) gap('candidate_changed_create_new_output');
     if (end.updated_at !== pr.updated_at || end.body !== pr.body || mandatoryCounts.some(k => pr[k] !== end[k])) gap('pr_changed_during_collection');

@@ -5,10 +5,16 @@ import { readFile, writeFile, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Response, Transport } from './contract.js';
+import { validBranchRef } from './contract.js';
 
 const exec = promisify(execFile);
 // No arbitrary URL, mutation, GraphQL, account or credential endpoint can cross this boundary.
 export function assertEndpoint(path: string): void {
+  const ref = /^repos\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*\/git\/ref\/heads\/([^/?#]+)$/.exec(path);
+  if (ref) {
+    try { const name = decodeURIComponent(ref[1]!); if (validBranchRef(name) && encodeURIComponent(name) === ref[1]) return; } catch { /* invalid encoding stays denied */ }
+    throw new Error('invalid_read_endpoint');
+  }
   if (!/^repos\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*\/(?:pulls\/[1-9]\d*(?:\/(?:comments|reviews|commits|files))?|issues\/[1-9]\d*(?:\/comments)?)(?:\?per_page=100&page=[1-9]\d*)?$/.test(path)) {
     throw new Error('invalid_read_endpoint');
   }

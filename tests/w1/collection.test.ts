@@ -25,6 +25,7 @@ class Fixture implements Transport {
     if (overridden) return overridden;
     const page = Number(new URL(`https://api.github.com/${endpoint}`).searchParams.get('page') ?? '1');
     if (endpoint.endsWith('/pulls/12')) return reply(this.pr);
+    if (endpoint.includes('/git/ref/heads/')) return reply({ ref: 'refs/heads/' + this.pr.base.ref, object: { type: 'commit', sha: this.pr.base.sha } });
     if (endpoint.includes('/issues/12/comments')) return reply(this.rows.slice((page - 1) * 100, page * 100));
     if (endpoint.includes('/pulls/12/comments')) return reply([{ id: 80, body: 'finding after CI green', in_reply_to_id: 79 }]);
     if (endpoint.includes('/reviews')) return reply([{ id: 9, body: 'review', user: { login: 'same-account' } }]);
@@ -101,8 +102,30 @@ for (const field of ['head', 'base', 'target'] as const) test(`${field} changes 
   await s.close(); const resumed = await Snapshot.resume(s.directory); t.after(() => resumed.close());
   f.override = undefined; const before = f.calls.length;
   assert.equal(await collect(resumed, f, git), 2);
-  assert.equal(f.calls.length - before, 1);
+  assert.equal(f.calls.length - before, 2);
   assert.ok(resumed.manifest.rounds.at(-1)!.gaps.includes('candidate_changed_create_new_output'));
+});
+
+test('stale PR base metadata does not replace the directly observed target or fixed Git input', async t => {
+  const s = await setup(t), f = new Fixture(), current = 'd'.repeat(40); let fixed: any;
+  f.override = ep => ep.includes('/git/ref/heads/') ? reply({ ref: 'refs/heads/integration/parent', object: { type: 'commit', sha: current } }) : undefined;
+  assert.equal(await collect(s, f, async (c, cache) => { fixed = { ...c }; return git(c, cache); }), 0);
+  assert.equal(fixed.B, current); assert.equal(s.manifest.candidate!.B, current); assert.equal(s.manifest.rounds[0]!.targetObservation!.reportedBase, B); assert.equal(s.manifest.rounds[0]!.targetObservation!.final!.sha, current);
+  assert.equal(s.manifest.candidate!.observedAt, s.manifest.rounds[0]!.targetObservation!.final!.observedAt); assert.equal(s.manifest.rounds[0]!.current, true);
+  assert.match(renderSummary(s.manifest), /pr_reported_base_differs_from_observed_target_ref/);
+});
+test('target moves while PR metadata stays unchanged: original base and bytes remain historical, resume requires a new output', async t => {
+  const s = await setup(t), f = new Fixture(); let refs = 0;
+  f.override = ep => ep.includes('/git/ref/heads/') ? reply({ ref: 'refs/heads/integration/parent', object: { type: 'commit', sha: ++refs === 1 ? B : 'd'.repeat(40) } }) : undefined;
+  assert.equal(await collect(s, f, git), 2); assert.equal(s.manifest.candidate!.B, B); assert.equal(s.manifest.rounds[0]!.current, false);
+  const originals = s.manifest.artifacts.map(a => ({ ...a })); await s.close(); const resumed = await Snapshot.resume(s.directory); t.after(() => resumed.close());
+  assert.equal(await collect(resumed, f, git), 2); assert.equal(resumed.manifest.candidate!.B, B); assert.ok(resumed.manifest.rounds.at(-1)!.gaps.includes('candidate_changed_create_new_output'));
+  for (const a of originals) assert.equal(hash(await readFile(join(s.directory, a.path))), a.sha256);
+});
+for (const mode of ['404','403','wrong-ref','wrong-type','array','final-unavailable']) test(`unusable target observation (${mode}) never falls back to PR metadata`,async t => {
+  const s=await setup(t),f=new Fixture(); let refs=0,gitCalls=0;
+  f.override=ep=>{if(!ep.includes('/git/ref/heads/'))return; refs++;if(mode==='final-unavailable'&&refs===1)return reply({ref:'refs/heads/integration/parent',object:{type:'commit',sha:B}});if(['404','403','final-unavailable'].includes(mode))return reply({},mode==='403'?403:404);if(mode==='array')return reply([]);return reply({ref:mode==='wrong-ref'?'refs/heads/main':'refs/heads/integration/parent',object:{type:mode==='wrong-type'?'tag':'commit',sha:B}});};
+  assert.equal(await collect(s,f,async(...args)=>{gitCalls++;return git(...args);}),2);assert.equal(s.manifest.rounds[0]!.current,false);assert.equal(gitCalls,mode==='final-unavailable'?1:0);assert.ok(s.manifest.rounds[0]!.gaps.includes(mode==='final-unavailable'?'target_ref_verify_incomplete':'target_ref_incomplete'));
 });
 
 for (const status of [403, 404, 429, 503]) test(`HTTP ${status} is a saved gap, not an empty complete collection`, async t => {

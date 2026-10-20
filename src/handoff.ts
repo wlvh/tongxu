@@ -6,6 +6,7 @@ export function renderSummary(m: Manifest): string {
   const c = m.candidate;
   const lines = ['# tongxu collection summary', '', 'Facts collected; this is not approval, business PASS, or permission to merge.', '', `Source: https://github.com/${m.repository}/pull/${m.pr}`, `Observation: ${r.startedAt} — ${r.finishedAt ?? 'incomplete'}`, `Candidate current at final read: ${r.current}`, `H: ${c?.H ?? 'unknown'}`, `B: ${c?.B ?? 'unknown'}`, `Target: ${literal(c?.targetRef ?? null)}`, `Merge base: ${c?.mergeBase ?? 'unknown'}`, '', 'Collection coverage:'];
   for (const [key, v] of Object.entries(r.coverage)) lines.push(`- ${key}: ${v.state}; ${v.records} records, ${v.pages} pages; ${v.termination}; ${v.errors.join(', ') || 'no recorded error'}`);
+  if (r.targetObservation) lines.push('', `Target ref before/after: ${r.targetObservation.initial?.sha ?? 'unavailable'} / ${r.targetObservation.final?.sha ?? 'unavailable'}`, `PR metadata reported base before/after: ${r.targetObservation.reportedBase} / ${r.targetObservation.reportedBaseAtEnd ?? 'unavailable'}`);
   lines.push('', 'Gaps:', ...r.gaps.map(g => `- ${g}`), ...(r.gaps.length ? [] : ['- No detected collection gap; semantic conclusions remain unverified.']), '', 'Observation limits:', ...r.limitations.map(l => `- ${l}`), '', 'Review this allowlisted summary before sharing. The rest of the package is private.', '');
   return lines.join('\n');
 }

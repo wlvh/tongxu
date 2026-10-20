@@ -26,6 +26,9 @@ test('invalid scope/arguments/hosts never reach external tools', async t => {
   assert.throws(() => assertEndpoint('https://evil.example/'));
   assert.throws(() => assertEndpoint('repos/a/b/issues/1/comments?per_page=100&page=1&token=x'));
   assert.throws(() => assertEndpoint('repos/a/b/contents/secrets'));
+  assert.doesNotThrow(() => assertEndpoint('repos/a/b/git/ref/heads/feature%2Ftarget'));
+  assert.doesNotThrow(() => assertEndpoint('repos/a/b/git/ref/heads/' + encodeURIComponent('分支/目标')));
+  for (const path of ['repos/a/b/git/matching-refs/heads/main','repos/a/b/git/ref/tags/main','repos/a/b/git/ref/heads/feature/target','repos/a/b/git/ref/heads/%2e%2e','repos/a/b/git/ref/heads/..%2Fx','repos/a/b/git/ref/heads/main%3Ftoken%3Dx','repos/a/b/git/ref/heads/x%5Cy','repos/a/b/git/ref/heads/main?x=1','repos/a/b/git/ref/heads/%ZZ','repos/a/b/git/ref/heads/x%2F.git','repos/a/b/git/ref/heads/x.lock']) assert.throws(() => assertEndpoint(path));
   assert.equal(parseArgs(['inspect', '--repo', 'a/b', '--pr', '1', '--issue', '2', '--issue', '2']).issues.length, 1);
 });
 
@@ -108,6 +111,7 @@ test('real CLI process survives SIGKILL via a new relay session; old raw page st
       const ep: string = request.endpoint; const page = Number(new URL(`https://x/${ep}`).searchParams.get('page'));
       let data: any = [];
       if (ep.endsWith('/pulls/12')) data = { id: 12, number: 12, head: { sha: H }, base: { sha: B, ref: 'stacked/base', repo: { full_name: 'example/project' } }, body: 'body', updated_at: '2026-01-01T00:00:00Z', comments: rows.length, review_comments: 0, commits: 1, changed_files: 1 };
+      else if (ep.includes('/git/ref/heads/')) data = { ref: 'refs/heads/stacked/base', object: { type: 'commit', sha: B } };
       else if (ep.includes('/issues/12/comments')) data = rows.slice((page - 1) * 100, page * 100);
       else if (ep.includes('/commits?')) data = [{ sha: H }];
       else if (ep.includes('/files?')) data = [{ filename: 'file' }];
