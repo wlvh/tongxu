@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
+import {QueueStore} from '../../src/queue-store.js';
 import {setup,waitPhase} from './receiver-fixture.js';
 import {runReception,correctReception,reconcileReception,supplementReception} from '../../src/receiver.js';
 import {hash} from '../../src/snapshot.js';
@@ -66,4 +67,21 @@ test('correction cannot exceed the existing three dispatched batches after two r
   const f=await setup(t,'budget-then-invalid');f.q.enableSupplements();let r=await runReception(f.path);
   for(let index=0;index<2;index++){assert.equal(r.receiver.judgment.verdict,'INSUFFICIENT_EVIDENCE');const material=join(f.root,'extra-'+index+'.txt');await writeFile(material,'Explicit new fixture fact '+index);const p=join(f.root,'supp-'+index+'.json');await writeFile(p,JSON.stringify({schemaVersion:1,kind:'tongxu-receiver-supplement',store:f.store,operation:r.operation,judgmentId:r.receiver.judgmentId,bindingHash:r.receiver.bindingHash,source:'fixture:bounded-supplement',reason:'Add actual fixture fact.',material:[{name:'fact',path:material,sha256:hash(await readFile(material))}]}));await supplementReception(p);r=await runReception(f.path);}
   assert.equal(r.status,'receiver_invalid_result');assert.equal(await f.count(),3);const correction=await plan(f,r);await assert.rejects(correctReception(correction.path),/receiver_correction_limit/);assert.equal(await f.count(),3);assert.equal(f.q.status().operations.length,3);
+});
+
+test('changing the plan pathname after registration cannot redirect the correction to another task',async t=>{
+  const f=await setup(t,'contradictory'),foreign=await setup(t),first=await runReception(f.path),p=await plan(f,first);const other=await foreign.packet({pr:77,H:await foreign.newHead(),scopeVersion:'S9',target:'another-target'});await writeFile(foreign.path,JSON.stringify({...foreign.plan,item:other.item}));const originalPlan=await readFile(f.path),foreignPlan=await readFile(foreign.path);
+  const registered=QueueStore.prototype.correctReceiver;
+  QueueStore.prototype.correctReceiver=function(...args){const result=registered.apply(this,args);if(this.directory===f.store){requirePlanReplacement();}return result;};
+  // The boundary is synchronous, just like the registration transaction.
+  const fs=await import('node:fs');function requirePlanReplacement(){fs.writeFileSync(f.path,foreignPlan);}
+  try{const second=await correctReception(p.path);assert.equal(second.item,f.item);assert.equal(second.candidate.H,first.candidate.H);assert.equal(second.receiver.correctionOf,first.operation);assert.equal(await f.count(),2);assert.equal(await foreign.count(),0);assert.equal(foreign.q.status().operations.length,0);assert.equal(f.q.receiverState(second.operation).receiver.planSha256,hash(originalPlan));}
+  finally{QueueStore.prototype.correctReceiver=registered;}
+});
+test('complete JSON with null or non-object findings is an invalid ended result and can take the explicit correction path',async t=>{
+  for(const value of ['null','false','[]']){
+    const f=await setup(t),script=await readFile(f.plan.claudeExecutable,'utf8');await writeFile(f.plan.claudeExecutable,script.replace("findings:contradict?",`findings:!x.data.evidence.correction?[${value}]:contradict?`));
+    const first=await runReception(f.path);assert.equal(first.status,'receiver_invalid_result');assert.equal(first.receiver.invalidResult.reason,'receiver_final_binding_or_judgment_invalid');assert.equal(first.receiver.judgment,null);assert.equal(f.q.status().claims.length,0);assert.equal((await runReception(f.path)).status,'receiver_invalid_result');assert.equal(await f.count(),1);
+    const p=await plan(f,first),second=await correctReception(p.path);assert.equal(second.receiver.phase,'returned');assert.equal(second.receiver.correctionOf,first.operation);assert.equal(await f.count(),2);
+  }
 });

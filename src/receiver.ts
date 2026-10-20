@@ -74,7 +74,7 @@ function judgment(text: string, state: any): any {
   let j: any; try { j = JSON.parse(fence ? fence[1]! : trimmed); } catch { throw new Error('receiver_invalid_json'); }
   const r = state.receiver;
   if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('receiver_final_binding_or_judgment_invalid');
-  if (j.schemaVersion !== (r.subject?2:1) || (r.subject?j.reviewedSubjectSha256!==r.subjectSha256:j.reviewedSubjectSha256!==undefined) || j.operation !== state.operation || j.judgmentId !== r.judgmentId || j.bindingHash !== r.bindingHash || !['ACCEPT_WITHIN_SCOPE', 'RETURN_FOR_WORK', 'INSUFFICIENT_EVIDENCE'].includes(j.verdict) || typeof j.report !== 'string' || !j.report.trim() || j.report.length > 128000 || !Array.isArray(j.findings) || j.findings.length > 30 || j.findings.some((x: any) => ![0, 1, 2].includes(x.priority) || typeof x.description !== 'string' || !x.description.trim()) || j.verdict === 'ACCEPT_WITHIN_SCOPE' && j.findings.some((x: any) => x.priority < 2)) throw new Error('receiver_final_binding_or_judgment_invalid');
+  if (j.schemaVersion !== (r.subject?2:1) || (r.subject?j.reviewedSubjectSha256!==r.subjectSha256:j.reviewedSubjectSha256!==undefined) || j.operation !== state.operation || j.judgmentId !== r.judgmentId || j.bindingHash !== r.bindingHash || !['ACCEPT_WITHIN_SCOPE', 'RETURN_FOR_WORK', 'INSUFFICIENT_EVIDENCE'].includes(j.verdict) || typeof j.report !== 'string' || !j.report.trim() || j.report.length > 128000 || !Array.isArray(j.findings) || j.findings.length > 30 || j.findings.some((x: any) => !x || typeof x !== 'object' || Array.isArray(x) || ![0, 1, 2].includes(x.priority) || typeof x.description !== 'string' || !x.description.trim()) || j.verdict === 'ACCEPT_WITHIN_SCOPE' && j.findings.some((x: any) => x.priority < 2)) throw new Error('receiver_final_binding_or_judgment_invalid');
   if (r.prerequisite ? j.consumedPrerequisite !== r.prerequisite.receiptSha256 : j.consumedPrerequisite !== undefined) throw new Error('receiver_prerequisite_not_consumed');
   return { schemaVersion: j.schemaVersion, ...(r.subject?{reviewedSubjectSha256:j.reviewedSubjectSha256}:{}), ...(r.prerequisite ? { consumedPrerequisite: j.consumedPrerequisite } : {}), operation: j.operation, judgmentId: j.judgmentId, bindingHash: j.bindingHash, verdict: j.verdict, report: j.report, findings: j.findings.map((x: any) => ({ priority: x.priority, description: x.description })) };
 }
@@ -158,7 +158,9 @@ export async function correctReception(planPath: string) {
       q.correctReceiver(p.operation,bytes,material);
     });
   }finally{q.close();}
-  return runReception(p.receiverPlan);
+  // Use the exact bytes already checked against the original operation. A
+  // changed pathname after registration must never redirect this paid task.
+  return runFixedReception(plan);
 }
 export async function supplementReception(planPath: string) {
   const p = JSON.parse((await file(planPath, 1024 * 1024)).toString());
@@ -179,7 +181,10 @@ export async function supplementReception(planPath: string) {
   } finally { q.close(); }
 }
 export async function runReception(planPath: string) {
-  const bytes = await file(planPath), p = parseReceiverPlan(bytes), q = await QueueStore.open(p.store);
+  return runFixedReception(await file(planPath));
+}
+async function runFixedReception(bytes: Buffer) {
+  const p = parseReceiverPlan(bytes), q = await QueueStore.open(p.store);
   try {
     q.requireReceiverMode();
     const begin = q.begin(p.item, 'independent-receiver'); if (begin.blocked) return begin;
