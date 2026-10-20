@@ -62,10 +62,11 @@ export async function workbenchState(p: WorkbenchPlan) {
       startedAt: o.started_at, finishedAt: o.finished_at, judgment: judgment(o),
       consumedPrerequisite: o.result?.receiver?.judgment?.consumedPrerequisite ?? null,
       nativeExecution: o.nativeExecution,
+      ...(o.result?.receiver?.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}),
       publication: publication(q.publications.find((pub: Row) => pub.operation === o.id)),
       recovery: o.recovery, productionActionAllowed: false
     }));
-    tasks.push({ ...base, available: true, candidate: item.candidate, currentPacket: item.currentPacket,
+    tasks.push({ ...base, available: true, candidate: item.candidate, ...(item.summary.composition?{composition:item.summary.composition}:{}), currentPacket: item.currentPacket,
       observationConflict: item.observationConflict, evidenceComplete: item.summary.evidenceComplete,
       sourceObservedAt: item.latestSourceObservation, executionObservedAt: item.latestObservation,
       scope: item.context.scope, arrangement: item.context.arrangement, dependencyGaps: item.dependencyGaps,
@@ -88,7 +89,7 @@ async function workbenchReport(p: WorkbenchPlan, source: string, operation: stri
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
   const q = await QueueStore.observe(s.store, [s.item]), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
   if (!j) throw new Error('report_not_found');
-  return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
+  return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
 }
 export async function startWorkbench(planPath: string) {
   const p = parseWorkbenchPlan(await regular(planPath)), token = randomBytes(32).toString('hex');

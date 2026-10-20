@@ -8,6 +8,7 @@ const eventNames = { receiver_reserved: '接收准备已登记', receiver_dispat
 function el(tag, value, className) { const n = document.createElement(tag); if (value !== undefined && value !== null) n.textContent = String(value); if (className) n.className = className; return n; }
 function append(parent, ...nodes) { nodes.filter(Boolean).forEach(n => parent.append(n)); return parent; }
 function pill(text, kind = '') { return el('span', text, 'pill ' + kind); }
+function subjectText(subject) { return '组合：' + subject.members.map(m => 'PR #' + m.candidate.pr + '@' + m.candidate.H.slice(0, 8)).join(' → '); }
 function date(value) { if (!value || Number.isNaN(Date.parse(value))) return '未登记'; return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }); }
 function statusOf(task) {
   if (!task.available) return ['来源无法读取', 'problem'];
@@ -28,7 +29,7 @@ function metric(number, label, note) { return append(el('div', null, 'metric'), 
 function openTask(id) { selected = id; view = 'tasks'; render(); $('content').focus({ preventScroll: true }); }
 function card(t) {
   const [label, kind] = statusOf(t), n = el('button', null, 'task-card'); n.type = 'button'; n.dataset.task = t.id; n.dataset.stage = label; n.onclick = () => openTask(t.id);
-  append(n, append(el('div', null, 'card-top'), el('span', t.available ? 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? '登记 H ' + t.candidate.H.slice(0, 8) + ' · ' + t.operations.filter(o => o.judgment).length + ' 份原报告' : t.error), el('span', '↗', 'arrow'))); return n;
+  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? '登记 H ' + t.candidate.H.slice(0, 8) + ' · ' + t.operations.filter(o => o.judgment).length + ' 份原报告' : t.error), el('span', '↗', 'arrow'))); return n;
 }
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage));
@@ -56,6 +57,7 @@ function taskView() {
   const t = state.tasks.find(t => t.id === selected), panel = el('section', null, 'panel'); append(layout, picker, panel); n.append(layout);
   if (!t.available) { append(panel, el('h2', t.title), el('p', '当前来源无法读取：' + t.error, 'empty')); return n; }
   const [label, kind] = statusOf(t), head = append(el('div', null, 'panel-head'), append(el('div'), el('h2', t.title), el('p', t.candidate.repository + ' · PR #' + t.candidate.pr)), pill(label, kind)); panel.append(head);
+  if (t.composition) append(panel, el('p', subjectText(t.composition.subject)), el('p', '判断对应整个固定组合；锚点 PR 用于定位，不表示任何成员单独放行。受测最终树：' + (t.composition.subject.testedTree || '未取得'), 'small'));
   const facts = el('dl', null, 'facts'); fact(facts, '登记候选 H', t.candidate.H, true); fact(facts, '固定基线 B', t.candidate.B, true); fact(facts, '真实目标', t.candidate.targetRef); fact(facts, '来源观察', date(t.sourceObservedAt)); fact(facts, '本次查看', date(t.observedAt)); fact(facts, '登记范围', t.scope.id + ' / ' + t.scope.version); panel.append(facts);
   if (/^[\w.-]+\/[\w.-]+$/.test(t.candidate.repository) && Number.isSafeInteger(t.candidate.pr)) { const a = el('a', '查看原 PR ↗'); a.href = 'https://github.com/' + t.candidate.repository + '/pull/' + t.candidate.pr; a.target = '_blank'; a.rel = 'noreferrer noopener'; panel.append(a); }
   panel.append(append(el('div', null, 'section-title'), el('h3', '原操作与报告'), el('span', t.operations.length + ' 条记录')));
@@ -65,6 +67,7 @@ function taskView() {
     append(left, append(el('div', null, 'label-line'), el('strong', text), pill(o.currentPacket ? stage[0] : '历史材料', o.currentPacket ? stage[1] : 'neutral')), el('p', date(o.finishedAt || o.startedAt) + ' · 操作 ' + o.id.slice(0, 8) + ' · 材料包 ' + o.packet));
     if (o.consumedPrerequisite) left.append(el('p', '已返回准确上游报告的消费引用。', 'small'));
     left.append(el('p', executionText(o.nativeExecution), 'small'));
+    if (o.subject) left.append(el('p', subjectText(o.subject) + ' · 组合判断，非逐成员放行', 'small'));
     if (o.publication) left.append(el('p', publicationText(o.publication), 'small'));
     row.append(left); if (o.judgment) { const b = el('button', '阅读完整报告', 'outline'); b.type = 'button'; b.onclick = () => openReport(t, o); row.append(b); } panel.append(row);
   });
@@ -91,7 +94,7 @@ async function refresh() {
 }
 async function openReport(t, o) {
   const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-dialog').showModal();
-  try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (verdicts[r.verdict] || r.verdict) + ' · 判断 ' + r.judgmentId + ' · 原文 SHA256 ' + r.reportSha256 + ' · ' + executionText(r.nativeExecution); $('report-body').textContent = r.report; }
+  try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (r.subject ? subjectText(r.subject) + ' · 非逐成员放行 · ' : '') + (verdicts[r.verdict] || r.verdict) + ' · 判断 ' + r.judgmentId + ' · 原文 SHA256 ' + r.reportSha256 + ' · ' + executionText(r.nativeExecution); $('report-body').textContent = r.report; }
   catch (e) { if (nonce === reportNonce) $('report-body').textContent = '原报告无法读取：' + e.message; }
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });

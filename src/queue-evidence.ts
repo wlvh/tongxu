@@ -6,11 +6,12 @@ import { canonical, samples, compare } from './comparison.js';
 import { shaPattern } from './contract.js';
 import type { Candidate, Manifest } from './contract.js';
 import { dockerEvidenceState } from './docker-sandbox.js';
+import { composeSubject, type Composition } from './composition.js';
 
 type Reference = { id: string; version: string; source: string };
 export type Requirement = { item: string; type: 'development' | 'merge' | 'enablement' | 'parent'; version: string; blocks: 'shadow_review' | 'merge' | 'enablement'; source: string; canContinue: string };
 export type QueueContext = { schemaVersion: 1; scope: Reference; arrangement: Reference; decisionKind: string; requires: Requirement[] };
-export type Packet = { candidate: Candidate; context: QueueContext; fingerprint: string; manifestHash: string; reportHash: string; contextHash: string; blobs: Map<string, Buffer>; summary: { gaps: string[]; evidenceComplete: boolean; tree: string | null; reportId: string; observation: string | null; sourceObservation: string | null; originalOperations: { id: string; stage: number; tool: string; status: string; pid?: number }[]; limitations: string[] } };
+export type Packet = { candidate: Candidate; context: QueueContext; fingerprint: string; manifestHash: string; reportHash: string; contextHash: string; blobs: Map<string, Buffer>; summary: { composition?:Composition; gaps: string[]; evidenceComplete: boolean; tree: string | null; reportId: string; observation: string | null; sourceObservation: string | null; originalOperations: { id: string; stage: number; tool: string; status: string; pid?: number }[]; limitations: string[] } };
 const digest = /^[a-f0-9]{64}$/;
 const text = (v: unknown, max = 2048): v is string => typeof v === 'string' && v.length > 0 && v.length <= max && !v.includes('\0');
 export function parseQueueContext(v: unknown): QueueContext {
@@ -21,8 +22,9 @@ export function parseQueueContext(v: unknown): QueueContext {
   const reference = (r: Reference): Reference => ({ id: r.id, version: r.version, source: r.source });
   return { schemaVersion: 1, scope: reference(c.scope), arrangement: reference(c.arrangement), decisionKind: c.decisionKind, requires: c.requires.map(r => ({ item: r.item, type: r.type, version: r.version, blocks: r.blocks, source: r.source, canContinue: r.canContinue })) };
 }
-export function candidateKey(candidate: Candidate, context: QueueContext): string {
-  return hash(canonical([candidate.repository.toLowerCase(), candidate.pr, candidate.H, candidate.B, candidate.targetRef, context.scope.id, context.scope.version, context.arrangement.id, context.arrangement.version]));
+export function candidateKey(candidate: Candidate, context: QueueContext, composition?:Composition): string {
+  const identity=[candidate.repository.toLowerCase(), candidate.pr, candidate.H, candidate.B, candidate.targetRef, context.scope.id, context.scope.version, context.arrangement.id, context.arrangement.version];
+  return hash(canonical(composition?[...identity,composition.key]:identity));
 }
 export function targetKey(candidate: Candidate): string { return canonical([candidate.repository.toLowerCase(), `refs/heads/${candidate.targetRef}`]); }
 async function regular(path: string, max: number): Promise<Buffer> {
@@ -32,12 +34,17 @@ async function regular(path: string, max: number): Promise<Buffer> {
 }
 const date = (v: unknown): string | null => typeof v === 'string' && /^\d{4}-\d\d-\d\dT/.test(v) && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 
-export async function readPacket(snapshot: string, verification: string, contextPath: string): Promise<Packet> {
+export async function readPacket(snapshot: string, verification: string, contextPath: string, compositionSnapshots: string[] = []): Promise<Packet> {
   const bundle = await loadBundle(snapshot), manifest = JSON.parse(bundle.bytes.toString()) as Manifest;
   const contextBytes = await regular(contextPath, 1024 * 1024), context = parseQueueContext(JSON.parse(contextBytes.toString()));
   await privateDirectory(verification, false); await privateDirectory(join(verification, 'raw'), false);
   const reportBytes = await regular(join(verification, 'verification.json'), 64 * 1024 * 1024), r = JSON.parse(reportBytes.toString());
   if (![1, 2].includes(r?.schemaVersion) || r.kind !== 'tongxu-verification' || !text(r.id, 128) || !Array.isArray(r.inputs) || r.inputs.length < 1 || r.inputs.length > 8 || !Array.isArray(r.stages) || r.stages.length > 9 || !Array.isArray(r.gaps)) throw new Error('invalid_verification_report');
+  const memberBundles=[];
+  if(compositionSnapshots.length){
+    if(compositionSnapshots.length!==r.inputs.length||compositionSnapshots.length<2||compositionSnapshots.length>8||compositionSnapshots.at(-1)!==snapshot||new Set(compositionSnapshots).size!==compositionSnapshots.length)throw new Error('all_ordered_composition_snapshots_required');
+    for(const [index,path] of compositionSnapshots.entries()){const b=path===snapshot?bundle:await loadBundle(path);if(hash(b.bytes)!==r.inputs[index]?.manifestHash)throw new Error('composition_manifest_order_mismatch');memberBundles.push({path,bundle:b,manifest:JSON.parse(b.bytes.toString()) as Manifest});}
+  }
   const blobs = new Map<string, Buffer>(); let total = 0;
   const remember = (bytes: Buffer) => { const h = hash(bytes); if (!blobs.has(h)) { total += bytes.length; if (total > 128 * 1024 * 1024) throw new Error('queue_evidence_limit'); blobs.set(h, bytes); } return h; };
   const manifestHash = remember(bundle.bytes), reportHash = remember(reportBytes), contextHash = remember(contextBytes);
@@ -48,7 +55,8 @@ export async function readPacket(snapshot: string, verification: string, context
     if (s.mergeOutput) references.push(s.mergeOutput);
     for (const t of s.tools) { if (!t || !text(t.id, 64) || !Array.isArray(t.gaps)) throw new Error('invalid_verification_tool'); for (const name of ['stdout', 'stderr', 'result', 'sandbox']) if (t[name]) references.push(t[name]); }
   }
-  for (const [root, refs, pattern] of [[snapshot, manifest.artifacts, /^(raw\/[0-9a-f]{64}\.json|git\/[0-9a-f]{64}\.(patch|json))$/], [verification, references, /^raw\/[0-9a-f]{64}\.bin$/]] as const) {
+  const sources:Array<readonly[string,any[],RegExp]>=[[snapshot, manifest.artifacts, /^(raw\/[0-9a-f]{64}\.json|git\/[0-9a-f]{64}\.(patch|json))$/], [verification, references, /^raw\/[0-9a-f]{64}\.bin$/],...memberBundles.filter(x=>x.path!==snapshot).map(x=>[x.path,x.manifest.artifacts,/^(raw\/[0-9a-f]{64}\.json|git\/[0-9a-f]{64}\.(patch|json))$/] as const)];
+  for (const [root, refs, pattern] of sources) {
     for (const ref of refs) {
       if (!ref || !pattern.test(ref.path) || !digest.test(ref.sha256) || !Number.isSafeInteger(ref.bytes) || ref.bytes < 0 || ref.bytes > 64 * 1024 * 1024) throw new Error('invalid_evidence_reference');
       const bytes = await regular(join(root, ref.path), 64 * 1024 * 1024);
@@ -61,7 +69,9 @@ export async function readPacket(snapshot: string, verification: string, context
   const same = (v: any) => v && ['repository', 'pr', 'H', 'B', 'targetRef'].every(k => v[k] === (c as any)[k]);
   if (!input || !same(input.candidate) || input.manifest?.sha256 !== manifestHash || r.repository !== c.repository || r.targetRef !== c.targetRef) gaps.push('candidate_or_manifest_mismatch');
   if (r.planHash !== r.plan?.sha256) gaps.push('plan_hash_mismatch');
-  if (r.inputs.length !== 1) gaps.push('additional_members_require_independent_reception');
+  const composition=memberBundles.length?composeSubject(r,h=>{const b=blobs.get(h);if(!b)throw new Error('composition_original_missing');return b;}):undefined;
+  if (r.inputs.length !== 1&&!composition) gaps.push('additional_members_require_independent_reception');
+  if(composition)for(const m of composition.subject.members){gaps.push(...m.sourceGaps.map(g=>`member:${m.index}:source:${g}`));if(!date(m.candidate.observedAt))gaps.push(`member:${m.index}:observation_time_unavailable`);}
   if (r.businessCorrectness !== 'unverified') gaps.push('unsupported_business_correctness_claim');
   if (r.status !== 'complete' || r.executionComplete !== true || r.gaps.length || r.stages.length !== r.inputs.length + 1) gaps.push('execution_evidence_incomplete');
   if (r.observedSampleFailures !== 0 || r.comparisonComplete === false) gaps.push('sample_failure_or_incomplete_comparison');
@@ -107,6 +117,8 @@ export async function readPacket(snapshot: string, verification: string, context
     if (r.observedSampleFailures !== failures || r.comparisonComplete !== comparisonComplete) gaps.push('sample_summary_evidence_mismatch');
   }
   const originalOperations = r.stages.flatMap((s: any) => s.tools.filter((t: any) => ['running', 'unknown'].includes(t.status)).map((t: any) => ({ id: r.id, stage: s.index, tool: t.id, status: t.status, ...(Number.isInteger(t.pid) ? { pid: t.pid } : {}) })));
-  const semantic = { candidate: [c.repository, c.pr, c.H, c.B, c.targetRef], context, source: [...new Set(manifest.artifacts.map(a => canonical([a.kind, a.status ?? null, a.sha256])))].sort(), gaps, plan: r.planHash, dependency: r.dependencyHash, toolVersions: r.toolVersions, judgmentRefs: r.judgmentRefs, status: r.status, executionComplete: r.executionComplete, comparisonComplete: r.comparisonComplete, observedSampleFailures: r.observedSampleFailures, businessCorrectness: r.businessCorrectness, originalOperations: originalOperations.map(({ pid: _pid, ...operation }: any) => operation), stages: r.stages.map((s: any) => ({ index: s.index, inputHead: s.inputHead, parent: s.parent, tree: s.tree, status: s.status, comparisons: s.comparisons, gaps: s.gaps, tools: s.tools.map((t: any) => ({ id: t.id, argv: t.argv, status: t.status, exit: t.exitCode, signal: t.signal, inputUnchanged: t.inputUnchanged, dependenciesUnchanged: t.dependenciesUnchanged, dependencyHash: t.dependencyHash, sampleSet: t.sampleSet, gaps: t.gaps })) })) };
-  return { candidate: c, context, fingerprint: hash(canonical(semantic)), manifestHash, reportHash, contextHash, blobs, summary: { gaps: [...new Set(gaps)], evidenceComplete: gaps.length === 0, tree: final?.tree ?? null, reportId: r.id, observation: date(r.startedAt), sourceObservation: date(c.observedAt), originalOperations, limitations: ['reported_evidence_is_not_independent_acceptance', 'source_binding_is_not_owner_authorization', 'no_live_remote_refresh', 'deduplication_uses_declared_results_not_arbitrary_log_semantics', ...(r.comparisonComplete === null ? ['ordinary_test_output_has_no_structured_sample_coverage'] : [])] } };
+  const artifactIdentity=(artifacts:Manifest['artifacts'])=>[...new Set(artifacts.map(a=>canonical([a.kind,a.status??null,a.sha256])))].sort();
+  const sourceObservation=composition?composition.subject.members.every(m=>date(m.candidate.observedAt))?composition.subject.members.map(m=>date(m.candidate.observedAt)!).sort()[0]!:null:date(c.observedAt);
+  const semantic = { candidate: [c.repository, c.pr, c.H, c.B, c.targetRef], ...(composition?{compositionKey:composition.key}:{}), context, source: composition?memberBundles.map((m,index)=>({index,artifacts:artifactIdentity(m.manifest.artifacts)})):artifactIdentity(manifest.artifacts), gaps, plan: r.planHash, dependency: r.dependencyHash, toolVersions: r.toolVersions, judgmentRefs: r.judgmentRefs, status: r.status, executionComplete: r.executionComplete, comparisonComplete: r.comparisonComplete, observedSampleFailures: r.observedSampleFailures, businessCorrectness: r.businessCorrectness, originalOperations: originalOperations.map(({ pid: _pid, ...operation }: any) => operation), stages: r.stages.map((s: any) => ({ index: s.index, inputHead: s.inputHead, parent: s.parent, tree: s.tree, status: s.status, comparisons: s.comparisons, gaps: s.gaps, tools: s.tools.map((t: any) => ({ id: t.id, argv: t.argv, status: t.status, exit: t.exitCode, signal: t.signal, inputUnchanged: t.inputUnchanged, dependenciesUnchanged: t.dependenciesUnchanged, dependencyHash: t.dependencyHash, sampleSet: t.sampleSet, gaps: t.gaps })) })) };
+  return { candidate: c, context, fingerprint: hash(canonical(semantic)), manifestHash, reportHash, contextHash, blobs, summary: { ...(composition?{composition}:{}), gaps: [...new Set(gaps)], evidenceComplete: gaps.length === 0, tree: final?.tree ?? null, reportId: r.id, observation: date(r.startedAt), sourceObservation, originalOperations, limitations: ['reported_evidence_is_not_independent_acceptance', 'source_binding_is_not_owner_authorization', 'no_live_remote_refresh', 'deduplication_uses_declared_results_not_arbitrary_log_semantics', ...(composition?['composition_acceptance_is_not_individual_member_acceptance']:[]), ...(r.comparisonComplete === null ? ['ordinary_test_output_has_no_structured_sample_coverage'] : [])] } };
 }

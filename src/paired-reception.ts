@@ -18,7 +18,7 @@ async function readPlan(path: string) {
     if (!ref || !digest.test(ref.sha256)) throw new Error('invalid_pair_plan_reference');
     const b = await regular(ref.path); if (hash(b) !== ref.sha256) throw new Error('pair_receiver_plan_changed');
     const plan = parseReceiverPlan(b);
-    if (plan.kind !== 'tongxu-queue-receiver' || plan.schemaVersion !== 1 || !digest.test(plan.item) || !['native_capture', 'fixture'].includes(plan.executionKind)) throw new Error('pair_requires_receiver_plans');
+    if (plan.kind !== 'tongxu-queue-receiver' || ![1,2].includes(plan.schemaVersion) || !digest.test(plan.item) || !['native_capture', 'fixture'].includes(plan.executionKind)) throw new Error('pair_requires_receiver_plans');
     plans.push({ bytes: b, plan });
   }
   const [first, second] = plans as [typeof plans[number], typeof plans[number]];

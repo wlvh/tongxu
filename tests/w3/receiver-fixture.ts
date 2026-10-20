@@ -9,8 +9,8 @@ import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
 import type { ReceiverPlan } from '../../src/receiver.js';
 
-export async function setup(t: test.TestContext, mode = 'complete', seats = 1) {
-  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
+export async function setup(t: test.TestContext, mode = 'complete', seats = 1, cleanup = true) {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); if (cleanup) t.after(() => rm(root, { recursive: true, force: true }));
   const objects = join(root, 'objects'); await mkdir(objects); const git = (args: string[]) => execFileSync('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: objects, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '--initial-branch=fixture']); await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=1;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture']);
   const B = git(['rev-parse', 'HEAD']), baseTree = git(['rev-parse', 'HEAD^{tree}']);
@@ -43,7 +43,7 @@ if(process.argv.includes('auth')){setTimeout(()=>console.log(JSON.stringify({log
 else{let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>{const x=JSON.parse(text);fs.appendFileSync(trace,'model-dispatch\\n');
 emit({type:'system',subtype:'init',session_id:'fixture-receiver',model:'fixture',claude_code_version:'2.1.233',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});
 const missing=mode==='always-insufficient'||mode==='insufficient'&&!x.data.evidence.supplements?.length;
-const j={schemaVersion:1,...(x.data.evidence.prerequisite?{consumedPrerequisite:x.data.evidence.prerequisite.receiptSha256}:{}),operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':mode==='return'?'RETURN_FOR_WORK':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:mode==='return'?[{priority:1,description:'Explicit fixture: empty normalized labels require Untitled fallback.'}]:[]};
+const j={schemaVersion:x.responseShape.schemaVersion,...(x.binding.subjectSha256?{reviewedSubjectSha256:x.binding.subjectSha256}:{}),...(x.data.evidence.prerequisite?{consumedPrerequisite:x.data.evidence.prerequisite.receiptSha256}:{}),operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':mode==='return'?'RETURN_FOR_WORK':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:mode==='return'?[{priority:1,description:'Explicit fixture: empty normalized labels require Untitled fallback.'}]:[]};
 const fence=String.fromCharCode(96).repeat(3),fenced=fence+'json\\n'+JSON.stringify(j)+'\\n'+fence,formatted=mode==='fenced'?fenced:mode==='fenced-prose'?'note\\n'+fenced:mode==='fenced-double'?fenced+'\\n'+fenced:JSON.stringify(j);
 setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:formatted,usage:{},total_cost_usd:0}),mode==='delay'?900:0);
 });}

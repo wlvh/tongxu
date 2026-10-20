@@ -29,12 +29,12 @@ export class ReviewRecords {
   private bytes(sha256: string): Buffer { const r = this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha256) as Row; if (!r || hash(Buffer.from(r.bytes)) !== sha256) throw new Error('review_original_changed'); return Buffer.from(r.bytes); }
   private requireMode(legacyReadOrClose=false) {
     const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-    if (!(version===9 || legacyReadOrClose&&version===8) || ![['review_repair_claim_guard', repairClaimGuard], ['review_repair_record_guard', version===8?legacyRepairRecordGuard:repairRecordGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row)?.sql === sql)) throw new Error('review_records_not_enabled');
+    if (!([9,10].includes(version) || legacyReadOrClose&&version===8) || ![['review_repair_claim_guard', repairClaimGuard], ['review_repair_record_guard', version===8?legacyRepairRecordGuard:repairRecordGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row)?.sql === sql)) throw new Error('review_records_not_enabled');
   }
   enable() {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if (version === 9) { this.requireMode(); return { enabled: true, duplicate: true, productionActionAllowed: false }; }
+      if ([9,10].includes(version)) { this.requireMode(); return { enabled: true, duplicate: true, productionActionAllowed: false }; }
       if (![6, 7, 8].includes(version)) throw new Error('enable_receiver_supplements_before_review_records');
       if(version===8)this.requireMode(true);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
@@ -61,6 +61,7 @@ export class ReviewRecords {
         if(x.repair.phase!=='closed_unstarted'||replacement.replacesClosedBinding!==x.repair.bindingHash||nextRequest.executionRoot===x.repair.executionRoot)throw new Error('queue_repair_fixed_input_changed');
       }
       const s = this.source(id, true);
+      if(s.receiver.subject)throw new Error('composition_requires_member_scoped_repair_and_reverification');
       if (op.status !== 'complete' || s.receiver.judgment.verdict !== 'RETURN_FOR_WORK' || !s.receiver.controllerReturned) throw new Error('repair_requires_completed_return');
       const p = JSON.parse(plan.toString()), r = JSON.parse(request.toString()), c = JSON.parse(config.toString());
       if (p.operation !== id || p.judgmentId !== s.receiver.judgmentId || p.bindingHash !== s.receiver.bindingHash || p.packet !== op.packet || canonical(p.context) !== canonical(s.context)) throw new Error('queue_repair_source_mismatch');
@@ -156,7 +157,7 @@ export class ReviewRecords {
       if (Object.values(classification).some(x => !text(x)) || Object.keys(classification).sort().join() !== 'coverageWindow,riskClass,source,taskClass') throw new Error('judgment_classification_required');
       const j = s.receiver.judgment, object = `judgment:${j.judgmentId}`, existing = this.events(object, 'judgment_registered')[0];
       const init = JSON.parse(this.bytes(s.receiver.blobs['init.json'].sha256).toString());
-      const entry = { operation: id, judgmentId: j.judgmentId, bindingHash: s.receiver.bindingHash, candidate: s.candidate, context: s.context, classification, verdict: j.verdict, findings: j.findings, executionKind: s.receiver.executionKind, inputSha256: s.receiver.inputSha256, systemSha256: s.receiver.systemSha256, rawOutputSha256: s.receiver.blobs['stdout.ndjson'].sha256, model: init.model, toolVersion: init.claude_code_version, session: init.session_id, outcome: 'unobserved' };
+      const entry = { operation: id, judgmentId: j.judgmentId, bindingHash: s.receiver.bindingHash, candidate: s.candidate, ...(s.receiver.subject?{subject:s.receiver.subject,subjectSha256:s.receiver.subjectSha256}:{}), context: s.context, classification, verdict: j.verdict, findings: j.findings, executionKind: s.receiver.executionKind, inputSha256: s.receiver.inputSha256, systemSha256: s.receiver.systemSha256, rawOutputSha256: s.receiver.blobs['stdout.ndjson'].sha256, model: init.model, toolVersion: init.claude_code_version, session: init.session_id, outcome: 'unobserved' };
       if (existing) { if (canonical(existing.data) !== canonical(entry)) throw new Error('judgment_classification_changed'); return { ...existing.data, duplicate: true }; }
       this.event('judgment_registered', object, entry); return { ...entry, duplicate: false };
     });

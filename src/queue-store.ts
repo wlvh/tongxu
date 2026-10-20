@@ -9,6 +9,7 @@ import type { Packet, QueueContext } from './queue-evidence.js';
 import type { Candidate } from './contract.js';
 import { canonical } from './comparison.js';
 import { ReviewRecords } from './review-record-store.js';
+import { composeSubject, currentMembers, type Composition } from './composition.js';
 
 type Row = Record<string, any>;
 const parse = (row: Row | undefined, key: string): any => row ? JSON.parse(row[key]) : undefined;
@@ -18,6 +19,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_packet_material_binding_required'); END`;
 const supplementLineageGuard = `CREATE TRIGGER receiver_supplement_lineage_guard BEFORE INSERT ON packets
 WHEN json_type(NEW.summary,'$.supplement') IS NOT 'object' AND EXISTS(SELECT 1 FROM items JOIN packets ON packets.id=items.current_packet WHERE items.id=NEW.item AND json_type(packets.summary,'$.supplement')='object')
 BEGIN SELECT RAISE(ABORT,'supplement_lineage_must_be_retained'); END`;
+const compositionGuard = `CREATE TRIGGER composition_receiver_guard BEFORE UPDATE ON operations
+WHEN NEW.status='receiving' AND EXISTS(SELECT 1 FROM packets WHERE id=NEW.packet AND json_type(summary,'$.composition')='object' AND json_extract(summary,'$.composition.sha256') IS NOT json_extract(NEW.result,'$.receiver.subjectSha256'))
+BEGIN SELECT RAISE(ABORT,'composition_receiver_subject_required'); END`;
 export function materialIdentity(bytes: Buffer): string {
   const text = new TextDecoder('utf8', { fatal: true }).decode(bytes);
   try { return hash('json:' + canonical(JSON.parse(text))); } catch { return hash('text:' + text); }
@@ -93,7 +97,7 @@ export class QueueStore {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       if (readOnly) db.exec('PRAGMA query_only=ON;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (![3, 4, 5, 6, 7, 8, 9].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (![3, 4, 5, 6, 7, 8, 9, 10].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
@@ -101,7 +105,7 @@ export class QueueStore {
   enableReceiver(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([4, 5, 6, 7, 8, 9].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([4, 5, 6, 7, 8, 9, 10].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![3, 4].includes(version) || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       // Same tables/ledger, explicit format opt-in. Older v3 clients must refuse
       // rather than evaluate and release a claim owned by a native receiver.
@@ -120,7 +124,7 @@ PRAGMA user_version=4;`);
   enableSupplements(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([6, 7, 8, 9].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([6, 7, 8, 9, 10].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![4, 5, 6].includes(version) || !this.receiverGuardsInstalled()) throw new Error('enable_receiver_before_supplements');
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       this.db.exec(`DROP TRIGGER IF EXISTS receiver_packet_material_guard; DROP TRIGGER IF EXISTS receiver_supplement_lineage_guard; ${supplementGuard}; ${supplementLineageGuard}; PRAGMA user_version=6;`);
@@ -128,7 +132,17 @@ PRAGMA user_version=4;`);
       return { supplementsEnabled: true, schemaVersion: 6, productionActionAllowed: false };
     });
   }
-  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
+  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9, 10].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
+  enableCompositions(): Row {
+    return this.transaction(()=>{
+      const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+      if(version===10){this.requireCompositionMode();return {enabled:true,duplicate:true,productionActionAllowed:false};}
+      if(version!==9)throw new Error('enable_review_records_before_compositions');
+      if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
+      this.db.exec(compositionGuard+'; PRAGMA user_version=10;');this.event('composition_format_enabled',this.directory,{from:version,to:10});return {enabled:true,duplicate:false,productionActionAllowed:false};
+    });
+  }
+  private requireCompositionMode(){if((this.db.prepare('PRAGMA user_version').get() as Row).user_version!==10||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='composition_receiver_guard'").get() as Row)?.sql!==compositionGuard)throw new Error('compositions_not_enabled');}
   reviewRecords(): ReviewRecords { return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id)); }
   private reviewSource(id: string, requireCurrent: boolean): Row {
     const { op, result, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet);
@@ -233,6 +247,8 @@ PRAGMA user_version=4;`);
       for (const tool of stage.tools) for (const key of ['stdout', 'stderr', 'result', 'sandbox']) if (tool[key]) references.push(tool[key]);
     }
     for (const ref of references) this.blob(ref.sha256);
+    const composition=parse(packet,'summary').composition;
+    if(composition&&canonical(composeSubject(report,h=>this.blob(h)))!==canonical(composition))throw new Error('stored_composition_changed');
     for (let s = parse(packet, 'summary').supplement; s; s = s.previous) {
       this.blob(s.priorJudgmentSha256);
       this.blob(s.priorInputSha256);
@@ -277,7 +293,8 @@ PRAGMA user_version=4;`);
   import(packet: Packet): Row {
     return this.transaction(() => {
       if ((this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value !== packet.candidate.repository.toLowerCase()) throw new Error('queue_repository_mismatch');
-      const id = candidateKey(packet.candidate, packet.context);
+      if(packet.summary.composition){this.requireCompositionMode();if(canonical(composeSubject(JSON.parse(packet.blobs.get(packet.reportHash)!.toString()),h=>{const b=packet.blobs.get(h);if(!b)throw new Error('composition_original_missing');return b;}))!==canonical(packet.summary.composition))throw new Error('composition_import_changed');}
+      const id = candidateKey(packet.candidate, packet.context,packet.summary.composition);
       for (const [digest, bytes] of packet.blobs) { if (hash(bytes) !== digest) throw new Error('invalid_import_blob'); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(digest, bytes); this.blob(digest); }
       this.db.prepare('INSERT OR IGNORE INTO items(id,candidate,context,created_at) VALUES(?,?,?,?)').run(id, JSON.stringify(packet.candidate), JSON.stringify(packet.context), now());
       const item = this.item(id), previous = item.current_packet ? this.packet(item.current_packet) : undefined;
@@ -405,6 +422,7 @@ PRAGMA user_version=4;`);
       const supplements = [];
       for (let s = parse(packet, 'summary').supplement; s; s = s.previous) supplements.unshift({ ...s, previous: undefined, priorJudgment: JSON.parse(this.blob(s.priorJudgmentSha256).toString()), material: s.material.map((m: Row) => ({ ...m, text: new TextDecoder('utf8', { fatal: true }).decode(this.blob(m.sha256)) })) });
       return { operation: id, packet: op.packet, fingerprint: packet.fingerprint, context, manifest, report, plan: JSON.parse(this.blob(report.plan.sha256).toString()), outputs,
+        ...(parse(packet,'summary').composition?{composition:parse(packet,'summary').composition}:{}),
         ...(supplements.length ? { supplements } : {}),
         ...(this.pairedPrerequisite(op.item) ? { prerequisite: this.pairedPrerequisite(op.item) } : {}),
         sourceArtifactScope: 'W1 artifact index included; selected exact-H source and reports supplied separately. Unprovided artifacts are not reviewed.' };
@@ -415,7 +433,7 @@ PRAGMA user_version=4;`);
       const id = hash(plan), prior = this.db.prepare("SELECT data FROM events WHERE kind='pair_registered'").get() as Row | undefined;
       if (prior) { const p = parse(prior, 'data'); if (p.id !== id) throw new Error('pair_already_bound'); this.blob(id); return { ...p, duplicate: true }; }
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if (![6, 8, 9].includes(version) || !this.supplementGuardInstalled() || !this.receiverGuardsInstalled()) throw new Error('pair_requires_idle_format6');
+      if (![6, 8, 9, 10].includes(version) || !this.supplementGuardInstalled() || !this.receiverGuardsInstalled()) throw new Error('pair_requires_idle_format6');
       if (!source?.trim() || source.length > 2048 || firstItem === secondItem) throw new Error('invalid_pair_scope');
       const first = this.item(firstItem), second = this.item(secondItem), ac = parse(first, 'context'), bc = parse(second, 'context');
       if (canonical(ac.scope) !== canonical(bc.scope) || targetKey(parse(first, 'candidate')) === targetKey(parse(second, 'candidate'))) throw new Error('pair_requires_same_scope_distinct_targets');
@@ -460,7 +478,7 @@ PRAGMA user_version=4;`);
     for (const ref of Object.values(r.blobs ?? {}) as Row[]) this.blob(ref.sha256);
     if (r.planSha256 !== p.first.planSha256) throw new Error('paired_upstream_plan_changed');
     this.blob(r.inputSha256); this.blob(r.systemSha256); this.blob(r.planSha256);
-    const receipt = { pair: p.id, item: p.first.item, packet: op.packet, candidate: p.first.candidate, operation: op.id, bindingHash: r.bindingHash, planSha256: r.planSha256, judgment: r.judgment, inputSha256: r.inputSha256, executionKind: r.executionKind, reportSha256: hash(r.judgment.report) };
+    const receipt = { pair: p.id, item: p.first.item, packet: op.packet, candidate: p.first.candidate, ...(r.subject?{subject:r.subject,subjectSha256:r.subjectSha256}:{}), operation: op.id, bindingHash: r.bindingHash, planSha256: r.planSha256, judgment: r.judgment, inputSha256: r.inputSha256, executionKind: r.executionKind, reportSha256: hash(r.judgment.report) };
     return { ...receipt, receiptSha256: hash(canonical(receipt)) };
   }
   pairedStatus(id: string): Row {
@@ -514,6 +532,7 @@ PRAGMA user_version=4;`);
   }
   private receiverGate(op: Row): void {
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
+    if(parse(packet,'summary').composition)this.requireCompositionMode();
     this.basePacketFingerprint(packet); this.pairedPrerequisite(op.item);
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
@@ -546,7 +565,10 @@ PRAGMA user_version=4;`);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
       const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
       for (const bytes of [fixed.plan, fixed.input, fixed.system]) this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes);
+      const composition=parse(this.packet(op.packet),'summary').composition as Composition|undefined;
+      if(composition){this.requireCompositionMode();const input=JSON.parse(fixed.input.toString());if(input.binding.subjectSha256!==composition.sha256||canonical(input.binding.subject)!==canonical(composition.subject)||canonical(input.data.evidence.composition)!==canonical(composition))throw new Error('receiver_composition_input_mismatch');}
       const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+        ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
       this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
@@ -576,17 +598,25 @@ PRAGMA user_version=4;`);
     if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
   }
   private receiverCandidateCurrent(item: Row): boolean {
-    const current = parse(item, 'candidate') as Candidate, context = parse(item, 'context') as QueueContext;
+    const primary = parse(item, 'candidate') as Candidate, context = parse(item, 'context') as QueueContext;
+    const composition=parse(this.packet(item.current_packet),'summary').composition as Composition|undefined;
+    const effective=(c:Candidate,watermark:string|null)=>({...c,observedAt:(!c.observedAt||watermark&&watermark>c.observedAt)?watermark:c.observedAt});
+    const selected=(composition?currentMembers(composition):[primary]).map(c=>effective(c,item.latest_source_observation));
     // H/B/target changes create another item. Compare source observations across
     // the PR, never W2 completion/arrival time: a fresh test of old H is not new H.
-    const others = this.db.prepare("SELECT candidate,context,latest_source_observation FROM items WHERE id!=? AND lower(json_extract(candidate,'$.repository'))=? AND json_extract(candidate,'$.pr')=?").all(item.id, current.repository.toLowerCase(), current.pr) as Row[];
+    const others = this.db.prepare("SELECT items.candidate,items.context,items.latest_source_observation,packets.summary FROM items JOIN packets ON packets.id=items.current_packet WHERE items.id!=? AND lower(json_extract(candidate,'$.repository'))=?").all(item.id, primary.repository.toLowerCase()) as Row[];
+    for(const current of selected){
     for (const other of others) {
-      const candidate = parse(other, 'candidate') as Candidate, otherContext = parse(other, 'context') as QueueContext;
+      const otherComposition=parse(other,'summary').composition as Composition|undefined, otherCandidates=(otherComposition?currentMembers(otherComposition):[parse(other,'candidate') as Candidate]).map(c=>effective(c,other.latest_source_observation)),otherContext=parse(other,'context') as QueueContext;
+      for(const candidate of otherCandidates){
+      if(candidate.pr!==current.pr)continue;
       // A new context version in this same scope can make the selected task
       // ambiguous; it does not adopt another scope or grant any new permission.
       const sameContext = context.scope.id !== otherContext.scope.id || context.scope.version === otherContext.scope.version && context.arrangement.id === otherContext.arrangement.id && context.arrangement.version === otherContext.arrangement.version;
       if (candidate.H === current.H && candidate.B === current.B && candidate.targetRef === current.targetRef && sameContext) continue;
-      if (!item.latest_source_observation || !other.latest_source_observation || other.latest_source_observation >= item.latest_source_observation) return false;
+      if (!current.observedAt || !candidate.observedAt || candidate.observedAt >= current.observedAt) return false;
+      }
+    }
     }
     return true;
   }
@@ -610,7 +640,7 @@ PRAGMA user_version=4;`);
       const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item) && this.pairedApplicability(op, receiver);
       const r = { ...receiver, phase: judgment ? 'returned' : 'closed_unresolved', finishedAt: now(), judgment, closeSource: closeSource ?? null, blobs,
         currentMaterialMatches: current, newTaskSentOnRecovery: false };
-      const completed = { ...result, status: 'receiver_evaluated', receiver: r, independentReception: judgment ? receiver.executionKind === 'fixture' ? 'fixture_judgment_recorded' : 'judgment_recorded' : 'closed_without_judgment',
+      const completed = { ...result, status: 'receiver_evaluated', receiver: r, independentReception: judgment ? receiver.executionKind === 'fixture' ? 'fixture_judgment_recorded' : receiver.subject?'composition_judgment_recorded':'judgment_recorded' : 'closed_without_judgment',
         productionActionAllowed: false, externalProductionActionSent: false, externalActionKind: 'readonly_model_request',
         externalActionSent: receiver.executionKind === 'fixture' ? false : judgment ? true : receiver.phase === 'dispatch_registered' ? 'unknown' : false,
         modelDispatchStatus: judgment ? 'returned_final' : receiver.phase === 'dispatch_registered' ? 'submitted_or_unknown' : 'not_dispatched', modelRequestRegistered: receiver.phase === 'dispatch_registered',
@@ -628,6 +658,7 @@ PRAGMA user_version=4;`);
     return { ...summary, evidenceComplete: summary.evidenceComplete && !item.observation_conflict, gaps: [...summary.gaps, ...(item.observation_conflict ? ['observation_order_conflict'] : [])] };
   }
   private itemStatus(item: Row): Row {
+    if(parse(this.packet(item.current_packet),'summary').composition)this.packetEvidence(this.packet(item.current_packet));
     return { id: item.id, candidate: parse(item, 'candidate'), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
@@ -649,7 +680,7 @@ PRAGMA user_version=4;`);
     this.db.exec('BEGIN');
     try {
       const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
-      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       for (const operation of result.operations as Row[]) if (receiverMetadataFor.includes(operation.item)) Object.assign(operation, { nativeExecution: this.receiverMetadata(operation.result?.receiver) });
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
