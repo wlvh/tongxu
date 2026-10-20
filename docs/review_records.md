@@ -20,7 +20,7 @@ RF08 本阶段不推送受管修复候选到原作者分支、不批准/合并/�
 
 ## 入口与当前边界
 
-先在无活动/未知 operation 的原队列运行 `node dist/src/review-records-cli.js enable --store ABS`。这是显式启用存储格式 8，保留原表/字节/事件和既有补充、双任务保护；旧客户端会拒绝此格式。`status --store ABS` 读取判断与后果，原 `queue-cli status` 继续显示接收与修复的完整历史。
+先在无活动/未知 operation 的原队列运行 `node dist/src/review-records-cli.js enable --store ABS`。这是显式启用存储格式 9，保留原表/字节/事件和既有补充、双任务保护；旧客户端会拒绝此格式。`status --store ABS` 读取判断与后果，原 `queue-cli status` 继续显示接收与修复的完整历史。
 
 `repair --plan ABS [--reconcile-ended]` 的可信 plan 固定原 store、operation、packet、judgmentId、bindingHash、完整 context，以及工程请求和执行器配置的路径/hash。工程请求中的 findings 必须为空；由程序从原捕获装配，完整原报告随项目输入交付。新候选仍在独立受管副本，原 PR 和原作者工作区不被修改。错误或中断保留原 claim；明确结束恢复不换根、不重复替换已写文件。单独调用旧 `repair-cli` 无法绕开已绑定的队列控制。
 
@@ -29,3 +29,7 @@ RF08 本阶段不推送受管修复候选到原作者分支、不批准/合并/�
 `overall-prepare|overall-run|overall-reconcile --plan ABS` 按需比较四类固定材料，一次运行使用新的独立 reviewer，并将原输入/输出回存同一队列。当前可信采用身份接口尚在原 #5 的剩余范围，因此接受基线的输入状态仅支持 `missing` 或 `supplied_unverified`；两者都输出明确缺口和 `noOverallDriftEstablished=false`。这能执行技术对照，不能单靠计划中的一个布尔字段宣布“基线已采用”或“整体无漂移”。后续 G01 的真实采用记录接入前，这个边界保持。
 
 开发验证使用 `TONGXU_TEST_DOCKER_CONFIG=ABS` 指定已有隔离配置；遗留跨平台测试以规范临时路径运行（Mac 可设置 `TMPDIR=/private/tmp`）。新测试的模型响应全部是明确 fixture；项目测试、Git 修改、队列事务和恢复实际执行。真实供应商工程链沿用 PR27 的原证据，不能把本套夹具算作新增真实模型验收。
+
+已知未发送的恢复使用显式入口：`repair-close-unstarted --plan ABS --source TEXT` 先核原控制器、准备Git子进程、准确原请求，且必须不存在managed operation或写者lease。确认后保留旧根/原claim历史，修正请求须带`replacesClosedBinding`并使用新受管根；这仅限已证实没有开始模型执行的准备失败。实际写入或未知执行不能使用此入口。缺少过程原件的旧准备失败保持待核，不笼统按错误文本释放。
+
+`overall-close-unstarted --plan ABS --source TEXT` 只在本操作互斥锁内核原stage没有任何native launch、process、stdout/stdin或请求契约时登记未发送。原plan随后可明确运行新的有界attempt，旧stage不删除；已启动的现场只允许读取原结果。存储格式8的旧记录可只读检查/关闭已核未启动的复盘，队列闲置后明确enable到9。若旧输入编码已不兼容，使用带`recoveryOf=原overall ID`的同内容计划接续；引用必须指向已核未发送、没有完成结果的原任务，不能借它重发成功任务。JSON排版/键顺序不再产生新任务，原plan字节仍保存。

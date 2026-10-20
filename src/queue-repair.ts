@@ -11,11 +11,11 @@ import { canonical } from './comparison.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
-  request: string; requestSha256: string; config: string; configSha256: string };
+  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string };
 const uuid = /^[a-f0-9-]{36}$/, digest = /^[a-f0-9]{64}$/;
 export function parseQueueRepairPlan(bytes: Buffer): QueueRepairPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || Object.keys(p).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>k!=='replacesClosedBinding').sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
   for (const path of [p.store, p.request, p.config]) if (typeof path !== 'string' || resolve(path) !== path) throw new Error('queue_repair_path_not_canonical');
   return p;
 }
@@ -54,7 +54,7 @@ export async function repairEvidence(operation: string, queueOperation: string, 
   };
   return { operation:queueOperation, bindingHash, resultSha256:hash(resultBytes), terminalRecordSha256:hash(terminalBytes), counters, nativeEvidenceRevalidatedBy:'runRepair terminal reader', productionActionAllowed:false };
 }
-export async function runQueueRepair(planPath: string, reconcileEnded = false) {
+export async function runQueueRepair(planPath: string, reconcileEnded = false): Promise<Row> {
   const planBytes = await regular(planPath), p = parseQueueRepairPlan(planBytes);
   return lock(p.store,p.operation,async()=> {
     // Re-read the supplier capture before using the stored finding. No resend.
@@ -72,9 +72,10 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false) {
         queueOperation:{store:p.store,operation:p.operation}
       };
       const effectiveBytes = Buffer.from(JSON.stringify(effective)), registered = records.reserve(p.operation,planBytes,effectiveBytes,configBytes), bound = registered.repair.bindingHash;
+      if(registered.repair.phase==='closed_unstarted')return {operation:p.operation,status:'closed_unstarted',duplicate:true,modelExecutionStarted:false,productionActionAllowed:false};
       if (registered.duplicate && registered.repair.phase !== 'returned' && !registered.repair.controllerReturned && processState(registered.repair.controllerPid) !== 'ended') throw new Error('original_queue_repair_controller_active_or_unknown');
       if (registered.duplicate && registered.repair.phase !== 'returned' && !reconcileEnded) throw new Error('explicit_queue_repair_reconciliation_required');
-      const requestPath = join(p.store,`repair-${p.operation}-request.json`), configPath = join(p.store,`repair-${p.operation}-config.json`);
+      const requestPath = join(p.store,`repair-${p.operation}-${bound}-request.json`), configPath = join(p.store,`repair-${p.operation}-${bound}-config.json`);
       await putFixed(requestPath,effectiveBytes); await putFixed(configPath,configBytes);
       try {
         if (registered.repair.phase !== 'returned') records.check(p.operation,bound);
@@ -89,5 +90,24 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false) {
         records.controller(p.operation,bound,'unknown',{reason:e instanceof Error?e.message:'repair_unavailable'}); throw e;
       }
     } finally { q.close(); }
+  });
+}
+export async function closeUnstartedQueueRepair(planPath:string,source:string){
+  const bytes=await regular(planPath),p=parseQueueRepairPlan(bytes);
+  return lock(p.store,p.operation,async()=>{
+    const q=await QueueStore.open(p.store);try{
+      const records=q.reviewRecords(),state=records.state(p.operation),r=state.repair,root=r.executionRoot;
+      if(r.planSha256!==hash(bytes)||!source.trim()||source.length>2048)throw new Error('unstarted_close_plan_changed');
+      if(!r.controllerReturned&&processState(r.controllerPid)!=='ended')throw new Error('original_queue_repair_controller_active_or_unknown');
+      if(await exists(join(root,'operation'))||await exists(join(root,'workspace/.git/tongxu-writer.json')))throw new Error('repair_execution_may_have_started');
+      const processes=[];
+      if(await exists(root)){
+        if(hash(await regular(join(root,'request.json')))!==r.requestSha256||hash(await regular(join(root,'config.json')))!==r.configSha256)throw new Error('preparation_original_changed');
+        const intent=JSON.parse((await regular(join(root,'preparation-intent.json'))).toString()),exit=JSON.parse((await regular(join(root,'preparation-exit.json'))).toString());
+        if(intent.requestSha256!==r.requestSha256||exit.controllerPid!==intent.controllerPid||!['failed','prepared'].includes(exit.status)||exit.modelDispatched!==false)throw new Error('preparation_end_unverified');
+        for(const name of (await readdir(root)).filter(n=>/^preparation-git-\d+$/.test(n))){const dir=join(root,name),proc=JSON.parse((await regular(join(dir,'process.json'))).toString()),end=JSON.parse((await regular(join(dir,'exit.json'))).toString());if(end.code===null&&end.signal===null||processState(proc.pid)!=='ended')throw new Error('preparation_child_active_or_unknown');processes.push({directory:name,pid:proc.pid,exit:end});}
+      }
+      return records.closeUnstarted(p.operation,r.bindingHash,source,Buffer.from(JSON.stringify({operation:p.operation,bindingHash:r.bindingHash,executionRoot:root,modelExecutionStarted:false,managedOperationAbsent:true,preparationProcesses:processes,originalFilesPreserved:true})));
+    }finally{q.close();}
   });
 }

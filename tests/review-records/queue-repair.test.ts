@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setup } from '../w3/receiver-fixture.js';
 import { fixture } from '../w5/repair-fixture.js';
 import { runReception } from '../../src/receiver.js';
-import { runQueueRepair } from '../../src/queue-repair.js';
+import { runQueueRepair, closeUnstartedQueueRepair } from '../../src/queue-repair.js';
 import { runRepair } from '../../src/repair.js';
 import { git } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
@@ -88,9 +88,23 @@ test('ended interruption preserves the original claim and resumes the same alrea
   const code=`import {runQueueRepair} from ${JSON.stringify(new URL('../../src/queue-repair.js',import.meta.url).href)};await runQueueRepair(${JSON.stringify(f.planPath)});`;
   await assert.rejects(exec(process.execPath,['--input-type=module','-e',code]),/executor_closed_before_result/);
   assert.equal(f.q.status().claims.length,1);
+  await assert.rejects(closeUnstartedQueueRepair(f.planPath,'fixture:must not close an actual execution'),/repair_execution_may_have_started/);
   const before=(await readFile(f.model.trace,'utf8')).split('"name":"tongxu_replace_file"').length;
   await assert.rejects(runQueueRepair(f.planPath),/explicit_queue_repair_reconciliation_required/);
   const recovered=await runQueueRepair(f.planPath,true);assert.equal(recovered.repairStatus,'completed_recovered_candidate');
   assert.equal((await readFile(f.model.trace,'utf8')).split('"name":"tongxu_replace_file"').length,before);assert.equal(f.q.status().claims.length,0);
   assert.equal(recovered.counters.recoveryAttempts,2);
+});
+
+test('known ended preparation failure can close without erasing it, then an explicitly linked corrected request continues',async t=>{
+  const f=await setupRepair(t),before=await readFile(f.model.trace);
+  const broken={...f.request,materialPaths:[...f.request.materialPaths,'missing.txt']};await writeFile(f.requestPath,JSON.stringify(broken));const brokenPlan={...f.p,requestSha256:hash(await readFile(f.requestPath))};await writeFile(f.planPath,JSON.stringify(brokenPlan));
+  await assert.rejects(runQueueRepair(f.planPath),/project_material_missing/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,1);
+  const originalRequest=await readFile(join(f.request.executionRoot,'request.json')),closed=await closeUnstartedQueueRepair(f.planPath,'fixture:verified no managed operation or model launch');
+  assert.equal(closed.phase,'closed_unstarted');assert.equal(closed.modelExecutionStarted,false);assert.equal(f.q.status().claims.length,0);
+  assert.equal((await runQueueRepair(f.planPath,true)).status,'closed_unstarted');assert.deepEqual(await readFile(f.model.trace),before);
+  await writeFile(f.requestPath,JSON.stringify({...f.request,executionRoot:join(f.root,'corrected-known-unstarted')}));
+  await writeFile(f.planPath,JSON.stringify({...f.p,requestSha256:hash(await readFile(f.requestPath)),replacesClosedBinding:closed.bindingHash}));
+  const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.deepEqual(await readFile(join(f.request.executionRoot,'request.json')),originalRequest);
+  assert.equal(f.q.status().events.filter((e:any)=>e.kind==='repair_closed_unstarted').length,1);
 });

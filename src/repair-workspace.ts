@@ -183,6 +183,7 @@ export async function testClamp(workspace: string, directory: string, node: stri
 export class RepairTools {
   phase: 'read' | 'write' | 'closed' = 'read';
   private serial = 0;
+  private handoffSerial = 0;
   private expectedHead: string;
   constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>, private externalGate?: (effect?: () => void) => void) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
@@ -198,7 +199,7 @@ export class RepairTools {
   }
   async handoff(sessionId: string) {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
-    save(join(this.operation, 'handoff-' + this.lease.generation + '.json'), { from: 'trusted-preparer', to: sessionId, sessionContinuity: 'same_fact_verifier_session', grant: this.grant, lease: this.lease, verifiedTreeSha256: treeHash(this.expected), backgroundCommands: 'none-active-in-managed-workspace' }); this.phase = 'write';
+    await writeFile(join(this.operation, 'handoff-' + this.lease.generation + '-' + (++this.handoffSerial) + '.json'), JSON.stringify({ from: 'trusted-preparer', to: sessionId, sessionContinuity: 'same_fact_verifier_session', grant: this.grant, lease: this.lease, verifiedTreeSha256: treeHash(this.expected), backgroundCommands: 'none-active-in-managed-workspace' }), { flag: 'wx', mode: 0o600 }); this.phase = 'write';
   }
   async call(p: { tool: string; arguments: any; callId: string }) {
     const current = await this.check();

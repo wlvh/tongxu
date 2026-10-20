@@ -58,6 +58,10 @@ test('revocation is checked by the actual write gate and preserves already appli
   const f = await fixture(t); await mkdir(f.operation, { mode: 0o700 });
   const g = JSON.parse(await readFile(f.grantPath, 'utf8')), current = await tree(f.workspace), lease = await acquireWorkspace(f.workspace, f.operation, false, g);
   const gate = new RepairTools(f.workspace, f.operation, g, lease, process.execPath, current); await gate.handoff('fixture-fact-session');
+  const firstHandoff = await readFile(join(f.operation, `handoff-${lease.generation}-1.json`));
+  await gate.handoff('fixture-fact-session');
+  assert.deepEqual(await readFile(join(f.operation, `handoff-${lease.generation}-1.json`)), firstHandoff);
+  assert.equal(JSON.parse(await readFile(join(f.operation, `handoff-${lease.generation}-2.json`), 'utf8')).to, 'fixture-fact-session');
   await revokeRepair(f.operation, 'fixture:explicit-user-revocation');
   await assert.rejects(gate.call({ tool: 'tongxu_replace_file', callId: 'fixture-write-after-revoke', arguments: { path: 'clamp.mjs', expectedSha256: current['clamp.mjs']!.sha256, text: 'changed' } }), /revoked/);
   assert.equal(treeHash(await tree(f.workspace)), treeHash(current)); await releaseWorkspace(f.workspace, lease, 'revoked');

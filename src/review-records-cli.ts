@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { QueueStore } from './queue-store.js';
-import { runQueueRepair } from './queue-repair.js';
+import { runQueueRepair, closeUnstartedQueueRepair } from './queue-repair.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
 import { overallReview } from './overall-review.js';
 try {
   const a = process.argv.slice(2); let result: unknown;
   if (a[0] === 'repair' && a[1] === '--plan' && (a.length === 3 || a.length === 4 && a[3] === '--reconcile-ended')) result = await runQueueRepair(a[2]!,a.length===4);
+  else if(a[0]==='repair-close-unstarted'&&a[1]==='--plan'&&a[3]==='--source'&&a.length===5)result=await closeUnstartedQueueRepair(a[2]!,a[4]!);
+  else if(a[0]==='overall-close-unstarted'&&a[1]==='--plan'&&a[3]==='--source'&&a.length===5)result=await overallReview(a[2]!,'close-unstarted',a[4]!);
   else if (['overall-prepare','overall-run','overall-reconcile'].includes(a[0]!) && a[1]==='--plan' && a.length===3) result=await overallReview(a[2]!,a[0]!.slice(8) as 'prepare'|'run'|'reconcile');
   else if (a.length === 3 && ['enable','status'].includes(a[0]!) && a[1] === '--store') { const q=await QueueStore.open(a[2]!); try { result=a[0]==='enable'?q.reviewRecords().enable():q.reviewRecords().status(); } finally { q.close(); } }
   else if (a.length === 3 && a[0]==='record' && a[1]==='--request') {

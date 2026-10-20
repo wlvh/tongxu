@@ -11,6 +11,9 @@ const repairClaimGuard = `CREATE TRIGGER review_repair_claim_guard BEFORE DELETE
 WHEN EXISTS(SELECT 1 FROM operations WHERE id=OLD.operation AND status='repairing')
 BEGIN SELECT RAISE(ABORT,'repair_claim_active'); END`;
 const repairRecordGuard = `CREATE TRIGGER review_repair_record_guard BEFORE UPDATE ON operations
+WHEN json_type(OLD.result,'$.repair')='object' AND (NEW.packet!=OLD.packet OR (json_extract(NEW.result,'$.repair.bindingHash') IS NOT json_extract(OLD.result,'$.repair.bindingHash') AND (json_extract(OLD.result,'$.repair.phase') IS NOT 'closed_unstarted' OR json_extract(NEW.result,'$.repair.previousBindingHash') IS NOT json_extract(OLD.result,'$.repair.bindingHash'))))
+BEGIN SELECT RAISE(ABORT,'repair_record_is_bound'); END`;
+const legacyRepairRecordGuard = `CREATE TRIGGER review_repair_record_guard BEFORE UPDATE ON operations
 WHEN json_type(OLD.result,'$.repair')='object' AND (NEW.packet!=OLD.packet OR json_extract(NEW.result,'$.repair.bindingHash') IS NOT json_extract(OLD.result,'$.repair.bindingHash'))
 BEGIN SELECT RAISE(ABORT,'repair_record_is_bound'); END`;
 
@@ -24,17 +27,21 @@ export class ReviewRecords {
   private events(object: string, kind?: string): Row[] { return (this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all(object) as Row[]).filter(e => !kind || e.kind === kind).map(e => ({ ...e, data: JSON.parse(e.data) })); }
   private blob(bytes: Buffer) { const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); this.bytes(sha256); return sha256; }
   private bytes(sha256: string): Buffer { const r = this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha256) as Row; if (!r || hash(Buffer.from(r.bytes)) !== sha256) throw new Error('review_original_changed'); return Buffer.from(r.bytes); }
-  private requireMode() {
-    if ((this.db.prepare('PRAGMA user_version').get() as Row).user_version !== 8 || ![['review_repair_claim_guard', repairClaimGuard], ['review_repair_record_guard', repairRecordGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row)?.sql === sql)) throw new Error('review_records_not_enabled');
+  private requireMode(legacyReadOrClose=false) {
+    const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+    if (!(version===9 || legacyReadOrClose&&version===8) || ![['review_repair_claim_guard', repairClaimGuard], ['review_repair_record_guard', version===8?legacyRepairRecordGuard:repairRecordGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row)?.sql === sql)) throw new Error('review_records_not_enabled');
   }
   enable() {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if (version === 8) { this.requireMode(); return { enabled: true, duplicate: true, productionActionAllowed: false }; }
-      if (![6, 7].includes(version)) throw new Error('enable_receiver_supplements_before_review_records');
+      if (version === 9) { this.requireMode(); return { enabled: true, duplicate: true, productionActionAllowed: false }; }
+      if (![6, 7, 8].includes(version)) throw new Error('enable_receiver_supplements_before_review_records');
+      if(version===8)this.requireMode(true);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
-      this.db.exec(`${repairClaimGuard}; ${repairRecordGuard}; PRAGMA user_version=8;`);
-      this.event('review_records_enabled', 'review-records', { from: version, to: 8 }); return { enabled: true, duplicate: false, productionActionAllowed: false };
+      if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get() as Row).n)throw new Error('queue_has_active_or_unknown_overall_review');
+      if(version===8)this.db.exec('DROP TRIGGER review_repair_claim_guard; DROP TRIGGER review_repair_record_guard;');
+      this.db.exec(`${repairClaimGuard}; ${repairRecordGuard}; PRAGMA user_version=9;`);
+      this.event('review_records_enabled', 'review-records', { from: version, to: 9 }); return { enabled: true, duplicate: false, productionActionAllowed: false };
     });
   }
   private operation(id: string) { const o = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row; if (!o) throw new Error('operation_not_found'); return { op: o, result: JSON.parse(o.result) }; }
@@ -43,14 +50,15 @@ export class ReviewRecords {
     if (!r) throw new Error('queue_repair_not_registered');
     return { op, result, repair: r, plan: this.bytes(r.planSha256), request: this.bytes(r.requestSha256), config: this.bytes(r.configSha256) };
   }
-  state(id: string) { return this.transaction(() => { this.requireMode(); const x = this.fixed(id); if (x.repair.resultSha256) this.bytes(x.repair.resultSha256); return { ...x, events: this.events(id).filter(e => e.kind.startsWith('repair_')) }; }); }
+  state(id: string) { return this.transaction(() => { this.requireMode(true); const x = this.fixed(id); if (x.repair.resultSha256) this.bytes(x.repair.resultSha256); return { ...x, events: this.events(id).filter(e => e.kind.startsWith('repair_')) }; }); }
   reserve(id: string, plan: Buffer, request: Buffer, config: Buffer) {
     return this.transaction(() => {
       this.requireMode(); const { op, result } = this.operation(id);
       if (result.repair) {
         const x = this.fixed(id);
-        if (x.repair.planSha256 !== hash(plan) || x.repair.requestSha256 !== hash(request) || x.repair.configSha256 !== hash(config)) throw new Error('queue_repair_fixed_input_changed');
-        return { ...x, duplicate: true };
+        if (x.repair.planSha256 === hash(plan) && x.repair.requestSha256 === hash(request) && x.repair.configSha256 === hash(config)) return { ...x, duplicate: true };
+        const replacement=JSON.parse(plan.toString()),nextRequest=JSON.parse(request.toString());
+        if(x.repair.phase!=='closed_unstarted'||replacement.replacesClosedBinding!==x.repair.bindingHash||nextRequest.executionRoot===x.repair.executionRoot)throw new Error('queue_repair_fixed_input_changed');
       }
       const s = this.source(id, true);
       if (op.status !== 'complete' || s.receiver.judgment.verdict !== 'RETURN_FOR_WORK' || !s.receiver.controllerReturned) throw new Error('repair_requires_completed_return');
@@ -63,7 +71,7 @@ export class ReviewRecords {
       const seats = Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
       const bindingHash = hash(canonical({ operation: id, packet: op.packet, originalBinding: s.receiver.bindingHash, plan: hash(plan), request: hash(request), config: hash(config) }));
-      const repair = { bindingHash, phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.receiver.judgmentId, sourceBindingHash: s.receiver.bindingHash, scope: s.context.scope.id, registeredAt: now() };
+      const repair = { bindingHash, ...(result.repair?{previousBindingHash:result.repair.bindingHash}:{}), phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.receiver.judgmentId, sourceBindingHash: s.receiver.bindingHash, scope: s.context.scope.id, registeredAt: now() };
       const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
       this.db.prepare("UPDATE operations SET status='repairing',generation=?,finished_at=NULL,result=? WHERE id=?").run(generation, JSON.stringify({ ...result, repair }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
@@ -79,6 +87,20 @@ export class ReviewRecords {
       const context = JSON.parse(this.db.prepare('SELECT context FROM items WHERE id=?').get(x.op.item)!.context as string);
       if ((this.db.prepare("SELECT COUNT(*) AS n FROM controls WHERE scope=? AND kind IN ('investment','implementation') AND stopped=1").get(context.scope.id) as Row).n) throw new Error('queue_repair_stopped');
       effect?.(); return { operation: id, bindingHash, generation: x.op.generation };
+    });
+  }
+  closeUnstarted(id:string,bindingHash:string,source:string,proof:Buffer){
+    return this.transaction(()=>{
+      this.requireMode(true);const x=this.fixed(id);
+      if(x.repair.bindingHash!==bindingHash||!text(source)||JSON.parse(proof.toString()).modelExecutionStarted!==false)throw new Error('unstarted_close_binding_invalid');
+      if(x.repair.phase==='closed_unstarted')return {...x.repair,duplicate:true};
+      if(x.op.status!=='repairing'||x.repair.phase==='returned')throw new Error('unstarted_close_requires_pending_repair');
+      const claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(id) as Row;
+      if(!claim||claim.generation!==x.op.generation)throw new Error('queue_repair_claim_changed');
+      Object.assign(x.repair,{phase:'closed_unstarted',controllerReturned:true,closeSource:source,closeProofSha256:this.blob(proof),modelExecutionStarted:false});
+      this.db.prepare("UPDATE operations SET status='complete',finished_at=?,result=? WHERE id=?").run(now(),JSON.stringify(x.result),id);
+      this.db.prepare('DELETE FROM claims WHERE operation=? AND generation=?').run(id,x.op.generation);
+      this.event('repair_closed_unstarted',id,{bindingHash,source,proofSha256:hash(proof),originalRepair:x.repair});return {...x.repair,duplicate:false};
     });
   }
   controller(id: string, bindingHash: string, phase: 'prepared' | 'dispatched' | 'returned' | 'unknown', data: Row = {}) {
@@ -161,32 +183,54 @@ export class ReviewRecords {
       this.event('judgment_sample_selected', `sample:${id}`, entry); return {...entry,duplicate:false};
     });
   }
+  private overallKey(plan:Buffer){
+    const semantic=canonical(JSON.parse(plan.toString()));
+    const existing=(this.db.prepare("SELECT data FROM events WHERE kind='overall_review_reserved' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data)).filter(e=>canonical(JSON.parse(this.bytes(e.planSha256).toString()))===semantic);
+    if(existing.length>1)throw new Error('legacy_duplicate_overall_requests_require_inspection');
+    return existing[0]?.id??hash(semantic);
+  }
+  overallIdentity(plan:Buffer){return this.transaction(()=>{this.requireMode(true);return this.overallKey(plan);});}
+  overallOriginal(plan:Buffer){return this.transaction(()=>{this.requireMode(true);const key=this.overallKey(plan),events=this.events(`overall:${key}`),registered=events.find(e=>e.kind==='overall_review_reserved');if(!registered)return null;const result=events.find(e=>e.kind==='overall_review_result');return {...registered.data,originalPlan:this.bytes(registered.data.planSha256),originalInput:this.bytes(registered.data.inputSha256),...(result?{originalResult:JSON.parse(this.bytes(result.data.blobs.result.sha256).toString())}:{}),events};});}
   overall(id: string, plan: Buffer, input: Buffer, phase: 'reserve' | 'dispatch' | 'result', originals: Record<string,Buffer> = {}) {
     return this.transaction(() => {
-      this.requireMode(); const key=hash(plan), object=`overall:${key}`, events=this.events(object), registered=events.find(e=>e.kind==='overall_review_reserved');
+      this.requireMode(phase==='reserve'); const key=this.overallKey(plan), object=`overall:${key}`, events=this.events(object), registered=events.find(e=>e.kind==='overall_review_reserved');
       const source=this.source(id,phase==='dispatch'||!registered);
       const p=JSON.parse(plan.toString());
       if(p.operation!==id || p.bindingHash!==source.receiver.bindingHash || p.judgmentId!==source.receiver.judgmentId || canonical(p.context)!==canonical(source.context)) throw new Error('overall_source_binding_mismatch');
       if(registered && (registered.data.inputSha256!==hash(input)||registered.data.operation!==id)) throw new Error('overall_fixed_material_changed');
       if(phase==='reserve') {
-        if(registered)return {...registered.data,duplicate:true,events};
-        if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND json_extract(a.data,'$.operation')=? AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.kind='overall_review_result')").get(id) as Row).n) throw new Error('overall_original_pending_or_unknown');
+        if(registered)return {...registered.data,originalPlan:this.bytes(registered.data.planSha256),duplicate:true,events};
+        this.requireMode();
+        if(p.recoveryOf){const old=this.events(`overall:${p.recoveryOf}`),registration=old.find(e=>e.kind==='overall_review_reserved'),dispatch=old.findLast(e=>e.kind==='overall_review_dispatched');const {recoveryOf:_recovery,...withoutRecovery}=p;if(!registration||!dispatch||old.some(e=>e.kind==='overall_review_result')||!old.some(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id)||canonical(withoutRecovery)!==canonical(JSON.parse(this.bytes(registration.data.planSha256).toString())))throw new Error('overall_recovery_source_not_confirmed_unstarted');}
+        if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND json_extract(a.data,'$.operation')=? AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get(id) as Row).n) throw new Error('overall_original_pending_or_unknown');
         const entry={operation:id,id:key,planSha256:this.blob(plan),inputSha256:this.blob(input),judgmentId:source.receiver.judgmentId,modelDispatched:false};
-        this.event('overall_review_reserved',object,entry);return {...entry,duplicate:false,events:[]};
+        this.event('overall_review_reserved',object,entry);return {...entry,originalPlan:plan,duplicate:false,events:[]};
       }
       if(!registered)throw new Error('overall_intent_required');
       if(phase==='dispatch') {
-        if(events.some(e=>e.kind==='overall_review_dispatched'))throw new Error('overall_original_already_dispatched');
-        if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND a.object!=? AND json_extract(a.data,'$.operation')=? AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.kind='overall_review_result')").get(object,id) as Row).n)throw new Error('overall_original_pending_or_unknown');
+        const attempts=events.filter(e=>e.kind==='overall_review_dispatched'),latest=attempts.at(-1);
+        if(latest&&!events.some(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===latest.id))throw new Error('overall_original_already_dispatched');
+        if(attempts.length>=3)throw new Error('overall_unstarted_retry_limit');
+        if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND a.object!=? AND json_extract(a.data,'$.operation')=? AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get(object,id) as Row).n)throw new Error('overall_original_pending_or_unknown');
         if((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(source.context.scope.id) as Row)?.stopped)throw new Error('new_investment_stopped');
         if(this.db.prepare('SELECT 1 FROM claims WHERE operation=?').get(id))throw new Error('original_task_execution_active_or_unknown');
       }
       const blobs=Object.fromEntries(Object.entries(originals).map(([k,v])=>[k,{sha256:this.blob(v),bytes:v.length}]));
-      const entry={operation:id,id:key,inputSha256:hash(input),blobs};
-      const previous=events.find(e=>e.kind==='overall_review_'+(phase==='dispatch'?'dispatched':'result'));
+      const entry={operation:id,id:key,inputSha256:hash(input),blobs,...(phase==='dispatch'?{attempt:events.filter(e=>e.kind==='overall_review_dispatched').length+1}:{})};
+      const previous=phase==='result'?events.find(e=>e.kind==='overall_review_result'):undefined;
       if(previous){if(canonical(previous.data)!==canonical(entry))throw new Error('overall_result_changed');return {...entry,duplicate:true};}
       this.event('overall_review_'+(phase==='dispatch'?'dispatched':'result'),object,entry);return {...entry,duplicate:false};
     });
   }
-  status() { return this.transaction(() => { this.requireMode(); return { events:(this.db.prepare("SELECT * FROM events WHERE kind LIKE 'judgment_%' OR kind LIKE 'simplification_%' OR kind='repair_batch_published' ORDER BY id").all() as Row[]).map(e=>({id:e.id,kind:e.kind,object:e.object,observedAt:e.observed_at,data:JSON.parse(e.data)})), rankingAvailable:false, accuracyFromSilence:false, productionActionAllowed:false }; }); }
+  closeOverallUnstarted(id:string,plan:Buffer,source:string,proof:Buffer){
+    return this.transaction(()=>{
+      this.requireMode(true);const key=this.overallKey(plan),object=`overall:${key}`,events=this.events(object),dispatch=events.findLast(e=>e.kind==='overall_review_dispatched');
+      if(!dispatch||dispatch.data.operation!==id||!text(source)||JSON.parse(proof.toString()).nativeLaunchRegistered!==false)throw new Error('overall_unstarted_proof_missing');
+      if(events.some(e=>e.kind==='overall_review_result'))throw new Error('overall_already_completed');
+      const old=events.find(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id);if(old)return {...old.data,duplicate:true};
+      const entry={operation:id,id:key,dispatchEvent:dispatch.id,attempt:dispatch.data.attempt??1,source,proofSha256:this.blob(proof),modelDispatched:false,originalPreserved:true};
+      this.event('overall_review_closed_unstarted',object,entry);return {...entry,duplicate:false};
+    });
+  }
+  status() { return this.transaction(() => { this.requireMode(true); return { events:(this.db.prepare("SELECT * FROM events WHERE kind LIKE 'judgment_%' OR kind LIKE 'simplification_%' OR kind LIKE 'overall_review_%' OR kind='repair_batch_published' ORDER BY id").all() as Row[]).map(e=>({id:e.id,kind:e.kind,object:e.object,observedAt:e.observed_at,data:JSON.parse(e.data)})), rankingAvailable:false, accuracyFromSilence:false, productionActionAllowed:false }; }); }
 }

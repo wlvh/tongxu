@@ -133,11 +133,15 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
   await privateDirectory(root, true); await mkdir(workspace, { mode: 0o700 });
   await writeFile(join(root, 'config.json'), configBytes, { flag: 'wx', mode: 0o600 }); await writeFile(join(root, 'request.json'), requestBytes, { flag: 'wx', mode: 0o600 }); await writeFile(project.testPlan, testBytes, { flag: 'wx', mode: 0o600 });
+  save(join(root, 'preparation-intent.json'), { controllerPid: process.pid, requestSha256: hash(requestBytes), configSha256: hash(configBytes), workspace, phase: 'preparing_no_model_dispatch' });
+  let preparationStep = 0;
+  const prepareGit = (args: string[]) => mutateGit(workspace, args, join(root, 'preparation-git-' + (++preparationStep)));
+  try {
   // Fetch only fixed objects from the explicit local repository. No credential,
   // hook, config, uncommitted file or remote publishing setup is copied.
-  await git(workspace, ['init', '--template=', '--initial-branch=project-base']);
-  await git(workspace, ['fetch', '--no-tags', '--no-recurse-submodules', r.objects, r.candidate.H]);
-  await git(workspace, ['checkout', '-B', 'project-base', r.candidate.H]); await git(workspace, ['switch', '-c', 'repair-project']);
+  await prepareGit(['init', '--template=', '--initial-branch=project-base']);
+  await prepareGit(['fetch', '--no-tags', '--no-recurse-submodules', r.objects, r.candidate.H]);
+  await prepareGit(['checkout', '-B', 'project-base', r.candidate.H]); await prepareGit(['switch', '-c', 'repair-project']);
   if ((await git(workspace, ['ls-files', '--stage'])).split('\n').some(line => line.startsWith('160000 '))) throw new Error('project_submodule_material_unavailable');
   const initial = await tree(workspace, true); projectMaterial(initial, project);
   if (Object.keys(initial).some(path => project.generatedDirectories.some(d => path === d || path.startsWith(d + '/')))) throw new Error('project_output_overlaps_source');
@@ -147,7 +151,11 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   save(join(workspace, '.git', 'tongxu-managed.json'), { kind: 'owned-project-workspace', executionRoot: root, initialH: grant.H, initialTreeSha256: grant.treeSha256, sourceCandidate: r.candidate, requestSha256: hash(requestBytes), preparer: 'tongxu-fixed-project-preparer', preparerSourceWritesFinished: true });
   const candidate = await localCandidate(workspace, grant.H, true);
   const plan: RepairPlan = { ...config, schemaVersion: 1, kind: 'tongxu-controlled-repair', workspace, candidate, grant: join(root, 'grant.json'), findings: r.findings, test: 'registered-project-tests-v1', demonstrationFixture: r.demonstrationFixture, project };
-  save(join(root, 'plan.json'), plan); return { plan: join(root, 'plan.json'), operation: join(root, 'operation'), candidate, sourceCandidate: r.candidate };
+  save(join(root, 'plan.json'), plan); save(join(root, 'preparation-exit.json'), { status: 'prepared', controllerPid: process.pid, modelDispatched: false });
+  return { plan: join(root, 'plan.json'), operation: join(root, 'operation'), candidate, sourceCandidate: r.candidate };
+  } catch (error) {
+    save(join(root, 'preparation-exit.json'), { status: 'failed', controllerPid: process.pid, modelDispatched: false, reason: error instanceof Error ? error.message : 'preparation_failed' }); throw error;
+  }
 }
 
 /** Run unchanged registered tools against a disposable exact Git input. The
