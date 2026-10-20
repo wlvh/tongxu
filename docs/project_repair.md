@@ -42,3 +42,5 @@ TONGXU_TEST_DOCKER_CONFIG=/private/existing-docker.json npm run test:project-rep
 ```
 
 专项消息为明确本地模型夹具，Docker/文件/Git/测试/恢复为实际执行。真实供应商模型结果单独记录；测试数不能替代该实跑。
+
+专项测试失败时保留原执行目录，并将完整诊断副本复制到`TONGXU_TEST_FAILURE_DIRECTORY`（缺省为被Git忽略的`.test-failures`），输出原路径和副本路径。副本仅供诊断，活动或未知容器仍按原目录中的记录核实，不能用副本替代原执行或据此清理未知现场。

@@ -6,3 +6,4 @@ __pycache__/
 /prototypes/product_ui_prototype.html
 dist/
 *.tsbuildinfo
+.test-failures/

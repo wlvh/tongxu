@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { hash } from '../../src/snapshot.js';
 import { prepareRepairFixture, type RepairConfig } from '../../src/repair.js';
 
-export async function fixture(t: test.TestContext, mode = '') {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-controlled-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
+export async function fixture(t: test.TestContext, mode = '', cleanup = true) {
+  const root = await mkdtemp(join(tmpdir(), 'tongxu-controlled-fixture-')); if (cleanup) t.after(() => rm(root, { recursive: true, force: true }));
   const trace = join(root, 'trace.ndjson'); await writeFile(trace, '');
   const code = `#!${process.execPath}
 import fs from 'node:fs';import readline from 'node:readline';
