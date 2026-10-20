@@ -33,6 +33,8 @@ node dist/src/repair-cli.js run --plan /private/new-managed-project/plan.json --
 
 恢复检查只在控制器登记的测试目录内，将`work`和构建输出识别为候选数据；项目普通的`.vscode/launch.json`不会被当成进程记录，真实Git准备命令和模型/容器进程仍逐个检查。项目初始树与新候选使用匹配16MiB快照的读取上限。终态清单保留源快照、候选diff、真实Git身份、输入指纹、产物摘要与原始执行记录，不重复收录可重建的测试副本和构建产物；原目录仍保留，不删除未知现场。
 
+本机原生实跑发现相同CLI也会直接发出动态工具请求，未必启动Code Mode辅助进程。执行器依[官方动态工具流程](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental)核对同一受管App Server进程、当前thread/turn、唯一`item/started`及相同callId/工具/参数，再进入原读写权限门；辅助进程存在时记录并纳入恢复检查，未观察到时如实记录，不能声称已验证辅助进程执行。版本、配置、只读sandbox、禁网络/内建工具及逐次写权检查保持生效；工具请求缺前置事件或身份不符仍拒绝。
+
 现有测试全绿时仍核实finding；按测试覆盖之外的事实形成修复或反证。测试结果保留`businessCorrectness=requires_independent_review`，新候选还须新鲜独立审核。模型报告、测试输出及当前页面不赋予权限。判断反馈、已发布返工批次的独立计数和按需整体复盘继续按原#7另行补齐，不因本子范围交付消失。
 
 专项验证使用现成Docker配置，缺环境明确失败而不skip：
