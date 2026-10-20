@@ -6,21 +6,23 @@ import { regular } from './repair-workspace.js';
 import { disabledFeatures,checkConfig } from './live-codex.js';
 import { executable,LiveProcess,newStage,save,checkCapture } from './live-process.js';
 
-export type SessionReadSpec={schemaVersion:1;kind:'tongxu-exact-codex-session-read';executable:string;executableSha256:string;threadId:string;sessionId:string;workspace:string;disabledMcpServers:string[];executionKind:'fixture'|'native_capture'};
+export type SessionReadSpec={schemaVersion:1;kind:'tongxu-exact-codex-session-read';executable:string;executableSha256:string;threadId:string;sessionId:string|null;workspace:string|null;disabledMcpServers:string[];executionKind:'fixture'|'native_capture'};
 type Row=Record<string,any>;
 export type SessionObservation={spec:SessionReadSpec;directory:string;observedAt:string;metadata:Row|null;gap:string|null;reader:Row;originals:Record<string,Buffer>;replayed:boolean;modelRequestsSent:0;unexpectedExecutionObserved:boolean;controlPermissionGranted:false};
 const issued=new WeakMap<object,string>(),digest=/^[a-f0-9]{64}$/;
+const nativeId=(value:unknown):value is string=>typeof value==='string'&&/^[-A-Za-z0-9_.:]{1,128}$/.test(value);
+const absolutePath=(value:unknown):value is string=>typeof value==='string'&&!value.includes('\0')&&isAbsolute(value)&&resolve(value)===value;
 const key=(s:SessionObservation)=>hash(canonical({...s,originals:Object.fromEntries(Object.entries(s.originals).map(([name,bytes])=>[name,{sha256:hash(bytes),bytes:bytes.length}]))}));
 export function parseSessionReadSpec(bytes:Buffer):SessionReadSpec{
   const s=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes));
   if(!s||Object.keys(s).sort().join()!=='disabledMcpServers,executable,executableSha256,executionKind,kind,schemaVersion,sessionId,threadId,workspace'||s.schemaVersion!==1||s.kind!=='tongxu-exact-codex-session-read'||!digest.test(s.executableSha256)||!['fixture','native_capture'].includes(s.executionKind)||!Array.isArray(s.disabledMcpServers)||s.disabledMcpServers.length>30||new Set(s.disabledMcpServers).size!==s.disabledMcpServers.length||s.disabledMcpServers.some((x:unknown)=>typeof x!=='string'||!/^[-\w]+$/.test(x)))throw new Error('session_read_spec_invalid');
-  for(const field of ['threadId','sessionId'])if(typeof s[field]!=='string'||!/^[-A-Za-z0-9_.:]{1,128}$/.test(s[field]))throw new Error('exact_native_session_identity_required');
-  for(const field of ['executable','workspace'])if(typeof s[field]!=='string'||!isAbsolute(s[field])||resolve(s[field])!==s[field])throw new Error('session_read_absolute_path_required');
+  if(!nativeId(s.threadId)||s.sessionId!==null&&!nativeId(s.sessionId))throw new Error('exact_native_session_identity_required');
+  if(!absolutePath(s.executable)||s.workspace!==null&&!absolutePath(s.workspace))throw new Error('session_read_absolute_path_required');
   return s;
 }
 function readerArgs(spec:SessionReadSpec){const args=disabledFeatures.flatMap(name=>['-c',`features.${name}=false`]);for(const name of spec.disabledMcpServers)args.push('-c',`mcp_servers.${name}.enabled=false`);return [...args,'-c','web_search="disabled"','-c','project_doc_max_bytes=0','-c','model_provider="openai"','-c','service_tier="default"','app-server','--listen','stdio://'];}
 function metadataOf(result:Row,spec:SessionReadSpec){
-  const t=result?.thread;if(!t||t.id!==spec.threadId||t.sessionId!==spec.sessionId||t.cwd!==spec.workspace)throw new Error('native_session_metadata_identity_mismatch');
+  const t=result?.thread;if(!t||t.id!==spec.threadId||!nativeId(t.sessionId)||!absolutePath(t.cwd)||spec.sessionId!==null&&t.sessionId!==spec.sessionId||spec.workspace!==null&&t.cwd!==spec.workspace)throw new Error('native_session_metadata_identity_mismatch');
   return {threadId:t.id,sessionId:t.sessionId,workspace:t.cwd,createdWithVersion:typeof t.cliVersion==='string'?t.cliVersion:null,reportedStatus:t.status??null,ephemeral:typeof t.ephemeral==='boolean'?t.ephemeral:null,parentThreadId:t.parentThreadId??null,forkedFromId:t.forkedFromId??null,historyIncluded:false,reportedStatusDoesNotEstablishWriterOwnership:true,capabilities:{readMetadata:'observed',readOriginalCapture:'separate_evidence_required',resume:'not_verified',steer:'not_verified',interrupt:'not_verified',sendTurn:'not_authorized',write:'not_authorized'}};
 }
 /** This owns only its new metadata reader process. Reading one stored ID does

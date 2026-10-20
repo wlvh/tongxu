@@ -14,7 +14,7 @@ SN05 验证真实原始捕获关联、准确/错误会话、旧会话不可继�
 
 ## 已实现入口与实际边界
 
-`node dist/src/session-cli.js associate --store /绝对/queue --request 稳定请求ID --input /绝对/plan.json` 在原 events/blobs 中登记只读关联，保存读取意图后启动一个只负责元数据的子进程。plan 为 schemaVersion=1、kind=tongxu-session-association、item、role、source；source 使用 tongxu-exact-codex-session-read，固定 executable/executableSha256、threadId、sessionId、workspace、disabledMcpServers 与 executionKind。它没有模型轮次、接管或变更权限选项。
+`node dist/src/session-cli.js associate --store /绝对/queue --request 稳定请求ID --input /绝对/plan.json` 在原 events/blobs 中登记只读关联，保存读取意图后启动一个只负责元数据的子进程。plan 为 schemaVersion=1、kind=tongxu-session-association、item、role、source；source 使用 tongxu-exact-codex-session-read，固定 executable/executableSha256、threadId、sessionId、workspace、disabledMcpServers 与 executionKind。首次只有准确 threadId 时，sessionId 和 workspace 显式填 null；已知值仍须严格匹配，未知值仅从该 thread/read 返回中校验并保存，不搜索或猜测其他会话。它没有模型轮次、接管或变更权限选项。
 
 `status --store ... --request ...` 读取原状态。`reconcile --store ... --request ...` 只消费已经结束的完整原读取：检查准确命令、请求序列、响应、退出与哈希，保留原观察时间，不重启程序。已开始或未知的同一请求不会因重入另读一次；不同 request 内容不能复用同一个 ID。原程序已经删除也可读取完整原捕获；缺失/损坏的原件仍是未知，恢复准确原件后才可继续。跨进程控制器锁和登记都在原队列目录内，没有新的任务队列。
 
