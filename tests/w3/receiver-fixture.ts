@@ -44,7 +44,8 @@ else{let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>
 emit({type:'system',subtype:'init',session_id:'fixture-receiver',model:'fixture',claude_code_version:'2.1.233',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]});
 const missing=mode==='always-insufficient'||mode==='insufficient'&&!x.data.evidence.supplements?.length;
 const j={schemaVersion:1,...(x.data.evidence.prerequisite?{consumedPrerequisite:x.data.evidence.prerequisite.receiptSha256}:{}),operation:x.binding.operation,judgmentId:x.binding.judgmentId,bindingHash:mode==='bad-binding'?'0'.repeat(64):x.bindingHash,verdict:missing?'INSUFFICIENT_EVIDENCE':'ACCEPT_WITHIN_SCOPE',report:'明确标注的模拟接收判断；没有真实模型或业务批准。',findings:missing?[{priority:1,description:'fixture missing raw evidence'}]:[]};
-setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:JSON.stringify(j),usage:{},total_cost_usd:0}),mode==='delay'?900:0);
+const fence=String.fromCharCode(96).repeat(3),fenced=fence+'json\\n'+JSON.stringify(j)+'\\n'+fence,formatted=mode==='fenced'?fenced:mode==='fenced-prose'?'note\\n'+fenced:mode==='fenced-double'?fenced+'\\n'+fenced:JSON.stringify(j);
+setTimeout(()=>emit({type:'result',session_id:'fixture-receiver',subtype:'success',is_error:false,terminal_reason:mode==='aborted'?'aborted_streaming':'completed',stop_reason:'end_turn',result:formatted,usage:{},total_cost_usd:0}),mode==='delay'?900:0);
 });}
 `;
   await writeFile(executable, code, { mode: 0o700 }); const billing = join(root, 'billing.txt'); await writeFile(billing, 'Explicit test fixture billing; no actual authentication or model');

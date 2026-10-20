@@ -201,3 +201,11 @@ test('legacy supplemented packets without a base fingerprint reuse verified pred
   await supplementReception((await supplementPlan(f, second, '{"newOriginalEvidence":2}')).path); const third = await runReception(f.path); assert.equal(await f.count(), 3);
   const after = await f.packet({ artifactIndex: 1 }); assert.equal(after.packet, third.packet); assert.equal((await runReception(f.path)).duplicate, true); assert.equal(await f.count(), 3);
 });
+
+test('a single complete fenced JSON native final is consumed from the original capture; prose and multiple fences stay unresolved', async t => {
+  const f = await setup(t, 'fenced'), r = await runReception(f.path); assert.equal(r.receiver.judgment.verdict, 'ACCEPT_WITHIN_SCOPE');
+  const original = await readFile(join(r.receiver.directory, 'claude/stdout.ndjson'));
+  assert.ok(original.toString().includes('```json'));
+  const again = await reconcileReception(f.store, r.operation); assert.equal(again.duplicate, true); assert.deepEqual(again.receiver.judgment, r.receiver.judgment); assert.equal(await f.count(), 1); assert.deepEqual(await readFile(join(r.receiver.directory, 'claude/stdout.ndjson')), original);
+  for (const mode of ['fenced-prose','fenced-double']) { const g = await setup(t, mode), bad = await runReception(g.path); assert.equal(bad.status, 'receiver_unknown'); assert.equal((await reconcileReception(g.store, bad.operation)).status, 'receiver_unknown'); assert.equal(await g.count(), 1); }
+});

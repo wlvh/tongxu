@@ -64,7 +64,10 @@ async function prepare(p: ReceiverPlan, q: QueueStore, operation: string) {
   return { input, system, bindingHash, judgmentId, fingerprint: evidence.fingerprint };
 }
 function judgment(text: string, state: any): any {
-  const j = JSON.parse(text), r = state.receiver;
+  // Some supported native responses wrap the single JSON result in a Markdown
+  // fence. Accept only a whole-output fence; never search prose for a result.
+  const trimmed = text.trim(), fence = /^```(?:json)?\r?\n([\s\S]*)\r?\n```$/.exec(trimmed);
+  const j = JSON.parse(fence ? fence[1]! : trimmed), r = state.receiver;
   if (j.schemaVersion !== 1 || j.operation !== state.operation || j.judgmentId !== r.judgmentId || j.bindingHash !== r.bindingHash || !['ACCEPT_WITHIN_SCOPE', 'RETURN_FOR_WORK', 'INSUFFICIENT_EVIDENCE'].includes(j.verdict) || typeof j.report !== 'string' || !j.report.trim() || j.report.length > 128000 || !Array.isArray(j.findings) || j.findings.length > 30 || j.findings.some((x: any) => ![0, 1, 2].includes(x.priority) || typeof x.description !== 'string' || !x.description.trim()) || j.verdict === 'ACCEPT_WITHIN_SCOPE' && j.findings.some((x: any) => x.priority < 2)) throw new Error('receiver_final_binding_or_judgment_invalid');
   if (r.prerequisite ? j.consumedPrerequisite !== r.prerequisite.receiptSha256 : j.consumedPrerequisite !== undefined) throw new Error('receiver_prerequisite_not_consumed');
   return { schemaVersion: 1, ...(r.prerequisite ? { consumedPrerequisite: j.consumedPrerequisite } : {}), operation: j.operation, judgmentId: j.judgmentId, bindingHash: j.bindingHash, verdict: j.verdict, report: j.report, findings: j.findings.map((x: any) => ({ priority: x.priority, description: x.description })) };
