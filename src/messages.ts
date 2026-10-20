@@ -19,7 +19,7 @@ async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise
   for(const source of a.sourceRequests(intent.authorization))all.push(await readOwnerSource(profile,source.proposalSha256,source.commentId,join(directory,'owner-read-'+randomUUID())));return all;
 }
 async function billing(p:MessagePlan){const b=await regular(p.billing.evidence,128*1024),age=Date.now()-Date.parse(p.billing.observedAt);if(hash(b)!==p.billing.evidenceSha256||age< -60000||age>1800000)throw new Error('message_current_billing_evidence_required');}
-function completed(state:Row){return state.messages.every((m:Row)=>m.state==='Reply'&&m.reply.reportedConsumption)&&state.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.ended?.proof.successfulCapture===true);}
+function completed(state:Row){return state.messages.every((m:Row)=>m.state==='Reply'&&m.reply.reportedConsumption)&&state.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.captureVerification?.proof.successfulCapture===true);}
 async function replay(q:QueueStore,run:string,directory:string){
   const r=q.messages(),s=r.status(run),frozen=r.frozen(run),errors:string[]=[];for(const runtime of s.runtimes){if(!runtime.started)continue;const p=runtime.started.directory;try{
     const participant=s.plan.participants.find(a=>a.id===runtime.participant)!;const spec:RuntimeSpec={run,participant,executionKind:s.plan.executionKind,directory:p,assembly:JSON.parse(frozen.assemblies[participant.id]!.toString()),binding:s.registration.bindings[participant.id],timeoutMs:s.plan.timeoutMs};
