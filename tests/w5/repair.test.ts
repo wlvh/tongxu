@@ -142,3 +142,28 @@ test('a missing native tool host stops before impact or repair, while read-only 
   config.features.shell_tool = true;
   assert.throws(() => checkConfig(config, true), /native_feature_boundary_not_applied/);
 });
+
+test('a rejected structured turn cannot acquire a completion receipt during close', async t => {
+  const f = await fixture(t);
+  await writeFile(f.config.codexExecutable, (await readFile(f.config.codexExecutable, 'utf8')).replaceAll('candidateH:context.candidate.H', "candidateH:'wrong-candidate'"));
+  await assert.rejects(runRepair(f.plan, f.operation), /structured_report_wrong_candidate/);
+  const stage = join(f.operation, 'attempt-1/fact-and-repair');
+  await assert.rejects(readFile(join(stage, 'completed.json')), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await readFile(join(stage, 'native-boundary-failure.json'), 'utf8')).reason, 'structured_report_wrong_candidate');
+  assert.equal(modelInputs(await readFile(f.trace, 'utf8')), 1);
+});
+
+test('a tool request buffered after turn completion never reaches the gate or becomes a completed receipt', async t => {
+  const f = await fixture(t), source = await readFile(f.config.codexExecutable, 'utf8');
+  const terminal = "emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:current,status:'completed',rootTurnId:current,items:[item],itemsView:'full',error:null}}});";
+  assert.ok(source.includes(terminal));
+  const late = "process.stdout.write([{method:'turn/completed',params:{threadId:thread.id,turn:{id:current,status:'completed',rootTurnId:current,items:[item],itemsView:'full',error:null}}},{id:'late-read',method:'item/tool/call',params:{threadId:thread.id,turnId:current,callId:'late-read',namespace:null,tool:'tongxu_read_file',arguments:{path:'clamp.mjs'}}}].map(x=>JSON.stringify(x)+'\\n').join(''));";
+  await writeFile(f.config.codexExecutable, source.replace(terminal, late));
+  await assert.rejects(runRepair(f.plan, f.operation), /native_tool_request_after_terminal|controlled_result_not_final|dynamic_tool_identity_or_permission_mismatch/);
+  const stage = join(f.operation, 'attempt-1/fact-and-repair');
+  const served = JSON.parse(await readFile(join(stage, 'reconciled-tools.json'), 'utf8'));
+  assert.equal(served.length, 2); assert.ok(served.every((x: any) => x.request.params.callId !== 'late-read'));
+  await assert.rejects(readFile(join(stage, 'completed.json')), { code: 'ENOENT' });
+  assert.equal(modelInputs(await readFile(f.trace, 'utf8')), 1);
+  assert.equal(await git(f.workspace, ['rev-parse', 'HEAD']), f.candidate.H);
+});

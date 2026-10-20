@@ -122,6 +122,16 @@ test('a valid late final from the same original run can be recovered after waiti
   const f = await fixture(t, 'waiting-late-final'); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /native_waiting/); const logs = await f.logs();
   const recovered = await runSecretary(f.secretaryPlan, f.output); assert.equal(recovered.status, 'completed'); assert.equal(recovered.newModelTasks, 0); assert.deepEqual(await f.logs(), logs); assert.equal(JSON.parse(await readFile(join(f.output, 'outcome.json'), 'utf8')).reason, 'native_waiting');
 });
+test('waiting preserves the original run but a late answer for the wrong candidate cannot become a completion', async t => {
+  const f = await fixture(t, 'waiting-late-final');
+  await writeFile(f.p.codexExecutable, (await readFile(f.p.codexExecutable, 'utf8')).replace('candidateH:context.candidate.H', "candidateH:'wrong-candidate'"));
+  await writeFile(f.secretaryPlan, JSON.stringify({ ...f.p, codexSha256: hash(await readFile(f.p.codexExecutable)) }));
+  await assert.rejects(runSecretary(f.secretaryPlan, f.output), /native_waiting/);
+  const logs = await f.logs();
+  await assert.rejects(readFile(join(f.output, 'codex-secretary/completed.json')), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await readFile(join(f.output, 'codex-secretary/native-boundary-failure.json'), 'utf8')).reason, 'structured_report_wrong_candidate');
+  await assert.rejects(runSecretary(f.secretaryPlan, f.output)); assert.deepEqual(await f.logs(), logs);
+});
 
 test('pinned native binaries larger than 128 MB reach the stop gate without being executed', async t => {
   const f = await fixture(t), path = join(f.root, 'large-binary-data-fixture');

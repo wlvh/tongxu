@@ -39,6 +39,20 @@ export function dynamicToolStart(events: any[], request: any) {
   if (item.type !== 'dynamicToolCall' || item.status !== 'inProgress' || item.namespace != null || item.tool !== p.tool || !isDeepStrictEqual(item.arguments, p.arguments)) throw new Error('native_dynamic_tool_start_missing_or_mismatched');
   return starts[0];
 }
+export function assertToolTurnOpen(events: any[], request: any) {
+  const p = request.params;
+  // The queue can already contain later events from the same stdout chunk by
+  // the time this asynchronous handler runs. A finished turn/call is no longer
+  // allowed to execute, even if the request was buffered before its terminal.
+  if (events.some(m => m.params?.threadId === p.threadId && (m.method === 'turn/completed' && m.params?.turn?.id === p.turnId || m.method === 'item/completed' && m.params?.turnId === p.turnId && m.params?.item?.id === p.callId))) throw new Error('native_tool_request_after_terminal');
+}
+function validateNativeReport(report: any, candidate: Candidate, schema: unknown) {
+  if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
+  if (schema === secretarySchema) {
+    if (!Array.isArray(report.observationIds) || !report.observationIds.length || report.observationIds.length > 8 || report.observationIds.some((x: any) => typeof x !== 'string' || !/^[a-f0-9]{64}$/.test(x)) || Object.keys(report).sort().join() !== 'candidateH,observationIds,report') throw new Error('invalid_secretary_report');
+  } else if (schema === reviewSchema ? !['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'].includes(report.verdict) || !Array.isArray(report.findings) : !['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'].includes(report.decision)) throw new Error('invalid_structured_judgment');
+  if (schema === reviewSchema && (report.findings.length > 20 || report.findings.some((f: any) => typeof f?.id !== 'string' || !f.id || ![0, 1, 2].includes(f.priority) || typeof f.description !== 'string' || !f.description.trim()))) throw new Error('invalid_structured_findings');
+}
 // One native transport and capture contract, with separate, fixed role tools.
 export class BoundedCodexSession {
   private rpc!: LiveProcess;
@@ -88,7 +102,8 @@ export class BoundedCodexSession {
       // Wait for our already-submitted turn, never adopt an ID from the tool.
       if (this.pendingTurn) await this.pendingTurn;
       const p = m.params;
-      if (!o.gate || !p || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
+      if (!o.gate || this.boundaryFailure || !p || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
+      assertToolTurnOpen(this.rpc.events, m);
       if (this.toolHost) {
         const started = dynamicToolStart(this.rpc.events, m);
         const observed = await exec('/bin/ps', ['-axo', 'pid=,ppid=,comm='], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
@@ -130,8 +145,21 @@ export class BoundedCodexSession {
     } catch (e) { await this.close(); throw e; }
   }
   async turn(input: string, candidate: Candidate, schema: unknown) {
+    try { return await this.runTurn(input, candidate, schema); }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (reason === 'native_waiting') {
+        save(join(this.o.directory, 'native-waiting.json'), { reason, turnIds: this.binding?.turnIds ?? [], originalFinalMayStillArrive: true, newToolsAllowed: false });
+      } else {
+        this.boundaryFailure = reason;
+        save(join(this.o.directory, 'native-boundary-failure.json'), { reason, stage: 'turn_rejected', turnIds: this.binding?.turnIds ?? [] });
+      }
+      throw error;
+    }
+  }
+  private async runTurn(input: string, candidate: Candidate, schema: unknown) {
     if ((this.o.role === 'secretary') !== (schema === secretarySchema)) throw new Error('native_role_output_schema_mismatch');
-    if (this.closed || this.binding.turnIds.length >= 8) throw new Error('native_turn_budget_or_closed');
+    if (this.closed || this.boundaryFailure || this.binding.turnIds.length >= 8) throw new Error('native_turn_budget_or_closed');
     if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
     await this.o.gate?.check();
     const usage = await this.request('account/rateLimits/read', {}); if (usage.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
@@ -161,11 +189,7 @@ export class BoundedCodexSession {
     const parsed = parseCodexResult(await readFile(join(this.o.directory, 'stdout.ndjson')), this.binding, this.pairs);
     if (parsed.status !== 'final_observed') throw new Error('controlled_result_not_final:' + parsed.gaps.join(','));
     const final = parsed.turns[index - 1]!.final!, report = JSON.parse(final.text);
-    if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
-    if (schema === secretarySchema) {
-      if (!Array.isArray(report.observationIds) || !report.observationIds.length || report.observationIds.length > 8 || report.observationIds.some((x: any) => typeof x !== 'string' || !/^[a-f0-9]{64}$/.test(x)) || Object.keys(report).sort().join() !== 'candidateH,observationIds,report') throw new Error('invalid_secretary_report');
-    } else if (schema === reviewSchema ? !['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'].includes(report.verdict) || !Array.isArray(report.findings) : !['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'].includes(report.decision)) throw new Error('invalid_structured_judgment');
-    if (schema === reviewSchema && (report.findings.length > 20 || report.findings.some((f: any) => typeof f?.id !== 'string' || !f.id || ![0, 1, 2].includes(f.priority) || typeof f.description !== 'string' || !f.description.trim()))) throw new Error('invalid_structured_findings');
+    validateNativeReport(report, candidate, schema);
     save(join(this.o.directory, `turn-${index}-final.json`), { turnId: currentTurn, subjectCandidate: candidate, final, report }); return report;
   }
   async close() {
@@ -173,6 +197,18 @@ export class BoundedCodexSession {
     if (!this.binding?.turnIds.length || this.boundaryFailure || this.rpc.failure || this.rpc.exit?.code !== 0) return;
     const raw = await readFile(join(this.o.directory, 'stdout.ndjson'));
     const parsed = parseCodexResult(raw, this.binding, this.pairs);
+    if (parsed.status === 'final_observed') {
+      try {
+        for (const [index, turn] of parsed.turns.entries()) {
+          const expected = this.inputs[index];
+          if (!expected || !turn.final) throw new Error('controlled_late_final_input_mismatch');
+          validateNativeReport(JSON.parse(turn.final.text), expected.subjectCandidate, expected.schema);
+        }
+      } catch (error) {
+        this.boundaryFailure = error instanceof Error ? error.message : String(error);
+        save(join(this.o.directory, 'native-boundary-failure.json'), { reason: this.boundaryFailure, stage: 'final_capture_rejected' }); return;
+      }
+    }
     if (parsed.status === 'final_observed') save(join(this.o.directory, 'completed.json'), { kind: 'controlled-codex-execution', binding: this.binding, rawSha256: hash(raw), inputSha256: hash(await readFile(join(this.o.directory, 'stdin.ndjson'))), contractSha256: hash(await readFile(join(this.o.directory, 'expected-requests.json'))), reconciledSha256: hash(await readFile(join(this.o.directory, 'reconciled-tools.json'))), ...(this.toolTransports.length ? { toolTransportsSha256: hash(await readFile(join(this.o.directory, 'native-tool-transports.json'))) } : {}), finalAnswers: parsed.turns.map(t => t.final), processExit: this.rpc.exit });
   }
 }
