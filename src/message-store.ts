@@ -11,7 +11,7 @@ type Row=Record<string,any>;
 /** Transport records beside the original queue. They are neither formal
  * judgments nor resource balances and never confer writing/merge authority. */
 export class MessageRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row,private coordinationGate?:(run:string,messageId?:string,participant?:string)=>void){}
   private events(run:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'message_%' ORDER BY id").all('messages:'+run) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('message_original_missing_or_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
@@ -38,17 +38,18 @@ export class MessageRecords {
     }else if(f.plan.authorityIntent!==null)throw new Error('message_authority_profile_missing');
     return f;
   }
-  check(run:string,observations:OwnerObservation[]){return this.transaction(()=>{this.gate(run,observations);return this.view(run);});}
+  check(run:string,observations:OwnerObservation[],messageId?:string){return this.transaction(()=>{this.gate(run,observations);this.coordinationGate?.(run,messageId);return this.view(run);});}
   startRuntime(run:string,participant:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.gate(run,observations),p=f.plan.participants.find(p=>p.id===participant);if(!p)throw new Error('message_participant_missing');const prior=this.runtime(f,participant);
     if(prior.started&&(!prior.ended||!prior.ended.proof.successfulCapture&&!prior.ended.proof.knownUnstarted||f.e.some(e=>e.kind==='message_send_registered'&&f.plan.messages.find(m=>m.id===e.data.id)?.to===participant)))throw new Error('message_original_runtime_must_be_reconciled');
     if(prior.attempt>=3)throw new Error('message_unstarted_bootstrap_retry_limit');
     const starts:Row[]=(this.db.prepare("SELECT object,data FROM events WHERE kind='message_runtime_started'").all() as Row[]).map(e=>({...e,data:JSON.parse(e.data).value}));for(const s of starts)if(s.data.item===p.item&&s.data.role===p.role){const oldRun=s.object.slice(9),state=this.view(oldRun),runtime=state.runtimes.find(r=>r.participant===s.data.participant)!;if(runtime.attempt!==s.data.attempt)continue;const unresolved=state.messages.some(m=>m.to===s.data.participant&&['Unknown','Delivered'].includes(m.state));if(!runtime.ended||unresolved)throw new Error('message_prior_role_runtime_active_or_unknown');}
+    this.coordinationGate?.(run,undefined,participant);
     const attempt=prior.attempt+1,directory=join(this.directory,'messages-'+run,'runtimes',hash(participant),'attempt-'+attempt);this.event(run,'runtime_started',{participant,attempt,directory,item:p.item,role:p.role,controllerPid:process.pid,startedAt:now()});return this.view(run);
   });}
   private route(run:string,participant:string,route:Row){return this.transaction(()=>{const f=this.fixed(run),r=this.runtime(f,participant);if(!r.started)throw new Error('message_runtime_not_started');if(r.route){if(canonical(r.route)!==canonical(route))throw new Error('message_original_recipient_is_fixed');return this.view(run);}this.event(run,'route_bound',{participant,attempt:r.attempt,route});return this.view(run);});}
   intent(run:string,id:string,envelope:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
-    const f=this.gate(run,observations),m=f.plan.messages.find(m=>m.id===id);if(!m)throw new Error('message_missing');if(f.e.some(e=>e.kind==='message_send_registered'&&e.data.id===id))throw new Error('message_unknown_or_sent_never_resend');
+    const f=this.gate(run,observations),m=f.plan.messages.find(m=>m.id===id);if(!m)throw new Error('message_missing');if(f.e.some(e=>e.kind==='message_send_registered'&&e.data.id===id))throw new Error('message_unknown_or_sent_never_resend');this.coordinationGate?.(run,id);
     const runtime=this.runtime(f,m.to),route=runtime.route;if(!route||runtime.ended)throw new Error('message_recipient_not_running');
     const parsed=JSON.parse(envelope.toString());if(parsed.messageId!==id||canonical(parsed.to)!==canonical(route)||parsed.run!==run)throw new Error('message_envelope_address_mismatch');
     const current=this.view(run),references:string[]=[];for(const prior of m.replies){const upstream=current.messages.find(m=>m.id===prior);if(upstream?.state!=='Reply'||!upstream.reply?.reportedConsumption)throw new Error('message_upstream_reply_required');references.push(upstream.reply.finalSha256);}for(const name of f.plan.consumeMaterial??[])references.push(f.r.materials[name].sha256);if(canonical(parsed.replyReferences)!==canonical(references)||canonical(parsed.responseContract?.consumed)!==canonical(references))throw new Error('message_consumption_references_changed');

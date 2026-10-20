@@ -58,7 +58,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
     const runtimes=new Map<string,ReadonlyDialog>(),specs=new Map<string,RuntimeSpec>();let sent=0,activeMessage:string|null=null;
     try{
-      for(const m of p.messages){activeMessage=m.id;await checkParent();await billing(p);records.check(run,await observations(q,p,directory));
+      for(const m of p.messages){activeMessage=m.id;await checkParent();await billing(p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
