@@ -32,7 +32,8 @@
     "test:sessions": "npm run build && node --test dist/tests/w4/role-prompts.test.js dist/tests/w4/session-*.test.js",
     "sessions": "node dist/src/session-cli.js",
     "messages": "node dist/src/message-cli.js",
-    "test:messages": "npm run build && node --test dist/tests/w6/messages.test.js"
+    "test:messages": "npm run build && node --test dist/tests/w6/messages.test.js dist/tests/w6/message-claude.test.js dist/tests/w6/message-continuation.test.js",
+    "message-continuation": "node dist/src/message-continuation-cli.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

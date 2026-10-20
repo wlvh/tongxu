@@ -31,11 +31,14 @@ async function replay(q:QueueStore,run:string,directory:string){
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
 export async function runMessages(store:string,planPath:string,recoverOnly=false){
-  const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p),q=await QueueStore.open(store),directory=join(store,'messages-'+run);let lock:DatabaseSync|undefined;
+  const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p),q=await QueueStore.open(store),directory=join(store,'messages-'+run);let lock:DatabaseSync|undefined,parentLock:DatabaseSync|undefined;
   try{
     await ensurePrivate(directory);
     const lockPath=join(directory,'controller.sqlite');try{await writeFile(lockPath,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}await regular(lockPath,4*1024*1024);lock=new DatabaseSync(lockPath);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{lock.close();lock=undefined;throw new Error('message_controller_active');}
     const records=q.messages();let previous:ReturnType<MessageRecords['status']>|null=null;try{previous=records.status(run);}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}
+    const parent=records.continuationParent(run);
+    if(parent){const path=join(store,'messages-'+parent,'controller.sqlite');await regular(path,4*1024*1024);parentLock=new DatabaseSync(path);try{parentLock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{parentLock.close();parentLock=undefined;throw new Error('continuation_original_controller_active');}}
+    const checkParent=async()=>{if(parent){const recovered=await replay(q,parent,join(store,'messages-'+parent));if(recovered.recoveryErrors.length)throw new Error('continuation_original_capture_unresolved');records.continuationSource(parent);}};
     if(previous?.runtimes.some((r:Row)=>r.started)){
       const recovered=await replay(q,run,directory);
       // No recipient of a dispatched message may change. A bootstrap with
@@ -50,7 +53,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
     const runtimes=new Map<string,ReadonlyDialog>(),specs=new Map<string,RuntimeSpec>();let sent=0,activeMessage:string|null=null;
     try{
-      for(const m of p.messages){activeMessage=m.id;await billing(p);records.check(run,await observations(q,p,directory));
+      for(const m of p.messages){activeMessage=m.id;await checkParent();await billing(p);records.check(run,await observations(q,p,directory));
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
@@ -59,8 +62,9 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
         }
         const state=records.status(run),runtime=runtimes.get(m.to)!,upstream=m.replies.map(id=>{const result=state.messages.find((x:Row)=>x.id===id);if(result?.state!=='Reply'||!result.reply?.reportedConsumption)throw new Error('message_upstream_incomplete_or_not_consumed');return {messageId:id,to:state.runtimes.find((r:Row)=>r.participant===result.to)!.route,receipt:result.reply};});
         const sender=m.from===null?null:state.runtimes.find((r:Row)=>r.participant===m.from)?.route;if(m.from!==null&&!sender)throw new Error('message_sender_route_missing');
-        const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:upstream.map(x=>x.receipt.finalSha256),responseContract:{messageId:m.id,consumed:upstream.map(x=>x.receipt.finalSha256),report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
-        const final=await runtime.send(envelope,async()=>{await billing(p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
+        const materialConsumption=(p.consumeMaterial??[]).map(name=>({name,sha256:hash(frozen.materials[name]!)})),references=[...upstream.map(x=>x.receipt.finalSha256),...materialConsumption.map(m=>m.sha256)];
+        const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:references,...(materialConsumption.length?{materialConsumptionReferences:materialConsumption}:{}),responseContract:{messageId:m.id,consumed:references,report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
+        const final=await runtime.send(envelope,async()=>{await checkParent();await billing(p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
         if(!final.data.reportedConsumption)throw new Error('message_reply_did_not_confirm_input_consumption');
       }
     }catch(e){records.problem(run,activeMessage,e instanceof Error?e.message:'message_delivery_unknown');}
@@ -71,5 +75,5 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
       for(const [id,spec] of specs)if(!runtimes.has(id)){try{records.record(run,id,await inspectUnstartedDialog(spec));}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_bootstrap_unknown');}}
     }
     const result=records.status(run);return {...result,completed:completed(result),newModelRequests:sent,directory};
-  }finally{if(lock){lock.exec('ROLLBACK');lock.close();}q.close();}
+  }finally{if(parentLock){parentLock.exec('ROLLBACK');parentLock.close();}if(lock){lock.exec('ROLLBACK');lock.close();}q.close();}
 }
