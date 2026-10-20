@@ -30,7 +30,7 @@ export async function continueMessage(store:string,originalPlanPath:string,reque
   const lock=new DatabaseSync(lockPath);let locked=false,q:QueueStore|undefined;
   try{
     try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');locked=true;}catch{throw new Error('continuation_controller_active');}
-    const recovered=await runMessages(store,originalPlanPath,true);
+    const recovered=await runMessages(store,originalPlanPath,true,run);
     if('recoveryErrors' in recovered&&recovered.recoveryErrors.length)throw new Error('continuation_original_capture_unresolved');
     q=await QueueStore.open(store);const records=q.messages(),source=records.continuationSource(run),prior=records.continuation(run);
     let selected=prior;
@@ -51,7 +51,7 @@ export async function continueMessage(store:string,originalPlanPath:string,reque
     await immutable(join(path,'context.json'),context);await immutable(join(path,'plan.json'),fixed.plan);await immutable(join(path,'request.json'),requestBytes);
     const preparation={originalRun:run,nextRun:fixed.nextRun,originalMessage:fixed.originalMessage,attempt:fixed.attempt,directory:path,planPath:join(path,'plan.json'),contextSha256:fixed.contextSha256,nativeSessionResumed:false,newNativeContextRequired:true,originalMessageUnmodified:true};
     if(prepareOnly)return {...preparation,prepared:true,newModelRequests:0};
-    const result=await runMessages(store,preparation.planPath);const link=records.continuationResult(run,fixed.nextRun,result);
+    const result=await runMessages(store,preparation.planPath,false,fixed.nextRun);const link=records.continuationResult(run,fixed.nextRun,result);
     return {...preparation,prepared:true,completed:link.completed,newModelRequests:result.newModelRequests,originalRunCompleted:false,result};
   }finally{q?.close();if(locked)lock.exec('ROLLBACK');lock.close();}
 }

@@ -30,8 +30,13 @@ async function replay(q:QueueStore,run:string,directory:string){
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly=false){
-  const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p),q=await QueueStore.open(store),directory=join(store,'messages-'+run);let lock:DatabaseSync|undefined,parentLock:DatabaseSync|undefined;
+export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string){
+  const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
+  // The caller may have selected a frozen operation before handing us a path.
+  // Compare before opening the queue or creating/starting any runtime, and use
+  // this exact parsed object throughout the execution (no later plan reread).
+  if(expectedRun!==undefined&&run!==expectedRun)throw new Error('message_selected_plan_changed');
+  const q=await QueueStore.open(store),directory=join(store,'messages-'+run);let lock:DatabaseSync|undefined,parentLock:DatabaseSync|undefined;
   try{
     await ensurePrivate(directory);
     const lockPath=join(directory,'controller.sqlite');try{await writeFile(lockPath,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}await regular(lockPath,4*1024*1024);lock=new DatabaseSync(lockPath);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{lock.close();lock=undefined;throw new Error('message_controller_active');}
