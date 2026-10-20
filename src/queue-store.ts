@@ -14,6 +14,7 @@ import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
 import { MergeRecords } from './merge-store.js';
 import { EventRecords } from './event-store.js';
 import { SessionRecords } from './session-store.js';
+import { MessageRecords } from './message-store.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
@@ -179,6 +180,7 @@ PRAGMA user_version=4;`);
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
+  messages(): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new MessageRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations)); }
   resources(): ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
     return new ResourceRecords(this.db,fn=>this.transaction(fn),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt));

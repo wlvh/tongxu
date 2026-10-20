@@ -1,0 +1,19 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { hash } from '../../src/snapshot.js';
+import { ownerDecisionText,scopeBodyHash,type AuthorityProfile,type ActionRequest } from '../../src/authority-contract.js';
+import { fixtureOwnerObservation } from '../../src/authority-source.js';
+import { messagePlanId } from '../../src/message-contract.js';
+import type { messageFixture } from './message-fixture.js';
+const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));
+export async function messageAuthority(f:Awaited<ReturnType<typeof messageFixture>>){
+  f.q.enableSupplements();f.q.reviewRecords().enable();f.q.enableCompositions();f.q.enableReceiverCorrections();const records:Record<string,any>={},sourcePath=join(f.root,'message-owner-originals.json'),exe=join(f.root,'message-owner-fixture.mjs');
+  const code=`#!${process.execPath}\nimport fs from'node:fs';const args=process.argv.slice(2),r=JSON.parse(fs.readFileSync(${JSON.stringify(sourcePath)},'utf8'));if(args.includes('graphql')){const id=args.find(v=>v.startsWith('id=')).slice(3);console.log(JSON.stringify(Object.values(r).find(x=>x.comment.node_id===id).graph));}else console.log(JSON.stringify(r[args.at(-1).split('/').at(-1)].comment));`;
+  await writeFile(exe,code,{mode:0o700});const profile:AuthorityProfile={schemaVersion:1,kind:'tongxu-owner-source-profile',repository:'fixture/reception',issue:8,ownerId:101,executorId:202,ghExecutable:exe,ghSha256:hash(code),executionKind:'fixture',maxObservationAgeMs:300000,maxGrantDurationMs:86400000},a=f.q.authority();a.configure(bytes(profile));let index=7200000000;
+  async function adopt(value:any){const p=a.prepare('message-proposal-'+(++index),bytes(value)),id=index,sha=p.proposalSha256,text=ownerDecisionText(sha),at=new Date().toISOString(),node='IC_message_'+id,url=`https://github.com/fixture/reception/issues/8#issuecomment-${id}`;
+    const comment={id,node_id:node,body:text,user:{id:101,type:'User'},created_at:at,updated_at:at,issue_url:'https://api.github.com/repos/fixture/reception/issues/8',html_url:url},graph={data:{viewer:{databaseId:202},node:{__typename:'IssueComment',id:node,fullDatabaseId:String(id),author:{__typename:'User',databaseId:101},editor:null,lastEditedAt:null,body:text,createdAt:at,updatedAt:at,url,issue:{number:8,repository:{nameWithOwner:'fixture/reception'}}}}};records[id]={comment,graph};await writeFile(sourcePath,bytes(records));const observation=fixtureOwnerObservation(profile,sha,id,bytes(graph),bytes(comment),at);a.apply(sha,observation);return {sha,observation,id};
+  }
+  const item=f.q.status().items.find((i:any)=>i.id===f.item),body={goals:['Fixture addressed readonly discussion'],nonGoals:['No production approval'],preserve:['original messages'],acceptance:['Exact delivery and source receipts'],constraints:['No write or merge']};const scope=await adopt({kind:'adopt_scope',scopeId:item.context.scope.id,scopeVersion:item.context.scope.version,body,previousAdoption:null});
+  f.plan.authorityIntent='bounded-messages';await f.write();const request:ActionRequest={schemaVersion:1,scopeId:item.context.scope.id,scopeVersion:item.context.scope.version,scopeBodySha256:scopeBodyHash(body),repository:'fixture/reception',target:'fixture',action:'coordinate',item:f.item,candidate:{H:item.candidate.H,B:item.candidate.B,subjectSha256:null},paths:[],resourceRefs:[],payloadSha256:messagePlanId(f.plan)};
+  const confirmed=await adopt({kind:'confirm_action',adoption:scope.sha,performerRole:'coordinator',request,expiresAt:new Date(Date.now()+3600000).toISOString()});a.reserveAction(f.plan.authorityIntent,request,'coordinator',confirmed.sha,[scope.observation,confirmed.observation]);return {a,scope,confirmed,request,adopt,sourcePath,records};
+}

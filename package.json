@@ -30,7 +30,9 @@
     "test:events": "npm run build && node --test dist/tests/events/*.test.js",
     "events": "node dist/src/event-cli.js",
     "test:sessions": "npm run build && node --test dist/tests/w4/role-prompts.test.js dist/tests/w4/session-*.test.js",
-    "sessions": "node dist/src/session-cli.js"
+    "sessions": "node dist/src/session-cli.js",
+    "messages": "node dist/src/message-cli.js",
+    "test:messages": "npm run build && node --test dist/tests/w6/messages.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
