@@ -112,8 +112,10 @@ export class CoordinationRecords {
       // A caller can change source text (or role/id) to obtain another hash.
       // Coordination follows the actual item/assigned actor, not only a known
       // run hash; the ordinary public message entry must enforce it too.
-      const state=this.message(run).state,names=this.db.prepare("SELECT DISTINCT json_extract(data,'$.value.name') AS name FROM events WHERE kind='coordination_registered'").all() as Row[];
-      for(const {name} of names){const known=this.latest(name)!;for(const p of state.plan.participants){const binding=state.registration.bindings[p.id];if(known.plan.tasks.some(t=>t.item===p.item)||p.role==='issue_owner'&&canonical(binding.context.scope)===canonical(known.registration.scope)&&known.plan.tasks.some(t=>t.actor===p.id))throw new Error('coordinated_item_or_actor_requires_registered_message_binding');}}
+      const state=this.message(run).state,history=this.db.prepare("SELECT object FROM events WHERE kind='coordination_registered'").all() as Row[];
+      // Removing a task from a later arrangement is not evidence that its
+      // original execution ended or that its coordination binding was released.
+      for(const {object} of history){const known=this.fixed(object.slice(13));for(const p of state.plan.participants){const binding=state.registration.bindings[p.id];if(known.plan.tasks.some(t=>t.item===p.item)||p.role==='issue_owner'&&canonical(binding.context.scope)===canonical(known.registration.scope)&&known.plan.tasks.some(t=>t.actor===p.id))throw new Error('coordinated_item_or_actor_requires_registered_message_binding');}}
       return;
     }
     if(links.length!==1)throw new Error('coordination_message_binding_ambiguous');const f=this.fixed(links[0]!.object.slice(13)),bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===run)!.data;
