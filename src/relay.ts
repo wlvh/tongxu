@@ -6,6 +6,7 @@ import { importResult, parseCodexResult, prepareHandoff, type ResultBinding } fr
 import { runCodex, readCodexExecution, type Candidate } from './live-codex.js';
 import { runClaude, readClaudeExecution } from './live-claude.js';
 import { save } from './live-process.js';
+import { assemblePromptSet,inspectPromptSet } from './role-prompts.js';
 
 export type RelayPlan = {
   schemaVersion: 1; candidate: Candidate; scopeSource: string; arrangementSource: string;
@@ -98,7 +99,11 @@ export async function recoverStage(directory: string, kind: 'codex' | 'claude') 
 
 export async function runRelay(planPath: string, output: string) {
   const planBytes = await fixedFile(planPath), plan = JSON.parse(planBytes.toString()) as RelayPlan;
-  const inputs = await snapshot(plan), planSha256 = hash(planBytes);
+  const supplied=await snapshot(plan),roles={reviewer:'reviewer',verifierImpact:'verifier_impact',verifierFact:'verifier_fact'} as const;
+  let inputs:typeof supplied&{promptAssemblies?:any},legacy=false;
+  if(await has(output)){inputs=JSON.parse((await fixedFile(join(output,'inputs.json'))).toString());legacy=inspectPromptSet(supplied.prompts,roles,inputs).legacy;if(JSON.stringify(inputs.material)!==JSON.stringify(supplied.material))throw new Error('relay_fixed_material_changed');}
+  else inputs={material:supplied.material,...await assemblePromptSet(supplied.prompts,roles)};
+  const planSha256 = hash(planBytes);
   const frozen = JSON.stringify(inputs), inputManifestSha256 = hash(frozen);
   if (!await has(output)) {
     await privateDirectory(output, true);
@@ -113,7 +118,7 @@ export async function runRelay(planPath: string, output: string) {
   const lock = join(output, 'active.lock'); await writeFile(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
   let state = 'starting';
   const progress = (next: string) => { state = next; save(join(output, 'status.json'), { stage: next, at: new Date().toISOString(), candidate: plan.candidate }); };
-  const beforeLaunch = () => { if (Date.now() - Date.parse(plan.billing.observedAt) > 24 * 60 * 60 * 1000 || Date.parse(plan.billing.observedAt) > Date.now() + 60_000) throw new Error('billing_boundary_stale_before_new_launch'); };
+  const beforeLaunch = () => {if(legacy)throw new Error('legacy_prompt_capture_recovery_only'); if (Date.now() - Date.parse(plan.billing.observedAt) > 24 * 60 * 60 * 1000 || Date.parse(plan.billing.observedAt) > Date.now() + 60_000) throw new Error('billing_boundary_stale_before_new_launch'); };
   const sameCandidate = (c: Candidate) => JSON.stringify(c) === JSON.stringify(plan.candidate);
   const codex = (directory: string, role: 'reviewer' | 'verifier_fact', system: string, messages: string[]) => { beforeLaunch(); return runCodex({ executable: plan.codexExecutable, directory, system, inputs: messages, candidate: plan.candidate, role, run: output, inputManifestSha256, scopeSource: plan.scopeSource, arrangementSource: plan.arrangementSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, sourceKind: plan.executionKind ?? 'native_capture' }); };
   try {

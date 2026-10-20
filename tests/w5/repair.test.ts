@@ -18,6 +18,8 @@ test('one controlled entry performs tool writes, actual tests, a new commit and 
   const f = await fixture(t), before = await git(f.workspace, ['rev-parse', 'HEAD']), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true); assert.notEqual(result.after.H, before); assert.equal(result.after.kind, 'local-git'); assert.equal(result.after.pr, null);
   assert.equal(result.manualRepairRequired, false); assert.equal(result.manualReportCopyRequired, false);
+  const assembled=JSON.parse(await readFile(join(f.operation,'fixed-inputs.json'),'utf8')),sent=(await readFile(join(f.operation,'attempt-1/fact-and-repair/stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
+  assert.equal(sent.find(x=>x.method==='thread/start').params.baseInstructions,assembled.promptAssemblies.fact.system);assert.ok(assembled.promptAssemblies.reviewer.parts.some((p:any)=>p.sha256==='08e491ed00e59294408d9a97dd6b64bfa1b5d1d3bd44ba51ada4a6c85585ebe9'));assert.equal(assembled.promptAssemblies.impact.role,'verifier_impact');
   const trace = await readFile(f.trace, 'utf8'); assert.equal(modelInputs(trace), 5); assert.equal(trace.split('\n').filter(x => x.includes('"kind":"tool-request"')).length, 5);
   assert.deepEqual((result.data as any).changed, ['clamp.mjs']); assert.equal((result.data as any).tests.passed, true);
   const again = await runRepair(f.plan, f.operation); assert.deepEqual(again, result); assert.equal(await readFile(f.trace, 'utf8'), trace);

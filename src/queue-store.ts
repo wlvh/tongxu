@@ -13,6 +13,8 @@ import { AuthorityRecords } from './authority-store.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
 import { MergeRecords } from './merge-store.js';
 import { EventRecords } from './event-store.js';
+import { SessionRecords } from './session-store.js';
+import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
 import { composeSubject, currentMembers, type Composition } from './composition.js';
@@ -176,6 +178,7 @@ PRAGMA user_version=4;`);
   }
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
+  sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
   resources(): ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
     return new ResourceRecords(this.db,fn=>this.transaction(fn),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt));
@@ -701,7 +704,7 @@ PRAGMA user_version=4;`);
       const { op, result, receiver } = this.receiverOperation(id);
       if (receiver) for (const ref of Object.values(receiver.blobs ?? {}) as Row[]) this.blob(ref.sha256);
       return { operation: id, status: op.status, result: this.currentReceiverResult(op, result), receiver, currentPacket: this.item(op.item).current_packet,
-        ...(receiver ? { input: this.blob(receiver.inputSha256), system: this.blob(receiver.systemSha256), plan: this.blob(receiver.planSha256) } : {}) };
+        ...(receiver ? { input: this.blob(receiver.inputSha256), system: this.blob(receiver.systemSha256), plan: this.blob(receiver.planSha256),...(receiver.promptAssemblySha256?{promptAssembly:this.blob(receiver.promptAssemblySha256)}:{}) } : {}) };
     });
   }
   private receiverGate(op: Row): void {
@@ -719,7 +722,7 @@ PRAGMA user_version=4;`);
     return (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE item=? AND json_extract(result,'$.receiver.dispatchRegisteredAt') IS NOT NULL").get(item) as Row).n;
   }
   /** Later phase of the same operation; no second queue or automatic retries. */
-  reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
+  reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; promptAssembly?:Buffer;bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
     this.requireReceiverMode();
     if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
     if ((this.db.prepare('PRAGMA user_version').get() as Row).user_version >= 6 && !this.supplementGuardInstalled()) throw new Error('receiver_supplement_guard_missing_enable_when_idle');
@@ -739,6 +742,7 @@ PRAGMA user_version=4;`);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
       const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
       for (const bytes of [fixed.plan, fixed.input, fixed.system]) this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes);
+      if(fixed.promptAssembly){const assembly=JSON.parse(fixed.promptAssembly.toString());inspectRolePrompt(assembly,'receiver');if(assembly.system!==fixed.system.toString()||JSON.parse(fixed.input.toString()).binding.promptAssemblySha256!==hash(fixed.promptAssembly))throw new Error('receiver_prompt_assembly_binding_mismatch');this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(fixed.promptAssembly),fixed.promptAssembly);}
       const composition=parse(this.packet(op.packet),'summary').composition as Composition|undefined;
       if(composition){this.requireCompositionMode();const input=JSON.parse(fixed.input.toString());if(input.binding.subjectSha256!==composition.sha256||canonical(input.binding.subject)!==canonical(composition.subject)||canonical(input.data.evidence.composition)!==canonical(composition))throw new Error('receiver_composition_input_mismatch');}
       const correction=parse(this.packet(op.packet),'summary').correction;
@@ -746,6 +750,7 @@ PRAGMA user_version=4;`);
       const sourceEvents=(parse(this.packet(op.packet),'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r));
       if(this.eventSourceStates(this.item(op.item)).some(s=>s.registered)&&canonical(JSON.parse(fixed.input.toString()).data.evidence.sourceEvents)!==canonical(sourceEvents))throw new Error('receiver_event_source_input_mismatch');
       const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+        ...(fixed.promptAssembly?{promptAssemblySha256:hash(fixed.promptAssembly)}:{}),
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };

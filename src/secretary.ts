@@ -3,6 +3,7 @@ import { join, isAbsolute, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
+import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt } from './role-prompts.js';
 import { save } from './live-process.js';
 import { exists, regular } from './repair-workspace.js';
 import { BoundedCodexSession, readRepairSession, secretarySchema } from './repair-native.js';
@@ -38,7 +39,8 @@ async function inputs(p: SecretaryPlan) {
   // The already installed official macOS 0.163 package is about 250 MB.
   // Keep a finite binary bound without applying a document-sized limit to it.
   if (hash(await regular(p.billing.evidence)) !== p.billing.evidenceSha256 || hash(await regular(p.codexExecutable, 512 * 1024 * 1024)) !== p.codexSha256) throw new Error('secretary_runtime_or_billing_changed');
-  return { system: prompts.join('\n\n'), promptParts: p.prompts.map((ref, i) => ({ sha256: ref.sha256, text: prompts[i] })), question: p.question, candidate: p.candidate, toolSpecs: secretaryToolSpecs, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource };
+  const promptAssembly=await assembleRolePrompt('secretary',prompts.join('\n\n'));requireIssuedRolePrompt(promptAssembly,'secretary');
+  return { system: promptAssembly.system,promptAssembly, promptParts: p.prompts.map((ref, i) => ({ sha256: ref.sha256, text: prompts[i] })), question: p.question, candidate: p.candidate, toolSpecs: secretaryToolSpecs, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource };
 }
 const questionInput = (p: SecretaryPlan) => 'Answer this progress question by actually using the registered task-state queries. Cite their observationIds. Recorded judgments and publication are distinct from your explanation, current remote truth, approval and product completion.\n' + JSON.stringify({ question: p.question, candidate: p.candidate, item: p.item });
 async function lock<T>(output: string, fn: () => Promise<T>) {
@@ -75,7 +77,10 @@ export async function runSecretary(planPath: string, output: string) {
       save(savedInputs, await inputs(p));
     }
     const bytes = await regular(savedInputs), frozen = JSON.parse(bytes.toString()), inputSha256 = hash(bytes);
-    if (frozen.question !== p.question || canonical(frozen.candidate) !== canonical(p.candidate) || canonical(frozen.toolSpecs) !== canonical(secretaryToolSpecs) || !Array.isArray(frozen.promptParts) || frozen.promptParts.length !== 2 || frozen.promptParts.some((part: any, i: number) => typeof part.text !== 'string' || part.sha256 !== p.prompts[i]!.sha256 || hash(part.text) !== part.sha256) || frozen.system !== frozen.promptParts.map((part: any) => part.text).join('\n\n')) throw new Error('secretary_frozen_inputs_changed');
+    if (frozen.question !== p.question || canonical(frozen.candidate) !== canonical(p.candidate) || canonical(frozen.toolSpecs) !== canonical(secretaryToolSpecs) || !Array.isArray(frozen.promptParts) || frozen.promptParts.length !== 2 || frozen.promptParts.some((part: any, i: number) => typeof part.text !== 'string' || part.sha256 !== p.prompts[i]!.sha256 || hash(part.text) !== part.sha256)) throw new Error('secretary_frozen_inputs_changed');
+    const suppliedSystem=frozen.promptParts.map((part:any)=>part.text).join('\n\n');
+    if(frozen.promptAssembly){inspectRolePrompt(frozen.promptAssembly,'secretary');if(frozen.system!==frozen.promptAssembly.system||frozen.promptAssembly.parts.find((p:any)=>p.kind==='task_policy')?.text!==suppliedSystem)throw new Error('secretary_prompt_assembly_changed');}
+    else if(frozen.system!==suppliedSystem)throw new Error('secretary_frozen_inputs_changed');
     const intentPath = join(output, 'operation.json');
     if (await exists(intentPath)) {
       const o = JSON.parse((await regular(intentPath)).toString());

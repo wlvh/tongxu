@@ -28,7 +28,9 @@
     "test:resources": "npm run build && node --test dist/tests/resources/*.test.js",
     "test:merge": "npm run build && node --test dist/tests/merge/*.test.js",
     "test:events": "npm run build && node --test dist/tests/events/*.test.js",
-    "events": "node dist/src/event-cli.js"
+    "events": "node dist/src/event-cli.js",
+    "test:sessions": "npm run build && node --test dist/tests/w4/role-prompts.test.js dist/tests/w4/session-*.test.js",
+    "sessions": "node dist/src/session-cli.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

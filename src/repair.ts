@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
+import { assemblePromptSet,inspectPromptSet } from './role-prompts.js';
 import { runClaude } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
@@ -118,7 +119,11 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const runTests = (directory: string) => { externalGate?.(); return project ? testProject(plan.workspace, directory, plan.project!) : testClamp(plan.workspace, directory, plan.nodeExecutable); };
   const checkTests = (result: any) => { if (project && !result.executionHealthy) throw new Error('project_test_environment_or_capture_failed'); };
   const currentCandidate = () => localCandidate(plan.workspace, plan.candidate.B, project);
-  const inputs = await fixedInputs(plan), grant = inputs.grant, fixedSha256 = hash(JSON.stringify({ planSha256: hash(planBytes), inputs }));
+  const supplied=await fixedInputs(plan),roles={fact:'verifier_fact',impact:'verifier_impact',reviewer:'reviewer'} as const;
+  let inputs:typeof supplied&{promptAssemblies?:any},legacyPrompts=false;
+  if(await exists(operation)){inputs=JSON.parse((await regular(join(operation,'fixed-inputs.json'))).toString());legacyPrompts=inspectPromptSet(supplied.prompts,roles,inputs).legacy;if(!isDeepStrictEqual(inputs.grant,supplied.grant))throw new Error('repair_fixed_grant_changed');}
+  else inputs={grant:supplied.grant,...await assemblePromptSet(supplied.prompts,roles)};
+  const grant = inputs.grant, fixedSha256 = hash(JSON.stringify({ planSha256: hash(planBytes), inputs }));
   const marker = JSON.parse((await regular(join(plan.workspace, '.git', 'tongxu-managed.json'))).toString());
   if (marker.kind !== (project ? 'owned-project-workspace' : 'owned-test-workspace') || project && (!isDeepStrictEqual(marker.sourceCandidate, plan.project!.sourceCandidate) || marker.executionRoot !== resolve(plan.workspace, '..') || marker.requestSha256 !== hash(await regular(join(marker.executionRoot, 'request.json')))) || marker.initialH !== plan.candidate.H || marker.initialTreeSha256 !== grant.treeSha256 || marker.preparerSourceWritesFinished !== true) throw new Error('unmanaged_or_unreleased_workspace');
   if (plan.candidate.B !== plan.candidate.H || await git(plan.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== plan.candidate.B || await git(plan.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
@@ -171,6 +176,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const gate = new RepairTools(plan.workspace, operation, grant, lease, plan.nodeExecutable, original, await git(plan.workspace, ['rev-parse', 'HEAD']), project ? async directory => { const result = await runTests(directory); checkTests(result); return modelTests(result); } : undefined, externalGate);
   const progress = (stage: string, data: unknown = {}) => save(join(operation, 'status.json'), { stage, attempt, at: new Date().toISOString(), data });
   const start = async (stage: string, role: 'reviewer' | 'verifier_fact', system: string, candidate: Candidate, tools = false) => {
+    if(legacyPrompts)throw new Error('legacy_prompt_capture_recovery_only');
     externalGate?.();
     beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
     const path = attempt + '/' + stage; codexStages.push(path);
@@ -295,6 +301,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       progress('impact', { round, candidate }); gate.phase = 'read';
       beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
       const impactDir = attempt + '/impact-' + round; claudeStages.push(impactDir);
+      if(legacyPrompts)throw new Error('legacy_prompt_capture_recovery_only');
       const impact = await runClaude({ executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs, ...(externalGate ? { beforeDispatch: () => { externalGate(); } } : {}),
         input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. The demonstrationFixture field distinguishes an explicit fixture from a fixed project source; preserve that provenance. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: material(await readTree()), factReport, fixedContract: contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, baseline: modelTests(baseline) }) });
       const decision = await fact.turn(evidence('Synthesize your factual findings with the independent Claude impact report. Do not write yet. Return confirmed/refuted/needs_owner plus the full analysis and exact candidateH. No finding means no repair.', { candidate, originalFindingsOrReview: factReport, impactSession: impact.sessionId, impactReport: impact.finalText, source: material(await readTree()) }), candidate, findingSchema);

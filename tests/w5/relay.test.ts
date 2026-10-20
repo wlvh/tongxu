@@ -47,6 +47,8 @@ test('one entry hands actual fixture process results across roles and recovers w
   const f = await fixture(t), result = await runRelay(f.path, f.output);
   assert.equal(result.status, 'completed'); assert.equal(result.executionKind, 'fixture'); assert.equal(result.manualReportCopyRequired, false);
   assert.equal(result.reviewer.turnIds.length, 2); assert.notEqual(result.reviewer.threadId, result.synthesis.threadId);
+  const assembled=JSON.parse(await readFile(join(f.output,'inputs.json'),'utf8')),sent=(await readFile(join(f.output,'codex-review/stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
+  assert.equal(sent.find(x=>x.method==='thread/start').params.baseInstructions,assembled.promptAssemblies.reviewer.system);assert.ok(assembled.promptAssemblies.reviewer.parts.some((p:any)=>p.sha256==='08e491ed00e59294408d9a97dd6b64bfa1b5d1d3bd44ba51ada4a6c85585ebe9'));assert.equal(assembled.promptAssemblies.verifierImpact.role,'verifier_impact');assert.equal(assembled.promptAssemblies.verifierFact.role,'verifier_fact');
   const before = await readFile(f.trace, 'utf8'); assert.equal(before.split('\n').filter(x => x.includes('fixture-model-input')).length, 4);
   const handoff = JSON.parse(await readFile(join(f.output, 'handoff/input.json'), 'utf8')); assert.equal(handoff.delivery, 'not_sent'); assert.equal(handoff.sourceKind, 'fixture');
   assert.equal(JSON.parse(await readFile(join(f.output, 'delivery.json'), 'utf8')).status, 'receiver_returned_final');
