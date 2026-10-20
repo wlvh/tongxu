@@ -125,6 +125,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
  * writable repair workspace and all trusted controller records stay unmounted. */
 export async function testProject(workspace: string, directory: string, p: ProjectContract) {
   const fixed = await projectTestPlan(p), current = await tree(workspace, true), inputHash = treeHash(current);
+  if (fixed.dependencies && Object.keys(current).some(path => path === 'node_modules' || path.startsWith('node_modules/'))) throw new Error('project_dependency_overlaps_source');
   await privateDirectory(directory, true); const work = join(directory, 'work'), output = join(directory, 'output');
   save(join(directory, 'test-intent.json'), { kind: 'registered-project-tests-v1', directory, workspace, generatedDirectories: p.generatedDirectories, controllerPid: process.pid, candidateTreeSha256: inputHash, testPlanSha256: p.testPlanSha256 });
   save(join(directory, 'test-progress.json'), { phase: 'preparing_input' });
@@ -139,6 +140,11 @@ export async function testProject(workspace: string, directory: string, p: Proje
   const generated = [];
   for (const [index, path] of p.generatedDirectories.entries()) {
     const source = join(directory, 'generated-' + index); await mkdir(source, { mode: 0o700 }); await mkdir(join(work, path), { recursive: true, mode: 0o700 }); generated.push({ path, source });
+  }
+  if (fixed.dependencies) {
+    // OCI cannot create a child mount point underneath an already readonly
+    // parent bind. This empty directory is a mount target, never a dependency.
+    await mkdir(join(work, 'node_modules'), { mode: 0o700 });
   }
   const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });

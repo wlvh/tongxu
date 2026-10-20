@@ -25,7 +25,7 @@ node dist/src/repair-cli.js project --config /private/existing-config.json --req
 node dist/src/repair-cli.js run --plan /private/new-managed-project/plan.json --output /private/new-managed-project/operation --reconcile-ended
 ```
 
-首命令完成准备和执行；相同请求再次进入同一root复用原plan/operation。请求中的规范绝对`executionRoot`在准备前校验，并绑定到固定请求和受管标记；换root的调用在启动模型前拒绝。变更固定请求会拒绝，原执行未知时保留原件。不同可信请求是否属于同一个队列任务，仍需后续队列责任集成判定，本入口不宣称全局去重。恢复须先确认原执行者、所有登记子进程以及测试容器已结束，原Docker记录缺失时继续未知。新原生模型仍要求未过期的现有用量证据，不更换计费方式。
+首命令完成准备和执行；相同请求再次进入同一root复用原plan/operation。请求中的规范绝对`executionRoot`在准备前校验，并绑定到固定请求和受管标记；换root的调用在启动模型前拒绝。`run`也只允许该root下的固定`operation`目录，即使原判断为反证、不产生新提交，也不能换`--output`再次派发。变更固定请求会拒绝，原执行未知时保留原件。不同可信请求是否属于同一个队列任务，仍需后续队列责任集成判定，本入口不宣称全局去重。恢复须先确认原执行者、所有登记子进程以及测试容器已结束，原Docker记录缺失时继续未知。新原生模型仍要求未过期的现有用量证据，不更换计费方式。
 
 本版允许明确列出的现有文本文件替换，最多32个可写、64个模型可读材料；工作区最多2048个普通UTF-8文件、每文件256KiB、完整快照16MiB，送模型的材料768KiB。拒绝symlink、submodule、路径跳转、改文件集合以及未列出的读取/写入；不会静默截掉这些材料。新文件/删除和二进制修改尚未开放。测试代码只能在隔离副本执行，依赖只读挂载且前后hash一致；已登记结构化覆盖缺失不能因退出0通过。
 

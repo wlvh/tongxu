@@ -109,6 +109,7 @@ async function sealResult(operation: string, result: any) {
 export async function runRepair(planPath: string, operation: string, reconcileEnded = false) {
   const planBytes = await regular(planPath), plan = JSON.parse(planBytes.toString()) as RepairPlan;
   const project = plan.test === 'registered-project-tests-v1';
+  if (project && operation !== join(resolve(plan.workspace, '..'), 'operation')) throw new Error('project_operation_changed');
   const readTree = () => tree(plan.workspace, project);
   const material = (t: Tree) => project ? projectMaterial(t, plan.project!) : t;
   const modelTests = (t: any) => project ? projectModelTestResult(t) : t;

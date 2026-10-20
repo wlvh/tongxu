@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
 import { parseDockerConfig } from '../../src/docker-sandbox.js';
+import { dependencyDigest } from '../../src/sandbox.js';
 const configPath = process.env.TONGXU_TEST_DOCKER_CONFIG;
 if (!configPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG is required for the real project test suite');
 const docker = parseDockerConfig(JSON.parse(await readFile(configPath, 'utf8')));
@@ -100,7 +101,16 @@ test('unavailable submodule material is rejected before any native task, without
 test('a fixed request cannot be moved to a new root to start another native task', async t => {
   const f = await project(t), before = await readFile(f.trace);
   await assert.rejects(prepareProjectRepair(f.configPath, f.requestPath, join(f.root, 'replacement-root')), /project_execution_root_changed/);
+  await assert.rejects(runRepair(f.plan, join(f.root, 'replacement-operation')), /project_operation_changed/);
   assert.deepEqual(await readFile(f.trace), before);
+});
+test('a refuted project finding cannot be redispatched by changing the operation directory', async t => {
+  const f = await project(t, true);
+  await writeFile(f.config.codexExecutable, (await readFile(f.config.codexExecutable, 'utf8')).replace("repairing?'repaired':'confirmed'", "repairing?'repaired':'refuted'"));
+  const result = await runRepair(f.plan, f.operation); assert.equal(result.status, 'skipped_refuted');
+  const trace = await readFile(f.trace);
+  await assert.rejects(runRepair(f.plan, join(f.root, 'replacement-operation')), /project_operation_changed/);
+  assert.deepEqual(await runRepair(f.plan, f.operation), result); assert.deepEqual(await readFile(f.trace), trace);
 });
 test('unselected source printed by tests remains private and never enters fact or impact model inputs', async t => {
   const secret = 'EXPLICIT_FAKE_UNSELECTED_SOURCE_SENTINEL', f = await project(t, false, undefined, undefined, 'project', { secret });
@@ -148,4 +158,16 @@ test('registered build outputs are writable only during their producer and froze
   await writeFile(f.projectPlan.project.testPlan, JSON.stringify(plan)); f.projectPlan.project.testPlanSha256 = hash(await readFile(f.projectPlan.project.testPlan));
   const attack = await testProject(f.workspace, join(f.root, 'forbidden-generated-dependency'), f.projectPlan.project);
   assert.equal(attack.passed, false); assert.equal(attack.tools.length, 1); assert.equal(attack.tools[0]!.generatedArtifacts.valid, false);
+});
+test('readonly project inputs have a prepared readonly dependency mount without shadowing tracked source', async t => {
+  const f = await project(t), dependencies = join(f.root, 'node_modules');
+  await mkdir(dependencies); await writeFile(join(dependencies, 'sentinel.json'), '{"fixed":true}');
+  const plan = JSON.parse(await readFile(f.projectPlan.project.testPlan, 'utf8'));
+  plan.dependencyDirectory = dependencies;
+  plan.tools[0].argv = [docker.node, '-e', "const fs=require('node:fs'),assert=require('node:assert/strict');assert.equal(require('/work/node_modules/sentinel.json').fixed,true);assert.throws(()=>fs.writeFileSync('/work/node_modules/sentinel.json','forged'),/EROFS|EACCES/)"];
+  await writeFile(f.projectPlan.project.testPlan, JSON.stringify(plan)); f.projectPlan.project.testPlanSha256 = hash(await readFile(f.projectPlan.project.testPlan)); f.projectPlan.project.dependencyHash = await dependencyDigest(dependencies);
+  const result = await testProject(f.workspace, join(f.root, 'readonly-dependency'), f.projectPlan.project);
+  assert.equal(result.passed, true); assert.equal(result.tools[0]!.dependenciesUnchanged, true);
+  await mkdir(join(f.workspace, 'node_modules')); await writeFile(join(f.workspace, 'node_modules/tracked.json'), '{}');
+  await assert.rejects(testProject(f.workspace, join(f.root, 'dependency-overlap'), f.projectPlan.project), /project_dependency_overlaps_source/);
 });
