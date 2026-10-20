@@ -86,3 +86,5 @@ python3 prototypes/build_product_ui.py
 
 
 W6 两个固定接收任务的阶段协作入口：见 [paired_reception.md](docs/paired_reception.md)。B 可先完成独立材料检查，共享接收等待 A 的准确判断；一个入口自动转交完整结果并核消费，重复读取原运行。当前真实验收状态以该文档和原 #8 / 对应 PR 的固定记录为准。
+
+本机真实只读工作台：见 [local_workbench.md](docs/local_workbench.md)。已有队列的任务、完整报告和协作事件可在浏览器查看；刷新不调用模型，页面没有写入或批准入口。

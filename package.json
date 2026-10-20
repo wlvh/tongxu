@@ -18,7 +18,9 @@
     "test:receiver": "npm run build && node --test dist/tests/w3/receiver.test.js",
     "test:publication": "npm run build && node --test dist/tests/w3/publication.test.js",
     "test:secretary": "npm run build && node --test dist/tests/w4/secretary.test.js",
-    "test:pair": "npm run build && node --test dist/tests/w6/*.test.js"
+    "test:pair": "npm run build && node --test dist/tests/w6/*.test.js",
+    "test:workbench": "npm run build && node --test dist/tests/w7/*.test.js",
+    "workbench": "node dist/src/workbench-cli.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
