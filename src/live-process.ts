@@ -9,17 +9,17 @@ export const save = (path: string, value: unknown) => {
   const temporary = path + '.' + randomUUID() + '.tmp';
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); renameSync(temporary, path);
 };
-export async function executable(path: string, expected: string) {
+export async function executable(path: string, expected: string | readonly string[]) {
   if (!isAbsolute(path)) throw new Error('executable_must_be_absolute');
   const actual = await realpath(path), info = await stat(actual);
   if (!info.isFile() || !(info.mode & 0o111)) throw new Error('invalid_executable');
   const version = await new Promise<string>((resolve, reject) => {
-    const p = spawn(path, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] }); let text = '';
+    const p = spawn(path, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }); let text = '';
     const timer = setTimeout(() => { p.kill(); reject(new Error('version_timeout')); }, 10_000);
     p.stdout.on('data', b => { text += b; }); p.stderr.resume(); p.once('error', reject);
     p.once('close', code => { clearTimeout(timer); code === 0 ? resolve(text.trim()) : reject(new Error('version_failed')); });
   });
-  if (version !== expected) throw new Error('executor_version_mismatch');
+  if (!(typeof expected === 'string' ? version === expected : expected.includes(version))) throw new Error('executor_version_mismatch');
   return { path, realpath: actual, version, sha256: hash(await readFile(actual)) };
 }
 
