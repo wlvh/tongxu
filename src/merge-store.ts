@@ -4,7 +4,7 @@ import { hash } from './snapshot.js';
 import { now } from './contract.js';
 import { parseMergeBinding, mergeBindingHash, inspectMergeResponse, type ManagedMergeBinding } from './merge-contract.js';
 import { parseMergeProfile, mergeCommand, mergeWire, requireMergeObservation, type MergeProfile, type MergeObservation } from './merge-provider.js';
-import { requireMergePreflight, type MergePreflight } from './merge-preflight.js';
+import { requireMergePreflight, type MergePreflight, type MergeReadRecord } from './merge-preflight.js';
 import { requireMergeReadback, type MergeReadback } from './merge-readback.js';
 import { requireMergeControllerProof, type MergeControllerProof, type MergeDispatchReference } from './merge-recovery.js';
 import { resourceRequestHash, type ResourceRequest } from './resource-contract.js';
@@ -27,6 +27,24 @@ export class MergeRecords {
   private event(kind:string,id:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('managed_merge_'+kind,'merge:'+id,JSON.stringify(data),now());}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row;const b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('managed_merge_original_missing_or_changed');return b;}
+  /** Capture bytes are stored once. Never canonicalize Buffer itself: that
+   * turns every byte into a JSON property and can multiply a valid page by
+   * an order of magnitude. The index retains exact provenance and blob refs. */
+  private capturedRecords(records:MergeReadRecord[]){return records.map(({command,observation:o})=>({command,observation:{profileSha256:o.profileSha256,inputSha256:o.inputSha256,directory:o.directory,capturedAt:o.capturedAt,rawSha256:this.blob(o.raw),rawBytes:o.raw.length}}));}
+  private preflightEvidence(value:MergePreflight){return {profileSha256:value.profileSha256,bindingSha256:value.bindingSha256,records:this.capturedRecords(value.records),result:value.result,checkedAt:value.checkedAt};}
+  private readbackEvidence(value:MergeReadback){return {profileSha256:value.profileSha256,bindingSha256:value.bindingSha256,records:this.capturedRecords(value.records),result:value.result,checkedAt:value.checkedAt};}
+  private originalCapture(record:Row){
+    const o=record.observation;
+    if(o.rawSha256){const raw=this.bytes(o.rawSha256);if(raw.length!==o.rawBytes)throw new Error('managed_merge_capture_length_changed');return {raw,sha256:o.rawSha256};}
+    // Read-only compatibility with the initial 073fae0 index. Its expanded
+    // representation is never rewritten over the historical evidence. Every
+    // reconstructed byte must equal a separately saved original provider blob.
+    const entries=o.raw&&typeof o.raw==='object'&&!Array.isArray(o.raw)?Object.entries(o.raw):[];
+    if(!entries.length||entries.length>4*1024*1024)throw new Error('legacy_merge_capture_index_invalid');
+    const raw=Buffer.alloc(entries.length);
+    for(const [key,value] of entries){if(!/^(0|[1-9][0-9]*)$/.test(key)||Number(key)>=entries.length||!Number.isInteger(value)||(value as number)<0||(value as number)>255)throw new Error('legacy_merge_capture_index_invalid');raw[Number(key)]=value as number;}
+    const sha256=hash(raw);if(!this.bytes(sha256).equals(raw)||canonical(JSON.parse(raw.toString()))!==canonical(o.reply))throw new Error('legacy_merge_original_capture_changed');return {raw,sha256};
+  }
   private mode(){if((this.db.prepare('PRAGMA user_version').get() as Row).user_version!==14||![["managed_merge_claim_guard",claimGuard],["managed_merge_record_guard",recordGuard]].every(([name,sql])=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(name!) as Row)?.sql===sql))throw new Error('managed_merge_not_enabled');}
   private profile():MergeProfile{this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!ref)throw new Error('managed_publisher_not_configured');return parseMergeProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
@@ -91,7 +109,7 @@ export class MergeRecords {
     this.own(x);if(x.stage.attempts.length>=3)throw new Error('managed_merge_attempt_bound');
     const authorization=this.current(x.binding,observations);requireMergePreflight(preflight,p,x.binding);
     const resources=x.binding.resourceRequests.map(requestId=>this.resources().requireHeldForExecution(requestId,id,x.binding.authorityIntent));
-    const originals=preflight.records.map(r=>this.blob(r.observation.raw)),preflightSha=this.blob(Buffer.from(canonical(preflight)));
+    const evidence=this.preflightEvidence(preflight),originals=evidence.records.map(r=>r.observation.rawSha256),preflightSha=this.blob(Buffer.from(canonical(evidence)));
     const executionBindingSha256=this.blob(Buffer.from(canonical({kind:'managed_merge_dispatch_evidence',operation:id,binding:x.binding,authorization,resources,profile:p,preflightSha256:preflightSha,command:mergeCommand(x.binding,'merge'),registeredAt:now()})));
     delete x.stage.response;delete x.stage.readback;delete x.stage.latestObservationGap;
     x.stage.phase='sent_unknown';x.stage.requestState='registered_outcome_unknown';x.stage.controllerReturned=false;x.stage.dispatchedAt=now();
@@ -103,7 +121,8 @@ export class MergeRecords {
   preflightObserved(id:string,value:MergePreflight){return this.transaction(()=>{
     const x=this.original(id);if(value.bindingSha256!==x.stage.bindingHash||value.profileSha256!==hash(canonical(this.profile())))throw new Error('managed_merge_preflight_binding_mismatch');
     for(const r of value.records)requireMergeObservation(r.observation,this.profile(),r.command);
-    this.event('preflight',id,{ready:value.result.ready,gaps:value.result.gaps,blobs:[this.blob(Buffer.from(canonical(value))),...value.records.map(r=>this.blob(r.observation.raw))]});return value.result;
+    const evidence=this.preflightEvidence(value);
+    this.event('preflight',id,{ready:value.result.ready,gaps:value.result.gaps,blobs:[this.blob(Buffer.from(canonical(evidence))),...evidence.records.map(r=>r.observation.rawSha256)]});return value.result;
   });}
   private reference(x:ReturnType<MergeRecords['original']>):MergeDispatchReference {const a=x.stage.attempts.at(-1);if(!a)throw new Error('original_merge_dispatch_missing');return {attempt:a.attempt,directory:a.directory,controllerPid:a.controllerPid,controllerReturned:a.controllerReturned};}
   originalDispatch(id:string){return this.transaction(()=>this.reference(this.original(id)));}
@@ -136,7 +155,7 @@ export class MergeRecords {
     if(x.stage.readback?.result?.mergeCommit&&value.result.mergeCommit&&x.stage.readback.result.mergeCommit!==value.result.mergeCommit)throw new Error('actual_merge_identity_conflict');
     const prior=x.stage.phase;
     const terminal=['exact_merge_result_verified','actual_merge_result_verified','merged_wrong_target'];
-    const raw=this.blob(Buffer.from(canonical(value)));for(const r of value.records)this.blob(r.observation.raw);
+    const evidence=this.readbackEvidence(value),raw=this.blob(Buffer.from(canonical(evidence)));
     x.stage.readback={sha256:raw,result:value.result,checkedAt:value.checkedAt};
     if(value.result.mergeCommit&&value.result.state!=='sent_unknown'){x.stage.requestState='merge_effect_observed';x.result.externalActionSent=p.executionKind==='external';x.result.externalProductionActionSent=p.executionKind==='external';}
     if(!terminal.includes(prior)){
@@ -147,7 +166,7 @@ export class MergeRecords {
       else x.stage.phase='sent_unknown';
     }else if(value.result.state!=='exact_merge_result_observed'&&prior==='exact_merge_result_verified')x.stage.latestObservationGap=value.result;
     this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(x.result),id);
-    this.event('readback',id,{state:x.stage.phase,blobs:[raw,...value.records.map(r=>hash(r.observation.raw))]});
+    this.event('readback',id,{state:x.stage.phase,blobs:[raw,...evidence.records.map(r=>r.observation.rawSha256)]});
     if(x.stage.controllerReturned&&['refused',...terminal].includes(x.stage.phase)&&x.op.status==='merging')this.finish(x);
     return this.view(id);
   });}
@@ -167,7 +186,10 @@ export class MergeRecords {
   private validationBytes(id:string){
     const x=this.original(id);if(x.stage.phase!=='merged_pending_verification'||x.stage.readback?.result?.reason!=='actual_version_requires_own_validation')throw new Error('actual_merge_version_validation_not_applicable');
     const readback=JSON.parse(this.bytes(x.stage.readback.sha256).toString());
-    return Buffer.from(canonical({kind:'tongxu-actual-merge-validation',operation:id,binding:x.binding,bindingSha256:x.stage.bindingHash,actual:readback.result,readback}));
+    const captures=readback.records.map((r:Row)=>({record:r,captured:this.originalCapture(r)}));
+    const originals=captures.map(({record:r,captured}:{record:Row;captured:{raw:Buffer;sha256:string}})=>({command:r.command,rawSha256:captured.sha256,rawText:new TextDecoder('utf8',{fatal:true}).decode(captured.raw)}));
+    const index={...readback,originalIndexSha256:x.stage.readback.sha256,records:captures.map(({record:r,captured}:{record:Row;captured:{raw:Buffer;sha256:string}})=>({command:r.command,observation:{profileSha256:r.observation.profileSha256,inputSha256:r.observation.inputSha256,directory:r.observation.directory,capturedAt:r.observation.capturedAt,rawSha256:captured.sha256,rawBytes:captured.raw.length}}))};
+    return Buffer.from(canonical({kind:'tongxu-actual-merge-validation',operation:id,binding:x.binding,bindingSha256:x.stage.bindingHash,actual:readback.result,readback:index,originals}));
   }
   completeValidation(id:string,value:ActualMergeValidation){return this.transaction(()=>{
     const reference=this.validationBytes(id),x=this.original(id);requireActualMergeValidation(value,reference,this.profile().executionKind);this.own(x);

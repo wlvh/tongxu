@@ -45,6 +45,8 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 当前有限规则实现支持 PR 审批数量、准确 app/context 检查、禁止删除/强推规则。Code Owners、指定团队审核、最后推送者、讨论解决、签名、部署、merge queue、线性历史及其他未知语义会给出具体缺项。保护接口 404 不当作“没有保护”而放行；缺页也不是空集合。不修改设置。GitHub 在请求时的服务端规则执行仍不可省略。
 
+完整 provider 原字节逐份保存为 blob；preflight/readback 索引仅保留摘要、字节数、请求、捕获位置和时间，不把 Buffer 展成逐字节 JSON。原大页不截断、不降低既定页数/单响应上限。实际版本补验材料从准确原引用读取完整 UTF-8 回执，保留来源而不复制数字键表示。
+
 同步 merge 请求仅带固定 H、merge 方法和本操作固定标记。GitHub 的 head 条件不锁 base/target，因此结果必须回读原 PR、实际 merge commit 的两个 parents、tree、合入者和准确目标；目标继续前进时另查祖先关系。原输入、规则读取、授权意图、资源回执、发送过程和实际结果分别保存。进程退出0、接口200、模型判断和代码树核对均是不同事实。
 
 | 状态 | 后续行为 |

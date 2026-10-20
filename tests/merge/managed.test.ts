@@ -16,6 +16,7 @@ import { runReception } from '../../src/receiver.js';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { canonical } from '../../src/comparison.js';
 
 test('one original queue operation owns target before resources, sends one exact HTTP merge and verifies actual result',async t=>{
   const f=await ready(t),s=f.q.merges().status(f.operation);assert.equal(s.merge.phase,'resources_pending');assert.equal(f.q.status().claims[0].operation,f.operation);assert.equal(f.ledger.state().claims.length,0);
@@ -111,4 +112,30 @@ const q=await QueueStore.open(${JSON.stringify(f.store)}),m=q.merges(),s=m.statu
   assert.equal(result.signal,'SIGKILL',result.error);assert.equal(f.q.merges().status(f.operation).merge.phase,'sent_unknown');assert.equal(f.publisher.state().merges,0);
   assert.equal((await managedMergeAction(f.store,f.operation,'recover-controller')).merge.phase,'resources_pending');
   assert.equal((await managedMergeAction(f.store,f.operation,'run')).merge.phase,'exact_merge_result_verified');assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);assert.equal(f.ledger.state().claims.length,1);
+});
+test('large legal review pages retain exact original blobs while the saved preflight stays a bounded reference index',async t=>{
+  const f=await ready(t),p=f.publisher,root='/repos/'+f.binding.repository,body='x'.repeat(9000),at=new Date().toISOString();
+  for(let page=1;page<=5;page++)p.setReply(`${root}/pulls/${f.binding.pr}/reviews?per_page=100&page=${page}`,Array.from({length:100},(_,i)=>({id:(page-1)*100+i+1,user:{id:70,login:'fixture-commenter'},state:'COMMENTED',commit_id:f.binding.H,submitted_at:at,body})),200,page<5);
+  const done=await managedMergeAction(f.store,f.operation,'run');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(p.state().merges,1);
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'),{readOnly:true});try{
+    const get=(sha:string)=>Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as any).bytes);
+    const raw=get(done.merge.attempts[0].preflightSha256),saved=JSON.parse(raw.toString());assert.ok(raw.length<64*1024,`metadata index unexpectedly ${raw.length} bytes`);
+    const pages=saved.records.filter((r:any)=>r.command.read?.kind==='reviews');assert.equal(pages.length,5);let bytes=0;
+    for(const page of pages){assert.equal(page.observation.raw,undefined);assert.equal(page.observation.reply,undefined);const original=get(page.observation.rawSha256);assert.equal(hash(original),page.observation.rawSha256);assert.equal(original.length,page.observation.rawBytes);bytes+=original.length;const parsed=JSON.parse(JSON.parse(original.toString()).result.body);assert.equal(parsed.length,100);assert.equal(parsed[99].body,body);}
+    assert.ok(bytes>4*1024*1024);
+  }finally{db.close();}
+});
+test('historical expanded readback indexes stay readable without overwriting the original or repeating a merge',async t=>{
+  const f=await ready(t,'base-race');await managedMergeAction(f.store,f.operation,'run');
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'));let legacySha='';
+  try{
+    const get=(sha:string)=>Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as any).bytes),op=db.prepare('SELECT result FROM operations WHERE id=?').get(f.operation) as any,result=JSON.parse(op.result),oldSha=result.merge.readback.sha256,index=JSON.parse(get(oldSha).toString());
+    // Explicit fixture for the previously shipped 073fae0 storage format.
+    for(const r of index.records){const raw=get(r.observation.rawSha256);delete r.observation.rawSha256;delete r.observation.rawBytes;r.observation.raw=raw;r.observation.reply=JSON.parse(raw.toString());}
+    const legacy=Buffer.from(canonical(index));legacySha=hash(legacy);db.prepare('INSERT INTO blobs VALUES(?,?)').run(legacySha,legacy);result.merge.readback.sha256=legacySha;
+    db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result),f.operation);
+    const row=db.prepare("SELECT id,data FROM events WHERE object=? AND kind='managed_merge_readback'").get('merge:'+f.operation) as any,data=JSON.parse(row.data);data.blobs=data.blobs.map((s:string)=>s===oldSha?legacySha:s);db.prepare('UPDATE events SET data=? WHERE id=?').run(JSON.stringify(data),row.id);
+    const material=JSON.parse(f.q.merges().validationInput(f.operation).toString());assert.equal(material.readback.originalIndexSha256,legacySha);assert.equal(material.readback.records[0].observation.raw,undefined);assert.ok(material.originals.every((r:any)=>hash(r.rawText)===r.rawSha256));assert.equal(hash(get(legacySha)),legacySha);assert.equal(f.publisher.state().merges,1);
+    const ref=material.originals[0].rawSha256,original=get(ref);db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('changed'),ref);assert.throws(()=>f.q.merges().validationInput(f.operation),/original_missing_or_changed/);db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(original,ref);
+  }finally{db.close();}
 });
