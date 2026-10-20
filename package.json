@@ -20,7 +20,8 @@
     "test:secretary": "npm run build && node --test dist/tests/w4/secretary.test.js",
     "test:pair": "npm run build && node --test dist/tests/w6/*.test.js",
     "test:workbench": "npm run build && node --test dist/tests/w7/*.test.js",
-    "workbench": "node dist/src/workbench-cli.js"
+    "workbench": "node dist/src/workbench-cli.js",
+    "test:project-repair": "npm run build && node --test dist/tests/project-repair/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

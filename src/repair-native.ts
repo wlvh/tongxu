@@ -6,7 +6,7 @@ import { hash } from './snapshot.js';
 import { parseCodexResult, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
-import { repairToolSpecs, exists } from './repair-workspace.js';
+import { repairToolSpecs, projectRepairToolSpecs, exists } from './repair-workspace.js';
 import { secretaryToolSpecs } from './secretary-tools.js';
 const exec = promisify(execFile);
 
@@ -15,7 +15,7 @@ export type NativeOptions = {
   role: 'verifier_fact' | 'reviewer' | 'secretary'; system: string; inputManifestSha256: string;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   allowedInstructionSources: Array<{ path: string; sha256: string }>;
-  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; beforeTurn?: () => Promise<void>; gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string }): Promise<unknown> };
+  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; beforeTurn?: () => Promise<void>; gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string }): Promise<unknown> };
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
@@ -47,7 +47,7 @@ export class BoundedCodexSession {
   }
   get sessionId() { return this.binding.sessionId; }
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
-  private get toolSpecs() { return this.o.role === 'secretary' ? secretaryToolSpecs : repairToolSpecs; }
+  private get toolSpecs() { return this.o.role === 'secretary' ? secretaryToolSpecs : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);

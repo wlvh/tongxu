@@ -105,7 +105,7 @@ async function safeFile(root: string, path: string): Promise<string> {
   }
   throw new Error('unsafe_tracked_path');
 }
-async function fingerprint(directory: string, paths: string[]): Promise<string> {
+export async function fingerprint(directory: string, paths: string[]): Promise<string> {
   const items = [];
   for (const p of paths) items.push([p, await safeFile(directory, p)]);
   // HEAD/index/config alone miss replace refs, grafts, alternates and changed objects.

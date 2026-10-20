@@ -34,8 +34,8 @@ export async function regular(path: string, limit = 1024 * 1024) {
   const st = await lstat(path); if (!st.isFile() || st.nlink !== 1 || st.size > limit) throw new Error('invalid_repair_file');
   const bytes = await readFile(path); if (bytes.length !== st.size) throw new Error('repair_file_changed_during_read'); return bytes;
 }
-export type Tree = Record<string, { sha256: string; bytes: number; text: string }>;
-export async function tree(workspace: string): Promise<Tree> {
+export type Tree = Record<string, { sha256: string; bytes: number; text: string; executable?: number }>;
+export async function tree(workspace: string, project = false): Promise<Tree> {
   if (await realpath(workspace) !== workspace) throw new Error('noncanonical_workspace');
   const result: Tree = {};
   const walk = async (sub: string) => {
@@ -44,26 +44,26 @@ export async function tree(workspace: string): Promise<Tree> {
       const path = sub ? sub + '/' + name : name, full = join(workspace, path), st = await lstat(full);
       if (st.isSymbolicLink() || !/^[A-Za-z0-9_.\/-]+$/.test(path)) throw new Error('unsafe_workspace_entry');
       if (st.isDirectory()) await walk(path);
-      else { const b = await regular(full, 256 * 1024); result[path] = { sha256: hash(b), bytes: b.length, text: new TextDecoder('utf8', { fatal: true }).decode(b) }; }
-      if (Object.keys(result).length > 30) throw new Error('repair_workspace_limit');
+      else { const b = await regular(full, 256 * 1024); result[path] = { sha256: hash(b), bytes: b.length, text: new TextDecoder('utf8', { fatal: true }).decode(b), ...(project ? { executable: st.mode & 0o111 } : {}) }; }
+      if (Object.keys(result).length > (project ? 2048 : 30)) throw new Error('repair_workspace_limit');
     }
   };
-  await walk(''); if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error('repair_workspace_limit'); return result;
+  await walk(''); if (Buffer.byteLength(JSON.stringify(result)) > (project ? 16 : 1) * 1024 * 1024) throw new Error('repair_workspace_limit'); return result;
 }
 export const treeHash = (t: Tree) => hash(JSON.stringify(t));
 export function scopeChanges(before: Tree, after: Tree, allowed: string[]) {
   if (Object.keys(before).join('\0') !== Object.keys(after).join('\0')) throw new Error('workspace_file_set_changed');
-  const changed = Object.keys(before).filter(p => before[p]!.sha256 !== after[p]!.sha256);
+  const changed = Object.keys(before).filter(p => before[p]!.sha256 !== after[p]!.sha256 || before[p]!.executable !== after[p]!.executable);
   if (changed.some(p => !allowed.includes(p))) throw new Error('out_of_scope_workspace_change'); return changed;
 }
 export function processState(pid: unknown): 'alive' | 'ended' | 'unknown' {
   if (!Number.isSafeInteger(pid) || Number(pid) < 2) return 'unknown';
   try { process.kill(Number(pid), 0); return 'alive'; } catch (e: any) { return e.code === 'ESRCH' ? 'ended' : 'unknown'; }
 }
-export type Grant = { id: string; source: string; workspace: string; H: string; treeSha256: string; allowedPaths: string[]; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number };
+export type Grant = { id: string; source: string; workspace: string; H: string; treeSha256: string; allowedPaths: string[]; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number; profile?: 'project-v1'; materialPaths?: string[] };
 export type Lease = { operation: string; controllerPid: number; generation: string; status: 'held' };
 
-export async function acquireWorkspace(workspace: string, operation: string, reconcileEnded: boolean, grant: Grant) {
+export async function acquireWorkspace(workspace: string, operation: string, reconcileEnded: boolean, grant: Grant, beforeReconcile?: () => Promise<void>) {
   if (await realpath(join(workspace, '.git')) !== join(workspace, '.git') || !(await lstat(join(workspace, '.git'))).isDirectory()) throw new Error('unsafe_managed_git_directory');
   if (await exists(join(workspace, '.git', 'index.lock'))) throw new Error('git_write_active_or_unknown');
   const lock = join(workspace, '.git', 'tongxu-writer.json');
@@ -83,8 +83,9 @@ export async function acquireWorkspace(workspace: string, operation: string, rec
       }
     };
     await walk(operation);
-    const observed = await tree(workspace);
-    const frozen = JSON.parse((await regular(join(operation, 'initial-tree.json'))).toString()) as Tree;
+    await beforeReconcile?.();
+    const observed = await tree(workspace, grant.profile === 'project-v1');
+    const frozen = JSON.parse((await regular(join(operation, 'initial-tree.json'), grant.profile ? 20 * 1024 * 1024 : undefined)).toString()) as Tree;
     scopeChanges(frozen, observed, grant.allowedPaths);
     await mkdir(join(operation, 'ownership-history'), { recursive: true, mode: 0o700 });
     save(join(operation, 'ownership-history', prior.generation + '-reconciled.json'), { prior, controllerEnded: true, registeredChildrenEnded: true, observedTree: observed, observedTreeSha256: treeHash(observed), authorization: grant.id });
@@ -172,14 +173,15 @@ export class RepairTools {
   phase: 'read' | 'write' | 'closed' = 'read';
   private serial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
     if (this.phase === 'closed' || await exists(join(this.operation, 'revoked.json'))) throw new Error('repair_revoked_or_closed');
     if (JSON.stringify(JSON.parse((await regular(join(this.workspace, '.git', 'tongxu-writer.json'))).toString())) !== JSON.stringify(this.lease)) throw new Error('writer_lease_changed');
     if (await git(this.workspace, ['rev-parse', 'HEAD']) !== this.expectedHead) throw new Error('candidate_changed_during_operation');
-    if (await git(this.workspace, ['rev-parse', 'refs/heads/fixture-base']) !== this.grant.H || await git(this.workspace, ['branch', '--show-current']) !== 'repair-fixture') throw new Error('candidate_base_or_branch_changed');
-    const current = await tree(this.workspace);
+    const project = this.grant.profile === 'project-v1';
+    if (await git(this.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== this.grant.H || await git(this.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
+    const current = await tree(this.workspace, project);
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool'); return current;
   }
   async handoff(sessionId: string) {
@@ -200,22 +202,23 @@ export class RepairTools {
     if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('invalid_tool_arguments');
     let output: unknown;
     if (p.tool === 'tongxu_read_file') {
-      if (Object.keys(a).join() !== 'path' || !Object.hasOwn(current, a.path)) throw new Error('read_path_outside_material'); output = current[a.path];
+      if (Object.keys(a).join() !== 'path' || !Object.hasOwn(current, a.path) || this.grant.profile && !this.grant.materialPaths?.includes(a.path)) throw new Error('read_path_outside_material'); output = current[a.path];
     } else if (p.tool === 'tongxu_replace_file') {
       if (this.phase !== 'write' || !this.grant.allowRepair || Object.keys(a).sort().join() !== 'expectedSha256,path,text' || !this.grant.allowedPaths.includes(a.path) || typeof a.text !== 'string' || Buffer.byteLength(a.text) > 256 * 1024 || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
       const target = join(this.workspace, a.path), after = Buffer.from(a.text), before = readFileSync(target), temporary = join(calls, p.callId + '.pending');
-      const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: a.text, status: 'write_registered' };
-      save(path, receipt); writeFileSync(temporary, after, { flag: 'wx', mode: 0o600 });
+      const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: a.text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
+      save(path, receipt); writeFileSync(temporary, after, { flag: 'wx', mode: lstatSync(target).mode & 0o777 });
       // No await between the last revocation/identity check and atomic replace.
       if (readFileSync(join(this.workspace, '.git', 'tongxu-writer.json'), 'utf8') !== JSON.stringify(this.lease) || lstatSync(target).nlink !== 1 || hash(readFileSync(target)) !== receipt.beforeSha256) throw new Error('write_boundary_changed');
       try { readFileSync(join(this.operation, 'revoked.json')); throw new Error('repair_revoked'); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
-      renameSync(temporary, target); this.expected[a.path] = { sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
+      renameSync(temporary, target); this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
       const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
       save(path, { ...receipt, status: 'applied', response, afterTreeSha256: treeHash(this.expected) }); return response;
     } else if (p.tool === 'tongxu_run_tests') {
       if (Object.keys(a).length) throw new Error('test_arguments_not_allowed');
       await mkdir(join(this.operation, 'tests'), { recursive: true, mode: 0o700 });
-      output = await testClamp(this.workspace, join(this.operation, 'tests', 'tool-' + p.callId), this.node);
+      const directory = join(this.operation, 'tests', 'tool-' + p.callId);
+      output = this.grant.profile === 'project-v1' ? await this.projectTest!(directory) : await testClamp(this.workspace, directory, this.node);
     } else throw new Error('unregistered_repair_tool');
     const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
     save(path, { request: p, response, afterTreeSha256: treeHash(this.expected) }); return response;
@@ -227,4 +230,6 @@ export const repairToolSpecs = [
   { type: 'function', name: 'tongxu_replace_file', description: 'Replace exactly one authorized source file after handoff, with optimistic hash checking. No other path or permission is available.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, expectedSha256: { type: 'string' }, text: { type: 'string' } }, required: ['path', 'expectedSha256', 'text'], additionalProperties: false } },
   { type: 'function', name: 'tongxu_run_tests', description: 'Run the fixed trusted pure-function contract outside the writable source; no command argument is accepted.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }
 ];
-export async function localCandidate(workspace: string, base: string): Promise<Candidate> { return { kind: 'local-git', repository: 'local/clamp-fixture', pr: null, H: await git(workspace, ['rev-parse', 'HEAD']), B: base, target: 'fixture-base' }; }
+export async function localCandidate(workspace: string, base: string, project = false): Promise<Candidate> { return { kind: 'local-git', repository: project ? 'local/project-repair' : 'local/clamp-fixture', pr: null, H: await git(workspace, ['rev-parse', 'HEAD']), B: base, target: project ? 'project-base' : 'fixture-base' }; }
+
+export const projectRepairToolSpecs = repairToolSpecs.map(t => t.name === 'tongxu_run_tests' ? { ...t, description: 'Run the registered project tests in a separate isolated candidate copy. No command argument is accepted.' } : t);
