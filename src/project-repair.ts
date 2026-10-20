@@ -18,6 +18,8 @@ const paths = (p: unknown, max: number): p is string[] => Array.isArray(p) && p.
 export type ProjectContract = {
   sourceCandidate: Candidate; materialPaths: string[]; protectedPaths: string[]; contract: string;
   testPlan: string; testPlanSha256: string; dependencyHash: string | null; generatedDirectories: string[];
+  priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown };
+  queueOperation?: { store: string; operation: string };
 };
 export type ProjectRequest = {
   schemaVersion: 1; kind: 'tongxu-project-repair-request'; executionRoot: string; objects: string; candidate: Candidate;
@@ -25,12 +27,16 @@ export type ProjectRequest = {
   testPlan: string; testPlanSha256: string; findings: Array<{ id: string; description: string }>;
   authorization: { source: string; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number };
   demonstrationFixture: boolean; generatedDirectories: string[];
+  priorReview?: ProjectContract['priorReview'];
+  queueOperation?: ProjectContract['queueOperation'];
 };
 export function validateProjectContract(p: ProjectContract, grant: Grant) {
   const c = p?.sourceCandidate;
   if (!c || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !commit.test(c.H) || !commit.test(c.B) || typeof c.target !== 'string' || !c.target || /[\x00-\x20]/.test(c.target) || !(c.kind === 'local-git' ? c.repository.startsWith('local/') && c.pr === null : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr! > 0)) throw new Error('invalid_project_source_candidate');
   if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || !paths(grant.allowedPaths, 32) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
   if (!Array.isArray(p.generatedDirectories) || p.generatedDirectories.length > 16 || p.generatedDirectories.some(x => !relative(x) || p.generatedDirectories.some(y => y !== x && (x.startsWith(y + '/') || y.startsWith(x + '/')))) || new Set(p.generatedDirectories).size !== p.generatedDirectories.length) throw new Error('invalid_project_output_directories');
+  if (p.priorReview && (!digest.test(p.priorReview.bindingHash) || !digest.test(p.priorReview.inputSha256) || typeof p.priorReview.report !== 'string' || Buffer.byteLength(JSON.stringify(p.priorReview)) > 192 * 1024)) throw new Error('invalid_project_prior_review');
+  if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || p.queueOperation.operation !== p.priorReview?.operation)) throw new Error('invalid_project_queue_binding');
 }
 export async function projectTestPlan(p: ProjectContract) {
   const bytes = await regular(p.testPlan);
@@ -122,7 +128,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   const dependencyHash = await dependencyDigest(await validateDependencies(test.dependencyDirectory));
   const workspace = join(root, 'workspace');
   const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths };
-  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories };
+  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}) };
   validateProjectContract(project, grant);
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
   await privateDirectory(root, true); await mkdir(workspace, { mode: 0o700 });

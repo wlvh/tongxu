@@ -163,7 +163,7 @@ export class BoundedCodexSession {
     if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
     await this.o.gate?.check();
     const usage = await this.request('account/rateLimits/read', {}); if (usage.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
-    if (this.o.role === 'secretary') await this.o.beforeTurn!();
+    await this.o.beforeTurn?.();
     const index = this.inputs.length + 1;
     this.inputs.push({ input, subjectCandidate: candidate, schema });
     save(join(this.o.directory, 'inputs.json'), this.inputs);

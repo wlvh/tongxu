@@ -106,15 +106,16 @@ async function sealResult(operation: string, result: any) {
   save(join(operation, 'result.json'), result); return result;
 }
 
-export async function runRepair(planPath: string, operation: string, reconcileEnded = false) {
+export async function runRepair(planPath: string, operation: string, reconcileEnded = false, externalGate?: (effect?: () => void) => void) {
   const planBytes = await regular(planPath), plan = JSON.parse(planBytes.toString()) as RepairPlan;
   const project = plan.test === 'registered-project-tests-v1';
+  if (plan.project?.queueOperation && !externalGate) throw new Error('original_queue_repair_entry_required');
   if (project && operation !== join(resolve(plan.workspace, '..'), 'operation')) throw new Error('project_operation_changed');
   const readTree = () => tree(plan.workspace, project);
   const material = (t: Tree) => project ? projectMaterial(t, plan.project!) : t;
   const modelTests = (t: any) => project ? projectModelTestResult(t) : t;
   const contract = project ? plan.project!.contract : 'Finite numbers, low<=high: clamp returns the value bounded inclusively to [low,high], preserving fractional values.';
-  const runTests = (directory: string) => project ? testProject(plan.workspace, directory, plan.project!) : testClamp(plan.workspace, directory, plan.nodeExecutable);
+  const runTests = (directory: string) => { externalGate?.(); return project ? testProject(plan.workspace, directory, plan.project!) : testClamp(plan.workspace, directory, plan.nodeExecutable); };
   const checkTests = (result: any) => { if (project && !result.executionHealthy) throw new Error('project_test_environment_or_capture_failed'); };
   const currentCandidate = () => localCandidate(plan.workspace, plan.candidate.B, project);
   const inputs = await fixedInputs(plan), grant = inputs.grant, fixedSha256 = hash(JSON.stringify({ planSha256: hash(planBytes), inputs }));
@@ -140,6 +141,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     }
   }
   if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
+  externalGate?.();
   if (!grant.allowRepair) throw new Error('repair_not_authorized');
   const observedHead = await git(plan.workspace, ['rev-parse', 'HEAD']);
   if (observedHead !== plan.candidate.H) {
@@ -166,12 +168,13 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const attempts = (await readdir(operation)).filter(x => /^attempt-\d+$/.test(x));
   if (attempts.length >= 3) throw new Error('recovery_attempt_budget_reached');
   const attempt = 'attempt-' + (attempts.length + 1); await mkdir(join(operation, attempt), { mode: 0o700 });
-  const gate = new RepairTools(plan.workspace, operation, grant, lease, plan.nodeExecutable, original, await git(plan.workspace, ['rev-parse', 'HEAD']), project ? async directory => { const result = await runTests(directory); checkTests(result); return modelTests(result); } : undefined);
+  const gate = new RepairTools(plan.workspace, operation, grant, lease, plan.nodeExecutable, original, await git(plan.workspace, ['rev-parse', 'HEAD']), project ? async directory => { const result = await runTests(directory); checkTests(result); return modelTests(result); } : undefined, externalGate);
   const progress = (stage: string, data: unknown = {}) => save(join(operation, 'status.json'), { stage, attempt, at: new Date().toISOString(), data });
   const start = async (stage: string, role: 'reviewer' | 'verifier_fact', system: string, candidate: Candidate, tools = false) => {
+    externalGate?.();
     beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
     const path = attempt + '/' + stage; codexStages.push(path);
-    return RepairSession.start({ executable: plan.codexExecutable, directory: join(operation, path), operation, candidate, role, system, inputManifestSha256: fixedSha256, scopeSource: plan.scopeSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, executionKind: plan.executionKind ?? 'native_capture', ...(project ? { projectRepair: true } : {}), ...(tools ? { gate } : {}) });
+    return RepairSession.start({ executable: plan.codexExecutable, directory: join(operation, path), operation, candidate, role, system, inputManifestSha256: fixedSha256, scopeSource: plan.scopeSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, executionKind: plan.executionKind ?? 'native_capture', ...(externalGate ? { beforeTurn: async () => { externalGate(); } } : {}), ...(project ? { projectRepair: true } : {}), ...(tools ? { gate } : {}) });
   };
   const askReview = async (session: RepairSession, input: string, candidate: Candidate) => {
     let review = await session.turn(input, candidate, reviewSchema);
@@ -207,7 +210,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     // never executed; unlike a broken test environment it can safely be read.
     if (!project && !('candidateExecuted' in baseline && baseline.candidateExecuted === false) && (baseline.failure || baseline.exit.code !== 0)) throw new Error('test_environment_or_execution_failed');
     let candidate = await currentCandidate();
-    let findingsForVerification: unknown = plan.findings;
+    let findingsForVerification: unknown = plan.project?.priorReview ? { findings: plan.findings, originalReview: plan.project.priorReview } : plan.findings;
     if (attempts.length && baseline.passed && scopeChanges(initial, original, grant.allowedPaths).length) {
       // Recover already applied code, not an unfinished model answer. The old
       // verified context and exact raw prefix remain independently checkable.
@@ -288,10 +291,11 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     if (!['confirmed', 'refuted', 'needs_owner'].includes(factReport.decision)) throw new Error('unexpected_fact_decision');
     if (factReport.decision !== 'confirmed') return await finish(factReport.decision === 'refuted' ? 'skipped_refuted' : 'owner_decision_required', candidate, { baseline, factReport });
     for (let round = 1; round <= grant.maxRepairRounds - usedRepairRounds; round++) {
+      externalGate?.();
       progress('impact', { round, candidate }); gate.phase = 'read';
       beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
       const impactDir = attempt + '/impact-' + round; claudeStages.push(impactDir);
-      const impact = await runClaude({ executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs,
+      const impact = await runClaude({ executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs, ...(externalGate ? { beforeDispatch: () => { externalGate(); } } : {}),
         input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. The demonstrationFixture field distinguishes an explicit fixture from a fixed project source; preserve that provenance. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: material(await readTree()), factReport, fixedContract: contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, baseline: modelTests(baseline) }) });
       const decision = await fact.turn(evidence('Synthesize your factual findings with the independent Claude impact report. Do not write yet. Return confirmed/refuted/needs_owner plus the full analysis and exact candidateH. No finding means no repair.', { candidate, originalFindingsOrReview: factReport, impactSession: impact.sessionId, impactReport: impact.finalText, source: material(await readTree()) }), candidate, findingSchema);
       if (!['confirmed', 'refuted', 'needs_owner'].includes(decision.decision)) throw new Error('unexpected_fact_decision');

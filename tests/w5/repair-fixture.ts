@@ -1,12 +1,12 @@
 import type test from 'node:test';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { hash } from '../../src/snapshot.js';
 import { prepareRepairFixture, type RepairConfig } from '../../src/repair.js';
 
 export async function fixture(t: test.TestContext, mode = '', cleanup = true) {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-controlled-fixture-')); if (cleanup) t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-controlled-fixture-')); if (cleanup) t.after(() => rm(root, { recursive: true, force: true }));
   const trace = join(root, 'trace.ndjson'); await writeFile(trace, '');
   const code = `#!${process.execPath}
 import fs from 'node:fs';import readline from 'node:readline';

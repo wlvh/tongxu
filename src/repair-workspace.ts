@@ -184,9 +184,10 @@ export class RepairTools {
   phase: 'read' | 'write' | 'closed' = 'read';
   private serial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>, private externalGate?: (effect?: () => void) => void) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
+    this.externalGate?.();
     if (this.phase === 'closed' || await exists(join(this.operation, 'revoked.json'))) throw new Error('repair_revoked_or_closed');
     if (JSON.stringify(JSON.parse((await regular(join(this.workspace, '.git', 'tongxu-writer.json'))).toString())) !== JSON.stringify(this.lease)) throw new Error('writer_lease_changed');
     if (await git(this.workspace, ['rev-parse', 'HEAD']) !== this.expectedHead) throw new Error('candidate_changed_during_operation');
@@ -222,7 +223,10 @@ export class RepairTools {
       // No await between the last revocation/identity check and atomic replace.
       if (readFileSync(join(this.workspace, '.git', 'tongxu-writer.json'), 'utf8') !== JSON.stringify(this.lease) || lstatSync(target).nlink !== 1 || hash(readFileSync(target)) !== receipt.beforeSha256) throw new Error('write_boundary_changed');
       try { readFileSync(join(this.operation, 'revoked.json')); throw new Error('repair_revoked'); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
-      renameSync(temporary, target); this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
+      // The queue extension serializes a stop control with this single atomic
+      // replace in the original database transaction, not a check-then-await.
+      if (this.externalGate) this.externalGate(() => renameSync(temporary, target)); else renameSync(temporary, target);
+      this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
       const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
       save(path, { ...receipt, status: 'applied', response, afterTreeSha256: treeHash(this.expected) }); return response;
     } else if (p.tool === 'tongxu_run_tests') {
