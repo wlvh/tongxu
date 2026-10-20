@@ -1,13 +1,14 @@
 import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
 import { git, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
 import { parsePlan, fingerprint } from './verification.js';
 import { validateDependencies, dependencyDigest } from './sandbox.js';
 import { DockerRuntime, reconcileDocker } from './docker-sandbox.js';
-import { samples } from './comparison.js';
+import { samples, canonical } from './comparison.js';
 import type { Candidate } from './live-codex.js';
 import type { RepairConfig, RepairPlan } from './repair.js';
 
@@ -71,6 +72,7 @@ export function projectModelTestResult(result: any) {
   return {
     kind: result.kind, passed: result.passed, executionHealthy: result.executionHealthy,
     candidateTreeSha256: result.candidateTreeSha256, H: result.H, T: result.T,
+    ...(result.sourceInput ? { sourceInput: result.sourceInput } : {}),
     testPlanSha256: result.testPlanSha256, businessCorrectness: result.businessCorrectness,
     tools: result.tools.map((t: any) => ({ id: t.id, status: t.status, successfulExit: t.exitCode === 0,
       inputUnchanged: t.inputUnchanged, dependenciesUnchanged: t.dependenciesUnchanged,
@@ -78,6 +80,27 @@ export function projectModelTestResult(result: any) {
       ...(t.sampleSet ? { coverage: { complete: t.sampleSet.complete, samples: t.registeredSampleIds.map((id: string) => ({ id, status: t.sampleSet.samples.find((s: any) => s.id === id)?.status ?? 'missing' })) } } : {}) })),
     originalLogs: 'retained_in_private_test_evidence_not_model_input'
   };
+}
+/** Bind fresh controller test results to a committed candidate by actual Git
+ * tree and source bytes. This proves file-tree equivalence, not that two
+ * different commit IDs have identical metadata-sensitive behavior. */
+export async function bindProjectTestToCandidate(workspace: string, candidate: Candidate, tests: any) {
+  if (!commit.test(candidate.H) || tests.kind !== 'registered-project-tests-v1' || tests.executionHealthy !== true || !commit.test(tests.H) || !commit.test(tests.T)) throw new Error('project_candidate_test_binding_unavailable');
+  const head = await git(workspace, ['rev-parse', 'HEAD']), candidateTree = await git(workspace, ['rev-parse', candidate.H + '^{tree}']);
+  const workingTreeSha256 = treeHash(await tree(workspace, true));
+  if (head !== candidate.H || candidateTree !== tests.T || workingTreeSha256 !== tests.candidateTreeSha256 || !tests.tools.every((t: any) => t.inputUnchanged === true && t.dependenciesUnchanged === true)) throw new Error('project_candidate_test_tree_mismatch');
+  return { kind: 'host-observed-candidate-test-binding', schemaVersion: 1, candidate, candidateTree,
+    testedCommit: tests.H, testedTree: tests.T, workingTreeSha256, testPlanSha256: tests.testPlanSha256,
+    testResultCanonicalSha256: hash(canonical(tests)), equivalence: 'tracked_file_bytes_and_executable_modes',
+    commitMetadataEquivalent: tests.H === candidate.H, metadataSensitiveBehavior: 'not_inferred_from_tree_equivalence' };
+}
+export function needsProjectReviewBindingSupplement(previousInput: string, candidate: Candidate) {
+  const data = JSON.parse(previousInput.slice(previousInput.lastIndexOf('\n') + 1));
+  if (!isDeepStrictEqual(data.candidate, candidate)) throw new Error('previous_review_candidate_mismatch');
+  if (data.testCandidateBinding === undefined) return true;
+  const b = data.testCandidateBinding;
+  if (!b || b.kind !== 'host-observed-candidate-test-binding' || b.schemaVersion !== 1 || !isDeepStrictEqual(b.candidate, candidate) || !commit.test(b.candidateTree) || b.candidateTree !== b.testedTree) throw new Error('previous_review_test_binding_invalid');
+  return false;
 }
 export async function prepareProjectRepair(configPath: string, requestPath: string, root: string) {
   const configBytes = await regular(configPath), config = JSON.parse(configBytes.toString()) as RepairConfig;
@@ -125,6 +148,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
  * writable repair workspace and all trusted controller records stay unmounted. */
 export async function testProject(workspace: string, directory: string, p: ProjectContract) {
   const fixed = await projectTestPlan(p), current = await tree(workspace, true), inputHash = treeHash(current);
+  const sourceHead = await git(workspace, ['rev-parse', 'HEAD']), sourceHeadTree = await git(workspace, ['rev-parse', sourceHead + '^{tree}']);
   if (fixed.dependencies && Object.keys(current).some(path => path === 'node_modules' || path.startsWith('node_modules/'))) throw new Error('project_dependency_overlaps_source');
   await privateDirectory(directory, true); const work = join(directory, 'work'), output = join(directory, 'output');
   save(join(directory, 'test-intent.json'), { kind: 'registered-project-tests-v1', directory, workspace, generatedDirectories: p.generatedDirectories, controllerPid: process.pid, candidateTreeSha256: inputHash, testPlanSha256: p.testPlanSha256 });
@@ -185,7 +209,9 @@ export async function testProject(workspace: string, directory: string, p: Proje
   }
   if (treeHash(await tree(workspace, true)) !== inputHash) throw new Error('repair_workspace_changed_during_tests');
   const passed = executionHealthy && tools.length === fixed.plan.tools.length && tools.every(t => t.status === 'completed' && t.exitCode === 0 && (!t.sampleSet || t.sampleSet.complete && t.sampleSet.samples.every(s => s.status === 'ok')));
-  const result = { kind: 'registered-project-tests-v1', passed, executionHealthy, candidateTreeSha256: inputHash, H, T, tools, failure: executionHealthy ? null : 'test_execution_or_input_unverified', exit: { code: passed ? 0 : 1, signal: null }, businessCorrectness: 'requires_independent_review', testPlanSha256: p.testPlanSha256 };
+  const result = { kind: 'registered-project-tests-v1', passed, executionHealthy, candidateTreeSha256: inputHash, H, T,
+    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding' },
+    tools, failure: executionHealthy ? null : 'test_execution_or_input_unverified', exit: { code: passed ? 0 : 1, signal: null }, businessCorrectness: 'requires_independent_review', testPlanSha256: p.testPlanSha256 };
   save(join(directory, 'result.json'), result); save(join(directory, 'test-progress.json'), { phase: 'completed', toolsRequested: tools.length }); return result;
 }
 export async function reconcileProjectTests(operation: string, p: ProjectContract) {
