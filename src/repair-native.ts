@@ -32,8 +32,9 @@ export const secretaryDeveloperInstructions = 'You are the read-only work secret
 export function dynamicToolStart(events: any[], request: any) {
   const p = request?.params;
   if (request?.method !== 'item/tool/call' || !('id' in request) || !p || typeof p.callId !== 'string' || !p.callId) throw new Error('native_dynamic_tool_start_missing_or_mismatched');
+  const requestIndex = events.indexOf(request);
   const starts = events.filter(m => m.method === 'item/started' && m.params?.threadId === p.threadId && m.params?.turnId === p.turnId && m.params?.item?.id === p.callId);
-  if (starts.length !== 1) throw new Error('native_dynamic_tool_start_missing_or_mismatched');
+  if (requestIndex < 0 || starts.length !== 1 || events.indexOf(starts[0]) >= requestIndex) throw new Error('native_dynamic_tool_start_missing_or_mismatched');
   const item = starts[0].params.item;
   if (item.type !== 'dynamicToolCall' || item.status !== 'inProgress' || item.namespace != null || item.tool !== p.tool || !isDeepStrictEqual(item.arguments, p.arguments)) throw new Error('native_dynamic_tool_start_missing_or_mismatched');
   return starts[0];
