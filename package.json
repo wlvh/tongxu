@@ -26,7 +26,9 @@
     "test:composition": "npm run build && node --test dist/tests/composition/*.test.js",
     "test:authority": "npm run build && node --test dist/tests/authority/*.test.js",
     "test:resources": "npm run build && node --test dist/tests/resources/*.test.js",
-    "test:merge": "npm run build && node --test dist/tests/merge/*.test.js"
+    "test:merge": "npm run build && node --test dist/tests/merge/*.test.js",
+    "test:events": "npm run build && node --test dist/tests/events/*.test.js",
+    "events": "node dist/src/event-cli.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

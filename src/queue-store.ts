@@ -12,6 +12,9 @@ import { ReviewRecords } from './review-record-store.js';
 import { AuthorityRecords } from './authority-store.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
 import { MergeRecords } from './merge-store.js';
+import { EventRecords } from './event-store.js';
+import { currentEventSource,storedEventMaterial } from './event-gates.js';
+import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
 import { composeSubject, currentMembers, type Composition } from './composition.js';
 
 type Row = Record<string, any>;
@@ -172,6 +175,7 @@ PRAGMA user_version=4;`);
     return {item:id,packet:item.current_packet,fingerprint:packet.fingerprint,candidate:evidence.manifest.candidate,context:evidence.context,subjectSha256:summary.composition?.sha256??null,current:!item.observation_conflict&&this.receiverCandidateCurrent(item),prerequisites:this.prerequisites(item),evidenceComplete:summary.evidenceComplete};
   }
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
+  events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   resources(): ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
     return new ResourceRecords(this.db,fn=>this.transaction(fn),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt));
@@ -342,6 +346,12 @@ PRAGMA user_version=4;`);
     for (const ref of references) this.blob(ref.sha256);
     const composition=parse(packet,'summary').composition;
     if(composition&&canonical(composeSubject(report,h=>this.blob(h)))!==canonical(composition))throw new Error('stored_composition_changed');
+    const eventSources=parse(packet,'summary').eventSources;
+    if(eventSources){
+      if(!Array.isArray(eventSources)||!eventSources.length||eventSources.length>8||new Set(eventSources.map((r:Row)=>r.pr)).size!==eventSources.length)throw new Error('event_packet_material_invalid');
+      const members=composition?currentMembers(composition):[manifest.candidate];
+      for(const ref of eventSources){const source=storedEventMaterial(this.db,ref),member=members.find((c:Candidate)=>c.pr===ref.pr);if(!member||['repository','H','B','targetRef'].some(k=>source.candidate[k]!==member[k]))throw new Error('event_packet_candidate_mismatch');}
+    }
     for (let s = parse(packet, 'summary').supplement; s; s = s.previous) {
       this.blob(s.priorJudgmentSha256);
       this.blob(s.priorInputSha256);
@@ -423,9 +433,10 @@ PRAGMA user_version=4;`);
       }
       // A fresh W1/W2 observation of this same candidate must not erase received
       // supplementary originals or reset the candidate's registered call budget.
-      const supplement = priorSummary?.supplement, correction = priorSummary?.correction;
-      const fingerprint = supplement || correction ? hash(canonical({ base: packet.fingerprint, ...(supplement ? { supplement } : {}), ...(correction ? { correction } : {}) })) : packet.fingerprint;
-      const summary = supplement || correction ? { ...packet.summary, baseFingerprint: packet.fingerprint, ...(supplement ? { supplement } : {}), ...(correction ? { correction } : {}) } : packet.summary;
+      const supplement = priorSummary?.supplement, correction = priorSummary?.correction,eventSources=priorSummary?.eventSources;
+      const inherited={...(supplement?{supplement}:{}),...(correction?{correction}:{}),...(eventSources?{eventSources}:{})};
+      const fingerprint = Object.keys(inherited).length ? hash(canonical({ base: packet.fingerprint,...inherited })) : packet.fingerprint;
+      const summary = Object.keys(inherited).length ? { ...packet.summary, baseFingerprint: packet.fingerprint,...inherited } : packet.summary;
       const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(summary), now());
       const packetId = Number(inserted.lastInsertRowid);
       if (!older && !conflict) this.db.prepare('UPDATE items SET current_packet=?,candidate=?,context=? WHERE id=?').run(packetId, JSON.stringify(packet.candidate), JSON.stringify(packet.context), id);
@@ -467,11 +478,14 @@ PRAGMA user_version=4;`);
   }
   begin(id: string, run: string): Row {
     if (!run || run.length > 256 || run.includes('\0')) throw new Error('invalid_run_reference');
-    return this.transaction(() => {
+    return this.transaction(() => this.beginCurrent(id,run));
+  }
+  private beginCurrent(id:string,run:string):Row {
       const item = this.item(id);
       const existing = this.db.prepare('SELECT * FROM operations WHERE packet=?').get(item.current_packet) as Row | undefined;
       if (item.observation_conflict) return { blocked: ['observation_order_conflict'], originalOperation: existing?.id ?? null, next: existing?.status === 'running' ? 'evaluate_original_operation' : 'import_jointly_current_observation', mode: 'shadow' };
       if (existing) return { operation: existing.id, status: existing.status, duplicate: true, next: existing.status === 'merging' ? 'reconcile_original_merge' : existing.status === 'repairing' ? 'reconcile_original_repair' : existing.status === 'receiving' ? 'reconcile_original_receiver' : existing.status === 'running' ? 'evaluate_original_operation' : 'read_saved_result', mode: 'shadow' };
+      const eventGaps=this.eventSourceGaps(item);if(eventGaps.length)return {blocked:eventGaps,next:'refresh_source_and_reconcile_material',mode:'shadow'};
       if (parse(this.packet(item.current_packet), 'summary').composition && !this.receiverCandidateCurrent(item)) return { blocked: ['composition_member_currentness_unverified'], next: 'import_jointly_current_observation', mode: 'shadow' };
       const context = parse(item, 'context') as QueueContext;
       if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) return { blocked: ['new_investment_stopped'], mode: 'shadow' };
@@ -486,6 +500,61 @@ PRAGMA user_version=4;`);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(target, operation, generation);
       this.event('shadow_evaluation_started', operation, { item: id, packet: item.current_packet, generation });
       return { operation, generation, status: 'running', mode: 'shadow', next: 'evaluate_original_operation', externalActionSent: false };
+  }
+  private schedulingCurrent(){
+    if(!this.db.prepare("SELECT 1 FROM meta WHERE key='bounded_event_source_profile'").get())throw new Error('bounded_event_source_not_configured');
+    const all=this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[];
+    if(all.length>256)throw new Error('bounded_event_queue_limit');
+    const rows:RankItem[]=all.map(item=>{
+      const packet=this.packet(item.current_packet),summary=this.effectiveSummary(item,packet),candidate=parse(item,'candidate') as Candidate,context=parse(item,'context') as QueueContext;
+      const op=this.db.prepare('SELECT * FROM operations WHERE packet=?').get(packet.id) as Row|undefined,result=parse(op,'result'),receiver=result?.receiver;
+      const target=targetKey(candidate),active=Boolean(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(target)),waiting=[...this.prerequisites(item),...this.eventSourceGaps(item)];
+      let current=!item.observation_conflict&&this.receiverCandidateCurrent(item),stage:RankItem['stage']=!op||op.status==='running'?'evaluate':'receive',classification:RankItem['classification']='ordinary';const evidence:string[]=[];
+      try{this.packetEvidence(packet);}catch{current=false;waiting.push('stored_evidence_unreadable');}
+      if(!summary.evidenceComplete){stage='materials';waiting.push('required_evidence_incomplete');}
+      if(op?.status==='repairing')stage='repair';else if(op?.status==='merging')stage='merge';
+      if(receiver){
+        if(receiver.phase==='returned'&&current){
+          try{
+            this.reviewSource(op!.id,true);evidence.push(receiver.inputSha256,receiver.blobs['stdout.ndjson'].sha256);
+            if(receiver.judgment.verdict==='RETURN_FOR_WORK'){classification='verified_return';stage='repair';}
+            else if(receiver.judgment.verdict==='ACCEPT_WITHIN_SCOPE'){classification='verified_finish';const publication=this.publicationHistory(op!.id);stage=['comment','status'].every(name=>publication.stages[name]?.lastState==='verified')?'merge':'publish';}
+            else stage='materials';
+          }catch{stage='materials';waiting.push('original_judgment_unverified');}
+        }else if(op?.status==='receiving')stage='receive';else stage='materials';
+      }
+      const stops=this.db.prepare('SELECT kind FROM controls WHERE scope=? AND stopped=1').all(context.scope.id) as Row[];
+      if(stops.some(s=>s.kind==='investment'))waiting.push('new_investment_stopped');
+      if(stage==='repair'&&stops.some(s=>s.kind==='implementation'))waiting.push('implementation_stopped');
+      if(stage==='merge'&&stops.some(s=>s.kind==='merge'))waiting.push('merge_stopped');
+      // This selector starts only the existing local evaluation. Other stages
+      // remain concrete pending work for their separately bound consumers.
+      if(['exact_merge_result_verified','actual_merge_result_verified'].includes(result?.merge?.phase))stage='finished';
+      if(stage!=='evaluate'&&stage!=='finished')waiting.push(stage==='materials'?'material_or_arrangement_required':'bound_role_consumer_required:'+stage);
+      let priority=0;
+      const prefRow=this.db.prepare("SELECT data FROM events WHERE kind='source_preference_applied' AND json_extract(data,'$.preference.item')=? ORDER BY id DESC LIMIT 1").get(item.id) as Row|undefined;
+      if(prefRow){const record=parse(prefRow,'data'),pref=parseQueuePreference(this.blob(record.sha256));if(pref.item!==item.id||canonical(pref)!==canonical(record.preference))throw new Error('stored_queue_preference_changed');priority=pref.priority;evidence.push(record.sha256);if(pref.mainIncident)classification='adopted_main_incident';}
+      let estimatedCost:number|null=null;
+      try{const report=JSON.parse(this.blob(packet.report_hash).toString()),tools=report.stages.flatMap((s:Row)=>s.tools);if(tools.length&&tools.every((t:Row)=>Number.isFinite(t.durationMs)&&t.durationMs>=0)){estimatedCost=tools.reduce((n:number,t:Row)=>n+t.durationMs,0);evidence.push(packet.report_hash);}}catch{}
+      return {item:item.id,packet:packet.id,H:candidate.H,createdAt:item.created_at,current,waiting:[...new Set(waiting)],target,active,stage,classification,priority,estimatedCost,requires:context.requires.map(r=>({item:r.item,H:r.version})),evidence};
+    });
+    const history=(this.db.prepare("SELECT data FROM events WHERE kind='queue_ranked_evaluation_started' ORDER BY id DESC LIMIT 3").all() as Row[]).reverse().map(e=>parse(e,'data').history as SelectionHistory);
+    return rankQueue(rows,history,Date.now());
+  }
+  scheduling(){return this.transaction(()=>this.schedulingCurrent());}
+  selectEvaluation(run:string):Row{
+    if(!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(run))throw new Error('selection_run_reference_invalid');
+    return this.transaction(()=>{
+      const prior=this.db.prepare("SELECT data FROM events WHERE kind='queue_ranked_evaluation_started' AND object=?").get('selection:'+run) as Row|undefined;
+      if(prior)return {...parse(prior,'data'),duplicate:true};
+      if(!this.db.prepare("SELECT 1 FROM meta WHERE key='bounded_event_source_profile'").get())throw new Error('bounded_event_source_not_configured');
+      const original=this.db.prepare("SELECT id FROM operations WHERE status='running' ORDER BY started_at,id LIMIT 1").get() as Row|undefined;
+      if(original)return {operation:original.id,duplicate:true,recovery:'evaluate_original_operation',modelTasksStarted:0};
+      const ranking=this.schedulingCurrent();
+      const selected=ranking.selected;if(!selected)return {selected:null,waiting:ranking.items.map(r=>({item:r.item,stage:r.stage,reasons:r.reasons})),modelTasksStarted:0};
+      const started=this.beginCurrent(selected.item,run);if(started.blocked)return started;
+      const record={...started,item:selected.item,packet:selected.packet,reasons:selected.reasons,policy:ranking.policy,history:{item:selected.item,class:selected.rank<2?'urgent':'ordinary',selectedAt:now()},modelTasksStarted:0};
+      this.event('queue_ranked_evaluation_started','selection:'+run,record);return record;
     });
   }
   evaluate(id: string): Row {
@@ -527,6 +596,7 @@ PRAGMA user_version=4;`);
       return { operation: id, packet: op.packet, fingerprint: packet.fingerprint, context, manifest, report, plan: JSON.parse(this.blob(report.plan.sha256).toString()), outputs,
         ...(correction ? { correction: { ...correction, originalFinalText: this.blob(correction.finalTextSha256).toString(), material: correction.material.map((m: Row) => ({ ...m, text: new TextDecoder('utf8', { fatal: true }).decode(this.blob(m.sha256)) })), originalResultIsValidJudgment: false } } : {}),
         ...(parse(packet,'summary').composition?{composition:parse(packet,'summary').composition}:{}),
+        sourceEvents:(parse(packet,'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r)),
         ...(supplements.length ? { supplements } : {}),
         ...(this.pairedPrerequisite(op.item) ? { prerequisite: this.pairedPrerequisite(op.item) } : {}),
         sourceArtifactScope: 'W1 artifact index included; selected exact-H source and reports supplied separately. Unprovided artifacts are not reviewed.' };
@@ -673,7 +743,9 @@ PRAGMA user_version=4;`);
       if(composition){this.requireCompositionMode();const input=JSON.parse(fixed.input.toString());if(input.binding.subjectSha256!==composition.sha256||canonical(input.binding.subject)!==canonical(composition.subject)||canonical(input.data.evidence.composition)!==canonical(composition))throw new Error('receiver_composition_input_mismatch');}
       const correction=parse(this.packet(op.packet),'summary').correction;
       if(correction){this.requireCorrections();const input=JSON.parse(fixed.input.toString());if(input.binding.correctionSha256!==correction.sha256||input.data.evidence.correction?.sha256!==correction.sha256||input.data.evidence.correction.originalFinalText!==this.blob(correction.finalTextSha256).toString())throw new Error('receiver_correction_input_mismatch');}
-      const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+      const sourceEvents=(parse(this.packet(op.packet),'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r));
+      if(this.eventSourceStates(this.item(op.item)).some(s=>s.registered)&&canonical(JSON.parse(fixed.input.toString()).data.evidence.sourceEvents)!==canonical(sourceEvents))throw new Error('receiver_event_source_input_mismatch');
+      const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
@@ -704,7 +776,10 @@ PRAGMA user_version=4;`);
     const c = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
     if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
   }
+  private eventSourceStates(item:Row):Row[]{const composition=parse(this.packet(item.current_packet),'summary').composition;return (composition?currentMembers(composition):[parse(item,'candidate')]).map((c:Candidate)=>currentEventSource(this.db,c,item.id,item.current_packet));}
+  private eventSourceGaps(item:Row):string[]{return this.eventSourceStates(item).filter(s=>s.registered&&(!s.current||!s.materialBound)).map(s=>s.reason??'current_event_source_and_material_required');}
   private receiverCandidateCurrent(item: Row): boolean {
+    if(this.eventSourceGaps(item).length)return false;
     const primary = parse(item, 'candidate') as Candidate, context = parse(item, 'context') as QueueContext;
     const composition=parse(this.packet(item.current_packet),'summary').composition as Composition|undefined;
     const effective=(c:Candidate,watermark:string|null)=>({...c,observedAt:(!c.observedAt||watermark&&watermark>c.observedAt)?watermark:c.observedAt});
@@ -801,7 +876,7 @@ PRAGMA user_version=4;`);
   private itemStatus(item: Row): Row {
     const composition = parse(this.packet(item.current_packet), 'summary').composition;
     if(composition)this.packetEvidence(this.packet(item.current_packet));
-    return { id: item.id, candidate: parse(item, 'candidate'), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+    return { id: item.id, candidate: parse(item, 'candidate'), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.

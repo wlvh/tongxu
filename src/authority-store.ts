@@ -133,7 +133,9 @@ export class AuthorityRecords {
     if(request.item!==null){
       binding=this.currentItem(request.item);const c=binding.candidate,context=binding.context;
       if(!binding.current||c.repository.toLowerCase()!==request.repository.toLowerCase()||c.targetRef!==request.target||c.H!==request.candidate?.H||c.B!==request.candidate?.B||(binding.subjectSha256??null)!==request.candidate?.subjectSha256||context.scope.id!==scope.scopeId||context.scope.version!==scope.scopeVersion)throw new Error('authority_current_candidate_or_scope_mismatch');
-      if(binding.prerequisites.length)throw new Error('authority_prerequisites_unmet');
+      // Coordination can record how to unblock an exact candidate. It grants
+      // no implementation/receive/merge permission while prerequisites wait.
+      if(binding.prerequisites.length&&request.action!=='coordinate')throw new Error('authority_prerequisites_unmet');
     }
     return {authorization,adoption:p.adoption,mode:p.kind==='delegate'?'delegated':'per_action',role,request,requestSha256:actionHash(request),profileSha256:d.source.profileSha256,executionKind:profile.executionKind,binding,checkedAt:now()};
   }
