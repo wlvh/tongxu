@@ -39,6 +39,15 @@ function overview() {
   return n;
 }
 function fact(list, title, value, mono = false) { append(list, el('dt', title), el('dd', value, mono ? 'mono' : '')); }
+function executionText(x) {
+  if (!x || x.state === 'not_dispatched') return '原执行版本：尚无派发记录';
+  const kind = x.executionKind === 'fixture' ? '测试夹具 · ' : '';
+  return kind + (x.state === 'recorded' ? '原执行：' + x.tool + ' ' + x.version + ' · 模型 ' + x.model + ' · 会话 ' + x.session : '原执行版本：未知，原登记证据不可得或校验未通过');
+}
+function publicationText(p) {
+  const phase = value => ({ verified: '已读回', problem: '待核 / 异常', pending: '尚无读回证明' }[value] || '未知');
+  return '发布记录：评论 ' + phase(p.comment) + ' · 状态 ' + phase(p.status) + (p.status === 'verified' ? ' · 原读回值 ' + p.recordedGithubState + '（' + date(p.recordedAt) + '，本次未刷新远端）' : ' · 拟发布值 ' + p.plannedGithubState + '（不代表已发送）') + (p.materialDigest === 'historical_derived_digest_mismatch' ? ' · 保留历史摘要差异' : '');
+}
 function taskView() {
   if (!selected || !state.tasks.some(t => t.id === selected)) selected = state.tasks[0].id;
   const n = el('div'); n.append(intro('任务与完整报告', '查看准确候选、接收状态及报告原文。来源不可用时会明确显示缺口。'));
@@ -55,7 +64,8 @@ function taskView() {
     const stage = stages[o.stage] || ['阶段待核', 'wait'], text = o.judgment ? verdicts[o.judgment.verdict] || o.judgment.verdict : stage[0], row = el('div', null, 'report-row'), left = el('div');
     append(left, append(el('div', null, 'label-line'), el('strong', text), pill(o.currentPacket ? stage[0] : '历史材料', o.currentPacket ? stage[1] : 'neutral')), el('p', date(o.finishedAt || o.startedAt) + ' · 操作 ' + o.id.slice(0, 8) + ' · 材料包 ' + o.packet));
     if (o.consumedPrerequisite) left.append(el('p', '已返回准确上游报告的消费引用。', 'small'));
-    if (o.publication) left.append(el('p', '发布：评论 ' + o.publication.comment + ' · GitHub 状态 ' + o.publication.githubState + (o.publication.materialDigest === 'historical_derived_digest_mismatch' ? ' · 保留历史摘要差异' : ''), 'small'));
+    left.append(el('p', executionText(o.nativeExecution), 'small'));
+    if (o.publication) left.append(el('p', publicationText(o.publication), 'small'));
     row.append(left); if (o.judgment) { const b = el('button', '阅读完整报告', 'outline'); b.type = 'button'; b.onclick = () => openReport(t, o); row.append(b); } panel.append(row);
   });
   const details = append(el('details'), el('summary', '已有停止状态与观察边界'));
@@ -81,7 +91,7 @@ async function refresh() {
 }
 async function openReport(t, o) {
   const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-dialog').showModal();
-  try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (verdicts[r.verdict] || r.verdict) + ' · 判断 ' + r.judgmentId + ' · 原文 SHA256 ' + r.reportSha256; $('report-body').textContent = r.report; }
+  try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (verdicts[r.verdict] || r.verdict) + ' · 判断 ' + r.judgmentId + ' · 原文 SHA256 ' + r.reportSha256 + ' · ' + executionText(r.nativeExecution); $('report-body').textContent = r.report; }
   catch (e) { if (nonce === reportNonce) $('report-body').textContent = '原报告无法读取：' + e.message; }
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });

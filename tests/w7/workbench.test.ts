@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { setup } from '../w3/receiver-fixture.js';
 import { runReception } from '../../src/receiver.js';
 import { parseWorkbenchPlan, receptionStage, startWorkbench } from '../../src/workbench.js';
+import { publication } from '../../src/publisher.js';
+import { hash } from '../../src/snapshot.js';
 
-async function fixture(t: test.TestContext) {
-  const f = await setup(t), result = await runReception(f.path);
+async function fixture(t: test.TestContext, nativeShapedFixture = false) {
+  const f = await setup(t);
+  if (nativeShapedFixture) await writeFile(f.path, JSON.stringify({ ...f.plan, executionKind: 'native_capture' }));
+  const result = await runReception(f.path);
   const p = { schemaVersion: 1, kind: 'tongxu-local-workbench', title: '明确测试夹具', goal: '测试现有队列的只读呈现，不是真实模型或产品接收。', sources: [{ id: 'selected', title: '固定测试任务', store: f.store, item: f.item }] };
   const path = join(f.root, 'workbench.json'); await writeFile(path, JSON.stringify(p));
   const app = await startWorkbench(path); t.after(() => app.close()); const u = new URL(app.url), headers = { Authorization: 'Bearer ' + u.hash.slice(1) };
@@ -66,4 +71,35 @@ test('a response treats report HTML as data and serves it only as authenticated 
 test('configuration cannot silently alias task identities or accept an arbitrary relative store', async t => {
   const f = await fixture(t);
   for (const sources of [[...f.p.sources, ...f.p.sources], [{ ...f.p.sources[0], store: '../elsewhere' }], [{ ...f.p.sources[0], id: '../../etc' }]]) assert.throws(() => parseWorkbenchPlan(Buffer.from(JSON.stringify({ ...f.p, sources }))), /invalid_workbench_source/);
+});
+test('prepare-only publication exposes a planned value, never a remotely observed success', async t => {
+  // Explicit native-shaped fixture: the executable remains the fake script.
+  const f = await fixture(t, true), gh = join(f.root, 'never-call-gh.mjs');
+  await writeFile(gh, '#!' + process.execPath + '\nthrow new Error("unexpected_external_call");\n', { mode: 0o700 });
+  const path = join(f.root, 'prepare-only.json');
+  await writeFile(path, JSON.stringify({ schemaVersion: 1, kind: 'tongxu-reception-publication', store: f.store, operation: f.result.operation, channel: 'commit-status', ghExecutable: gh, ghSha256: hash(await readFile(gh)), repositoryId: 71, actor: { id: 72, login: 'fixture-publisher' }, source: 'fixture:prepare-only' }));
+  assert.equal((await publication(path, 'prepare')).status, 'prepared_not_sent');
+  const before = f.q.status(), state = await (await fetch(f.base + '/api/state', { headers: f.headers })).json() as any, p = state.tasks[0].operations[0].publication;
+  assert.equal(p.status, 'pending'); assert.equal(p.plannedGithubState, 'success'); assert.equal(p.recordedGithubState, null); assert.equal(p.githubState, undefined); assert.equal(p.remoteRechecked, false);
+  assert.deepEqual(before.events.filter((e: any) => e.kind.startsWith('publication_')).map((e: any) => e.kind), ['publication_prepared']);
+  assert.deepEqual(f.q.status(), before); assert.equal(await f.count(), 1);
+});
+test('execution version and session come from registered original blobs even when capture files are moved', async t => {
+  const f = await fixture(t), before = f.q.status(), directory = f.result.receiver.directory, retained = directory + '-retained';
+  await rename(directory, retained);
+  const state = await (await fetch(f.base + '/api/state', { headers: f.headers })).json() as any;
+  const report = await (await fetch(f.base + '/api/report/selected/' + f.result.operation, { headers: f.headers })).json() as any;
+  const x = state.tasks[0].operations[0].nativeExecution;
+  assert.equal(x.state, 'recorded'); assert.equal(x.executionKind, 'fixture'); assert.equal(x.version, '2.1.233'); assert.equal(x.session, 'fixture-receiver'); assert.equal(x.model, 'fixture');
+  assert.equal(x.evidenceSha256, f.result.receiver.blobs['init.json'].sha256); assert.deepEqual(report.nativeExecution, x);
+  assert.deepEqual(f.q.status(), before); assert.equal(before.operations[0].nativeExecution, undefined); assert.equal(await f.count(), 1);
+});
+test('missing or corrupt original metadata remains explicitly unknown without borrowing a current version', async t => {
+  const f = await fixture(t), db = new DatabaseSync(join(f.store, 'queue.sqlite')); t.after(() => db.close());
+  const sha = f.result.receiver.blobs['init.json'].sha256;
+  for (const command of ['UPDATE blobs SET bytes=? WHERE hash=?', 'DELETE FROM blobs WHERE hash=?']) {
+    if (command.startsWith('UPDATE')) db.prepare(command).run(Buffer.from('{"claude_code_version":"invented"}'), sha); else db.prepare(command).run(sha);
+    const state = await (await fetch(f.base + '/api/state', { headers: f.headers })).json() as any, x = state.tasks[0].operations[0].nativeExecution;
+    assert.equal(x.state, 'unavailable'); assert.equal(x.reason, 'original_metadata_unreadable_or_invalid'); assert.equal(x.version, undefined); assert.equal(await f.count(), 1);
+  }
 });

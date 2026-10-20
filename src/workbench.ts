@@ -33,13 +33,20 @@ const safeError = (e: unknown) => e instanceof Error && /^[a-z0-9_]+$/.test(e.me
 type StoreSnapshot = { value: Row; observedAt: string } | { error: string; observedAt: string };
 async function stores(p: WorkbenchPlan) {
   return new Map<string, StoreSnapshot>(await Promise.all([...new Set(p.sources.map(s => s.store))].map(async store => {
-    try { return [store, { value: await QueueStore.observe(store), observedAt: new Date().toISOString() }] as const; }
+    try { return [store, { value: await QueueStore.observe(store, p.sources.filter(s => s.store === store).map(s => s.item)), observedAt: new Date().toISOString() }] as const; }
     catch (e) { return [store, { error: safeError(e), observedAt: new Date().toISOString() }] as const; }
   })));
 }
 function judgment(o: Row) {
   const j = o.result?.receiver?.judgment;
   return j ? { id: j.judgmentId, verdict: j.verdict, reportSha256: hash(j.report), findings: [0, 1, 2].map(priority => ({ priority, count: j.findings.filter((f: Row) => f.priority === priority).length })) } : null;
+}
+function publication(pub: Row | undefined) {
+  if (!pub) return null;
+  const { githubState, ...record } = pub;
+  // The publisher records verified only after exact remote readback. Its
+  // desired value alone is not evidence of a send or a current GitHub state.
+  return { ...record, plannedGithubState: githubState, recordedGithubState: pub.status === 'verified' ? githubState : null, remoteRechecked: false };
 }
 export async function workbenchState(p: WorkbenchPlan) {
   const snapshots = await stores(p), tasks: Row[] = [], events: Row[] = [];
@@ -54,7 +61,8 @@ export async function workbenchState(p: WorkbenchPlan) {
       id: o.id, packet: o.packet, currentPacket: o.packet === item.currentPacket, stage: receptionStage(o),
       startedAt: o.started_at, finishedAt: o.finished_at, judgment: judgment(o),
       consumedPrerequisite: o.result?.receiver?.judgment?.consumedPrerequisite ?? null,
-      publication: q.publications.find((pub: Row) => pub.operation === o.id) ?? null,
+      nativeExecution: o.nativeExecution,
+      publication: publication(q.publications.find((pub: Row) => pub.operation === o.id)),
       recovery: o.recovery, productionActionAllowed: false
     }));
     tasks.push({ ...base, available: true, candidate: item.candidate, currentPacket: item.currentPacket,
@@ -78,9 +86,9 @@ export async function workbenchState(p: WorkbenchPlan) {
 }
 async function workbenchReport(p: WorkbenchPlan, source: string, operation: string) {
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
-  const q = await QueueStore.observe(s.store), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
+  const q = await QueueStore.observe(s.store, [s.item]), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
   if (!j) throw new Error('report_not_found');
-  return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), stage: receptionStage(o), findings: j.findings, productionActionAllowed: false };
+  return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
 }
 export async function startWorkbench(planPath: string) {
   const p = parseWorkbenchPlan(await regular(planPath)), token = randomBytes(32).toString('hex');

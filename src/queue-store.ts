@@ -77,9 +77,9 @@ export class QueueStore {
   static async open(directory: string): Promise<QueueStore> {
     return this.connect(directory, false);
   }
-  static async observe(directory: string): Promise<Row> {
+  static async observe(directory: string, receiverMetadataFor: readonly string[] = []): Promise<Row> {
     const q = await this.connect(directory, true);
-    try { return q.status(); } finally { q.close(); }
+    try { return q.status(receiverMetadataFor); } finally { q.close(); }
   }
   private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
@@ -618,11 +618,27 @@ PRAGMA user_version=4;`);
   private itemStatus(item: Row): Row {
     return { id: item.id, candidate: parse(item, 'candidate'), currentPacket: item.current_packet, latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
-  status(): Row {
+  // Read only original, registered capture blobs inside the same status
+  // transaction. Never probe today's executable or follow a recorded path.
+  private receiverMetadata(receiver: Row | undefined): Row {
+    if (!receiver) return { state: 'not_dispatched' };
+    const base = { executionKind: receiver.executionKind, tool: 'Claude Code' };
+    try {
+      const initRef = receiver.blobs?.['init.json'];
+      if (!initRef) return { ...base, state: 'unavailable', reason: 'original_init_not_registered' };
+      const bytes = this.blob(initRef.sha256);
+      if (bytes.length !== initRef.bytes || bytes.length > 65536) throw new Error('original_init_invalid');
+      const init = JSON.parse(bytes.toString());
+      if (init.type !== 'system' || init.subtype !== 'init' || ![init.claude_code_version, init.model, init.session_id].every(x => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x))) throw new Error('original_init_invalid');
+      return { ...base, state: 'recorded', version: init.claude_code_version, model: init.model, session: init.session_id, evidenceSha256: initRef.sha256 };
+    } catch { return { ...base, state: 'unavailable', reason: 'original_metadata_unreadable_or_invalid' }; }
+  }
+  status(receiverMetadataFor: readonly string[] = []): Row {
     this.db.exec('BEGIN');
     try {
       const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
       const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      for (const operation of result.operations as Row[]) if (receiverMetadataFor.includes(operation.item)) Object.assign(operation, { nativeExecution: this.receiverMetadata(operation.result?.receiver) });
       this.db.exec('COMMIT'); return result;
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
