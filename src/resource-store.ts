@@ -35,6 +35,7 @@ export class ResourceRecords {
   private fixed(id:string){const events=this.events(id),prepared=events.find(e=>e.kind==='resource_request_prepared');if(!prepared)throw new Error('original_resource_request_required');const request=JSON.parse(this.bytes(prepared.data.requestSha256).toString()) as ResourceRequest,p=this.profile(request.ledgerId);parseResourceRequest(request,p);if(resourceRequestHash(request)!==id)throw new Error('resource_request_identity_changed');return {request,profile:p,prepared:prepared.data,events};}
   private statusOf(id:string){
     const f=this.fixed(id),sent=f.events.filter(e=>e.kind==='resource_claim_dispatched'),replies=f.events.filter(e=>e.kind==='resource_reply_observed'),present=replies.filter(e=>e.data.reply.result.state==='present'),last=present.at(-1),refusal=replies.findLast(e=>e.data.command==='claim'&&e.data.reply.result.state==='refused'),outcome=f.events.find(e=>e.kind==='resource_execution_outcome'),settlement=f.events.filter(e=>e.kind==='resource_result_dispatched');
+    for(const e of replies)if(canonical(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(this.bytes(e.data.rawSha256))))!==canonical(e.data.reply))throw new Error('resource_saved_reply_changed');
     const claim=last?.data.reply.result.claim??null;
     let state=claim?claim.state:sent.length?'claim_unknown':'prepared_not_sent';
     if(!claim&&refusal&&refusal.id>sent.at(-1)!.id)state='refused';
@@ -50,6 +51,8 @@ export class ResourceRecords {
     if(request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');
     if(this.events(id).some(e=>e.kind==='resource_request_prepared'))return {...this.statusOf(id),duplicate:true};
     const action=this.authority(request.authorityIntent,observations);this.matchAction(request,action);
+    const intentBindings=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared' AND json_extract(data,'$.authorityIntent')=?").all(request.authorityIntent) as Row[]).map(e=>JSON.parse(e.data));
+    if(intentBindings.some(e=>e.operation!==request.operation||e.packet!==action.binding?.packet||e.actionSha256!==request.actionSha256))throw new Error('authority_intent_already_bound_to_original_operation');
     const slot=hash(canonical([request.operation,request.ledgerId,request.resourceRef]));
     const prior=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]).map(e=>JSON.parse(e.data)).find(e=>e.slot===slot);
     if(prior)throw new Error('original_resource_slot_already_bound');
@@ -65,8 +68,13 @@ export class ResourceRecords {
   }
   command(id:string,kind:LedgerCommand['command']):LedgerCommand{return this.transaction(()=>{
     const f=this.fixed(id),state=this.statusOf(id);
+    if(kind==='record_result')this.validateOutcome(state);
     return {protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:kind,requestId:id,request:kind==='capabilities'?null:f.request,outcome:kind==='record_result'?state.outcome?.outcome??null:null};
   });}
+  private validateOutcome(state:Row){
+    const record=state.outcome;if(!record||hash(canonical(record.outcome))!==record.outcomeSha256)throw new Error('resource_original_outcome_missing_or_changed');
+    this.bytes(record.outcome.evidenceSha256);
+  }
   dispatchClaim(id:string,capabilities:LedgerObservation,observations:OwnerObservation[],callerRole:AuthorityRole,directory:string,retryRefused=false){return this.transaction(()=>{
     const f=this.fixed(id),state=this.statusOf(id),capCommand:LedgerCommand={protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:'capabilities',requestId:id,request:null,outcome:null};
     if(f.request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');
@@ -111,7 +119,7 @@ export class ResourceRecords {
     this.event('resource_dispatch_closed_unstarted','resource:'+id,{dispatchEvent:ref.event,phase,proofSha256:this.blob(proof.proof),originalRequestPreserved:true,resourceRefunded:false});return {...this.statusOf(id),duplicate:false};
   });}
   prepareOutcome(id:string){return this.transaction(()=>{
-    const f=this.fixed(id),s=this.statusOf(id);if(s.outcome)return {...s,duplicate:true};
+    const f=this.fixed(id),s=this.statusOf(id);if(s.outcome){this.validateOutcome(s);return {...s,duplicate:true};}
     if(!s.claim||s.claim.state!=='held')throw new Error('original_held_resource_claim_required');
     const accepted=f.events.find(e=>e.kind==='resource_reply_observed'&&e.data.reply.result.state==='present'&&e.data.reply.result.claim.state==='held');if(!accepted)throw new Error('original_resource_claim_receipt_required');
     const action=this.authority(f.request.authorityIntent,null),evidence=this.execution(f.request.operation,action,accepted.observed_at);
@@ -122,6 +130,7 @@ export class ResourceRecords {
   });}
   dispatchResult(id:string,capabilities:LedgerObservation,directory:string){return this.transaction(()=>{
     const f=this.fixed(id),s=this.statusOf(id),c:LedgerCommand={protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:'capabilities',requestId:id,request:null,outcome:null};requireLedgerObservation(capabilities,f.profile,c);
+    this.validateOutcome(s);
     if(capabilities.reply.result.credentialState!=='available'||capabilities.reply.result.recordResult!==true)throw new Error('original_ledger_result_permission_unavailable');
     if(!s.outcome||s.state!=='result_pending')throw new Error('resource_result_unavailable_conflicting_or_already_recorded');
     if(s.pendingResultAttempt)throw new Error('resource_original_result_requires_lookup_not_resend');

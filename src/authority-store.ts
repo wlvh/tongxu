@@ -159,7 +159,9 @@ export class AuthorityRecords {
     this.profile();const old=this.events('authority-intent:'+requestId,'authority_action_reserved')[0];if(!old)throw new Error('authority_original_intent_missing');
     // Rechecking an original reservation is not a second reservation. Consumers
     // still bind the original operation and cannot infer an unknown was unsent.
-    return {...this.check(old.data.request,old.data.role,old.data.authorization,observations),requestId,state:old.data.state};
+    const current=this.check(old.data.request,old.data.role,old.data.authorization,observations);
+    if(current.binding?.packet!==old.data.binding?.packet||current.binding?.fingerprint!==old.data.binding?.fingerprint)throw new Error('authority_reserved_material_changed');
+    return {...current,requestId,state:old.data.state};
   });}
   adoptionBaseline(adoption:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const a=this.adoption(adoption);this.freshDecision(adoption,observations);

@@ -28,6 +28,8 @@ RL06 用本地明确fixture验证竞争、丢响应、晚到结果、旧回执�
 
 发送前先保存原请求，再实际读取 provider 能力和新动作的准确 Owner 来源，最后在原队列事务中重新核验当前候选、停止、角色和原操作。相同 operation/ledger/resource 不能通过改数量、换动作ID或目录产生第二个认领。两个进程同时尝试同一原请求，只有第一个能登记发送；原账本自身决定跨任务资源竞争。新工作与账本认领是不同阶段，接口不因 `held` 就宣称模型/业务已执行。
 
+同一 authority intent 还固定在原 packet/fingerprint 和首次关联的 operation 上：即使 H/item 没变，新增实质材料形成的新 packet/operation 也不能刷新原逐次确认来再次认领。原请求的读取、查询和事实结果回报保留，新的动作须按其实际权限模式另行登记。有限委托不等于复用某个旧 intent。
+
 ```text
 node dist/src/resource-cli.js configure --store ABS_QUEUE --profile ABS_EXISTING_LEDGER_PROFILE
 node dist/src/resource-cli.js prepare --store ABS_QUEUE --request ABS_FIXED_RESOURCE_REQUEST
@@ -50,6 +52,8 @@ node dist/src/resource-cli.js close-unstarted --store ABS_QUEUE --id ORIGINAL_RE
 结果回报从可信执行器的原记录取得，CLI不接收模型报告或布尔成功标记。接收与修复的事实读取器要求同一 authority intent、原 operation/packet、认领之后登记的执行、已结束控制器和完整原件/终态。现有旧消费者尚未填写这项新绑定，因此不能被本接口追认成已受管执行；G02/G11 继续接入新的执行入口。隔离测试明确替换执行适配器来验证结果协议，不宣称进行了新真实模型工作。
 
 已知失败也可能消耗资源：`completed|failed|cancelled` 是执行结果，原账本的 `held|consumed|released|unknown` 是另一事实。产品不计算退款。结果回报丢回执后只读原认领；准确 outcome hash 确认后才记录消费，冲突终态不覆盖或重报成成功。凭据暂不可用保留原结果，恢复时不重跑工作；原报告和原认领保持关联。
+
+读取已保存的 provider 回执会重新核原 blob 摘要及记录一致性；结果重入、构造请求和最后发送门均重新读取已登记执行证明。证明损坏或缺失时停止相关回报，不能只凭 event 中已有 outcome 字段结算。恢复准确原字节后可继续原结果，既不伪造证明，也不重新执行工作。
 
 ## 验证范围
 

@@ -12,6 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resourceMain } from '../../src/resource-cli.js';
 import { closeUnstartedResource } from '../../src/resource-claims.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));let commentId=7100000000;
 async function ready(t:test.TestContext,mode='normal',role:AuthorityRole='receiver'){
@@ -108,4 +109,22 @@ test('known-unstarted result report can continue, while a different terminal out
   const g=await ready(t);await g.claim();(g.q as any).resourceExecution=()=>({state:'completed',source:'explicit-fixture-execution',proof:bytes({kind:'intended-fixture-outcome'}),executionKind:'fixture'});g.resources.prepareOutcome(g.id);
   const wrong=g.resources.command(g.id,'record_result');wrong.outcome={...wrong.outcome!,evidenceSha256:hash('external conflicting result')};await g.ledger.call(wrong,()=>{});
   assert.equal((await g.lookup()).state,'result_conflict');const gc=await g.ledger.call(g.resources.command(g.id,'capabilities'));assert.throws(()=>g.resources.dispatchResult(g.id,gc,'overwrite-attempt'),/conflicting/);assert.equal(g.ledger.state().settlements.length,1);
+});
+test('one reserved authority intent cannot move to a new packet/operation and claim the same resource again',async t=>{
+  const f=await ready(t);await f.claim();const ledger=new DatabaseSync(join(f.ledger.root,'original-fixture.sqlite'));ledger.prepare('UPDATE capacity SET n=2').run();ledger.close();
+  const material=await f.packet(),next=f.q.begin(material.item,'same-H-new-material');f.q.evaluate(next.operation);
+  assert.equal(material.item,f.item);assert.notEqual(next.operation,f.request.operation);
+  assert.throws(()=>f.resources.prepare({...f.request,operation:next.operation},f.observations,'receiver'),/authority_reserved_material_changed|intent_already_bound/);
+  assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().remaining,2);assert.equal(f.a.status().intents.length,1);
+  assert.equal((await f.lookup()).state,'held');assert.equal(f.resources.prepare(f.request,[],'receiver').duplicate,true);
+});
+test('persisted execution proof and provider originals are revalidated before result sending; exact original restoration permits continuation',async t=>{
+  const f=await ready(t);await f.claim();(f.q as any).resourceExecution=()=>({state:'failed',source:'explicit-fixture-execution',proof:bytes({kind:'known-fixture-failure'}),executionKind:'fixture'});const prepared=f.resources.prepareOutcome(f.id);
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'));t.after(()=>db.close());const digest=prepared.outcome.outcome.evidenceSha256,original=Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(digest) as any).bytes);
+  db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('storage corruption fixture'),digest);
+  await assert.rejects(resourceMain(['record-result','--store',f.store,'--id',f.id]),/original_missing_or_changed/);assert.equal(f.ledger.state().settlements.length,0);assert.equal(f.resources.status(f.id).resultAttempts,0);
+  db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(original,digest);
+  assert.equal((await resourceMain(['record-result','--store',f.store,'--id',f.id])).state,'consumed');assert.equal(f.ledger.state().settlements.length,1);
+  const observed=f.q.status().events.find((e:any)=>e.kind==='resource_reply_observed'),ref=JSON.parse(observed.data).rawSha256,raw=Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(ref) as any).bytes);
+  db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('broken provider source'),ref);assert.throws(()=>f.resources.status(f.id),/original_missing_or_changed/);db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(raw,ref);assert.equal(f.resources.status(f.id).state,'consumed');
 });
