@@ -183,6 +183,17 @@ export class MergeRecords {
   validationInput(id:string){return this.transaction(()=>{
     return this.validationBytes(id);
   });}
+  validationReferences(id:string){return this.transaction(()=>this.validationReferenceBytes(id));}
+  private validationReferenceBytes(id:string){
+    const current=this.validationBytes(id),x=this.original(id),readback=JSON.parse(this.bytes(x.stage.readback.sha256).toString());
+    // An already completed receiver may have consumed the exact 073fae0
+    // representation. Keep that historical reference eligible only when it
+    // comes from this unchanged original index and all its raw blobs match.
+    if(!readback.records.length||!readback.records.every((r:Row)=>r.observation.raw!==undefined&&r.observation.rawSha256===undefined))return [current];
+    for(const r of readback.records)this.originalCapture(r);
+    const legacy=Buffer.from(canonical({kind:'tongxu-actual-merge-validation',operation:id,binding:x.binding,bindingSha256:x.stage.bindingHash,actual:readback.result,readback}));
+    return hash(legacy)===hash(current)?[current]:[current,legacy];
+  }
   private validationBytes(id:string){
     const x=this.original(id);if(x.stage.phase!=='merged_pending_verification'||x.stage.readback?.result?.reason!=='actual_version_requires_own_validation')throw new Error('actual_merge_version_validation_not_applicable');
     const readback=JSON.parse(this.bytes(x.stage.readback.sha256).toString());
@@ -192,10 +203,15 @@ export class MergeRecords {
     return Buffer.from(canonical({kind:'tongxu-actual-merge-validation',operation:id,binding:x.binding,bindingSha256:x.stage.bindingHash,actual:readback.result,readback:index,originals}));
   }
   completeValidation(id:string,value:ActualMergeValidation){return this.transaction(()=>{
-    const reference=this.validationBytes(id),x=this.original(id);requireActualMergeValidation(value,reference,this.profile().executionKind);this.own(x);
+    const references=this.validationReferenceBytes(id),reference=references.find(r=>hash(r)===value.referenceSha256),x=this.original(id);if(!reference)throw new Error('actual_independent_merge_validation_required');requireActualMergeValidation(value,reference,this.profile().executionKind);this.own(x);
     if(!x.stage.controllerReturned)throw new Error('original_merge_controller_still_unknown');
     x.stage.validationSha256=this.blob(value.proof);x.stage.phase='actual_merge_result_verified';this.finish(x);
     this.event('actual_version_validated',id,{blobs:[x.stage.validationSha256],originalMergeRepeated:false});return this.view(id);
+  });}
+  completedValidation(id:string,store:string,operation:string){return this.transaction(()=>{
+    const x=this.original(id);if(x.stage.phase!=='actual_merge_result_verified')return null;
+    const proof=JSON.parse(this.bytes(x.stage.validationSha256).toString());if(proof.store!==store||proof.operation!==operation)throw new Error('actual_merge_validation_already_bound');
+    return {...this.view(id),duplicate:true,newModelCalls:0,newMergeCall:false};
   });}
   problem(id:string,reason:string){return this.transaction(()=>{this.original(id);this.event('problem',id,{reason:reason.slice(0,512)});return this.view(id);});}
 }

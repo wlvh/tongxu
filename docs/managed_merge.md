@@ -47,6 +47,8 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 完整 provider 原字节逐份保存为 blob；preflight/readback 索引仅保留摘要、字节数、请求、捕获位置和时间，不把 Buffer 展成逐字节 JSON。原大页不截断、不降低既定页数/单响应上限。实际版本补验材料从准确原引用读取完整 UTF-8 回执，保留来源而不复制数字键表示。
 
+升级前已完成的补验可继续使用它实际收到的准确旧参考材料。仅当原队列仍保有那个旧索引、原回读和全部相符原 blob 时，验证入口接受旧表示的摘要；候选、S/r、实际 B/H/T、独立判断和捕获核查不放宽。表示变化不要求重跑模型，旧原件不重写；不同来源或损坏材料不能借“兼容”替换。
+
 同步 merge 请求仅带固定 H、merge 方法和本操作固定标记。GitHub 的 head 条件不锁 base/target，因此结果必须回读原 PR、实际 merge commit 的两个 parents、tree、合入者和准确目标；目标继续前进时另查祖先关系。原输入、规则读取、授权意图、资源回执、发送过程和实际结果分别保存。进程退出0、接口200、模型判断和代码树核对均是不同事实。
 
 | 状态 | 后续行为 |

@@ -91,7 +91,12 @@ export async function managedMergeAction(store:string,operation:string,action:'r
 }
 export async function validateManagedMerge(store:string,operation:string,validationStore:string,validationOperation:string){
   const q=await QueueStore.open(store);try{return await locked(store,operation,async()=>{
-    const m=q.merges(),reference=m.validationInput(operation),proof=await inspectActualMergeValidation(validationStore,validationOperation,reference,m.configuration().executionKind);
-    return m.completeValidation(operation,proof);
+    const m=q.merges(),completed=m.completedValidation(operation,validationStore,validationOperation);if(completed)return completed;
+    const references=m.validationReferences(operation);let missing:unknown;
+    for(const reference of references){
+      try{const proof=await inspectActualMergeValidation(validationStore,validationOperation,reference,m.configuration().executionKind);return m.completeValidation(operation,proof);}
+      catch(e){if(!(e instanceof Error)||e.message!=='actual_version_original_readback_not_consumed')throw e;missing=e;}
+    }
+    throw missing??new Error('actual_version_original_readback_not_consumed');
   });}finally{q.close();}
 }

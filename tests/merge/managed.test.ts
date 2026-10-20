@@ -18,6 +18,17 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { canonical } from '../../src/comparison.js';
 
+function expandedIndexFixture(f:{store:string;operation:string}){
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'));
+  try{
+    const get=(sha:string)=>Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as any).bytes),row=db.prepare('SELECT result FROM operations WHERE id=?').get(f.operation) as any,result=JSON.parse(row.result),oldSha=result.merge.readback.sha256,index=JSON.parse(get(oldSha).toString());
+    for(const r of index.records){const raw=get(r.observation.rawSha256);delete r.observation.rawSha256;delete r.observation.rawBytes;r.observation.raw=raw;r.observation.reply=JSON.parse(raw.toString());}
+    const encoded=Buffer.from(canonical(index)),sha=hash(encoded);db.prepare('INSERT INTO blobs VALUES(?,?)').run(sha,encoded);result.merge.readback.sha256=sha;db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result),f.operation);
+    const event=db.prepare("SELECT id,data FROM events WHERE object=? AND kind='managed_merge_readback'").get('merge:'+f.operation) as any,data=JSON.parse(event.data);data.blobs=data.blobs.map((s:string)=>s===oldSha?sha:s);db.prepare('UPDATE events SET data=? WHERE id=?').run(JSON.stringify(data),event.id);
+    return sha;
+  }finally{db.close();}
+}
+
 test('one original queue operation owns target before resources, sends one exact HTTP merge and verifies actual result',async t=>{
   const f=await ready(t),s=f.q.merges().status(f.operation);assert.equal(s.merge.phase,'resources_pending');assert.equal(f.q.status().claims[0].operation,f.operation);assert.equal(f.ledger.state().claims.length,0);
   const done=await managedMergeAction(f.store,f.operation,'run');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.status,'complete');assert.equal(done.newMergeCall,true);
@@ -77,7 +88,9 @@ test('serialized provider receipts and request path/payload overrides cannot cre
   const q=await QueueStore.open(f.store);try{assert.equal(q.merges().status(f.operation).operation,f.operation);}finally{q.close();}
 });
 test('actual-version validation consumes a new explicit fixture W2 packet and a separately executed fixture receiver, never an old PASS',async t=>{
-  const f=await ready(t,'base-race');await managedMergeAction(f.store,f.operation,'run');const reference=f.q.merges().validationInput(f.operation),actual=JSON.parse(reference.toString()).actual;
+  for(const format of ['current','legacy']){
+  const f=await ready(t,'base-race');await managedMergeAction(f.store,f.operation,'run');if(format==='legacy')expandedIndexFixture(f);
+  const reference=format==='legacy'?f.q.merges().validationReferences(f.operation)[1]!:f.q.merges().validationInput(f.operation),actual=JSON.parse(reference.toString()).actual;
   await assert.rejects(validateManagedMerge(f.store,f.operation,f.store,f.operation),/separate_actual_version/);
   // Only copies of explicitly synthetic test inputs are edited. This fixture
   // exercises binding/consumption, not real GitHub, W2 or model acceptance.
@@ -90,8 +103,11 @@ test('actual-version validation consumes a new explicit fixture W2 packet and a 
   const store=join(root,'queue'),q=await QueueStore.create(store,'fixture/reception');t.after(()=>q.close());q.enableReceiver();const item=q.import(await readPacket(snapshot,verification,join(f.root,'context-1.json')));
   const material=join(root,'actual-merge-readback.json');await writeFile(material,reference,{mode:0o600});const plan=join(root,'receiver.json');await writeFile(plan,JSON.stringify({...f.receiverPlan,store,item:item.item,material:[{path:material,sha256:hash(reference)}]}),{mode:0o600});
   const received=await runReception(plan);assert.equal(received.receiver.judgment.verdict,'ACCEPT_WITHIN_SCOPE');
+  const calls=await f.count(),requests=f.publisher.requests.length;
   const done=await validateManagedMerge(f.store,f.operation,store,received.operation);assert.equal(done.merge.phase,'actual_merge_result_verified');assert.equal(f.q.status().claims.length,0);assert.equal(f.publisher.state().merges,1);assert.equal(done.productionActionAllowed,false);
+  assert.equal((await validateManagedMerge(f.store,f.operation,store,received.operation)).duplicate,true);assert.equal(await f.count(),calls);assert.equal(f.publisher.requests.length,requests);
   const settled=await resourceAction(f.store,f.binding.resourceRequests[0]!,'record-result','background');assert.equal(settled.state,'consumed');
+  }
 });
 test('confirmed unsent cancellation releases the queue target and reports original resource facts without assuming a refund',async t=>{
   const f=await ready(t,'draft');await managedMergeAction(f.store,f.operation,'run');assert.equal(f.ledger.state().claims.length,1);
