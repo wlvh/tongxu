@@ -15,7 +15,7 @@ function statusOf(task) {
   if (task.observationConflict) return ['材料观察有冲突', 'wait'];
   if (task.compositionCurrent === false) return ['组合成员状态待核实', 'wait'];
   if((task.collaboration?.messages||[]).some(r=>!r.available))return ['协作原件待核','wait'];
-  const runs=(task.collaboration?.messages||[]).filter(r=>r.available&&r.current);
+  const runs=(task.collaboration?.messages||[]).filter(r=>r.available&&r.current&&r.messages.length>0);
   if(runs.some(r=>r.messages.some(m=>m.sendRegistered&&m.state!=='Reply')))return ['协作已投入，结果待核','wait'];
   if(runs.some(r=>r.messages.some(m=>m.state!=='Reply')))return ['协作仍有待发送消息','wait'];
   if(runs.some(r=>r.resourcesSettled===false))return ['报告已返回，结算待核','wait'];
@@ -69,13 +69,14 @@ function collaborationView(t) {
     a.shared.forEach(s=>append(box,el('p','共享部分 '+s.id+'：'+s.agreed+'/'+s.requiredFeedback+' 项反馈适用'+(s.conflict?' · 有分歧':'')+(s.unknown?' · 有缺失或待核反馈':''),'small')));n.append(box);
   });
   c.repairs.forEach(r=>{const box=el('div',null,'execution-card');if(!r.available){append(box,pill('修复原件待核','wait'),el('p',r.error,'small'));n.append(box);return;}
-    append(box,append(el('div',null,'label-line'),el('strong','受管修复'),pill(r.phase==='returned'?'结果已返回':'原运行待核',r.phase==='returned'?'':'wait')),el('p','操作 '+r.operation.slice(0,8)+(r.currentPacket?' · 当前材料':' · 历史材料'),'small'));
+    append(box,append(el('div',null,'label-line'),el('strong','受管修复'),pill(r.phase==='returned'?'结果已返回':'原运行待核',r.phase==='returned'?'':'wait')),el('p','操作 '+r.operation.slice(0,8)+(r.currentMaterial?' · 当前材料':' · 历史材料'),'small'));
     if(r.result){const x=r.result;append(box,el('p',(x.demonstrationFixture?'明确测试场景 · ':'')+(x.actualRepairPerformed?'已发生代码修改':'未登记实际修改'),'small'),el('p',(x.beforeH||'未知').slice(0,12)+' → '+(x.afterH||'未知').slice(0,12),'mono'),el('p','实际测试：'+(x.testsPassed?'通过':'未通过或未知')+' · 独立审核：'+(x.reviewVerdict||'未取得'),'small'));}
     if(r.resources.length)append(box,el('p','原资源结果：'+(r.resources.every(x=>x.settled)?'结算凭据匹配':'仍有未结算或未知结果'),'small'));n.append(box);
   });
   c.messages.slice().reverse().forEach(run=>{const box=el('div',null,'execution-card');if(!run.available){append(box,pill('消息原件待核','wait'),el('p',run.error,'small'));n.append(box);return;}
     append(box,append(el('div',null,'label-line'),el('strong','消息运行 '+run.run.slice(0,8)),pill(run.executionKind==='fixture'?'测试夹具':'真实模型记录','neutral'),pill(run.current?'当前材料':'历史材料',run.current?'':'neutral')));
     if(run.resourcesSettled!==null)append(box,el('p','原资源结算：'+(run.resourcesSettled?'本次结果凭据匹配':'未完成，保留原认领'),'small'));
+    if(!run.messages.length)append(box,el('p','尚无实际发给本任务的消息；其他任务的回复不计为本任务完成。','small'));
     run.participants.forEach(p=>append(box,el('p',p.tool+' · '+p.id+' · '+(p.started?(p.ended?(p.completeCapture?'完整捕获已核':'执行结束，捕获待核'):'执行中或结束状态未知'):'尚未启动')+(p.sessionId?' · 会话 '+p.sessionId:''),'small wrap')));
     run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label={Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
     if(run.continuation)append(box,el('p','另有新上下文接续记录；不能据此认定原会话已恢复。','small'));n.append(box);

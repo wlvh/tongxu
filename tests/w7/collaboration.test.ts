@@ -12,6 +12,7 @@ import {observeTask} from '../../src/secretary-tools.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {coordinationPlanId} from '../../src/coordination-contract.js';
 import {hash} from '../../src/snapshot.js';
+import {runInNewContext} from 'node:vm';
 
 async function app(t:test.TestContext,f:Awaited<ReturnType<typeof messageFixture>>){
   const path=join(f.root,'workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-local-workbench',title:'实际进程测试场景',goal:'明确夹具验证，不代表真实模型',sources:[{id:'selected',title:'所选任务',store:f.store,item:f.item}]}));
@@ -29,6 +30,10 @@ test('workbench and secretary share exact selected message facts; full reports a
 test('messages addressed only to another selected-out item cannot be retrieved through a guessed run and message id',async t=>{
   const f=await messageFixture(t),other=await f.packet({pr:2});f.plan.participants.find(p=>p.id==='impact')!.item=other.item;await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,true);const a=await app(t,f),state=await a.state(),m=state.collaboration.messages[0];
   assert.deepEqual(m.messages.map((x:any)=>x.id),['check','fact','synthesis']);assert.ok(!JSON.stringify(state).includes(other.item));assert.equal((await a.get('/api/message-report/selected/'+result.run+'/impact')).status,404);assert.equal((await a.get('/api/message-report/unknown/'+result.run+'/check')).status,404);
+});
+test('an unused participant cannot make the selected task appear to have received another tasks reports',async t=>{
+  const f=await messageFixture(t),other=await f.packet({pr:2});f.plan.participants.find(p=>p.id==='impact')!.item=other.item;f.plan.messages=[{id:'only-other-task',from:null,to:'impact',body:'Explicit fixture work for the other task only.',replies:[]}];await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,true);const a=await app(t,f),state=await a.state();assert.equal(state.collaboration.messages[0].messages.length,0);assert.equal(state.collaboration.messages[0].participants.every((p:any)=>!p.started),true);
+  const js=await readFile(new URL('../../../web/workbench/app.js',import.meta.url),'utf8'),fn=js.slice(js.indexOf('function statusOf('),js.indexOf('\nasync function api(')),label=runInNewContext(fn+';statusOf(task)',{task:state});assert.notEqual(label[0],'协作报告已返回');assert.equal((await a.get('/api/message-report/selected/'+result.run+'/only-other-task')).status,404);
 });
 test('historical candidate and arrangement remain explicit while unknown original captures never appear complete',async t=>{
   const f=await messageFixture(t,'partial-answer'),result=await runMessages(f.store,f.path);assert.equal(result.completed,false);const other=await f.packet({pr:2}),task=(id:string,item:string)=>({id,item,actor:id,originActor:id,dispatch:'owner_backlog',stages:['investigate','implement'],independentPaths:[],workspace:null,publishBranch:null,outputs:[]});
