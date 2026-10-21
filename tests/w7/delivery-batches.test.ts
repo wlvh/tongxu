@@ -14,6 +14,7 @@ import {parseDeliveryBatch,type DeliveryBatch} from '../../src/delivery-contract
 import {observeTaskWorkspace} from '../../src/task-source.js';
 import {deliveryMain} from '../../src/delivery-cli.js';
 import {parseMessagePlan} from '../../src/message-contract.js';
+import type {OwnerObservation} from '../../src/authority-source.js';
 
 const raw=(x:unknown)=>Buffer.from(canonical(x));
 const exec=promisify(execFile);
@@ -49,4 +50,14 @@ test('readonly exact selection changes no queue values and corrupt source cannot
 });
 test('batch contract cannot add authority, select unlisted scenario members or omit version ancestry',async t=>{
   const f=await fixture(t);assert.throws(()=>parseDeliveryBatch(raw({...f.p,accepted:true})),/batch_invalid/);assert.throws(()=>parseDeliveryBatch(raw({...f.p,revision:2})),/batch_invalid/);assert.throws(()=>parseDeliveryBatch(raw({...f.p,scenarios:[{...f.p.scenarios[0],members:['f'.repeat(64)]}]})),/scenarios_invalid/);const before=f.q.status();assert.throws(()=>f.q.deliveries().register(raw({...f.p,members:[{...f.p.members[0],fingerprint:'0'.repeat(64)}]})),/current_material_mismatch/);assert.deepEqual(f.q.status(),before);
+});
+test('missing stored Owner originals invalidate current adoption while preserving historical registration',async t=>{
+  for(const variant of ['comment','editor','profile'] as const){const f=await fixture(t),plan=parseMessagePlan(await readFile(f.path)),a=await messageAuthority({...f,plan,write:async()=>writeFile(f.path,raw(plan))}),adopted=a.a.proposal(a.scope.sha),scope=adopted.proposal as any,p={...f.p,scope:{...f.p.scope,adoption:a.scope.sha},goals:scope.body.goals,nonGoals:scope.body.nonGoals},x=f.q.deliveries().register(raw(p));
+    const entry=f.q.status().events.find((e:any)=>e.kind==='authority_decision_applied'&&e.object==='authority-decision:'+a.scope.sha),source=JSON.parse(entry.data).source,sha=variant==='profile'?adopted.profileSha256:variant==='comment'?source.originalCommentSha256:source.originalEditorSha256,db=new DatabaseSync(join(f.store,'queue.sqlite'));t.after(()=>db.close());const original=(db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as any).bytes;if(variant==='editor')db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('explicit damaged editor fixture'),sha);else db.prepare('DELETE FROM blobs WHERE hash=?').run(sha);
+    const state=await deliveryMain(['state','--store',f.store,'--batch-sha',x.batchSha256]);assert.equal(state.scope.adoptionRecorded,true);assert.equal(state.scope.currentAdoption,false);assert.equal(state.scope.sourceOriginalsVerified,false);assert.equal(state.scope.reason,'authority_original_changed');const before=f.q.status();assert.throws(()=>f.q.deliveries().register(raw({...p,id:'X2'})),/authority_original_changed/);assert.deepEqual(f.q.status(),before);
+    db.prepare('INSERT OR REPLACE INTO blobs VALUES(?,?)').run(sha,original);assert.equal(f.q.deliveries().state(x.batchSha256).scope.currentAdoption,true);assert.equal((await f.calls()).length,0);
+  }
+});
+test('a locally inspected historical source cannot act as a fresh provider observation',async t=>{
+  const f=await fixture(t),plan=parseMessagePlan(await readFile(f.path)),a=await messageAuthority({...f,plan,write:async()=>writeFile(f.path,raw(plan))}),before=f.q.status(),inspected=a.a.inspectRecordedDecision(a.scope.sha);assert.equal(inspected.originalBytesVerified,true);assert.equal(inspected.freshForAction,false);assert.deepEqual(f.q.status(),before);assert.throws(()=>a.a.adoptionBaseline(a.scope.sha,[inspected.source as unknown as OwnerObservation]),/fresh_provider_owner_observation_required/);
 });

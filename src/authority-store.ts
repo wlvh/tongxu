@@ -3,7 +3,7 @@ import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
 import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest } from './authority-contract.js';
-import { requireOwnerObservation, type OwnerObservation } from './authority-source.js';
+import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 
 type Row=Record<string,any>;
 const profileKey='owner_authority_profile';
@@ -72,6 +72,12 @@ export class AuthorityRecords {
     parseOwnerProposal(p.proposal,profile,Date.parse(p.createdAt));return p;
   }
   proposal(sha:string){return this.transaction(()=>this.prepared(sha));}
+  inspectRecordedDecision(sha:string){return this.transaction(()=>{
+    const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
+    const checked=inspectStoredOwnerSource(profile,sha,saved.commentId,this.bytes(originalEditorSha256),this.bytes(originalCommentSha256),saved.readAt);
+    if(d.proposalSha256!==sha||d.kind!==d.proposal.kind||d.executionKind!==profile.executionKind||canonical(saved)!==canonical(checked.source))throw new Error('authority_recorded_source_index_changed');
+    return {proposalSha256:sha,proposal:d.proposal,source:checked.source,executionKind:d.executionKind,originalBytesVerified:true,freshForAction:false};
+  });}
   private decision(sha:string){const e=this.events('authority-decision:'+sha,'authority_decision_applied')[0];if(!e)throw new Error('verified_owner_decision_missing');return {...e.data,proposal:this.prepared(sha).proposal};}
   private revoked(sha:string){return this.all('authority_revoked').some(e=>e.data.decision===sha);}
   private currentScope(id:string){return this.events('authority-scope:'+id,'authority_scope_adopted').at(-1)?.data??null;}

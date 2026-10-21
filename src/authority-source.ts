@@ -40,6 +40,13 @@ export function fixtureOwnerObservation(profile:AuthorityProfile,proposalSha256:
   return verifyOwnerObservation(profile,hash(canonical(profile)),proposalSha256,commentId,graphRaw,commentRaw,readAt);
 }
 
+/** Revalidate stored originals for a historical view. The returned copy is
+ * deliberately not an issued OwnerObservation and cannot authorize an action. */
+export function inspectStoredOwnerSource(profile:AuthorityProfile,proposalSha256:string,commentId:number,graphRaw:Buffer,commentRaw:Buffer,readAt:string){
+  const checked=verifyOwnerObservation(profile,hash(canonical(profile)),proposalSha256,commentId,graphRaw,commentRaw,readAt),{graphRaw:_graph,commentRaw:_comment,...source}=checked;
+  return {source,freshForAction:false as const};
+}
+
 export const ownerCommentQuery=`query($id: ID!) {
   viewer { id login databaseId }
   node(id: $id) {
