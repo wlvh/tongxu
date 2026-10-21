@@ -1,3 +1,4 @@
+import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
@@ -30,10 +31,10 @@ export class AuthorityRecords {
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row;const b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('authority_original_changed');return b;}
-  private mode(){const repair=this.db.prepare('SELECT value FROM meta WHERE key=?').get(repairConsumerKey) as Row|undefined;if(repair&&repair.value!==hash(governedRepairGuard))throw new Error('owner_repair_consumer_contract_changed');if(![12,13,14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===(repair&&g.name==='authority_legacy_native_guard'?governedRepairGuard:g.sql)))throw new Error('owner_authority_not_enabled');}
+  private mode(){const repair=this.db.prepare('SELECT value FROM meta WHERE key=?').get(repairConsumerKey) as Row|undefined;if(repair&&repair.value!==hash(governedRepairGuard))throw new Error('owner_repair_consumer_contract_changed');if(![12,13,14,15,16].includes(queueFeatureVersion(this.db))||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===(repair&&g.name==='authority_legacy_native_guard'?governedRepairGuard:g.sql)))throw new Error('owner_authority_not_enabled');}
   private profile(){this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!isAuthorityDigest(ref))throw new Error('owner_authority_profile_missing');const p=parseAuthorityProfile(this.bytes(ref));if(hash(canonical(p))!==ref)throw new Error('authority_profile_changed');return {profile:p,profileSha256:ref};}
   configure(raw:Buffer){return this.transaction(()=>{
-    const p=parseAuthorityProfile(raw),encoded=Buffer.from(canonical(p)),profileSha256=hash(encoded),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+    const p=parseAuthorityProfile(raw),encoded=Buffer.from(canonical(p)),profileSha256=hash(encoded),version=queueFeatureVersion(this.db);
     if(p.repository.toLowerCase()!==(this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value)throw new Error('authority_repository_mismatch');
     const old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;
     if(old){this.mode();if(old.value!==profileSha256)throw new Error('authority_profile_is_fixed');return {configured:true,duplicate:true,profileSha256,ownerAdoptionVerified:false};}
@@ -43,7 +44,7 @@ export class AuthorityRecords {
     if(this.all('publication_intent').some(e=>!this.events(e.object).some(x=>x.id>e.id&&x.kind==='publication_verified'&&x.data.stage===e.data.stage)))throw new Error('queue_has_unresolved_publication');
     if(p.executionKind==='fixture'&&(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE json_extract(result,'$.receiver.executionKind')='native_capture'").get() as Row).n)throw new Error('fixture_authority_requires_non_native_queue');
     this.blob(encoded);this.blob(raw);this.db.prepare('INSERT INTO meta VALUES(?,?)').run(profileKey,profileSha256);
-    this.db.exec(guards.map(g=>g.sql).join(';')+';');if(version<12)this.db.exec('PRAGMA user_version=12;');
+    this.db.exec(guards.map(g=>g.sql).join(';')+';');if(version<12)setQueueFeatureVersion(this.db,12);
     this.event('authority_profile_configured','authority-profile',{profileSha256,originalSha256:hash(raw),executionKind:p.executionKind,expectedOwnerId:p.ownerId,expectedExecutorId:p.executorId,adoptionVerified:false});
     return {configured:true,duplicate:false,profileSha256,ownerAdoptionVerified:false,externalActionSent:false};
   });}

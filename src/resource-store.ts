@@ -1,3 +1,4 @@
+import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
@@ -14,21 +15,21 @@ export type ResourceOutcome={state:'completed'|'failed'|'cancelled';source:strin
 export class ResourceRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,
     private authority:(id:string,fresh:OwnerObservation[]|null)=>Row,
-    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome){}
+    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome,private newClaimGate?:(action:Row)=>void){}
   private event(kind:string,object:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind,object,JSON.stringify(data),now());}
   private events(key:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'resource_%' ORDER BY id").all('resource:'+key) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('resource_original_missing_or_changed');return b;}
-  private profile(ledgerId:string){if(![13,14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version))throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
+  private profile(ledgerId:string){if(![13,14,15,16].includes(queueFeatureVersion(this.db)))throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
-    const p=parseLedgerProfile(raw),h=hash(canonical(p)),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+    const p=parseLedgerProfile(raw),h=hash(canonical(p)),version=queueFeatureVersion(this.db);
     if(![12,13,14,15,16].includes(version))throw new Error('enable_owner_authority_before_resources');
     const ownerRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value;if(!ownerRef)throw new Error('resource_owner_profile_required');const owner=JSON.parse(this.bytes(ownerRef).toString());
     if(owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('resource_authority_profile_mismatch');
     const key='resource-ledger:'+p.ledgerId,old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row;
     if(old){if(old.value!==h)throw new Error('resource_ledger_profile_is_fixed');return {ledgerId:p.ledgerId,profileSha256:h,duplicate:true,credentialState:'not_observed',resourceBalanceStored:false};}
     if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
-    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(key,h);if(version<13)this.db.exec('PRAGMA user_version=13');
+    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(key,h);if(version<13)setQueueFeatureVersion(this.db,13);
     this.event('resource_profile_configured','resource-profile:'+p.ledgerId,{ledgerId:p.ledgerId,profileSha256:h,originalSha256:hash(raw),executionKind:p.executionKind,capabilityVerified:false});return {ledgerId:p.ledgerId,profileSha256:h,duplicate:false,credentialState:'not_observed',resourceBalanceStored:false};
   });}
   configuration(id:string){return this.transaction(()=>this.profile(id));}
@@ -55,7 +56,7 @@ export class ResourceRecords {
     const p=this.profile(request.ledgerId);parseResourceRequest(request,p);const id=resourceRequestHash(request);
     if(request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');
     if(this.events(id).some(e=>e.kind==='resource_request_prepared'))return {...this.statusOf(id),duplicate:true};
-    const action=this.authority(request.authorityIntent,observations);this.matchAction(request,action);
+    const action=this.authority(request.authorityIntent,observations);this.matchAction(request,action);this.newClaimGate?.(action);
     const intentBindings=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared' AND json_extract(data,'$.authorityIntent')=?").all(request.authorityIntent) as Row[]).map(e=>JSON.parse(e.data));
     if(intentBindings.some(e=>e.operation!==request.operation||e.packet!==action.binding?.packet||e.actionSha256!==request.actionSha256))throw new Error('authority_intent_already_bound_to_original_operation');
     const slot=hash(canonical([request.operation,request.ledgerId,request.resourceRef]));
@@ -100,7 +101,7 @@ export class ResourceRecords {
     if(capabilities.reply.result.claim!==true)throw new Error('original_ledger_claim_permission_unavailable');
     if(state.state!=='prepared_not_sent'&&!(state.state==='refused'&&retryRefused))throw new Error('resource_original_request_requires_lookup_not_resend');
     if(state.claimAttempts>=3)throw new Error('resource_refused_retry_bound');
-    const action=this.authority(f.request.authorityIntent,observations);this.matchAction(f.request,action);
+    const action=this.authority(f.request.authorityIntent,observations);this.matchAction(f.request,action);this.newClaimGate?.(action);
     const slot=hash(canonical([f.request.operation,f.request.ledgerId,f.request.resourceRef]));for(const row of this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]){const prior=JSON.parse(row.data);if(prior.slot===slot&&prior.requestSha256!==id&&!['prepared_not_sent','refused','consumed','released'].includes(this.statusOf(prior.requestSha256).state))throw new Error('resource_previous_action_claim_unresolved');}
     this.blob(capabilities.raw);this.event('resource_claim_dispatched','resource:'+id,{requestSha256:id,originalOperation:f.request.operation,directory,attempt:state.claimAttempts+1,capabilitiesSha256:hash(capabilities.raw),registeredAt:now(),controllerPid:process.pid});
     return this.statusOf(id);

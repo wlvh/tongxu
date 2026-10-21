@@ -17,9 +17,9 @@ export async function runDeliveryAssessment(store:string,requestPath:string,acti
   try{
     await directory(root);const path=join(root,'controller.sqlite');try{await writeFile(path,'',{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}await regular(path);lock=new DatabaseSync(path);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{throw new Error('delivery_assessment_controller_active');}
     const records=q.deliveryAssessments();let state:ReturnType<typeof records.state>|undefined;try{state=records.state(p.id);}catch(e){if(!(e instanceof Error)||e.message!=='delivery_assessment_not_prepared')throw e;}if(state&&state.requestSha256!==assessmentRequestSha(p))throw new Error('delivery_assessment_request_id_changed');
-    if(state&&['recorded','returned_invalid','closed_unstarted'].includes(state.phase))return {...state,newModelRequests:0,duplicate:true};
-    if(!state){if(action==='reconcile'||action==='close-unstarted')return {id:p.id,phase:'not_prepared',newModelRequests:0,userOutcomeAccepted:false};records.prepare(raw);}
-    const fixed=records.files(p.id);await immutable(join(root,'request.json'),fixed.request);await immutable(join(root,'plan.json'),fixed.plan);for(const m of fixed.material)await immutable(join(root,m.name),m.bytes);
+    if(state&&['recorded','returned_invalid','closed_unstarted'].includes(state.phase)){if(action==='prepare')records.prepare(raw);return {...state,newModelRequests:0,duplicate:true};}
+    if(!state){if(action==='reconcile'||action==='close-unstarted')return {id:p.id,phase:'not_prepared',newModelRequests:0,userOutcomeAccepted:false};records.prepare(raw);}else if(action==='prepare')records.prepare(raw);
+    const fixed=records.files(p.id);if(fixed.directory!==root){if(action==='reconcile')return {...records.consume(p.id),newModelRequests:0,recovery:'original_workspace_required_for_further_execution'};throw new Error('delivery_assessment_original_workspace_required');}await immutable(join(root,'request.json'),fixed.request);await immutable(join(root,'plan.json'),fixed.plan);for(const m of fixed.material)await immutable(join(root,m.name),m.bytes);
     if(action==='close-unstarted')return {...records.closeUnstarted(p.id),newModelRequests:0};
     if(action==='prepare')return {...records.state(p.id),planPath:join(root,'plan.json'),newModelRequests:0};
     if(action==='reconcile'&&records.state(p.id).phase==='prepared_not_started')return {...records.state(p.id),knownNotStarted:true,newModelRequests:0};

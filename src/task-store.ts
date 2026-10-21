@@ -1,3 +1,4 @@
+import {queueFeatureVersion} from './queue-format.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
@@ -17,7 +18,7 @@ BEGIN SELECT RAISE(ABORT,'development_task_requires_formal_candidate'); END`;
  * to their original packet. No extra scheduler or synthetic PR is created. */
 export class TaskRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T){}
-  private mode(){if(![15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='development_task_operation_guard'").get() as Row)?.sql!==taskOperationGuard)throw new Error('development_task_format_not_enabled');}
+  private mode(){if(![15,16].includes(queueFeatureVersion(this.db))||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='development_task_operation_guard'").get() as Row)?.sql!==taskOperationGuard)throw new Error('development_task_format_not_enabled');}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('task_original_missing_or_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private event(id:string,kind:string,value:unknown){const sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('development_task_'+kind,id,JSON.stringify({value,sha256}),now());}

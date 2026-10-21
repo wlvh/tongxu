@@ -1,3 +1,4 @@
+import {queueFeatureVersion} from './queue-format.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
@@ -11,7 +12,7 @@ type Row=Record<string,any>;
  * replacement item, a fabricated candidate or an authorization transfer. */
 export class TaskCandidateLinks {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private tasks:TaskRecords,private candidate:(id:string)=>Row){}
-  configuration(){if((this.db.prepare('PRAGMA user_version').get() as Row).user_version!==16||(this.db.prepare("SELECT value FROM meta WHERE key='task_candidate_link_contract'").get() as Row)?.value!=='exact-original-packets-v1')throw new Error('task_candidate_link_format_not_enabled');return {schemaVersion:16,contract:'exact-original-packets-v1'};}
+  configuration(){if(queueFeatureVersion(this.db)!==16||(this.db.prepare("SELECT value FROM meta WHERE key='task_candidate_link_contract'").get() as Row)?.value!=='exact-original-packets-v1')throw new Error('task_candidate_link_format_not_enabled');return {schemaVersion:16,contract:'exact-original-packets-v1'};}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('task_candidate_link_original_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private latestSource(task:string){

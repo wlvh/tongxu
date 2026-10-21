@@ -1,3 +1,4 @@
+import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
@@ -45,16 +46,16 @@ export class MergeRecords {
     for(const [key,value] of entries){if(!/^(0|[1-9][0-9]*)$/.test(key)||Number(key)>=entries.length||!Number.isInteger(value)||(value as number)<0||(value as number)>255)throw new Error('legacy_merge_capture_index_invalid');raw[Number(key)]=value as number;}
     const sha256=hash(raw);if(!this.bytes(sha256).equals(raw)||canonical(JSON.parse(raw.toString()))!==canonical(o.reply))throw new Error('legacy_merge_original_capture_changed');return {raw,sha256};
   }
-  private mode(){if(![14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||![["managed_merge_claim_guard",claimGuard],["managed_merge_record_guard",recordGuard]].every(([name,sql])=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(name!) as Row)?.sql===sql))throw new Error('managed_merge_not_enabled');}
+  private mode(){if(![14,15,16].includes(queueFeatureVersion(this.db))||![["managed_merge_claim_guard",claimGuard],["managed_merge_record_guard",recordGuard]].every(([name,sql])=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(name!) as Row)?.sql===sql))throw new Error('managed_merge_not_enabled');}
   private profile():MergeProfile{this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!ref)throw new Error('managed_publisher_not_configured');return parseMergeProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseMergeProfile(raw),ref=hash(canonical(p)),old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;
     if(old){this.mode();if(old.value!==ref)throw new Error('managed_publisher_profile_is_fixed');return {duplicate:true,profileSha256:ref,credentialVerified:false};}
-    if(![13,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version))throw new Error('original_authority_and_resources_required');
+    if(![13,15,16].includes(queueFeatureVersion(this.db)))throw new Error('original_authority_and_resources_required');
     const authorityRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value,owner=authorityRef&&JSON.parse(this.bytes(authorityRef).toString());
     if(!owner||owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture')||[owner.ownerId,owner.executorId].includes(p.actorId))throw new Error('separate_managed_publisher_identity_required');
     if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
-    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(profileKey,ref);this.db.exec(claimGuard+';'+recordGuard+';');if((this.db.prepare('PRAGMA user_version').get() as Row).user_version<14)this.db.exec('PRAGMA user_version=14;');
+    this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(profileKey,ref);this.db.exec(claimGuard+';'+recordGuard+';');if(queueFeatureVersion(this.db)<14)setQueueFeatureVersion(this.db,14);
     this.event('configured','profile',{profileSha256:ref,executionKind:p.executionKind,credentialVerified:false});return {duplicate:false,profileSha256:ref,credentialVerified:false};
   });}
   configuration(){return this.transaction(()=>this.profile());}

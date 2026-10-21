@@ -1,3 +1,4 @@
+import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
@@ -29,19 +30,19 @@ export class ReviewRecords {
   private blob(bytes: Buffer) { const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); this.bytes(sha256); return sha256; }
   private bytes(sha256: string): Buffer { const r = this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha256) as Row; if (!r || hash(Buffer.from(r.bytes)) !== sha256) throw new Error('review_original_changed'); return Buffer.from(r.bytes); }
   private requireMode(legacyReadOrClose=false) {
-    const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+    const version=queueFeatureVersion(this.db);
     if (!([9,10,11,12,13,14,15,16].includes(version) || legacyReadOrClose&&version===8) || ![['review_repair_claim_guard', repairClaimGuard], ['review_repair_record_guard', version===8?legacyRepairRecordGuard:repairRecordGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row)?.sql === sql)) throw new Error('review_records_not_enabled');
   }
   enable() {
     return this.transaction(() => {
-      const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+      const version = queueFeatureVersion(this.db);
       if ([9,10,11,12,13,14,15,16].includes(version)) { this.requireMode(); return { enabled: true, duplicate: true, productionActionAllowed: false }; }
       if (![6, 7, 8].includes(version)) throw new Error('enable_receiver_supplements_before_review_records');
       if(version===8)this.requireMode(true);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       if((this.db.prepare("SELECT COUNT(*) AS n FROM events a WHERE a.kind='overall_review_dispatched' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get() as Row).n)throw new Error('queue_has_active_or_unknown_overall_review');
       if(version===8)this.db.exec('DROP TRIGGER review_repair_claim_guard; DROP TRIGGER review_repair_record_guard;');
-      this.db.exec(`${repairClaimGuard}; ${repairRecordGuard}; PRAGMA user_version=9;`);
+      this.db.exec(`${repairClaimGuard}; ${repairRecordGuard};`);setQueueFeatureVersion(this.db,9);
       this.event('review_records_enabled', 'review-records', { from: version, to: 9 }); return { enabled: true, duplicate: false, productionActionAllowed: false };
     });
   }
