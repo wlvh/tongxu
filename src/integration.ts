@@ -8,7 +8,7 @@ import {regular,exists} from './repair-workspace.js';
 import {canonical} from './comparison.js';
 import {parseIntegrationRequest,integrationRequestSha256} from './integration-contract.js';
 import {captureIntegrationGit,readIntegrationGit} from './integration-git.js';
-import {integrationContinuationProtocol,integrationRuntimeHashes,recordIntegrationBoundary,integrationControllerReturned,inspectIntegrationContinuation,recordIntegrationContinuation,checkIntegrationContinuationBoundary} from './integration-continuation.js';
+import {integrationContinuationProtocol,integrationRuntimeHashes,recordIntegrationBoundary,integrationControllerReturned,inspectIntegrationContinuation,recordIntegrationContinuation,checkIntegrationContinuationBoundary,checkIntegrationPrefixCapture} from './integration-continuation.js';
 import {integrationRecipe,readIntegrationCapture} from './integration-producer.js';
 import {inspectObjectSource} from './integration-objects.js';
 import {readOwnerSource,type OwnerObservation} from './authority-source.js';
@@ -35,7 +35,7 @@ export async function runIntegration(store:string,requestPath:string,action:'pre
       const proof=await inspectIntegrationContinuation(m);await refresh();const nextController=randomUUID();records.continueEnded(p.id,proof,nextController,observations);controllerId=nextController;producerSha256=proof.producerSha256;await recordIntegrationContinuation(directory,controllerId,proof);
       let processes=0,lastBoundary=proof.lastBoundarySha256;const prefix=new Set(proof.completedSteps);
       try{await integrationRecipe(proof.material,async(name,step)=>{
-        const root=join(directory,'steps',name);if(prefix.has(name))return readIntegrationGit(root,step);if(await exists(root))throw new Error('integration_continuation_unexplained_step');
+        const root=join(directory,'steps',name);if(prefix.has(name)){const result=await readIntegrationGit(root,step);checkIntegrationPrefixCapture(proof,name,result);return result;}if(await exists(root))throw new Error('integration_continuation_unexplained_step');
         const result=await captureIntegrationGit(root,step,effect=>records.effect(p.id,observations,()=>{if(processes===0)checkIntegrationContinuationBoundary(proof);const value=effect();if(Number.isSafeInteger((value as any)?.pid))processes++;return value;}),refresh);
         if(result.successful){const boundary=await recordIntegrationBoundary(m,name,result,lastBoundary);records.boundary(p.id,boundary.bytes);lastBoundary=boundary.sha256;}return result;
       });}catch(e){records.problem(p.id,reason(e));}

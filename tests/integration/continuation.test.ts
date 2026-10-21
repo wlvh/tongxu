@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile,readdir,stat,rename,rm,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
+import {readFileSync,writeFileSync} from 'node:fs';
 import {integrationFixture,raw} from './fixture.js';
 import {integrationAuthority} from './authority-fixture.js';
 import {IntegrationRecords} from '../../src/integration-store.js';
@@ -18,6 +19,7 @@ async function paused(t:test.TestContext,governed=false){
   assert.equal(ended,true);const state=f.q.integrations().state(f.request.id);assert.equal(state.phase,'started_or_unknown');return {...f,owner,state,directory:state.directory};
 }
 async function captures(directory:string){const files:Record<string,unknown>={};const walk=async(path:string,relative='')=>{for(const name of (await readdir(path)).sort()){const full=join(path,name),key=relative+name,s=await stat(full);if(s.isDirectory())await walk(full,key+'/');else files[key]={sha256:hash(await readFile(full)),mtimeMs:s.mtimeMs};}};await walk(join(directory,'steps'));return files;}
+function alteredPrefix(directory:string){const step=join(directory,'steps/000-git-version'),stdout=readFileSync(join(step,'stdout.bin')),exit=readFileSync(join(step,'exit.json')),changed=Buffer.concat([stdout,Buffer.from('explicit changed old capture\n')]);writeFileSync(join(step,'stdout.bin'),changed);writeFileSync(join(step,'exit.json'),raw({...JSON.parse(exit.toString()),stdoutSha256:hash(changed)}));return ()=>{writeFileSync(join(step,'stdout.bin'),stdout);writeFileSync(join(step,'exit.json'),exit);};}
 
 test('MI05: same ended prefix continues only missing Git steps, preserving captures and the author checkout',options,async t=>{
   const f=await paused(t),before=await captures(f.directory),author=await f.authorState(),steps=await readdir(join(f.directory,'steps'));
@@ -57,4 +59,21 @@ test('MI05: an exact existing grant continues the original consumer without anot
 });
 test('MI05: revocation of the original exact grant blocks the pending tail without rewriting the preserved prefix',options,async t=>{
   const f=await paused(t,true),before=await captures(f.directory);await f.owner!.adopt({kind:'revoke',decision:f.owner!.confirmation.sha});await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/revoked/);assert.deepEqual(await captures(f.directory),before);assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');assert.equal(await f.count(),0);
+});
+test('MIC-F01: changed prefix capture after admission cannot replace the issued proof; restoring originals continues the same request',options,async t=>{
+  const f=await paused(t),admit=IntegrationRecords.prototype.continueEnded,steps=await readdir(join(f.directory,'steps'));let restore:(()=>void)|undefined;
+  IntegrationRecords.prototype.continueEnded=function(...args){const value=admit.apply(this,args);if(!restore)restore=alteredPrefix(f.directory);return value;};t.after(()=>{IntegrationRecords.prototype.continueEnded=admit;});
+  await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/boundary_capture_changed/);assert.ok(restore);assert.deepEqual(await readdir(join(f.directory,'steps')),steps);assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');restore();IntegrationRecords.prototype.continueEnded=admit;
+  const recovered=await runIntegration(f.store,f.path,'continue-ended');assert.equal(recovered.phase,'produced');assert.ok('reusedGitSteps' in recovered);assert.equal(recovered.reusedGitSteps,7);assert.equal(await f.count(),0);
+});
+test('MIC-F01: old capture changed at the first new spawn is refused even with a self-consistent changed exit',options,async t=>{
+  const f=await paused(t),effect=IntegrationRecords.prototype.effect;let restore:(()=>void)|undefined;
+  IntegrationRecords.prototype.effect=function(id,observations,call){if(!restore)restore=alteredPrefix(f.directory);return (effect as any).call(this,id,observations,call);};t.after(()=>{IntegrationRecords.prototype.effect=effect;});
+  await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/boundary_capture_changed/);const step=join(f.directory,'steps/007-prefix-0');await assert.rejects(readFile(join(step,'process.json')));const refusal=JSON.parse(await readFile(join(step,'not-started.json'),'utf8'));assert.equal(refusal.spawnInvoked,false);assert.equal(refusal.reason,'integration_continuation_prefix_capture_changed');assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');restore!();assert.equal(await f.count(),0);
+});
+test('MIC-F01: final capture replay binds each original step to its recorded boundary before completing',options,async t=>{
+  const f=await paused(t),boundary=IntegrationRecords.prototype.boundary;let restore:(()=>void)|undefined;
+  IntegrationRecords.prototype.boundary=function(...args){const value=boundary.apply(this,args);if(value.name==='018-bundle-verify'&&!restore)restore=alteredPrefix(f.directory);return value;};t.after(()=>{IntegrationRecords.prototype.boundary=boundary;});
+  await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/boundary_capture_changed/);assert.ok(restore);assert.equal((await readdir(join(f.directory,'steps'))).length,19);assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');restore();IntegrationRecords.prototype.boundary=boundary;
+  const recovered=await runIntegration(f.store,f.path,'reconcile');assert.equal(recovered.phase,'produced');assert.equal(recovered.newGitProcesses,0);assert.equal(await f.count(),0);
 });

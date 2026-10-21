@@ -6,7 +6,7 @@ import {canonical} from './comparison.js';
 import {shaPattern} from './contract.js';
 import {verifyObjectSource,type ObjectSource} from './integration-objects.js';
 import {regular,exists} from './repair-workspace.js';
-import {readIntegrationGit,readIntegrationGitRefusal,type GitStep} from './integration-git.js';
+import {readIntegrationGit,readIntegrationGitRefusal,integrationGitCaptureSha,type GitStep} from './integration-git.js';
 
 type Row=Record<string,any>;
 export type IntegrationMaterial={request:Row;source:Row;directory:string;requestSha256:string;objectSource?:ObjectSource};
@@ -50,9 +50,11 @@ export async function integrationRecipe(m:IntegrationMaterial,step:(name:string,
 export async function readIntegrationCapture(m:IntegrationMaterial){
   const producer=await regular(join(m.directory,'producer.json')),p=JSON.parse(producer.toString());if(p.kind!=='tongxu-fixed-git-integration'||p.requestSha256!==m.requestSha256||p.sourceSha256!==hash(canonical(m.source))||p.directory!==m.directory)throw new Error('integration_original_producer_changed');
   const layout=await regular(join(m.directory,'object-source.json')),objectSource=verifyObjectSource(JSON.parse(layout.toString()),m.request.objects);if(p.objectSourceSha256!==hash(layout))throw new Error('integration_object_source_changed');m={...m,objectSource};const originals=new Map<string,Buffer>([[hash(producer),producer],[hash(layout),layout]]);let endedSteps=0,knownFailure:string|null=null;
-  let value:IntegrationCapture;
+  let value:IntegrationCapture,boundarySha256:string|null=null;
+  if(p.continuationProtocol==='ended-fixed-prefix-v1'){const bytes=await regular(join(m.directory,'boundaries/initial.json'),8*1024*1024),b=JSON.parse(bytes.toString());if(b.protocol!==p.continuationProtocol||b.requestSha256!==m.requestSha256||b.producerSha256!==hash(producer)||b.name!=='initial'||b.previousSha256!==null||b.stepSha256!==null)throw new Error('integration_boundary_capture_changed');boundarySha256=hash(bytes);originals.set(boundarySha256,bytes);}
   try{value=await integrationRecipe(m,async(name,s)=>{const path=join(m.directory,'steps',name);if(await exists(join(path,'not-started.json'))){const r=await readIntegrationGitRefusal(path,s);for(const b of Object.values(r.originals))originals.set(hash(b),b);knownFailure='integration_effect_refused';throw new Error(knownFailure);}
-    const r=await readIntegrationGit(path,s);for(const b of Object.values(r.originals))originals.set(hash(b),b);endedSteps++;if(!r.successful)knownFailure='integration_git_step_failed';return r;});
+    const r=await readIntegrationGit(path,s);for(const b of Object.values(r.originals))originals.set(hash(b),b);endedSteps++;if(!r.successful)knownFailure='integration_git_step_failed';
+    if(r.successful&&p.continuationProtocol==='ended-fixed-prefix-v1'){const bytes=await regular(join(m.directory,'boundaries',name+'.json'),8*1024*1024),b=JSON.parse(bytes.toString());if(b.protocol!==p.continuationProtocol||b.requestSha256!==m.requestSha256||b.producerSha256!==hash(producer)||b.name!==name||b.previousSha256!==boundarySha256||b.stepSha256!==integrationGitCaptureSha(r))throw new Error('integration_boundary_capture_changed');boundarySha256=hash(bytes);originals.set(boundarySha256,bytes);}return r;});
   }catch(e){const why=e instanceof Error?e.message:'';if(!knownFailure&&!['integration_reconstructed_tree_changed','integration_commit_identity_changed','integration_commit_readback_changed','integration_git_source_identity_changed'].includes(why))throw e;
     value={success:false,binding:{requestSha256:m.requestSha256,operation:m.request.operation,subjectSha256:m.request.subjectSha256},reason:knownFailure??why,originals,steps:endedSteps,partialPrivateArtifactMayExist:true};
   }

@@ -38,6 +38,7 @@ export async function readIntegrationGit(directory:string,step:GitStep){
   if(successful){if(!Array.isArray(exit.artifacts)||exit.artifacts.length!==(step.artifacts??[]).length)throw new Error('integration_git_artifact_changed');for(const [i,path] of (step.artifacts??[]).entries()){const b=await regular(join(directory,'artifact-'+i+'.bin'),64*1024*1024),ref=exit.artifacts[i];if(ref.path!==path||ref.sha256!==hash(b)||ref.bytes!==b.length)throw new Error('integration_git_artifact_changed');originals['artifact-'+i+'.bin']=b;artifacts.push(b);}}
   return {exit,stdout,stderr,artifacts,originals,successful};
 }
+export const integrationGitCaptureSha=(r:Awaited<ReturnType<typeof readIntegrationGit>>)=>hash(canonical(Object.fromEntries(Object.entries(r.originals).map(([name,b])=>[name,hash(b)]))));
 export async function readIntegrationGitRefusal(directory:string,step:GitStep){
   const launch=await regular(join(directory,'launch.json')),input=await regular(join(directory,'stdin.bin'),64*1024*1024),raw=await regular(join(directory,'not-started.json')),refusal=JSON.parse(raw.toString());
   if(canonical(JSON.parse(launch.toString()))!==canonical(plan(step))||!input.equals(step.stdin)||refusal.spawnInvoked!==false||typeof refusal.reason!=='string'||await exists(join(directory,'process.json'))||await exists(join(directory,'exit.json')))throw new Error('integration_git_refusal_unverified');
