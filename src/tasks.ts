@@ -9,6 +9,7 @@ import {runMessages} from './messages.js';
 import type {MessagePlan} from './message-contract.js';
 import {parseTaskOwnerRequest,type TaskOwnerRequest} from './task-inbox.js';
 import {exactKeys} from './authority-contract.js';
+import {parseTaskCandidateLink} from './task-link-contract.js';
 import {canonical} from './comparison.js';
 
 export async function addDevelopmentTask(store:string,definitionPath:string){const p=parseDevelopmentTask(await regular(definitionPath,64*1024)),o=await observeTaskWorkspace(p),q=await QueueStore.open(store);try{return q.tasks().observe(p,o);}finally{q.close();}}
@@ -47,3 +48,6 @@ export async function runTaskContact(store:string,planPath:string,currentBilling
   }
   return {steps,completed:true,newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true,nativeSessionResumed:false};
 }
+
+export async function linkTaskCandidate(store:string,requestPath:string){const raw=await regular(requestPath,8192),p=parseTaskCandidateLink(raw),q=await QueueStore.open(store);try{const source=await q.refreshTaskLinkSource(p.task);return q.taskLinks().attach(raw,source);}finally{q.close();}}
+export async function resolveTaskCandidate(store:string,task:string,link:string){const q=await QueueStore.open(store);try{await q.refreshTaskLinkSource(task);const material=q.taskLinks().material(task,link);if(!material)throw new Error('task_candidate_link_no_longer_current');return {binding:material.association,material,permissionGranted:false};}finally{q.close();}}

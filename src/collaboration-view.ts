@@ -3,7 +3,7 @@ import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 
 type Row=Record<string,any>;
-type Sources={item:(id:string)=>Row;message:(run:string)=>Row;coordination:(id:string)=>Row;resource:(id:string)=>Row;settled:(id:string)=>boolean;messageResource:(run:string)=>Row;repair:(operation:string)=>Row};
+type Sources={item:(id:string)=>Row;message:(run:string)=>Row;messageAssociation?:(run:string)=>{current:boolean}|null;coordination:(id:string)=>Row;resource:(id:string)=>Row;settled:(id:string)=>boolean;messageResource:(run:string)=>Row;repair:(operation:string)=>Row};
 const safe=(e:unknown)=>e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'original_record_unavailable';
 /** Selected-task facts from one readonly SQLite snapshot. No provider, model,
  * filesystem execution, authorization refresh or new event is available here. */
@@ -32,13 +32,13 @@ export class CollaborationView {
   messageReport(item:string,run:string,id:string){
     const {m,participants,ids}=this.selected(run,item),message=m.messages.find((x:Row)=>x.id===id&&ids.has(x.to));
     if(!message?.reply||typeof message.reply.finalText!=='string'||hash(message.reply.finalText)!==message.reply.finalSha256)throw new Error('report_not_found');
-    const runtime=m.runtimes.find((x:Row)=>x.participant===message.to),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false;
+    const runtime=m.runtimes.find((x:Row)=>x.participant===message.to),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false&&this.sources.messageAssociation?.(run)?.current!==false;
     return {item,run,message:id,report:message.reply.finalText,reportSha256:message.reply.finalSha256,reportText:message.reply.report,reportTextSha256:hash(message.reply.report),state:message.state,current,executionKind:m.plan.executionKind,sessionId:message.reply.sessionId,turnId:message.reply.turnId??null,completeCapture:runtime?.captureVerification?.proof.successfulCapture===true,consumptionConfirmed:message.reply.reportedConsumption===true,formalJudgmentGranted:false};
   }
   state(item:string){
     this.sources.item(item);const messageRows=this.events('message_registered',item),coordRows=this.events('coordination_registered',item);if(messageRows.length>64||coordRows.length>64)throw new Error('collaboration_history_limit');
     const messages=messageRows.map(row=>{const run=row.object.slice(9);try{
-      const {m,participants,ids}=this.selected(run,item),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false,continuation=this.continuationResult(m);
+      const {m,participants,ids}=this.selected(run,item),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false&&this.sources.messageAssociation?.(run)?.current!==false,continuation=this.continuationResult(m);
       let resources:Row[]=[];let resourcesSettled:boolean|null=m.plan.resourceBudget?false:null;
       if(m.plan.resourceBudget){try{const binding=this.sources.messageResource(run);resources=binding.resourceRequests.map((id:string)=>this.resource(id));resourcesSettled=['returned','partial_returned'].includes(binding.phase)&&resources.length===m.plan.resourceBudget.length&&resources.every(r=>r.settled);}catch(e){resources=[{state:'unknown',settled:false,error:safe(e)}];}}
       return {run,available:true,current,arrangement,executionKind:m.plan.executionKind,registeredAt:m.registration.registeredAt,resources,resourcesSettled,

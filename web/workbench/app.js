@@ -1,5 +1,5 @@
 'use strict';
-function taskSourceLabel(t) { return t.candidate.kind === 'development-task' ? '开发任务 · 尚无 PR' : 'PR #' + t.candidate.pr; }
+function taskSourceLabel(t) { if(t.candidate.kind !== 'development-task')return 'PR #' + t.candidate.pr;const links=(t.developmentTask?.candidateLinks||[]).filter(l=>l.current);return links.length===1?'开发任务 · PR #'+links[0].pr:links.length>1?'开发任务 · 多个候选待选择':'开发任务 · 尚无当前 PR 关联'; }
 const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0;
@@ -96,7 +96,11 @@ function taskView() {
   if (/^[\w.-]+\/[\w.-]+$/.test(t.candidate.repository) && Number.isSafeInteger(t.candidate.pr)) { const a = el('a', '查看原 PR ↗'); a.href = 'https://github.com/' + t.candidate.repository + '/pull/' + t.candidate.pr; a.target = '_blank'; a.rel = 'noreferrer noopener'; panel.append(a); }
   if (t.developmentTask) {
     const d = t.developmentTask, phases = {queued:'待处理',prepared:'已装配，尚未发送',waiting:'等待前置',active_or_unknown:'执行中或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'已撤销未发送待办'};
-    panel.append(el('p', '开发任务先于 PR 登记。只观察了指定文件；尚未取得正式候选与测试验收。', 'small'));
+    panel.append(el('p', '开发任务保持原身份。只观察了指定文件；关联候选、测试结果与正式接受分别记录。', 'small'));
+    const links=d.candidateLinks||[];
+    if(!links.length)panel.append(el('p','尚未关联真实 PR 候选材料。','small'));
+    for(const linked of links){const row=el('div',null,'report-row'),left=el('div');left.append(el('strong','PR #'+linked.pr+' · '+(linked.current?'对应当前已记录材料':'历史关联')));left.append(el('p','H '+linked.H+' · B '+linked.B+' · '+linked.target,'small'));if(linked.reason)left.append(el('p',linked.reason,'small'));left.append(el('p','关联不授予接收、写入或合并权限；当前性基于原队列最近观察。','small'));row.append(left);if(/^[\w.-]+\/[\w.-]+$/.test(linked.repository)&&Number.isSafeInteger(linked.pr)&&linked.pr>0){const a=el('a','打开关联 PR ↗');a.href='https://github.com/'+linked.repository+'/pull/'+linked.pr;a.target='_blank';a.rel='noreferrer noopener';row.append(a);}panel.append(row);}
+
     const inbox=el('section',null,'panel');inbox.append(el('h3','负责人待办'));
     if (!d.inbox.length) inbox.append(el('p','尚未安排负责人调查。','small'));
     for (const r of d.inbox) inbox.append(append(el('div',null,'report-row'),append(el('div'),el('strong',r.id+' · '+(phases[r.phase]||r.phase)),el('p',r.actor+' / '+r.tool+' · '+(r.currentMaterial?'对应当前材料':'历史材料'),'small'),r.reason?el('p',r.reason,'small'):null,r.sessionId?el('p','实际会话 '+r.sessionId+' · 新上下文，未接管外部会话','small'):null)));

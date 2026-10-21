@@ -19,10 +19,10 @@ export class ResourceRecords {
   private events(key:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'resource_%' ORDER BY id").all('resource:'+key) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('resource_original_missing_or_changed');return b;}
-  private profile(ledgerId:string){if(![13,14,15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version))throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
+  private profile(ledgerId:string){if(![13,14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version))throw new Error('resource_format_not_enabled');const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('resource-ledger:'+ledgerId) as Row)?.value;if(!ref)throw new Error('existing_resource_ledger_not_configured');return parseLedgerProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseLedgerProfile(raw),h=hash(canonical(p)),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-    if(![12,13,14,15].includes(version))throw new Error('enable_owner_authority_before_resources');
+    if(![12,13,14,15,16].includes(version))throw new Error('enable_owner_authority_before_resources');
     const ownerRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value;if(!ownerRef)throw new Error('resource_owner_profile_required');const owner=JSON.parse(this.bytes(ownerRef).toString());
     if(owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('resource_authority_profile_mismatch');
     const key='resource-ledger:'+p.ledgerId,old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row;

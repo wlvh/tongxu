@@ -17,6 +17,8 @@ import { SessionRecords } from './session-store.js';
 import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
 import { MessageResourceRecords } from './message-resource-store.js';
+import { TaskCandidateLinks } from './task-link-store.js';
+import { observeTaskLinkSource } from './task-link-source.js';
 import { TaskInbox } from './task-inbox.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
 import { observeTaskWorkspace } from './task-source.js';
@@ -112,7 +114,7 @@ export class QueueStore {
   }
   private collaborationView(){
     const noAction=()=>{throw new Error('readonly_view_cannot_authorize');},m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),noAction),r=this.resourceRecords(fn=>fn()),c=this.coordinationRecords(fn=>fn()),mr=this.messageResourceRecords(fn=>fn()),repair=new ReviewRecords(this.db,fn=>fn(),noAction,noAction);
-    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
+    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
   }
   private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
@@ -125,7 +127,7 @@ export class QueueStore {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       if (readOnly) db.exec('PRAGMA query_only=ON;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
@@ -133,7 +135,7 @@ export class QueueStore {
   enableReceiver(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![3, 4].includes(version) || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       // Same tables/ledger, explicit format opt-in. Older v3 clients must refuse
       // rather than evaluate and release a claim owned by a native receiver.
@@ -152,7 +154,7 @@ PRAGMA user_version=4;`);
   enableSupplements(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![4, 5, 6].includes(version) || !this.receiverGuardsInstalled()) throw new Error('enable_receiver_before_supplements');
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       this.db.exec(`DROP TRIGGER IF EXISTS receiver_packet_material_guard; DROP TRIGGER IF EXISTS receiver_supplement_lineage_guard; ${supplementGuard}; ${supplementLineageGuard}; PRAGMA user_version=6;`);
@@ -160,21 +162,21 @@ PRAGMA user_version=4;`);
       return { supplementsEnabled: true, schemaVersion: 6, productionActionAllowed: false };
     });
   }
-  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
+  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
   enableCompositions(): Row {
     return this.transaction(()=>{
       const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if([10,11,12,13,14,15].includes(version)){this.requireCompositionMode();return {enabled:true,duplicate:true,productionActionAllowed:false};}
+      if([10,11,12,13,14,15,16].includes(version)){this.requireCompositionMode();return {enabled:true,duplicate:true,productionActionAllowed:false};}
       if(version!==9)throw new Error('enable_review_records_before_compositions');
       if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
       this.db.exec(compositionGuard+'; PRAGMA user_version=10;');this.event('composition_format_enabled',this.directory,{from:version,to:10});return {enabled:true,duplicate:false,productionActionAllowed:false};
     });
   }
-  private requireCompositionMode(){if(![10,11,12,13,14,15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='composition_receiver_guard'").get() as Row)?.sql!==compositionGuard)throw new Error('compositions_not_enabled');}
+  private requireCompositionMode(){if(![10,11,12,13,14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='composition_receiver_guard'").get() as Row)?.sql!==compositionGuard)throw new Error('compositions_not_enabled');}
   enableReceiverCorrections(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([11,12,13,14,15].includes(version)) { this.requireCorrections(); return { enabled: true, duplicate: true }; }
+      if ([11,12,13,14,15,16].includes(version)) { this.requireCorrections(); return { enabled: true, duplicate: true }; }
       if (version !== 10) throw new Error('enable_compositions_before_corrections');
       this.requireCompositionMode();
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
@@ -184,24 +186,38 @@ PRAGMA user_version=4;`);
     });
   }
   private requireCorrections() {
-    if (![11,12,13,14,15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version) || ![['receiver_correction_guard',correctionGuard],['receiver_correction_lineage_guard',correctionLineageGuard]].every(([name,sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(name!) as Row)?.sql === sql)) throw new Error('receiver_corrections_not_enabled');
+    if (![11,12,13,14,15,16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version) || ![['receiver_correction_guard',correctionGuard],['receiver_correction_lineage_guard',correctionLineageGuard]].every(([name,sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(name!) as Row)?.sql === sql)) throw new Error('receiver_corrections_not_enabled');
   }
   enableTasks():Row {
     return this.transaction(()=>{
       const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
       this.requireCorrections();
-      if(version===15){if((this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='development_task_operation_guard'").get() as Row)?.sql!==taskOperationGuard)throw new Error('development_task_format_not_enabled');return {enabled:true,duplicate:true,schemaVersion:15};}
+      if([15,16].includes(version)){if((this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='development_task_operation_guard'").get() as Row)?.sql!==taskOperationGuard)throw new Error('development_task_format_not_enabled');return {enabled:true,duplicate:true,schemaVersion:version};}
       if(![11,12,13,14].includes(version))throw new Error('development_task_requires_current_queue_format');
+      this.requireIdleTaskFormat();
+      this.db.exec(taskOperationGuard+'; PRAGMA user_version=15;');this.event('development_task_format_enabled',this.directory,{from:version,to:15});return {enabled:true,duplicate:false,schemaVersion:15};
+    });
+  }
+  private requireIdleTaskFormat(){
       if(this.db.prepare("SELECT 1 FROM claims").get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
       if(this.db.prepare("SELECT 1 FROM events a WHERE a.kind='overall_review_dispatched' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get())throw new Error('queue_has_active_or_unknown_overall_review');
       if(this.db.prepare("SELECT 1 FROM events a WHERE a.kind='publication_intent' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind='publication_verified' AND json_extract(a.data,'$.stage')=json_extract(b.data,'$.stage'))").get())throw new Error('queue_has_unresolved_publication');
       // Native runtimes are recorded in the same event ledger, not claims.
-      for(const row of this.db.prepare("SELECT object FROM events WHERE kind='message_registered'").all() as Row[]){const m=this.messages().status(row.object.slice(9));if(m.runtimes.some((r:Row)=>r.started&&(!r.ended||r.captureVerification?.proof.successfulCapture!==true&&r.ended.proof.knownUnstarted!==true))||m.messages.some((x:Row)=>['Unknown','Delivered'].includes(x.state)))throw new Error('queue_has_active_or_unknown_message');}
-      this.db.exec(taskOperationGuard+'; PRAGMA user_version=15;');this.event('development_task_format_enabled',this.directory,{from:version,to:15});return {enabled:true,duplicate:false,schemaVersion:15};
-    });
+      const records=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('format_inspection_cannot_authorize');});
+      for(const row of this.db.prepare("SELECT object FROM events WHERE kind='message_registered'").all() as Row[]){const m=records.status(row.object.slice(9));if(m.runtimes.some((r:Row)=>r.started&&(!r.ended||r.captureVerification?.proof.successfulCapture!==true&&r.ended.proof.knownUnstarted!==true))||m.messages.some((x:Row)=>['Unknown','Delivered'].includes(x.state)))throw new Error('queue_has_active_or_unknown_message');}
   }
+  enableTaskLinks(){return this.transaction(()=>{
+    const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+    if(version===16){this.taskLinkRecords(fn=>fn()).configuration();return {enabled:true,duplicate:true,schemaVersion:16};}
+    if(version!==15)throw new Error('enable_development_tasks_before_candidate_links');
+    this.requireCorrections();this.requireIdleTaskFormat();
+    this.db.prepare('INSERT INTO meta VALUES(?,?)').run('task_candidate_link_contract','exact-original-packets-v1');this.db.exec('PRAGMA user_version=16');this.event('task_candidate_link_format_enabled',this.directory,{from:15,to:16});return {enabled:true,duplicate:false,schemaVersion:16};
+  });}
   tasks(){return new TaskRecords(this.db,fn=>this.transaction(fn));}
   private taskRecords(){return new TaskRecords(this.db,fn=>fn());}
+  taskLinks(){return this.taskLinkRecords(fn=>this.transaction(fn));}
+  private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
+  async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.tasks().observe(p,source.observation);this.taskLinks().observe(source);return source;}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
   private taskInboxRecords(transaction:<T>(f:()=>T)=>T){
     const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});
@@ -209,12 +225,12 @@ PRAGMA user_version=4;`);
       const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget;
       if(state.plan.resourceBudget)try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());resourcesSettled=b.phase==='returned'&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{}
       return {state:{...state,resourcesSettled},inputs:state.plan.participants.flatMap(p=>m.submitted(run,p.id))};
-    });
+    },task=>this.taskLinkRecords(fn=>fn()).material(task),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task));
   }
 
   async refreshMessageTaskSources(run:string){
     const state=this.messages().status(run),ids=[...new Set<string>([...state.plan.participants.map(p=>p.item),...this.taskInboxRecords(fn=>fn()).sourceTasks(run)])];
-    for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){const p=this.tasks().definition(id);this.tasks().observe(p,await observeTaskWorkspace(p));}
+    for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){if(this.taskLinks().hasSource(id))await this.refreshTaskLinkSource(id);else{const p=this.tasks().definition(id);this.tasks().observe(p,await observeTaskWorkspace(p));}}
   }
   private authorityItem(id:string):Row {
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);
@@ -959,13 +975,15 @@ PRAGMA user_version=4;`);
     });
   }
   private effectiveSummary(item: Row, packet: Row): Row {
-    const summary = parse(packet, 'summary');
+    const original = parse(packet, 'summary');
+    const linked=original.kind==='development-task'&&this.taskLinkRecords(fn=>fn()).state(item.id).some(l=>l.current);
+    const summary=linked?{...original,gaps:original.gaps.filter((g:string)=>g!=='formal_candidate_not_attached'),limitations:['Development-task source and linked PR evidence retain separate identities.','Only declared paths were observed; this is not a task acceptance report.'],linkedCandidateAvailable:true}:original;
     return { ...summary, evidenceComplete: summary.evidenceComplete && !item.observation_conflict, gaps: [...summary.gaps, ...(item.observation_conflict ? ['observation_order_conflict'] : [])] };
   }
   private itemStatus(item: Row): Row {
     const composition = parse(this.packet(item.current_packet), 'summary').composition;
     if(composition)this.packetEvidence(this.packet(item.current_packet));
-    return { id: item.id, candidate: parse(item, 'candidate'), ...(parse(item,'candidate').kind==='development-task'?{developmentTask:{...this.taskRecords().status(item.id),inbox:this.taskInboxRecords(fn=>fn()).status(item.id)}}:{}), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+    return { id: item.id, candidate: parse(item, 'candidate'), ...(parse(item,'candidate').kind==='development-task'?{developmentTask:{...this.taskRecords().status(item.id),inbox:this.taskInboxRecords(fn=>fn()).status(item.id),candidateLinks:this.taskLinkRecords(fn=>fn()).state(item.id)}}:{}), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.
@@ -986,7 +1004,7 @@ PRAGMA user_version=4;`);
     this.db.exec('BEGIN');
     try {
       const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
-      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'merging' ? 'merge_unknown_reconcile_original_operation' : o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'merging' ? 'merge_unknown_reconcile_original_operation' : o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       for (const operation of result.operations as Row[]) if (receiverMetadataFor.includes(operation.item)) Object.assign(operation, { nativeExecution: this.receiverMetadata(operation.result?.receiver) });
       for (const operation of result.operations as Row[]) if (invalidOutputFor.includes(operation.id) && operation.result?.receiver?.invalidResult) operation.invalidOutput = this.blob(operation.result.receiver.invalidResult.finalTextSha256).toString();
       const collaboration=Object.fromEntries(collaborationFor.map(id=>[id,this.collaborationView().state(id)]));

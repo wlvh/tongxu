@@ -19,7 +19,7 @@ export function parseTaskOwnerRequest(raw:Buffer):TaskOwnerRequest{
  * native context only after the preceding exact execution is proven ended.
  * Imported App sessions and caller-written actor names are not control rights. */
 export class TaskInbox {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private tasks:TaskRecords,private messages:(run:string)=>Row){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private tasks:TaskRecords,private messages:(run:string)=>Row,private association?:(task:string)=>Row|null,private checkAssociation?:(task:string,link:string)=>void,private associationHistory?:(task:string)=>Row[]){}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('task_inbox_original_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private event(task:string,kind:string,value:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('task_inbox_'+kind,task,canonical({value,sha256:this.blob(Buffer.from(canonical(value)))}),now());}
@@ -28,6 +28,7 @@ export class TaskInbox {
   private completed(run:string){let s:Row;try{s=this.messages(run).state;}catch(e){if((e as Error).message==='original_message_run_required')return false;throw e;}return s.messages.length>0&&s.messages.every((m:Row)=>m.state==='Reply'&&m.reply?.reportedConsumption===true)&&s.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.captureVerification?.proof.successfulCapture===true)&&s.resourcesSettled!==false;}
   private captured(from:NonNullable<TaskOwnerRequest['from']>){const source=this.messages(from.run),s=source.state,m=s.messages.find((m:Row)=>m.id===from.messageId),p=s.plan.participants.find((p:Row)=>p.id===m?.to),r=s.runtimes.find((r:Row)=>r.participant===p?.id),current=this.tasks.current(from.task),binding=s.registration.bindings[p?.id];
     if(p?.item!==from.task||m?.state!=='Reply'||!m.reply?.reportedConsumption||r?.captureVerification?.proof.successfulCapture!==true||binding?.packet!==current.packet||binding?.fingerprint!==current.fingerprint)throw new Error('task_contact_requires_current_captured_sender');
+    const input=source.inputs.find((x:Row)=>x.messageId===from.messageId),context=input?.material?.find((m:Row)=>m.name==='task-owner-context.json');if(context){const associated=JSON.parse(context.text).candidateAssociation;if(associated)this.checkAssociation?.(from.task,associated.association.link);}
     return {task:from.task,run:from.run,messageId:from.messageId,sourceSha256:current.fingerprint,route:r.route,reply:m.reply};
   }
   enqueue(raw:Buffer){return this.transaction(()=>{
@@ -40,6 +41,7 @@ export class TaskInbox {
   });}
   private available(task:string,id:string){
     const f=this.entry(task,id),current=this.tasks.current(task);if(f.events.some(e=>e.kind==='task_inbox_cancelled'&&e.data.id===id))throw new Error('task_request_cancelled');if(current.packet!==f.queued.packet||current.fingerprint!==f.queued.sourceSha256)throw new Error('task_queued_source_changed');if(f.request.from&&canonical(this.captured(f.request.from))!==canonical(f.queued.sender))throw new Error('task_contact_source_changed');
+    if(f.selected){const associated=JSON.parse(this.bytes(f.selected.contextSha256).toString()).candidateAssociation;if(associated)this.checkAssociation?.(task,associated.association.link);}
     for(const e of f.events.filter(e=>e.kind==='task_inbox_queued')){if(e.data.id===id)break;if(f.events.some(c=>c.kind==='task_inbox_cancelled'&&c.data.id===e.data.id))continue;const previous=this.entry(task,e.data.id);if(!previous.selected||!this.completed(previous.selected.run))throw new Error('task_original_responsibility_pending');}
     return f;
   }
@@ -57,7 +59,7 @@ export class TaskInbox {
   prepare(task:string,id:string){return this.transaction(()=>{
     const f=this.entry(task,id);if(f.selected)return this.selection(f.selected);
     this.available(task,id);const history=f.events.filter(e=>e.kind==='task_inbox_selected'&&!f.events.some(c=>c.kind==='task_inbox_cancelled'&&c.data.id===e.data.id)).map(e=>{const original=this.messages(e.data.run),s=original.state;return {originalRoleInputs:original.inputs,request:e.data.id,run:e.data.run,bindings:s.registration.bindings,reports:s.messages.map((m:Row)=>({id:m.id,recipient:m.sent.recipient,receipt:m.reply})),nativeSessionResumed:false};});
-    const context=Buffer.from(canonical({schemaVersion:1,kind:'tongxu-task-owner-context',task:JSON.parse(this.tasks.context(task).toString()),request:{id,question:f.request.question,source:f.request.source},sender:f.queued.sender,previousExecutions:history,newNativeContext:true,nativeSessionResumed:false,externalSessionControl:false,permissionsGranted:false}));
+    const context=Buffer.from(canonical({schemaVersion:1,kind:'tongxu-task-owner-context',task:JSON.parse(this.tasks.context(task).toString()),candidateAssociation:this.association?.(task)??null,candidateAssociationHistory:this.associationHistory?.(task)??[],request:{id,question:f.request.question,source:f.request.source},sender:f.queued.sender,previousExecutions:history,newNativeContext:true,nativeSessionResumed:false,externalSessionControl:false,permissionsGranted:false}));
     if(context.length>512*1024)throw new Error('task_complete_context_limit');const directory=join(this.directory,'task-inbox',task,id),contextSha256=this.blob(context),plan=planFor(f.request,join(directory,'context.json'),contextSha256),value={id,run:messagePlanId(plan),directory,contextSha256,planSha256:this.blob(Buffer.from(canonical(plan)))};
     this.event(task,'selected',value);return this.selection(value);
   });}
@@ -66,11 +68,17 @@ export class TaskInbox {
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
     if(!links.length)return [];if(links.length!==1)throw new Error('task_contact_binding_ambiguous');const selected=JSON.parse(links[0]!.data).value,f=this.entry(links[0]!.object,selected.id);return f.request.from?[f.request.from.task]:[];
   }
+  associationStatus(run:string){
+    const rows=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];if(!rows.length)return null;if(rows.length!==1)throw new Error('task_contact_binding_ambiguous');
+    const value=JSON.parse(rows[0]!.data).value,f=this.entry(rows[0]!.object,value.id),selected=this.selection(f.selected),association=JSON.parse(selected.context.toString()).candidateAssociation?.association;if(!association)return null;
+    try{this.checkAssociation?.(rows[0]!.object,association.link);return {link:association.link,current:true,reason:null};}catch(e){return {link:association.link,current:false,reason:e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'original_association_unavailable'};}
+  }
   gate(run:string){
     const state=this.messages(run).state,taskParticipants=state.plan.participants.filter((p:Row)=>state.registration.bindings[p.id].candidate.kind==='development-task');if(!taskParticipants.length)return;
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
     if(links.length!==1||taskParticipants.length!==1||state.plan.participants.length!==1)throw new Error('task_registered_owner_dispatch_required');
     const task=links[0]!.object,selected=JSON.parse(links[0]!.data).value,f=this.available(task,selected.id),exact=this.selection(f.selected);
+    const associated=JSON.parse(exact.context.toString()).candidateAssociation;if(associated)this.checkAssociation?.(task,associated.association.link);
     if(canonical(state.plan)!==canonical(parseMessagePlan(exact.plan))||taskParticipants[0].item!==task||state.registration.materials['task-owner-context.json']?.sha256!==selected.contextSha256)throw new Error('task_owner_dispatch_changed');
   }
   status(task:string){this.tasks.current(task);return this.transaction(()=>this.events(task).filter(e=>e.kind==='task_inbox_queued').map(e=>{
@@ -78,6 +86,6 @@ export class TaskInbox {
     if(f.events.some(e=>e.kind==='task_inbox_cancelled'&&e.data.id===f.request.id))phase='cancelled';
     else if(f.selected){try{const s=this.messages(f.selected.run).state;route=s.runtimes[0]?.route??null;phase=this.completed(f.selected.run)?'returned':s.runtimes.some((r:Row)=>r.started&&!r.ended)?'active_or_unknown':s.messages.some((m:Row)=>m.sent)?'unresolved':'prepared';}catch(error){if((error as Error).message==='original_message_run_required')phase='prepared';else{phase='unresolved';reason=(error as Error).message;}}}
     if(phase==='queued'||phase==='prepared')try{this.available(task,e.data.id);}catch(error){phase='waiting';reason=(error as Error).message;}
-    return {id:e.data.id,task,packet:e.data.packet,currentMaterial:this.tasks.current(task).packet===e.data.packet,sourceSha256:e.data.sourceSha256,phase,reason,run:f.selected?.run??null,role:'issue_owner',actor:f.request.participant.id,tool:f.request.participant.tool,sessionId:route?.sessionId??null,nativeSessionResumed:false,externalSessionControl:false};
+    return {id:e.data.id,task,packet:e.data.packet,currentMaterial:this.tasks.current(task).packet===e.data.packet&&(!f.selected||this.associationStatus(f.selected.run)?.current!==false),sourceSha256:e.data.sourceSha256,phase,reason,run:f.selected?.run??null,role:'issue_owner',actor:f.request.participant.id,tool:f.request.participant.tool,sessionId:route?.sessionId??null,nativeSessionResumed:false,externalSessionControl:false};
   }));}
 }
