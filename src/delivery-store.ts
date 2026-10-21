@@ -6,7 +6,7 @@ import {isAuthorityDigest} from './authority-contract.js';
 import {parseDeliveryBatch,deliveryBatchSha,type DeliveryBatch} from './delivery-contract.js';
 
 type Row=Record<string,any>;
-type ScopeState={adoptionRecorded:boolean;currentAdoption:boolean;reason?:string;scopeBodySha256?:string;sourceFreshness:'not_rechecked'};
+type ScopeState={adoptionRecorded:boolean;currentAdoption:boolean;reason?:string;scopeBodySha256?:string;executionKind?:'github'|'fixture';decisionSource?:string;sourceFreshness:'not_rechecked'};
 /** Fixed outcome material in the original event/blob store. Registration is
  * neither execution evidence nor an Owner acceptance or permission grant. */
 export class DeliveryRecords{
@@ -28,7 +28,9 @@ export class DeliveryRecords{
     const prepared=JSON.parse(this.bytes(batch.scope.adoption).toString()),p=prepared.proposal;
     if(p.kind!=='adopt_scope'||p.scopeId!==batch.scope.id||p.scopeVersion!==batch.scope.version||hash(canonical(p.body))!==latest.scopeBodySha256||batch.goals.some(g=>!p.body.goals.includes(g))||p.body.nonGoals.some((g:string)=>!batch.nonGoals.includes(g)))throw new Error('delivery_adopted_goals_mismatch');
     const revoked=this.db.prepare("SELECT 1 FROM events WHERE kind='authority_revoked' AND json_extract(data,'$.decision')=? LIMIT 1").get(batch.scope.adoption);if(revoked)throw new Error('delivery_scope_adoption_revoked');
-    return {adoptionRecorded:true,currentAdoption:true,scopeBodySha256:latest.scopeBodySha256,sourceFreshness:'not_rechecked'};
+    const decisionRow=this.db.prepare("SELECT data FROM events WHERE kind='authority_decision_applied' AND object=? ORDER BY id LIMIT 1").get('authority-decision:'+batch.scope.adoption) as Row|undefined,decision=decisionRow&&JSON.parse(decisionRow.data);
+    if(!decision||decision.kind!=='adopt_scope'||decision.proposalSha256!==batch.scope.adoption||!['github','fixture'].includes(decision.executionKind)||decision.source?.executionKind!==decision.executionKind||typeof decision.source.sourceUrl!=='string')throw new Error('delivery_scope_original_decision_missing');
+    return {adoptionRecorded:true,currentAdoption:true,scopeBodySha256:latest.scopeBodySha256,executionKind:decision.executionKind,decisionSource:decision.source.sourceUrl,sourceFreshness:'not_rechecked'};
   }
   register(raw:Buffer){return this.transaction(()=>{
     const p=parseDeliveryBatch(raw),sha=deliveryBatchSha(p),history=this.events(p.id),old=history.find(e=>JSON.parse(e.data).batchSha256===sha);if(old)return {...this.stateOf(sha),duplicate:true};
