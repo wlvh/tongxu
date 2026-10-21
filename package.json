@@ -35,7 +35,9 @@
     "test:messages": "npm run build && node --test dist/tests/w6/messages.test.js dist/tests/w6/message-claude.test.js dist/tests/w6/message-continuation.test.js",
     "message-continuation": "node dist/src/message-continuation-cli.js",
     "coordination": "node dist/src/coordination-cli.js",
-    "test:coordination": "npm run build && node --test dist/tests/coordination/*.test.js"
+    "test:coordination": "npm run build && node --test dist/tests/coordination/*.test.js",
+    "tasks": "node dist/src/task-cli.js",
+    "test:tasks": "npm run build && node --test dist/tests/w6/task-intake.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

@@ -1,4 +1,5 @@
 'use strict';
+function taskSourceLabel(t) { return t.candidate.kind === 'development-task' ? '开发任务 · 尚无 PR' : 'PR #' + t.candidate.pr; }
 const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0;
@@ -37,7 +38,7 @@ function openTask(id) { selected = id; view = 'tasks'; render(); $('content').fo
 function card(t) {
   const [label, kind] = statusOf(t), n = el('button', null, 'task-card'); n.type = 'button'; n.dataset.task = t.id; n.dataset.stage = label; n.onclick = () => openTask(t.id);
   const replies=(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages).filter(m=>m.state==='Reply').length;
-  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? 'H ' + t.candidate.H.slice(0, 8) + ' · 接收判断 ' + t.operations.filter(o => o.judgment).length + ' · 协作回复 '+replies : t.error), el('span', '↗', 'arrow'))); return n;
+  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : taskSourceLabel(t) : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? 'H ' + t.candidate.H.slice(0, 8) + ' · 接收判断 ' + t.operations.filter(o => o.judgment).length + ' · 协作回复 '+replies : t.error), el('span', '↗', 'arrow'))); return n;
 }
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
@@ -86,13 +87,21 @@ function taskView() {
   if (!selected || !state.tasks.some(t => t.id === selected)) selected = state.tasks[0].id;
   const n = el('div'); n.append(intro('任务与完整报告', '查看准确候选、接收状态及报告原文。来源不可用时会明确显示缺口。'));
   const layout = el('div', null, 'task-layout'), picker = el('div', null, 'task-picker');
-  state.tasks.forEach(t => { const b = el('button', t.title); b.type = 'button'; b.setAttribute('aria-pressed', String(t.id === selected)); b.append(el('small', t.available ? 'PR #' + t.candidate.pr + ' · ' + statusOf(t)[0] : '来源无法读取')); b.onclick = () => { selected = t.id; render(); }; picker.append(b); });
+  state.tasks.forEach(t => { const b = el('button', t.title); b.type = 'button'; b.setAttribute('aria-pressed', String(t.id === selected)); b.append(el('small', t.available ? taskSourceLabel(t) + ' · ' + statusOf(t)[0] : '来源无法读取')); b.onclick = () => { selected = t.id; render(); }; picker.append(b); });
   const t = state.tasks.find(t => t.id === selected), panel = el('section', null, 'panel'); append(layout, picker, panel); n.append(layout);
   if (!t.available) { append(panel, el('h2', t.title), el('p', '当前来源无法读取：' + t.error, 'empty')); return n; }
-  const [label, kind] = statusOf(t), head = append(el('div', null, 'panel-head'), append(el('div'), el('h2', t.title), el('p', t.candidate.repository + ' · PR #' + t.candidate.pr)), pill(label, kind)); panel.append(head);
+  const [label, kind] = statusOf(t), head = append(el('div', null, 'panel-head'), append(el('div'), el('h2', t.title), el('p', t.candidate.repository + ' · ' + taskSourceLabel(t))), pill(label, kind)); panel.append(head);
   if (t.composition) append(panel, el('p', subjectText(t.composition.subject)), el('p', '判断对应整个固定组合；锚点 PR 用于定位，不表示任何成员单独放行。受测最终树：' + (t.composition.subject.testedTree || '未取得'), 'small'));
   const facts = el('dl', null, 'facts'); fact(facts, '登记候选 H', t.candidate.H, true); fact(facts, '固定基线 B', t.candidate.B, true); fact(facts, '真实目标', t.candidate.targetRef); fact(facts, '来源观察', date(t.sourceObservedAt)); fact(facts, '本次查看', date(t.observedAt)); fact(facts, '登记范围', t.scope.id + ' / ' + t.scope.version); panel.append(facts);
   if (/^[\w.-]+\/[\w.-]+$/.test(t.candidate.repository) && Number.isSafeInteger(t.candidate.pr)) { const a = el('a', '查看原 PR ↗'); a.href = 'https://github.com/' + t.candidate.repository + '/pull/' + t.candidate.pr; a.target = '_blank'; a.rel = 'noreferrer noopener'; panel.append(a); }
+  if (t.developmentTask) {
+    const d = t.developmentTask, phases = {queued:'待处理',prepared:'已装配，尚未发送',waiting:'等待前置',active_or_unknown:'执行中或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'已撤销未发送待办'};
+    panel.append(el('p', '开发任务先于 PR 登记。只观察了指定文件；尚未取得正式候选与测试验收。', 'small'));
+    const inbox=el('section',null,'panel');inbox.append(el('h3','负责人待办'));
+    if (!d.inbox.length) inbox.append(el('p','尚未安排负责人调查。','small'));
+    for (const r of d.inbox) inbox.append(append(el('div',null,'report-row'),append(el('div'),el('strong',r.id+' · '+(phases[r.phase]||r.phase)),el('p',r.actor+' / '+r.tool+' · '+(r.currentMaterial?'对应当前材料':'历史材料'),'small'),r.reason?el('p',r.reason,'small'):null,r.sessionId?el('p','实际会话 '+r.sessionId+' · 新上下文，未接管外部会话','small'):null)));
+    panel.append(inbox);
+  }
   panel.append(collaborationView(t));
   panel.append(append(el('div', null, 'section-title'), el('h3', '正式接收操作与报告'), el('span', t.operations.length + ' 条记录')));
   if (!t.operations.length) panel.append(el('p', '尚无正式接收操作记录。协作回复不自动成为接收判断。', 'small'));

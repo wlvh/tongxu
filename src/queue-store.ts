@@ -17,6 +17,9 @@ import { SessionRecords } from './session-store.js';
 import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
 import { MessageResourceRecords } from './message-resource-store.js';
+import { TaskInbox } from './task-inbox.js';
+import { TaskRecords,taskOperationGuard } from './task-store.js';
+import { observeTaskWorkspace } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
@@ -122,7 +125,7 @@ export class QueueStore {
       db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       if (readOnly) db.exec('PRAGMA query_only=ON;');
       const version = db.prepare('PRAGMA user_version').get() as Row;
-      if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
+      if (![3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version.user_version) || (db.prepare("SELECT value FROM meta WHERE key='mode'").get() as Row)?.value !== 'shadow') throw new Error('unsupported_queue_schema_or_mode');
       return new QueueStore(directory, db);
     } catch (e) { db.close(); throw e; }
   }
@@ -130,7 +133,7 @@ export class QueueStore {
   enableReceiver(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version) && this.receiverGuardsInstalled()) return { receiverEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![3, 4].includes(version) || (this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       // Same tables/ledger, explicit format opt-in. Older v3 clients must refuse
       // rather than evaluate and release a claim owned by a native receiver.
@@ -149,7 +152,7 @@ PRAGMA user_version=4;`);
   enableSupplements(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([6, 7, 8, 9, 10, 11, 12, 13, 14].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
+      if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(version) && this.supplementGuardInstalled()) return { supplementsEnabled: true, duplicate: true, productionActionAllowed: false };
       if (![4, 5, 6].includes(version) || !this.receiverGuardsInstalled()) throw new Error('enable_receiver_before_supplements');
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
       this.db.exec(`DROP TRIGGER IF EXISTS receiver_packet_material_guard; DROP TRIGGER IF EXISTS receiver_supplement_lineage_guard; ${supplementGuard}; ${supplementLineageGuard}; PRAGMA user_version=6;`);
@@ -157,21 +160,21 @@ PRAGMA user_version=4;`);
       return { supplementsEnabled: true, schemaVersion: 6, productionActionAllowed: false };
     });
   }
-  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
+  requireReceiverMode(): void { if (![4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)) throw new Error('receiver_mode_not_enabled'); }
   enableCompositions(): Row {
     return this.transaction(()=>{
       const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if([10,11,12,13,14].includes(version)){this.requireCompositionMode();return {enabled:true,duplicate:true,productionActionAllowed:false};}
+      if([10,11,12,13,14,15].includes(version)){this.requireCompositionMode();return {enabled:true,duplicate:true,productionActionAllowed:false};}
       if(version!==9)throw new Error('enable_review_records_before_compositions');
       if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
       this.db.exec(compositionGuard+'; PRAGMA user_version=10;');this.event('composition_format_enabled',this.directory,{from:version,to:10});return {enabled:true,duplicate:false,productionActionAllowed:false};
     });
   }
-  private requireCompositionMode(){if(![10,11,12,13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='composition_receiver_guard'").get() as Row)?.sql!==compositionGuard)throw new Error('compositions_not_enabled');}
+  private requireCompositionMode(){if(![10,11,12,13,14,15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='composition_receiver_guard'").get() as Row)?.sql!==compositionGuard)throw new Error('compositions_not_enabled');}
   enableReceiverCorrections(): Row {
     return this.transaction(() => {
       const version = (this.db.prepare('PRAGMA user_version').get() as Row).user_version;
-      if ([11,12,13,14].includes(version)) { this.requireCorrections(); return { enabled: true, duplicate: true }; }
+      if ([11,12,13,14,15].includes(version)) { this.requireCorrections(); return { enabled: true, duplicate: true }; }
       if (version !== 10) throw new Error('enable_compositions_before_corrections');
       this.requireCompositionMode();
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n || (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n) throw new Error('queue_has_active_or_unknown_operation');
@@ -181,7 +184,37 @@ PRAGMA user_version=4;`);
     });
   }
   private requireCorrections() {
-    if (![11,12,13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version) || ![['receiver_correction_guard',correctionGuard],['receiver_correction_lineage_guard',correctionLineageGuard]].every(([name,sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(name!) as Row)?.sql === sql)) throw new Error('receiver_corrections_not_enabled');
+    if (![11,12,13,14,15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version) || ![['receiver_correction_guard',correctionGuard],['receiver_correction_lineage_guard',correctionLineageGuard]].every(([name,sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE name=?").get(name!) as Row)?.sql === sql)) throw new Error('receiver_corrections_not_enabled');
+  }
+  enableTasks():Row {
+    return this.transaction(()=>{
+      const version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
+      this.requireCorrections();
+      if(version===15){if((this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='development_task_operation_guard'").get() as Row)?.sql!==taskOperationGuard)throw new Error('development_task_format_not_enabled');return {enabled:true,duplicate:true,schemaVersion:15};}
+      if(![11,12,13,14].includes(version))throw new Error('development_task_requires_current_queue_format');
+      if(this.db.prepare("SELECT 1 FROM claims").get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
+      if(this.db.prepare("SELECT 1 FROM events a WHERE a.kind='overall_review_dispatched' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind IN ('overall_review_result','overall_review_closed_unstarted'))").get())throw new Error('queue_has_active_or_unknown_overall_review');
+      if(this.db.prepare("SELECT 1 FROM events a WHERE a.kind='publication_intent' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind='publication_verified' AND json_extract(a.data,'$.stage')=json_extract(b.data,'$.stage'))").get())throw new Error('queue_has_unresolved_publication');
+      // Native runtimes are recorded in the same event ledger, not claims.
+      for(const row of this.db.prepare("SELECT object FROM events WHERE kind='message_registered'").all() as Row[]){const m=this.messages().status(row.object.slice(9));if(m.runtimes.some((r:Row)=>r.started&&(!r.ended||r.captureVerification?.proof.successfulCapture!==true&&r.ended.proof.knownUnstarted!==true))||m.messages.some((x:Row)=>['Unknown','Delivered'].includes(x.state)))throw new Error('queue_has_active_or_unknown_message');}
+      this.db.exec(taskOperationGuard+'; PRAGMA user_version=15;');this.event('development_task_format_enabled',this.directory,{from:version,to:15});return {enabled:true,duplicate:false,schemaVersion:15};
+    });
+  }
+  tasks(){return new TaskRecords(this.db,fn=>this.transaction(fn));}
+  private taskRecords(){return new TaskRecords(this.db,fn=>fn());}
+  taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
+  private taskInboxRecords(transaction:<T>(f:()=>T)=>T){
+    const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});
+    return new TaskInbox(this.db,transaction,this.directory,this.taskRecords(),run=>{
+      const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget;
+      if(state.plan.resourceBudget)try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());resourcesSettled=b.phase==='returned'&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{}
+      return {state:{...state,resourcesSettled},inputs:state.plan.participants.flatMap(p=>m.submitted(run,p.id))};
+    });
+  }
+
+  async refreshMessageTaskSources(run:string){
+    const state=this.messages().status(run),ids=[...new Set<string>(state.plan.participants.map(p=>p.item))];
+    for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){const p=this.tasks().definition(id);this.tasks().observe(p,await observeTaskWorkspace(p));}
   }
   private authorityItem(id:string):Row {
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);
@@ -190,7 +223,7 @@ PRAGMA user_version=4;`);
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
-  messages(): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>c.messageGate(run,message,participant),(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}); }
+  messages(): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}); }
   messageResources(){return this.messageResourceRecords(fn=>this.transaction(fn));}
   private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('message_resource_read_cannot_authorize');});return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run));}
   coordination(): CoordinationRecords {return this.coordinationRecords(fn=>this.transaction(fn));}
@@ -387,6 +420,7 @@ PRAGMA user_version=4;`);
   }
   private packetEvidence(packet: Row): { context: QueueContext; manifest: any; report: any } {
     const context = parseQueueContextBlob(this.blob(packet.context_hash)), manifest = JSON.parse(this.blob(packet.manifest_hash).toString()), report = JSON.parse(this.blob(packet.report_hash).toString());
+    if(manifest.kind==='tongxu-development-task-source'||parse(packet,'summary').kind==='development-task')return this.taskRecords().evidence(packet);
     const references = [report.plan, ...report.inputs.map((i: any) => i.manifest), ...manifest.artifacts];
     if (report.failureOutput) references.push(report.failureOutput.stdout, report.failureOutput.stderr);
     for (const stage of report.stages) {
@@ -540,7 +574,7 @@ PRAGMA user_version=4;`);
       const context = parse(item, 'context') as QueueContext;
       if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) return { blocked: ['new_investment_stopped'], mode: 'shadow' };
       const blocked = this.prerequisites(item); if (blocked.length) return { blocked, mode: 'shadow' };
-      const candidate = parse(item, 'candidate') as Candidate, target = targetKey(candidate);
+      const candidate = parse(item, 'candidate'), target = candidate.kind==='development-task'?'task-investigation:'+item.id:targetKey(candidate);
       if (this.db.prepare('SELECT operation FROM claims WHERE target=?').get(target)) return { blocked: ['target_occupied_or_unknown'], mode: 'shadow' };
       const seats = Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value);
       if ((this.db.prepare('SELECT COUNT(*) AS count FROM claims').get() as Row).count >= seats) return { blocked: ['reception_seats_full'], mode: 'shadow' };
@@ -635,6 +669,7 @@ PRAGMA user_version=4;`);
     return this.transaction(() => {
       const { op } = this.receiverOperation(id), packet = this.packet(op.packet);
       const { context, manifest, report } = this.packetEvidence(packet);
+      if(manifest.kind==='tongxu-development-task-source')throw new Error('development_task_requires_formal_candidate');
       const outputs = report.stages.flatMap((stage: Row) => stage.tools.map((tool: Row) => ({ stage: stage.index, tool: tool.id,
         originals: Object.fromEntries(['stdout', 'stderr', 'result', 'sandbox'].filter(k => tool[k]).map(k => {
           const bytes = this.blob(tool[k].sha256); let text: string, encoding: string;
@@ -829,9 +864,10 @@ PRAGMA user_version=4;`);
     const c = this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row | undefined;
     if (!c || c.operation !== op.id || c.generation !== op.generation) throw new Error('operation_claim_mismatch');
   }
-  private eventSourceStates(item:Row):Row[]{const composition=parse(this.packet(item.current_packet),'summary').composition;return (composition?currentMembers(composition):[parse(item,'candidate')]).map((c:Candidate)=>currentEventSource(this.db,effectiveEventCandidate(c,item.latest_source_observation),item.id,item.current_packet));}
+  private eventSourceStates(item:Row):Row[]{if(parse(item,'candidate').kind==='development-task')return [];const composition=parse(this.packet(item.current_packet),'summary').composition;return (composition?currentMembers(composition):[parse(item,'candidate')]).map((c:Candidate)=>currentEventSource(this.db,effectiveEventCandidate(c,item.latest_source_observation),item.id,item.current_packet));}
   private eventSourceGaps(item:Row):string[]{return this.eventSourceStates(item).filter(s=>s.registered&&(!s.current||!s.materialBound)).map(s=>s.reason??'current_event_source_and_material_required');}
   private receiverCandidateCurrent(item: Row): boolean {
+    if(parse(item,'candidate').kind==='development-task'){this.taskRecords().current(item.id);return true;}
     if(this.eventSourceGaps(item).length)return false;
     const primary = parse(item, 'candidate') as Candidate, context = parse(item, 'context') as QueueContext;
     const composition=parse(this.packet(item.current_packet),'summary').composition as Composition|undefined;
@@ -929,7 +965,7 @@ PRAGMA user_version=4;`);
   private itemStatus(item: Row): Row {
     const composition = parse(this.packet(item.current_packet), 'summary').composition;
     if(composition)this.packetEvidence(this.packet(item.current_packet));
-    return { id: item.id, candidate: parse(item, 'candidate'), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+    return { id: item.id, candidate: parse(item, 'candidate'), ...(parse(item,'candidate').kind==='development-task'?{developmentTask:{...this.taskRecords().status(item.id),inbox:this.taskInboxRecords(fn=>fn()).status(item.id)}}:{}), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.
@@ -950,7 +986,7 @@ PRAGMA user_version=4;`);
     this.db.exec('BEGIN');
     try {
       const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
-      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'merging' ? 'merge_unknown_reconcile_original_operation' : o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
+      const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'merging' ? 'merge_unknown_reconcile_original_operation' : o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       for (const operation of result.operations as Row[]) if (receiverMetadataFor.includes(operation.item)) Object.assign(operation, { nativeExecution: this.receiverMetadata(operation.result?.receiver) });
       for (const operation of result.operations as Row[]) if (invalidOutputFor.includes(operation.id) && operation.result?.receiver?.invalidResult) operation.invalidOutput = this.blob(operation.result.receiver.invalidResult.finalTextSha256).toString();
       const collaboration=Object.fromEntries(collaborationFor.map(id=>[id,this.collaborationView().state(id)]));

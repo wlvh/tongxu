@@ -59,8 +59,8 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
     const runtimes=new Map<string,ReadonlyDialog>(),specs=new Map<string,RuntimeSpec>();let sent=0,activeMessage:string|null=null;
     try{
-      records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
-      for(const m of p.messages){activeMessage=m.id;await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
+      await q.refreshMessageTaskSources(run);records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
+      for(const m of p.messages){activeMessage=m.id;await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
@@ -71,7 +71,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
         const sender=m.from===null?null:state.runtimes.find((r:Row)=>r.participant===m.from)?.route;if(m.from!==null&&!sender)throw new Error('message_sender_route_missing');
         const materialConsumption=(p.consumeMaterial??[]).map(name=>({name,sha256:hash(frozen.materials[name]!)})),references=[...upstream.map(x=>x.receipt.finalSha256),...materialConsumption.map(m=>m.sha256)];
         const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:references,...(materialConsumption.length?{materialConsumptionReferences:materialConsumption}:{}),responseContract:{messageId:m.id,consumed:references,report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
-        const final=await runtime.send(envelope,async()=>{await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
+        const final=await runtime.send(envelope,async()=>{await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
         if(!final.data.reportedConsumption)throw new Error('message_reply_did_not_confirm_input_consumption');
       }
     }catch(e){records.problem(run,activeMessage,e instanceof Error?e.message:'message_delivery_unknown');}

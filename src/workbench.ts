@@ -69,7 +69,7 @@ export async function workbenchState(p: WorkbenchPlan) {
       publication: publication(q.publications.find((pub: Row) => pub.operation === o.id)),
       recovery: o.recovery, productionActionAllowed: false
     }));
-    tasks.push({ ...base, available: true, candidate: item.candidate, ...(item.summary.composition?{composition:item.summary.composition,compositionCurrent:item.compositionCurrent}:{}), currentPacket: item.currentPacket,
+    tasks.push({ ...base, available: true, candidate: item.candidate, ...(item.developmentTask?{developmentTask:item.developmentTask}:{}), ...(item.summary.composition?{composition:item.summary.composition,compositionCurrent:item.compositionCurrent}:{}), currentPacket: item.currentPacket,
       observationConflict: item.observationConflict, evidenceComplete: item.summary.evidenceComplete,
       sourceObservedAt: item.latestSourceObservation, executionObservedAt: item.latestObservation,
       scope: item.context.scope, arrangement: item.context.arrangement, dependencyGaps: item.dependencyGaps,
