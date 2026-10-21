@@ -291,6 +291,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {proof:{parent:source.parent,selectedMember:source.selectedMember,selectedFindings:source.selectedFindings,memberReturn:p.memberReturn,repair:{...p.repair,result:repair.result},composition:{...p.composition,subject:composition.subject},previousIntegration:{id:original.request.integration,candidate:source.integration.candidate,subject:source.integration.source.composition.subject},permissionGranted:false,priorAcceptanceTransferred:false},originals};
   }
   memberRepairInput(operation:string,reference:unknown,current=true){return this.transaction(()=>this.memberRepairSource(operation,reference,current));}
+  /** Hold the original queue transaction through the synchronous spawn. A
+   * separately committed stop/source update cannot slip between the last
+   * read and the actual new Git or isolated test process. */
+  memberRecompositionEffect<T>(reference:unknown,effect:()=>T):T{return this.transaction(()=>{
+    if(!memberReturnReference(reference))throw new Error('member_repair_reference_invalid');this.requireUnprofiledConsumer();const m=this.integrationMemberRecords(fn=>fn()).material(reference.id);
+    if(m.state.requestSha256!==reference.requestSha256||m.state.sourceSha256!==reference.sourceSha256||!m.state.current)throw new Error('member_recomposition_source_no_longer_current');
+    if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND stopped=1 AND kind IN ('investment','implementation','candidate')").get(m.proof.member.context.scope.id))throw new Error('member_recomposition_stopped');return effect();
+  });}
   private memberRepairSource(operation:string,reference:unknown,current:boolean):Row{
     if(!memberReturnReference(reference))throw new Error('member_repair_reference_invalid');const m=this.integrationMemberRecords(fn=>fn()).material(reference.id),request=m.request,op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row|undefined;
     if(m.state.requestSha256!==reference.requestSha256||m.state.sourceSha256!==reference.sourceSha256||!op||op.item!==request.member.item||op.packet!==request.member.packet)throw new Error('member_repair_original_operation_mismatch');
