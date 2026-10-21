@@ -74,6 +74,7 @@ export class ResourceRecords {
     const claim=this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row;
     const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim.generation===op.generation;
     const message=result?.messageResources?.[action.request.payloadSha256],ownMessage=action.request.action==='coordinate'&&op.status==='messaging'&&message?.phase==='resources_pending'&&message.authorityIntent===request.authorityIntent&&message.resourceRequests?.includes(resourceRequestHash(request));
+    if(JSON.parse((this.db.prepare('SELECT candidate FROM items WHERE id=?').get(op.item) as Row).candidate).kind==='development-task'&&!ownMessage)throw new Error('task_resource_requires_bound_consumer');
     if(!ownMerge&&!ownMessage&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
     if(claim&&!ownMerge)throw new Error('resource_target_execution_active_or_unknown');
   }

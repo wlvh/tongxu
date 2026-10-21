@@ -213,7 +213,7 @@ PRAGMA user_version=4;`);
   }
 
   async refreshMessageTaskSources(run:string){
-    const state=this.messages().status(run),ids=[...new Set<string>(state.plan.participants.map(p=>p.item))];
+    const state=this.messages().status(run),ids=[...new Set<string>([...state.plan.participants.map(p=>p.item),...this.taskInboxRecords(fn=>fn()).sourceTasks(run)])];
     for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){const p=this.tasks().definition(id);this.tasks().observe(p,await observeTaskWorkspace(p));}
   }
   private authorityItem(id:string):Row {
@@ -225,7 +225,7 @@ PRAGMA user_version=4;`);
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
   messages(): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}); }
   messageResources(){return this.messageResourceRecords(fn=>this.transaction(fn));}
-  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('message_resource_read_cannot_authorize');});return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run));}
+  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{this.coordinationRecords(fn=>fn()).messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);});return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run),(run,observations)=>{m.admission(run,observations);});}
   coordination(): CoordinationRecords {return this.coordinationRecords(fn=>this.transaction(fn));}
   private coordinationRecords(transaction:<T>(f:()=>T)=>T):CoordinationRecords {
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});

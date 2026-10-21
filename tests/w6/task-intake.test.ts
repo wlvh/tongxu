@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {writeFile,readFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {execFileSync} from 'node:child_process';
+import {exists} from '../../src/repair-workspace.js';
+import {QueueStore} from '../../src/queue-store.js';
 import {messageFixture} from './message-fixture.js';
 import {parseDevelopmentTask,type DevelopmentTask} from '../../src/task-contract.js';
 import {observeTaskWorkspace} from '../../src/task-source.js';
@@ -33,7 +36,7 @@ async function waitInput(f:Awaited<ReturnType<typeof fixture>>){const end=Date.n
 test('no PR: actual dirty bytes, stable task identity, retained old packet, no invented verification',async t=>{
   const f=await fixture(t);await writeFile(join(f.definition.workspace,'sample.js'),'// actual uncommitted test material\nexport const value=7;\n');
   const changed=f.q.tasks().observe(f.definition,await observeTaskWorkspace(f.definition)),duplicate=f.q.tasks().observe(f.definition,await observeTaskWorkspace(f.definition));assert.equal(changed.item,f.a.item);assert.notEqual(changed.packet,f.a.packet);assert.equal(duplicate.duplicate,true);
-  const s=f.q.tasks().current(f.a.item);assert.equal(s.manifest.candidate.pr,null);assert.equal(s.manifest.candidate.H,f.H);assert.match(s.report.files[0]!.text!,/value=7/);assert.match(s.report.gitStatus,/sample.js/);assert.equal(s.report.testsExecuted,false);assert.equal(s.report.branch,'fixture');assert.equal(f.q.tasks().status(f.a.item).history.length,2);
+  const s=f.q.tasks().current(f.a.item);assert.equal(s.manifest.candidate.pr,null);assert.equal(s.manifest.candidate.H,f.H);assert.match(s.report.files[0]!.text!,/value=7/);assert.notEqual(s.report.files[0]!.sha256,s.report.headFiles![0]!.sha256);assert.equal(s.report.indexObserved,false);assert.equal(s.report.testsExecuted,false);assert.equal(s.report.branch,'fixture');assert.equal(f.q.tasks().status(f.a.item).history.length,2);
   const op=f.q.begin(f.a.item,'task-investigation'),result=f.q.evaluate(op.operation);assert.equal(result.evidenceComplete,false);assert.equal(result.productionActionAllowed,false);assert.throws(()=>f.q.receiverEvidence(op.operation),/development_task_requires_formal_candidate/);
   const db=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.throws(()=>db.prepare("UPDATE operations SET status='repairing' WHERE id=?").run(op.operation),/development_task_requires_formal_candidate|repair/);}finally{db.close();}
   assert.throws(()=>f.q.tasks().observe({...f.definition,title:'changed goal'},s.report),/actual_task_workspace_observation_required|task_definition_is_fixed/);
@@ -110,7 +113,7 @@ test('no-PR task uses original authority and resource consumer, and migration is
 });
 
 test('literal selected paths do not expand Git patterns into unrelated material',async t=>{
-  const f=await fixture(t),p={...f.definition,id:'literal',paths:['*.js']};await writeFile(join(p.workspace,'sample.js'),'PRIVATE_UNSELECTED\n');const o=await observeTaskWorkspace(p);assert.equal(o.files[0]?.missing,true);assert.equal(o.diff,'');assert.equal(o.gitStatus,'');assert.equal(canonical(o).includes('PRIVATE_UNSELECTED'),false);
+  const f=await fixture(t),p={...f.definition,id:'literal',paths:['*.js']};await writeFile(join(p.workspace,'sample.js'),'PRIVATE_UNSELECTED\n');const o=await observeTaskWorkspace(p);assert.equal(o.files[0]?.missing,true);assert.equal(o.headFiles![0]!.missing,true);assert.equal(o.diff,undefined);assert.equal(o.gitStatus,undefined);assert.equal(canonical(o).includes('PRIVATE_UNSELECTED'),false);
 });
 
 test('one fixed contact entry delivers A to B and returns B to A without copied reports; repetition has no new sends',async t=>{
@@ -119,4 +122,23 @@ test('one fixed contact entry delivers A to B and returns B to A without copied 
   const result=await runTaskContact(f.store,path);assert.equal(result.completed,true);assert.equal(result.newModelRequests,3);
   const second=f.q.messages().submitted(result.steps[1]!.run,'owner')[0]!,last=f.q.messages().submitted(result.steps[2]!.run,'owner')[0]!,context=JSON.parse(last.material[0].text);assert.equal(JSON.parse(second.material[0].text).sender.run,result.steps[0]!.run);assert.equal(context.sender.run,result.steps[1]!.run);assert.equal(context.previousExecutions[0].run,result.steps[0]!.run);
   const repeated=await runTaskContact(f.store,path);assert.equal(repeated.completed,true);assert.equal(repeated.newModelRequests,0);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,3);
+});
+
+test('NT-F01: raw-file observation never invokes configured clean or process filters',async t=>{
+  const f=await fixture(t),marker=join(f.root,'filter-ran'),exe=join(f.root,'filter.mjs');await writeFile(exe,`#!${process.execPath}\nimport fs from 'node:fs';fs.appendFileSync(${JSON.stringify(marker)},'ran');process.stdin.pipe(process.stdout);\n`,{mode:0o700});
+  for(const key of ['clean','process'])execFileSync('/usr/bin/git',['-C',f.definition.workspace,'config','filter.taskprobe.'+key,exe]);await writeFile(join(f.definition.workspace,'.gitattributes'),'sample.js filter=taskprobe\n');await writeFile(join(f.definition.workspace,'sample.js'),'export const raw=41;\n');
+  const observed=await observeTaskWorkspace(f.definition);assert.equal(observed.schemaVersion,2);assert.equal(await exists(marker),false);assert.match(observed.files[0]!.text!,/raw=41/);assert.notEqual(observed.headFiles![0]!.sha256,observed.files[0]!.sha256);assert.equal(observed.commands.some(c=>c.argv.includes('status')||c.argv.includes('diff')),false);
+});
+
+test('NT-F02: changed sender files block the contact without a separate manual observation',async t=>{
+  const f=await fixture(t);f.q.taskInbox().enqueue(raw(f.request('a')));await workTaskOwner(f.store,f.a.item,1);const source=f.q.taskInbox().status(f.a.item)[0]!;await writeFile(join(f.definition.workspace,'b.js'),'export const b=1;\n');
+  const bp={...f.definition,id:'b',paths:['b.js']},b=f.q.tasks().observe(bp,await observeTaskWorkspace(bp)),request={...f.request('b',b.item),from:{task:f.a.item,run:source.run,messageId:'a'}};f.q.taskInbox().enqueue(raw(request));await writeFile(join(f.definition.workspace,'sample.js'),'export const changedAfterA=1;\n');
+  const result=await workTaskOwner(f.store,b.item,1);assert.equal(result.newModelRequests,0);assert.equal(result.runs[0]?.completed,false);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);assert.notEqual(f.q.tasks().current(f.a.item).packet,f.a.packet);
+});
+
+test('NT-F03: cancellation after admission but before resource binding prevents every provider claim',async t=>{
+  const f=await fixture(t),ledger=await ledgerFixture(t),spec=ledger.profile.resources[0]!,request={...f.request('governed'),authorityIntent:'bounded-messages',resourceBudget:[{ledgerId:ledger.profile.ledgerId,resourceRef:spec.ref,unit:spec.unit,quantity:1}]};f.q.taskInbox().enqueue(raw(request));const selected=await prepareTaskOwner(f.store,f.a.item,'governed'),plan=JSON.parse(await readFile(selected.plan,'utf8'));
+  await messageAuthority({...f,item:f.a.item,plan,write:async()=>writeFile(selected.plan,canonical(plan))});f.q.resources().configure(raw(ledger.profile));
+  const original=QueueStore.prototype.begin;let cancelled=false;QueueStore.prototype.begin=function(item,run){const result=original.call(this,item,run);if(item===f.a.item&&!cancelled){cancelled=true;f.q.taskInbox().cancelUnsent(item,'governed','explicit fixture cancellation at committed transaction boundary');}return result;};
+  try{const result=await runMessages(f.store,selected.plan);assert.equal(result.newModelRequests,0);assert.equal(result.completed,false);assert.equal(cancelled,true);assert.equal(ledger.state().claims.length,0);assert.equal((await f.calls()).length,0);assert.equal(f.q.taskInbox().status(f.a.item)[0]!.phase,'cancelled');}finally{QueueStore.prototype.begin=original;}
 });

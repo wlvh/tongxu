@@ -62,6 +62,10 @@ export class TaskInbox {
     this.event(task,'selected',value);return this.selection(value);
   });}
   private selection(v:Row):Row&{plan:Buffer;context:Buffer}{const plan=this.bytes(v.planSha256),context=this.bytes(v.contextSha256);if(messagePlanId(parseMessagePlan(plan))!==v.run)throw new Error('task_selected_run_changed');return {...v,plan,context};}
+  sourceTasks(run:string){
+    const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
+    if(!links.length)return [];if(links.length!==1)throw new Error('task_contact_binding_ambiguous');const selected=JSON.parse(links[0]!.data).value,f=this.entry(links[0]!.object,selected.id);return f.request.from?[f.request.from.task]:[];
+  }
   gate(run:string){
     const state=this.messages(run).state,taskParticipants=state.plan.participants.filter((p:Row)=>state.registration.bindings[p.id].candidate.kind==='development-task');if(!taskParticipants.length)return;
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];

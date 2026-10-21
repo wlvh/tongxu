@@ -10,7 +10,7 @@ type Row=Record<string,any>;
 /** Consumer bindings in the original operations/events/blobs. The provider
  * remains the only owner of quantity, competition and accounting. */
 export class MessageResourceRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords,private continuation:(run:string)=>Row|null,private continuationSource:(run:string)=>Row,private prefixProof:(run:string)=>Row){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords,private continuation:(run:string)=>Row|null,private continuationSource:(run:string)=>Row,private prefixProof:(run:string)=>Row,private admission?:(run:string,observations:OwnerObservation[])=>void){}
   private bytes(sha:string){const row=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=row&&Buffer.from(row.bytes);if(!b||hash(b)!==sha)throw new Error('message_resource_original_changed');return b;}
   private blob(bytes:Buffer){const sha=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,bytes);this.bytes(sha);return sha;}
   private event(kind:string,run:string,value:Row){const sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('message_resource_'+kind,'message-resource:'+run,JSON.stringify({value,sha256}),now());}
@@ -19,6 +19,10 @@ export class MessageResourceRecords {
   private stateValue(run:string){const b=this.binding(run),{op,result}=this.operation(b.operation),stage=result.messageResources?.[run];if(!stage||stage.bindingSha256!==b.bindingSha256||stage.authorityIntent!==b.authorityIntent||canonical(stage.resourceRequests)!==canonical(b.resourceRequests))throw new Error('message_resource_operation_changed');return {...b,phase:stage.phase,operationStatus:op.status};}
   state(run:string){return this.transaction(()=>this.stateValue(run));}
   prepare(run:string,operation:string,observations:OwnerObservation[]){return this.transaction(()=>{
+    // Binding a resource request is an investment boundary. Serialize this
+    // current admission check and its binding with cancellation in one DB
+    // transaction; a prior check before begin/evaluate is insufficient.
+    this.admission?.(run,observations);
     const m=this.message(run),p=m.plan,first=m.registration.bindings[p.participants[0].id];if(!p.resourceBudget||!p.authorityIntent)throw new Error('message_fixed_resource_budget_required');
     const action=this.authority(p.authorityIntent,observations),r=this.resources(),{op,result}=this.operation(operation);
     if(action.request.action!=='coordinate'||action.request.payloadSha256!==run||action.request.item!==op.item||op.item!==first.item||op.packet!==first.packet||action.binding?.packet!==op.packet||canonical([...action.request.resourceRefs].sort())!==canonical(p.resourceBudget.map((b:Row)=>b.resourceRef).sort()))throw new Error('message_resource_exact_action_required');
