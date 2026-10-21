@@ -261,3 +261,12 @@ export function dockerEvidenceState(bytes: Buffer, config: DockerConfig, binding
 export function dockerEvidenceMatches(bytes: Buffer, config: DockerConfig, binding: Binding, tool: any, timeoutMs: number): boolean {
   return dockerEvidenceState(bytes, config, binding, tool, timeoutMs) === 'complete';
 }
+
+/** A terminal process is separate from a complete/passing test capture. This
+ * also recognizes the existing inspected never-started cleanup path. */
+export function dockerTerminalEvidence(bytes:Buffer,config:DockerConfig,directory:string,binding?:Binding):'ended'|'not_started'|'unknown'{
+  try{const r=JSON.parse(bytes.toString()) as RecordData;assertRecord(r);if(r.directory!==directory||canonical(r.connection.config)!==canonical(config)||canonical(r.binding??null)!==canonical(binding??null))return 'unknown';if(r.before)assertContainer(r,r.before);if(r.after)assertContainer(r,r.after);
+    if(r.phase==='not_started'&&r.startGateRejected===true&&!r.clientPid&&r.cleanup==='removed'&&r.after?.State?.Running===false&&r.after?.State?.Status==='created')return 'not_started';
+    if(r.phase==='finished'&&r.cleanup==='removed'&&r.containerId&&r.before?.Id===r.containerId&&r.after?.Id===r.containerId&&r.after?.State?.Running===false&&r.after?.State?.Status==='exited')return 'ended';
+  }catch{}return 'unknown';
+}

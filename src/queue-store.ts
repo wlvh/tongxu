@@ -25,6 +25,7 @@ import { observeTaskWorkspace } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
 import {LocalScopeControls} from './scope-controls.js';
 import {DeliveryRecords} from './delivery-store.js';
+import {DeliveryValidationRecords} from './delivery-validation-store.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
@@ -118,6 +119,7 @@ export class QueueStore {
     if(!batches.length||batches.length>8||new Set(batches).size!==batches.length)throw new Error('delivery_selection_invalid');
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return batches.map(sha=>q.deliveryRecords(fn=>fn()).state(sha));}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  static async observeDeliveryValidation(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryValidationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private collaborationView(){
     const noAction=()=>{throw new Error('readonly_view_cannot_authorize');},m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),noAction),r=this.resourceRecords(fn=>fn()),c=this.coordinationRecords(fn=>fn()),mr=this.messageResourceRecords(fn=>fn()),repair=new ReviewRecords(this.db,fn=>fn(),noAction,noAction);
     return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
@@ -244,7 +246,9 @@ PRAGMA user_version=4;`);
   }
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
   deliveries(){return this.deliveryRecords(fn=>this.transaction(fn));}
-  private deliveryRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha));}
+  private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha));}
+  deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}
+  private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
   messages(): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}); }

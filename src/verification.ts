@@ -10,7 +10,7 @@ import { canonical, compare, samples } from './comparison.js';
 import type { SampleSet, Comparison } from './comparison.js';
 import { runSandbox, validateDependencies, dependencyDigest, runtimeResources } from './sandbox.js';
 import { DockerRuntime, parseDockerConfig } from './docker-sandbox.js';
-import type { DockerConfig } from './docker-sandbox.js';
+import type { DockerConfig,DockerStartGate } from './docker-sandbox.js';
 
 const exec = promisify(execFile);
 type Tool = { id: string; argv: string[]; timeoutMs: number; expectedSampleIds?: string[] };
@@ -137,8 +137,10 @@ async function checkout(cache: string, destination: string, head: string): Promi
   return [...(await git(destination, 'ls-files', '-z')).toString().split('\0').filter(Boolean), '.git/HEAD', '.git/index', '.git/config'];
 }
 
-export async function verify(o: VerifyOptions): Promise<{ exit: number; report: Report }> {
+export type VerificationHooks={startGate:DockerStartGate;registered:(run:string,planSha256:string,inputManifests:string[])=>void};
+export async function verify(o: VerifyOptions,hooks?:VerificationHooks): Promise<{ exit: number; report: Report }> {
   const planBytes = await readFile(o.plan); const plan = parsePlan(JSON.parse(planBytes.toString()));
+  if(hooks&&!plan.executor)throw new Error('guarded_verification_requires_docker');
   const dependencies = await validateDependencies(plan.dependencyDirectory);
   const bundles = [];
   for (const path of o.snapshots) bundles.push(await loadBundle(path));
@@ -151,6 +153,7 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
   for (const b of bundles) report.inputs.push({ candidate: b.candidate, manifestHash: hash(b.bytes), sourceGaps: b.sourceGaps, manifest: await store.blob(b.bytes) });
   const save = () => store.atomic('verification.json', JSON.stringify(report, null, 2) + '\n');
   await save();
+  hooks?.registered(report.id,report.planHash,report.inputs.map(i=>i.manifestHash));
   try {
     for (const name of ['verification', 'sandbox', 'docker-sandbox', 'comparison', 'snapshot', 'contract', 'cli']) report.toolVersions[`runner_${name}_sha256`] = hash(await readFile(new URL(`./${name}.js`, import.meta.url)));
     const runtime = await runtimeResources();
@@ -161,7 +164,7 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
     report.limitations.push('test_child_tool_versions_not_exhaustively_observed');
     let docker: DockerRuntime | undefined;
     if (plan.executor) {
-      docker = await DockerRuntime.prepare(plan.executor, join(o.output, 'docker-runtime'));
+      docker = await DockerRuntime.prepare(plan.executor, join(o.output, 'docker-runtime'),hooks?.startGate);
       report.toolVersions.docker_engine = docker.connection.serverVersion; report.toolVersions.docker_image = docker.connection.config.image;
       report.limitations.push('docker_image_is_operator_selected_trusted_runtime', 'docker_logs_after_interruption_are_not_complete_capture', 'host_disk_usage_not_quota_isolated');
     } else {
@@ -200,7 +203,7 @@ export async function verify(o: VerifyOptions): Promise<{ exit: number; report: 
         const resultDirectory = join(o.output, `result-${i}-${tool.id}-${randomUUID()}`); await mkdir(resultDirectory, { mode: 0o700 });
         const common = { work, resultDirectory, dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, onSpawn: async (pid: number) => { result.pid = pid; if (!docker) result.processGroup = pid; await save(); } };
         if (docker) { result.dockerExecutionDirectory = `docker-tool-${i}-${tool.id}-${randomUUID()}`; await save(); }
-        const execution = docker ? await docker.run({ ...common, directory: join(o.output, result.dockerExecutionDirectory!), binding: { run: report.id, stage: i, tool: tool.id, head: stage.head!, tree: stage.tree!, planHash: report.planHash } }) : await runSandbox(common);
+        const execution = docker ? await docker.run({ ...common, directory: join(o.output, result.dockerExecutionDirectory!), binding: { run: report.id, stage: i, tool: tool.id, head: stage.head!, tree: stage.tree!, planHash: report.planHash },startGate:hooks?.startGate }) : await runSandbox(common);
         Object.assign(result, { status: execution.status, exitCode: execution.exitCode, signal: execution.signal, durationMs: execution.durationMs, stdout: await store.blob(execution.stdout), stderr: await store.blob(execution.stderr), finishedAt: now() });
         if ('record' in execution) result.sandbox = await store.blob(execution.record as Buffer);
         if (execution.status === 'unknown') { result.gaps.push('docker_original_execution_unknown'); await save(); throw new Error('docker_original_execution_unknown'); }

@@ -39,7 +39,8 @@
     "tasks": "node dist/src/task-cli.js",
     "test:tasks": "npm run build && node --test dist/tests/w6/task-intake.test.js",
     "deliveries": "node dist/src/delivery-cli.js",
-    "test:deliveries": "npm run build && node --test dist/tests/w7/delivery-*.test.js"
+    "test:deliveries": "npm run build && node --test dist/tests/w7/delivery-*.test.js",
+    "test:delivery-validation": "npm run build && node --test dist/tests/delivery-validation/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
