@@ -15,7 +15,7 @@ export type NativeOptions = {
   role: 'verifier_fact' | 'reviewer' | 'secretary'; system: string; inputManifestSha256: string;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   allowedInstructionSources: Array<{ path: string; sha256: string }>;
-  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; secretaryContacts?:boolean; secretaryDeliveries?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
+  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; secretaryContacts?:boolean; secretaryDeliveries?:boolean; secretaryDeliveryReports?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
@@ -71,12 +71,12 @@ export class BoundedCodexSession {
   private constructor(readonly o: NativeOptions) {}
   static async start(o: NativeOptions) {
     if (o.role === 'secretary' && (!o.gate || !o.arrangementSource || !o.beforeTurn)) throw new Error('secretary_query_boundary_missing');
-    if((o.secretaryContacts||o.secretaryDeliveries)&&o.role!=='secretary')throw new Error('secretary_contact_role_required');
+    if((o.secretaryContacts||o.secretaryDeliveries||o.secretaryDeliveryReports)&&o.role!=='secretary')throw new Error('secretary_contact_role_required');
     const session = new BoundedCodexSession(o); await session.initialize(); return session;
   }
   get sessionId() { return this.binding.sessionId; }
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
-  private get toolSpecs() { return this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries) : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
+  private get toolSpecs() { return this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports) : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);

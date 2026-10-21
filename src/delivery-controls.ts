@@ -31,4 +31,5 @@ export class DeliveryControls{
       return {...a.apply(body.proposalSha256,observation,dependencies),permissionsGranted:false};
     }finally{q.close();}
   }
+  async report(id:string,assessment:string){const {entry,source}=this.select(id),[batch]=await QueueStore.observeDeliveries(source.store,[entry.batchSha256]);this.assertMember(batch!,source);const report=await QueueStore.observeDeliveryAssessment(source.store,assessment,true);if(report.batchSha256!==entry.batchSha256)throw new Error('delivery_assessment_not_selected');return report;}
 }
