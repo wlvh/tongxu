@@ -42,7 +42,9 @@
     "test:deliveries": "npm run build && node --test dist/tests/w7/delivery-*.test.js",
     "test:delivery-validation": "npm run build && node --test dist/tests/delivery-validation/*.test.js",
     "assess-delivery": "node dist/src/delivery-assessment-cli.js",
-    "test:delivery-assessment": "npm run build && node --test dist/tests/delivery-assessment/*.test.js"
+    "test:delivery-assessment": "npm run build && node --test dist/tests/delivery-assessment/*.test.js",
+    "integration": "node dist/src/integration-cli.js",
+    "test:integration": "npm run build && node --test dist/tests/integration/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

@@ -1,3 +1,4 @@
+import {IntegrationRecords,type IntegrationSource} from './integration-store.js';
 import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion} from './queue-format.js';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
@@ -260,6 +261,19 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude));}
   deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}
   private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
+  integrations(){return this.integrationRecords(fn=>this.transaction(fn));}
+  private integrationRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new IntegrationRecords(this.db,transaction,this.directory,operation=>this.integrationSource(operation),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
+  static async observeIntegration(directory:string,id:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');return q.integrationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  private integrationSource(operation:string):IntegrationSource{
+    const {op}=this.receiverOperation(operation),item=this.item(op.item),packet=this.packet(op.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),composition=summary.composition;
+    if(!composition)throw new Error('integration_original_composition_required');this.requireCompositionMode();this.basePacketFingerprint(packet);
+    const originals=new Map<string,Buffer>(),add=(ref:Row)=>{const b=this.blob(ref.sha256);if(ref.bytes!==undefined&&ref.bytes!==b.length)throw new Error('integration_original_length_changed');originals.set(ref.sha256,b);};
+    for(const sha of [packet.manifest_hash,packet.report_hash,packet.context_hash])add({sha256:sha});add(e.report.plan);
+    for(const input of e.report.inputs){add(input.manifest);const manifest=JSON.parse(this.blob(input.manifestHash).toString());for(const ref of manifest.artifacts)add(ref);}
+    for(const stage of e.report.stages){if(stage.mergeOutput)add(stage.mergeOutput);for(const tool of stage.tools)for(const key of ['stdout','stderr','result','sandbox'])if(tool[key])add(tool[key]);}
+    if(e.report.failureOutput){add(e.report.failureOutput.stdout);add(e.report.failureOutput.stderr);}
+    return {operation,item:op.item,packet:op.packet,fingerprint:packet.fingerprint,current:op.status==='complete'&&item.current_packet===op.packet&&!item.observation_conflict&&this.receiverCandidateCurrent(item),context:e.context,composition,report:e.report,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,originals};
+  }
   deliveryAssessments(){return this.deliveryAssessmentRecords(fn=>this.transaction(fn));}
   private deliveryAssessmentRecords(transaction:<T>(fn:()=>T)=>T):DeliveryAssessmentRecords{return new DeliveryAssessmentRecords(this.db,transaction,this.directory,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),()=>this.messageRecords(fn=>fn()),(run,p)=>{if(!p.resourceBudget)return !this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}});}
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
