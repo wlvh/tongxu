@@ -12,6 +12,7 @@ import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
 import {memberInputFixture} from './repair-fixture.js';
 import {raw} from '../integration/fixture.js';
+import {git} from '../../src/repair-workspace.js';
 
 const options={skip:!process.env.TONGXU_TEST_DOCKER_CONFIG,timeout:120000};
 async function fixture(t:test.TestContext,mode='project-refuted',defect=false){
@@ -59,6 +60,7 @@ test('MRF-F01: the standard receiver also refuses changed refutation captures an
   await writeFile(capture,Buffer.concat([original,Buffer.from('\nchanged fixture capture\n')]));
   await assert.rejects(runMemberRefutation(f.refutationPath),/completion_evidence_changed/);await assert.rejects(runReception(f.receiverPath),/completion_evidence_changed/);assert.ok((await readFile(f.trace)).equals(trace));assert.equal(f.q.memberRefutation(f.refutationPlan.id).current,false);
   await writeFile(capture,original);await writeFile(source,Buffer.concat([code,Buffer.from('// unaccounted fixture modification\n')]));await assert.rejects(runReception(f.receiverPath),/completed_workspace_changed/);assert.ok((await readFile(f.trace)).equals(trace));await writeFile(source,code);
+  const workspace=join(f.request.executionRoot,'workspace'),index=await readFile(join(workspace,'.git/index'));await git(workspace,['update-index','--chmod=+x','src/normalize.mjs']);assert.ok((await readFile(source)).equals(code));assert.equal(f.q.memberRefutation(f.refutationPlan.id).current,false);await assert.rejects(runReception(f.receiverPath),/completed_workspace_changed/);assert.ok((await readFile(f.trace)).equals(trace));await writeFile(join(workspace,'.git/index'),index);
   await writeFile(f.plan.claudeExecutable,(await readFile(f.plan.claudeExecutable,'utf8')).replace('mode="return"','mode="complete"'));const received=await runReception(f.receiverPath);assert.equal(received.receiver.judgment.verdict,'ACCEPT_WITHIN_SCOPE');assert.equal(received.receiver.currentMaterialMatches,true);assert.ok((await readFile(f.model.trace)).equals(model));
   const after=await readFile(f.trace);await writeFile(capture,Buffer.concat([original,Buffer.from('\nchanged after reception\n')]));const historical=await reconcileReception(f.store,received.operation);assert.equal(historical.receiver.judgment.verdict,'ACCEPT_WITHIN_SCOPE');assert.equal(historical.receiver.currentMaterialMatches,false);assert.ok((await readFile(f.trace)).equals(after));await writeFile(capture,original);
 });
