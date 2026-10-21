@@ -13,6 +13,15 @@ import {canonical} from './comparison.js';
 export async function retainW2TerminalCapture(packet:Packet,root:string,registry?:W2ExecutionIntent[]){
   const report=JSON.parse(packet.blobs.get(packet.reportHash)!.toString()),plan=parsePlan(JSON.parse(packet.blobs.get(report.planHash)!.toString()));
   if(!plan.executor||!report.finishedAt)throw new Error('w2_original_execution_unknown');
+  // Without an original execution registry, an absent slot cannot prove that
+  // its process never started. Only fully covered legacy runs can be settled.
+  // This checks coverage, not success: complete failed executions remain facts.
+  if(registry===undefined){
+    const covered=report.stages.length===report.inputs.length+1&&report.stages.every((stage:any,index:number)=>
+      stage.index===index&&stage.tools.length===plan.tools.length&&stage.tools.every((tool:any,i:number)=>
+        tool.id===plan.tools[i]?.id&&canonical(tool.argv)===canonical(plan.tools[i]?.argv)));
+    if(!covered)throw new Error('w2_original_execution_unknown');
+  }
   const probe=join(root,'docker-runtime','probe'),proof=await regular(join(probe,'execution.json'),4*1024*1024);
   if(dockerTerminalEvidence(proof,plan.executor,probe)==='unknown')throw new Error('w2_original_execution_unknown');packet.blobs.set(hash(proof),proof);
   // Inspect the actual execution set, independently of report references.

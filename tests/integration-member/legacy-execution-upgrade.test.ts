@@ -15,14 +15,37 @@ const legacyRoot=process.env.TONGXU_RECOMPOSITION_LEGACY_ROOT;
 const registryLegacyRoot=process.env.TONGXU_W2_V1_LEGACY_ROOT;
 const old=(path:string)=>import(pathToFileURL(join(legacyRoot!,'dist',path+'.js')).href);
 function guards(store:string){const db=new DatabaseSync(join(store,'queue.sqlite'),{readOnly:true});try{return db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'w2_execution_%' ORDER BY name").all().map(r=>r.name);}finally{db.close();}}
-async function hideOriginal(root:string){
+async function hideOriginal(root:string,omit:'blocked'|'tool'|'stage'='blocked'){
   const reportPath=join(root,'verification.json'),reportBytes=await readFile(reportPath),report=JSON.parse(reportBytes.toString()),tool=report.stages[0].tools[0],directory=join(root,tool.dockerExecutionDirectory),execution=await readFile(join(directory,'execution.json')),retained=join(root,'retained-unknown-tool-original');
-  await writeFile(join(directory,'execution.json'),raw({...JSON.parse(execution.toString()),cleanup:'unknown'}));await rename(directory,retained);report.executionComplete=false;report.stages[0].tools=[{id:tool.id,argv:tool.argv,status:'blocked',startedAt:tool.startedAt,gaps:['explicit_missing_original_fixture']}];await writeFile(reportPath,raw(report));
+  await writeFile(join(directory,'execution.json'),raw({...JSON.parse(execution.toString()),cleanup:'unknown'}));await rename(directory,retained);report.executionComplete=false;
+  if(omit==='stage')report.stages.shift();else report.stages[0].tools=omit==='tool'?[]:[{id:tool.id,argv:tool.argv,status:'blocked',startedAt:tool.startedAt,gaps:['explicit_missing_original_fixture']}];await writeFile(reportPath,raw(report));
   return async()=>{await rename(retained,directory);await writeFile(join(directory,'execution.json'),execution);await writeFile(reportPath,reportBytes);};
 }
 
 test('the exact prior registry guards upgrade without removing original events',{skip:!registryLegacyRoot},async()=>{
   const legacy=await import(pathToFileURL(join(registryLegacyRoot!,'dist/src/w2-execution-store.js')).href),db=new DatabaseSync(':memory:');try{db.exec('CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,object TEXT,data TEXT,observed_at TEXT)');db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('original_fixture','original','{"preserved":true}','fixed');legacy.installW2ExecutionGuards(db);const events=db.prepare('SELECT * FROM events').all();assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'w2_execution_%'").all().length,2);db.exec('BEGIN IMMEDIATE');installW2ExecutionGuards(db);db.exec('COMMIT');assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'w2_execution_%'").all().length,3);assert.deepEqual(db.prepare('SELECT * FROM events').all(),events);}finally{db.close();}
+});
+
+test('legacy omitted execution slots cannot settle unknown work; original complete capture resumes the same run',{skip:!legacyRoot,timeout:180000},async t=>{
+  const fixture=await old('tests/integration-member/governed-recomposition-fixture'),runtime=await old('src/member-recomposition'),store=await old('src/recomposition-test-store'),f=await fixture.governedRecompositionFixture(t),complete=store.RecompositionTestRecords.prototype.complete;
+  store.RecompositionTestRecords.prototype.complete=function(){throw new Error('fixture_legacy_before_consumption');};try{await assert.rejects(runtime.runMemberRecomposition(f.recompositionPath),/fixture_legacy_before_consumption/);}finally{store.RecompositionTestRecords.prototype.complete=complete;}
+  const original=f.q.recompositionTests().state(f.recompositionPlan.id),root=join(original.directory,'verification'),settlements=f.ledger.state().settlements.length,trace=await readFile(f.model.trace),q=await QueueStore.open(f.store);
+  try{
+    for(const omit of ['tool','stage'] as const){
+      const restore=await hideOriginal(root,omit);try{await assert.rejects(runMemberRecomposition(f.recompositionPath),/w2_original_execution_unknown/);assert.equal(q.recompositionTests().state(f.recompositionPlan.id).phase,'started_or_unknown');assert.equal(q.recompositionTests().state(f.recompositionPlan.id).captureValidationCurrent,false);assert.equal(f.q.resources().status(f.testResource).state,'held');assert.equal(f.ledger.state().settlements.length,settlements);}finally{await restore();}
+    }
+    const reportPath=join(root,'verification.json'),bytes=await readFile(reportPath),report=JSON.parse(bytes.toString());report.stages[1].index=0;await writeFile(reportPath,raw(report));try{await assert.rejects(runMemberRecomposition(f.recompositionPath),/w2_original_execution_unknown/);}finally{await writeFile(reportPath,bytes);}
+    const recovered=await runMemberRecomposition(f.recompositionPath);assert.equal(recovered.phase,'new_integration_candidate_requires_own_reception');assert.equal(q.recompositionTests().state(f.recompositionPlan.id).binding!.run,original.binding.run);assert.equal(f.ledger.state().settlements.length,settlements+1);assert.equal((await runMemberRecomposition(f.recompositionPath) as any).newGitProcesses,0);assert.equal(f.ledger.state().settlements.length,settlements+1);assert.ok((await readFile(f.model.trace)).equals(trace));
+    await writeFile(join(f.root,'legacy-slot-coverage-proof.json'),raw({legacyRoot,originalRun:original.binding.run,omittedToolAndStageRejected:true,duplicateStageRejected:true,restoredSameRun:true,settlementsBefore:settlements,settlementsAfter:f.ledger.state().settlements.length,newModelInputs:0}));
+  }finally{q.close();}
+});
+
+test('shared delivery capture also rejects legacy omitted slots and resumes original complete capture',{skip:!legacyRoot,timeout:180000},async t=>{
+  const fixture=await old('tests/delivery-validation/fixture'),runtime=await old('src/delivery-validation'),store=await old('src/delivery-validation-store'),f=await fixture.deliveryFixture(t),complete=store.DeliveryValidationRecords.prototype.complete;
+  store.DeliveryValidationRecords.prototype.complete=function(){throw new Error('fixture_legacy_delivery_before_consumption');};try{await assert.rejects(runtime.runDeliveryValidation(f.store,f.planPath),/fixture_legacy_delivery_before_consumption/);}finally{store.DeliveryValidationRecords.prototype.complete=complete;}
+  const before=f.q.deliveryValidations().state(f.plan.id),directory=join(f.store,'delivery-validation-'+deliveryValidationSha(f.plan));
+  for(const omit of ['tool','stage'] as const){const restore=await hideOriginal(join(directory,'verification'),omit);try{await assert.rejects(runDeliveryValidation(f.store,f.planPath,'reconcile'),/delivery_validation_original_execution_unknown/);assert.equal(f.q.deliveryValidations().state(f.plan.id).phase,'started_or_unknown');}finally{await restore();}}
+  const recovered=await runDeliveryValidation(f.store,f.planPath,'reconcile');assert.ok('result' in recovered);assert.equal(recovered.result.scenarioAssertionsPassed,true);assert.equal(recovered.run,before.run);assert.equal(recovered.newVerificationRuns,0);assert.equal((await f.calls()).length,0);
 });
 
 for(const entry of ['run','repeat-prepare'])test('legacy already-started recomposition keeps upgrade protection after rejected capture: '+entry,{skip:!legacyRoot,timeout:180000},async t=>{
