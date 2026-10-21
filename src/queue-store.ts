@@ -1,8 +1,8 @@
 import {IntegrationRecords,type IntegrationSource} from './integration-store.js';
-import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion,enableIntegrationFormat} from './queue-format.js';
+import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion,enableIntegrationFormat,enableMemberRepairFormat} from './queue-format.js';
 import {parseIntegrationCandidate} from './integration-contract.js';
 import {IntegrationMemberRecords,type IntegrationMemberSource} from './integration-member-store.js';
-import type {IntegrationMemberReturn} from './integration-member-contract.js';
+import {memberReturnReference,type IntegrationMemberReturn} from './integration-member-contract.js';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -261,14 +261,43 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   }
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id),{check:p=>this.deliveryRecords(fn=>fn()).checkOutcome(p),record:sha=>this.deliveryRecords(fn=>fn()).recordOutcome(sha)}); }
   deliveries(){return this.deliveryRecords(fn=>this.transaction(fn));}
-  private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude));}
+  private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude),members=>this.deliveryMemberReturns(members));}
+  private deliveryMemberReturns(members:Row[]){
+    return members.flatMap(member=>{
+      const packet=this.packet(member.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),integration=this.integrationMaterial(packet,false),selected=integration?.source.composition.subject.members??summary.composition?.subject.members??[{candidate:e.manifest.candidate}],returns=this.integrationMemberRecords(fn=>fn()).contextFor(selected,e.context);
+      return returns.length?[{item:member.item,packet:member.packet,returns}]:[];
+    });
+  }
   deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}
   private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
   integrations(){return this.integrationRecords(fn=>this.transaction(fn));}
   private integrationRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new IntegrationRecords(this.db,transaction,this.directory,operation=>this.integrationSource(operation),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
-  integrationMemberReturns(){return new IntegrationMemberRecords(this.db,fn=>this.transaction(fn),p=>this.integrationMemberSource(p));}
+  integrationMemberReturns(){return this.integrationMemberRecords(fn=>this.transaction(fn));}
+  private integrationMemberRecords(transaction:<T>(fn:()=>T)=>T){return new IntegrationMemberRecords(this.db,transaction,p=>this.integrationMemberSource(p),()=>{enableMemberRepairFormat(this.db);});}
+  private memberReceptionCurrent(item:string){return !this.integrationMemberRecords(fn=>fn()).hasPendingForItem(item);}
+  private integrationApplicability(op:Row,receiver:Row){try{const m=this.integrationMaterial(this.packet(op.packet),true,op.id);return !m||(receiver.memberReturnEvidenceSha256??hash(canonical([])))===m.memberReturnEvidenceSha256;}catch{return false;}}
+  memberRepairInput(operation:string,reference:unknown,current=true){return this.transaction(()=>this.memberRepairSource(operation,reference,current));}
+  private memberRepairSource(operation:string,reference:unknown,current:boolean):Row{
+    if(!memberReturnReference(reference))throw new Error('member_repair_reference_invalid');const m=this.integrationMemberRecords(fn=>fn()).material(reference.id),request=m.request,op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row|undefined;
+    if(m.state.requestSha256!==reference.requestSha256||m.state.sourceSha256!==reference.sourceSha256||!op||op.item!==request.member.item||op.packet!==request.member.packet)throw new Error('member_repair_original_operation_mismatch');
+    if(current&&(!m.state.current||this.prerequisites(this.item(op.item)).length))throw new Error('member_repair_source_no_longer_current');
+    const proof=m.proof,parent=this.receiverOperation(request.reception.operation).receiver;if(!parent||parent.bindingHash!==request.reception.bindingHash||parent.judgmentId!==request.reception.judgmentId||parent.inputSha256!==request.reception.inputSha256||canonical(parent.judgment)!==canonical(proof.parent.judgment))throw new Error('member_repair_parent_judgment_changed');
+    if(proof.selectedFindings.length>10)throw new Error('member_repair_selected_finding_bound');
+    const parentInput=JSON.parse(this.blob(parent.inputSha256).toString()),priorReview={operation:request.reception.operation,packet:request.reception.packet,judgmentId:parent.judgmentId,bindingHash:parent.bindingHash,inputSha256:parent.inputSha256,report:parent.judgment.report,findings:parent.judgment.findings,context:proof.member.context,integrationMember:{reference,parentFinal:proof.parent.fullFinal,association:proof.integration.association,composition:proof.integration.source.composition,compositionReport:proof.integration.source.report,candidateDiff:proof.integration.diff,candidateReport:parentInput.data.evidence.report,sources:parentInput.data.sources,material:parentInput.data.material,selectedMember:proof.selectedMember,selectedFindings:proof.selectedFindings,member:proof.member,sourceArtifactScope:'Full parent final, original structured reports and supplied source/material are included. Raw provider and Git captures remain exact originals in the queue, not an implied model inspection of every raw field.'}},findings=proof.selectedFindings.map((x:Row)=>({id:parent.judgmentId+':'+x.index,description:x.finding.description})),queueOperation={store:this.directory,operation,sourceReviewOperation:request.reception.operation,memberReturnSha256:reference.sourceSha256};
+    return {kind:'integration-member-return',operation,packet:op.packet,candidate:proof.member.manifest.candidate,context:proof.member.context,reception:parent,receptionOperation:request.reception.operation,memberReturn:reference,priorReview,findings,queueOperation};
+  }
+  private memberRepairAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined){
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,stage=parse(op,'result')?.repair,plan=proposed?.plan??this.blob(stage?.planSha256),p=JSON.parse(plan.toString()),history=this.db.prepare("SELECT data FROM events WHERE kind='integration_member_repair_bound' AND object=? ORDER BY id DESC LIMIT 1").get(operation) as Row|undefined;
+    if(!p.memberReturn){if(history)throw new Error('member_repair_original_return_required');return;}
+    const source=this.memberRepairSource(operation,p.memberReturn,true),request=proposed?.request??this.blob(stage.requestSha256),config=proposed?.config??this.blob(stage.configSha256),r=JSON.parse(request.toString());
+    if(canonical(r.priorReview)!==canonical(source.priorReview)||canonical(r.findings)!==canonical(source.findings)||canonical(r.queueOperation)!==canonical(source.queueOperation))throw new Error('member_repair_complete_parent_material_required');
+    const entry={memberReturn:p.memberReturn,packet:op.packet,planSha256:hash(plan),requestSha256:hash(request),configSha256:hash(config),memberReturnSha256:p.memberReturn.sourceSha256};
+    if(history&&canonical(JSON.parse(history.data))!==canonical(entry)&&!(stage?.phase==='closed_unstarted'&&p.replacesClosedBinding===stage.bindingHash))throw new Error('member_repair_original_binding_changed');
+    enableMemberRepairFormat(this.db);if(!history||canonical(JSON.parse(history.data))!==canonical(entry))this.event('integration_member_repair_bound',operation,entry);
+    this.event('integration_member_repair_admitted',operation,entry);
+  }
   private integrationMemberSource(p:IntegrationMemberReturn):IntegrationMemberSource{
-    const parent=this.reviewSource(p.reception.operation,true),r=parent.receiver,op=this.receiverOperation(p.reception.operation).op,packet=this.packet(op.packet),integration=this.integrationMaterial(packet,true),member=this.item(p.member.item),memberPacket=this.packet(p.member.packet),e=this.packetEvidence(memberPacket),summary=this.effectiveSummary(member,memberPacket);
+    const parent=this.reviewSource(p.reception.operation,true),r=parent.receiver,op=this.receiverOperation(p.reception.operation).op,packet=this.packet(op.packet),integration=this.integrationMaterial(packet,true,p.reception.operation),member=this.item(p.member.item),memberPacket=this.packet(p.member.packet),e=this.packetEvidence(memberPacket),summary=this.effectiveSummary(member,memberPacket);
     if(op.status!=='complete'||!r.controllerReturned||r.judgment.verdict!=='RETURN_FOR_WORK'||op.packet!==p.reception.packet||r.bindingHash!==p.reception.bindingHash||r.judgmentId!==p.reception.judgmentId||r.inputSha256!==p.reception.inputSha256||!integration||integration.id!==p.integration||r.integrationSha256!==integration.sha256||r.judgment.consumedIntegration!==integration.sha256)throw new Error('integration_member_original_return_required');
     const completed=r.blobs?.['completed.json'];if(!completed)throw new Error('integration_member_final_original_required');const receipt=JSON.parse(this.blob(completed.sha256).toString());if(typeof receipt.finalText!=='string'||hash(receipt.finalText)!==p.reception.finalSha256||receipt.inputSha256!==p.reception.inputSha256)throw new Error('integration_member_final_original_changed');
     const selected=integration.source.composition.subject.members[p.member.index],c=e.manifest.candidate;
@@ -295,17 +324,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId,item.id);this.event('integration_candidate_linked',item.id,{packet:packetId,previousPacket:packet.id,integrationSha256:sha256,requestSha256:hash(raw)});
     return {item:item.id,packet:packetId,fingerprint,integrationSha256:sha256,duplicate:false,newModelInputs:0,priorJudgmentTransferred:false};
   });}
-  private integrationMaterial(packet:Row,requireCurrent:boolean):Row|null{
+  private integrationMaterial(packet:Row,requireCurrent:boolean,excludeReception?:string):Row|null{
     const e=this.packetEvidence(packet),records=this.integrationRecords(fn=>fn()),id=records.candidateProducer(e.manifest.candidate),ref=parse(packet,'summary').integration;
     if(!id){if(ref)throw new Error('integration_producer_binding_changed');return null;}if(!ref||ref.id!==id)throw new Error('integration_candidate_link_required');
     const proof=JSON.parse(this.blob(ref.sha256).toString()),m=records.candidateMaterial(id),c=e.manifest.candidate,summary=parse(packet,'summary');
     if(proof.id!==id||proof.requestSha256!==m.requestSha256||proof.sourceOperation!==m.source.operation||proof.sourcePacket!==m.source.packet||proof.sourceFingerprint!==m.source.fingerprint||proof.subjectSha256!==m.source.composition.sha256||['repository','pr','H','B','targetRef'].some(k=>proof.candidate[k]!==c[k])||proof.candidateTree!==m.candidate.T||summary.tree!==m.candidate.T||canonical(proof.context)!==canonical(e.context)||canonical(e.context)!==canonical(m.source.context))throw new Error('integration_candidate_link_changed');
     this.blob(proof.linkRequestSha256);this.blob(proof.originalCandidateManifestSha256);this.blob(proof.originalCandidateReportSha256);
     if(requireCurrent&&(!m.current||!summary.evidenceComplete))throw new Error('integration_original_or_validation_no_longer_current');
-    const {current:_current,...material}=m;return {sha256:ref.sha256,association:proof,...material};
+    const {current:_current,...material}=m,memberReturns=this.integrationMemberRecords(fn=>fn()).contextFor(m.source.composition.subject.members,m.source.context,excludeReception);return {sha256:ref.sha256,association:proof,...material,memberReturns,memberReturnEvidenceSha256:hash(canonical(memberReturns))};
   }
   private integrationAdmission(op:Row,status:'receiving'|'merging'){
-    const material=this.integrationMaterial(this.packet(op.packet),true);if(!material)return;
+    const material=this.integrationMaterial(this.packet(op.packet),true,op.id);if(!material)return;
     if(!this.receiverCandidateCurrent(this.item(op.item)))throw new Error('integration_current_candidate_required');
     this.event('integration_consumer_admitted',op.id,{packet:op.packet,status,integrationSha256:material.sha256});
   }
@@ -404,13 +433,15 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id),(operation,proposed,observations)=>{
       this.repairAuthorization(operation,proposed,observations);
       coordination.repairGate(operation,proposed);
-    });
+      this.memberRepairAdmission(operation,proposed);
+    },(operation,reference,current)=>this.memberRepairSource(operation,reference,current));
   }
   repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation,proposed,false);return {operation,preparationChecked:true,modelExecutionAllowed:false};});}
   private repairAuthorization(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:import('./authority-source.js').OwnerObservation[],requireHeld=true){
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const stage=parse(op,'result')?.repair;
     if(this.integrationRecords(fn=>fn()).candidateProducer(parse(this.item(op.item),'candidate')))throw new Error('integration_requires_member_scoped_repair');
     const p=JSON.parse((proposed?.plan??this.blob(stage?.planSha256)).toString()),request=JSON.parse((proposed?.request??this.blob(stage?.requestSha256)).toString()),config=JSON.parse((proposed?.config??this.blob(stage?.configSha256)).toString()),governance=p.governance;
+    if(p.memberReturn)this.memberRepairSource(operation,p.memberReturn,true);
     const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(governance!==undefined)throw new Error('queue_repair_authority_profile_missing');return;}
     if(!governance||Object.keys(governance).sort().join()!=='authorityIntent,resourceRequests'||typeof governance.authorityIntent!=='string'||!Array.isArray(governance.resourceRequests)||governance.resourceRequests.length>32||new Set(governance.resourceRequests).size!==governance.resourceRequests.length||governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!/^[a-f0-9]{64}$/.test(r)))throw new Error('queue_repair_authority_consumer_binding_required');
@@ -433,7 +464,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if (receiver?.phase !== 'returned' || !receiver.judgment || receiver.bindingHash !== receiver.judgment.bindingHash) throw new Error('original_receiver_judgment_unavailable');
     for (const ref of Object.values(receiver.blobs) as Row[]) this.blob(ref.sha256);
     this.blob(receiver.inputSha256); this.blob(receiver.systemSha256);
-    if (requireCurrent && (item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.pairedApplicability(op, receiver) || !this.effectiveSummary(item, packet).evidenceComplete || this.prerequisites(item).length)) throw new Error('queue_repair_source_no_longer_current');
+    if (requireCurrent && (item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.memberReceptionCurrent(item.id) || !this.integrationApplicability(op,receiver) || !this.pairedApplicability(op, receiver) || !this.effectiveSummary(item, packet).evidenceComplete || this.prerequisites(item).length)) throw new Error('queue_repair_source_no_longer_current');
     return { operation: id, packet: op.packet, receiver, candidate: evidence.manifest.candidate, context: evidence.context, result };
   }
   private supplementGuardInstalled(): boolean { return [['receiver_packet_material_guard', supplementGuard], ['receiver_supplement_lineage_guard', supplementLineageGuard]].every(([name, sql]) => (this.db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name!) as Row | undefined)?.sql === sql); }
@@ -483,7 +514,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if (!state.prepared) throw new Error('publication_not_prepared');
       if (kind === 'intent') {
         const { op, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet), context = this.packetEvidence(packet).context;
-        if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.bindingHash !== state.prepared.bindingHash || item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('publication_source_no_longer_current');
+        if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.bindingHash !== state.prepared.bindingHash || item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.memberReceptionCurrent(item.id) || !this.integrationApplicability(op,receiver) || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('publication_source_no_longer_current');
         if (this.prerequisites(item).length) throw new Error('publication_prerequisites_unmet');
         if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
         if (this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
@@ -775,7 +806,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const { op } = this.receiverOperation(id), packet = this.packet(op.packet);
       const { context, manifest, report } = this.packetEvidence(packet);
       if(manifest.kind==='tongxu-development-task-source')throw new Error('development_task_requires_formal_candidate');
-      const integration=this.integrationMaterial(packet,true);
+      const integration=this.integrationMaterial(packet,true,id);
       const outputs = report.stages.flatMap((stage: Row) => stage.tools.map((tool: Row) => ({ stage: stage.index, tool: tool.id,
         originals: Object.fromEntries(['stdout', 'stderr', 'result', 'sandbox'].filter(k => tool[k]).map(k => {
           const bytes = this.blob(tool[k].sha256); let text: string, encoding: string;
@@ -841,6 +872,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const op = this.db.prepare('SELECT * FROM operations WHERE item=? AND packet=?').get(p.first.item, p.first.packet) as Row | undefined;
     const r = op && parse(op, 'result')?.receiver;
     if (!op || op.status !== 'complete' || r?.phase !== 'returned' || r.judgment?.verdict !== 'ACCEPT_WITHIN_SCOPE') throw new Error('paired_upstream_reception_pending_or_not_accepted');
+    if(!this.memberReceptionCurrent(op.item)||!this.integrationApplicability(op,r))throw new Error('paired_upstream_new_member_evidence_requires_reception');
     for (const ref of Object.values(r.blobs ?? {}) as Row[]) this.blob(ref.sha256);
     if (r.planSha256 !== p.first.planSha256) throw new Error('paired_upstream_plan_changed');
     this.blob(r.inputSha256); this.blob(r.systemSha256); this.blob(r.planSha256);
@@ -900,6 +932,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
     if(parse(packet,'summary').composition)this.requireCompositionMode();
     this.basePacketFingerprint(packet); this.pairedPrerequisite(op.item);
+    if(!this.memberReceptionCurrent(item.id))throw new Error('member_return_requires_repair_or_refutation_reception');
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
     if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
@@ -938,9 +971,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if(correction){this.requireCorrections();const input=JSON.parse(fixed.input.toString());if(input.binding.correctionSha256!==correction.sha256||input.data.evidence.correction?.sha256!==correction.sha256||input.data.evidence.correction.originalFinalText!==this.blob(correction.finalTextSha256).toString())throw new Error('receiver_correction_input_mismatch');}
       const sourceEvents=(parse(this.packet(op.packet),'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r));
       if(this.eventSourceStates(this.item(op.item)).some(s=>s.registered)&&canonical(JSON.parse(fixed.input.toString()).data.evidence.sourceEvents)!==canonical(sourceEvents))throw new Error('receiver_event_source_input_mismatch');
-      const integration=this.integrationMaterial(this.packet(op.packet),true),input=JSON.parse(fixed.input.toString());if(integration&&(input.binding.integrationSha256!==integration.sha256||canonical(input.data.evidence.integration)!==canonical(integration)))throw new Error('receiver_integration_input_mismatch');
+      const integration=this.integrationMaterial(this.packet(op.packet),true,op.id),input=JSON.parse(fixed.input.toString());if(integration&&(input.binding.integrationSha256!==integration.sha256||input.binding.memberReturnEvidenceSha256!==integration.memberReturnEvidenceSha256||canonical(input.data.evidence.integration)!==canonical(integration)))throw new Error('receiver_integration_input_mismatch');
       const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
-        ...(integration?{integrationSha256:integration.sha256}:{}),
+        ...(integration?{integrationSha256:integration.sha256,memberReturnEvidenceSha256:integration.memberReturnEvidenceSha256}:{}),
         ...(fixed.promptAssembly?{promptAssemblySha256:hash(fixed.promptAssembly)}:{}),
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
@@ -1008,7 +1041,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   }
   private currentReceiverResult(op: Row, result: Row | null): Row | null {
     if (!result?.receiver) return result;
-    const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item) && this.pairedApplicability(op, result.receiver);
+    const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item) && this.memberReceptionCurrent(item.id) && this.integrationApplicability(op,result.receiver) && this.pairedApplicability(op, result.receiver);
     return { ...result, receiver: { ...result.receiver, materialMatchedAtReturn: result.receiver.currentMaterialMatches, currentMaterialMatches: current },
       gaps: [...new Set([...result.gaps, ...(!current ? ['newer_material_requires_own_reception'] : [])])] };
   }
@@ -1025,7 +1058,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       for (const [name, bytes] of Object.entries(originals)) {
         const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); blobs[name] = { sha256, bytes: bytes.length };
       }
-      const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item) && this.pairedApplicability(op, receiver);
+      const item = this.item(op.item), current = item.current_packet === op.packet && !item.observation_conflict && this.receiverCandidateCurrent(item) && this.memberReceptionCurrent(item.id) && this.integrationApplicability(op,receiver) && this.pairedApplicability(op, receiver);
       const r = { ...receiver, phase: judgment ? 'returned' : 'closed_unresolved', finishedAt: now(), judgment, closeSource: closeSource ?? null, blobs,
         ...(invalid ? { invalidResult: { kind: 'completed_invalid_judgment', reason: invalid.reason, finalTextSha256: hash(invalid.finalText), executionCompleted: true, validJudgment: false } } : {}),
         currentMaterialMatches: current, newTaskSentOnRecovery: false };

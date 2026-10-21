@@ -23,3 +23,5 @@ export function parseIntegrationMemberReturn(raw:Buffer):IntegrationMemberReturn
   return p;
 }
 export const integrationMemberReturnSha256=(p:IntegrationMemberReturn)=>hash(canonical(p));
+export type MemberReturnReference={id:string;requestSha256:string;sourceSha256:string};
+export function memberReturnReference(x:unknown):x is MemberReturnReference{return exactKeys(x,['id','requestSha256','sourceSha256'])&&messageId((x as MemberReturnReference).id)&&isAuthorityDigest((x as MemberReturnReference).requestSha256)&&isAuthorityDigest((x as MemberReturnReference).sourceSha256);}

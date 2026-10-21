@@ -13,14 +13,16 @@ import { privateDirectory } from './snapshot.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import { resourceAction } from './resource-claims.js';
 import type { AuthorityRole } from './authority-contract.js';
+import {memberReturnReference,type MemberReturnReference} from './integration-member-contract.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
-  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]};coordination?:{planId:string;task:string;capability:string;fromRun:string;fromMessage:string} };
+  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]};coordination?:{planId:string;task:string;capability:string;fromRun:string;fromMessage:string};memberReturn?:MemberReturnReference };
 const uuid = /^[a-f0-9-]{36}$/, digest = /^[a-f0-9]{64}$/;
 export function parseQueueRepairPlan(bytes: Buffer): QueueRepairPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance','coordination'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance','coordination','memberReturn'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if(p.memberReturn!==undefined&&!memberReturnReference(p.memberReturn))throw new Error('invalid_queue_repair_member_return');
   if(p.coordination!==undefined&&(!p.coordination||Object.keys(p.coordination).sort().join()!=='capability,fromMessage,fromRun,planId,task'||!digest.test(p.coordination.planId)||!digest.test(p.coordination.fromRun)||['task','capability','fromMessage'].some(k=>typeof p.coordination[k]!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(p.coordination[k]))))throw new Error('invalid_queue_repair_coordination');
   if(p.governance!==undefined&&(!p.governance||Object.keys(p.governance).sort().join()!=='authorityIntent,resourceRequests'||typeof p.governance.authorityIntent!=='string'||!p.governance.authorityIntent.trim()||p.governance.authorityIntent.length>128||!Array.isArray(p.governance.resourceRequests)||p.governance.resourceRequests.length>32||new Set(p.governance.resourceRequests).size!==p.governance.resourceRequests.length||p.governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!digest.test(r))))throw new Error('invalid_queue_repair_governance');
   for (const path of [p.store, p.request, p.config]) if (typeof path !== 'string' || resolve(path) !== path) throw new Error('queue_repair_path_not_canonical');
@@ -65,21 +67,26 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
   const planBytes = await regular(planPath), p = parseQueueRepairPlan(planBytes);
   return lock(p.store,p.operation,async()=> {
     // Re-read the supplier capture before using the stored finding. No resend.
-    await reconcileReception(p.store,p.operation);
+    let actualReception=p.operation;
+    if(p.memberReturn){const q=await QueueStore.open(p.store);try{actualReception=q.memberRepairInput(p.operation,p.memberReturn,false).receptionOperation;}finally{q.close();}}
+    await reconcileReception(p.store,actualReception);
     const q = await QueueStore.open(p.store), records = q.reviewRecords();
     try {
-      const original = q.receiverState(p.operation), evidence = q.receiverEvidence(p.operation), r = original.receiver;
+      const member=p.memberReturn?q.memberRepairInput(p.operation,p.memberReturn,false):null,original=member?null:q.receiverState(p.operation),evidence=member?{packet:member.packet,context:member.context}:q.receiverEvidence(p.operation),r=member?member.reception:original!.receiver;
       const requestBytes = await regular(p.request), configBytes = await regular(p.config);
       if (hash(requestBytes)!==p.requestSha256 || hash(configBytes)!==p.configSha256) throw new Error('queue_repair_plan_inputs_changed');
       const request = JSON.parse(requestBytes.toString()) as ProjectRequest;
       if (request.priorReview || request.queueOperation || request.findings.length) throw new Error('queue_repair_findings_must_come_from_original');
       const effective: ProjectRequest = { ...request,
-        findings:r.judgment.findings.map((f: Row,i: number)=>({id:r.judgmentId+':'+i,description:f.description})),
-        priorReview:{operation:p.operation,packet:evidence.packet,judgmentId:r.judgmentId,bindingHash:r.bindingHash,inputSha256:r.inputSha256,report:r.judgment.report,findings:r.judgment.findings,context:evidence.context},
-        queueOperation:{store:p.store,operation:p.operation}
+        findings:member?member.findings:r.judgment.findings.map((f: Row,i: number)=>({id:r.judgmentId+':'+i,description:f.description})),
+        priorReview:member?member.priorReview:{operation:p.operation,packet:evidence.packet,judgmentId:r.judgmentId,bindingHash:r.bindingHash,inputSha256:r.inputSha256,report:r.judgment.report,findings:r.judgment.findings,context:evidence.context},
+        queueOperation:member?member.queueOperation:{store:p.store,operation:p.operation}
       };
       const effectiveBytes = Buffer.from(JSON.stringify(effective));let observations:OwnerObservation[]=[],role:AuthorityRole='implementer',prior:Row|null=null;
       try{prior=records.state(p.operation).repair;}catch(e){if(!(e instanceof Error)||e.message!=='queue_repair_not_registered')throw e;}
+      // Refuse aliases before any resource preparation/claim or new model
+      // admission. A known unstarted replacement keeps its explicit lineage.
+      if(prior&&(prior.planSha256!==hash(planBytes)||prior.requestSha256!==hash(effectiveBytes)||prior.configSha256!==hash(configBytes))&&!(prior.phase==='closed_unstarted'&&p.replacesClosedBinding===prior.bindingHash&&request.executionRoot!==prior.executionRoot))throw new Error('queue_repair_fixed_input_changed');
       const terminalRead=prior?.planSha256===hash(planBytes)&&['returned','closed_unstarted'].includes(prior.phase);
       const refresh=async()=>{
         if(!p.governance)return;

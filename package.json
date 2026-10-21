@@ -44,7 +44,9 @@
     "assess-delivery": "node dist/src/delivery-assessment-cli.js",
     "test:delivery-assessment": "npm run build && node --test dist/tests/delivery-assessment/*.test.js",
     "integration": "node dist/src/integration-cli.js",
-    "test:integration": "npm run build && node --test dist/tests/integration/*.test.js"
+    "test:integration": "npm run build && node --test dist/tests/integration/*.test.js",
+    "member-repair": "node dist/src/integration-member-cli.js",
+    "test:integration-member": "npm run build && node --test dist/tests/integration-member/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"

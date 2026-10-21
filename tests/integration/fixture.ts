@@ -12,13 +12,14 @@ import {runIntegration} from '../../src/integration.js';
 import type {IntegrationRequest} from '../../src/integration-contract.js';
 
 export const raw=(x:unknown)=>Buffer.from(canonical(x));
-export async function integrationFixture(t:test.TestContext){
+export type MemberScenario={seed:(objects:string)=>Promise<void>;changeA:(objects:string)=>Promise<void>};
+export async function integrationFixture(t:test.TestContext,scenario?:MemberScenario){
   const config=process.env.TONGXU_TEST_DOCKER_CONFIG;if(!config)throw new Error('TONGXU_TEST_DOCKER_CONFIG_required');const docker=JSON.parse(await readFile(config,'utf8')),hooks:Array<()=>unknown>=[],f=await setup({after:(fn:()=>unknown)=>hooks.push(fn)} as unknown as test.TestContext);
   t.after(async()=>{if(process.env.TONGXU_INTEGRATION_TEST_EVIDENCE){const parent=process.env.TONGXU_INTEGRATION_TEST_EVIDENCE;await mkdir(parent,{recursive:true});await cp(f.root,join(parent,basename(f.root)),{recursive:true});}for(const fn of hooks.reverse())await fn();});
   const objects=f.plan.objects;
   const commit=async(message:string)=>{await git(objects,['add','.']);await git(objects,['-c','user.name=fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgSign=false','commit','-m',message]);return git(objects,['rev-parse','HEAD']);};
-  await writeFile(join(objects,'scale.json'),'1\n');await writeFile(join(objects,'consumer.json'),'1\n');const B=await commit('base units contract');
-  await git(objects,['switch','-c','member-a',B]);await writeFile(join(objects,'scale.json'),'1000\n');const A=await commit('producer changes units');
+  await writeFile(join(objects,'scale.json'),'1\n');await writeFile(join(objects,'consumer.json'),'1\n');await scenario?.seed(objects);const B=await commit('base units contract');
+  await git(objects,['switch','-c','member-a',B]);await writeFile(join(objects,'scale.json'),'1000\n');await scenario?.changeA(objects);const A=await commit('producer changes units');
   await git(objects,['switch','-c','member-b',B]);await writeFile(join(objects,'consumer.json'),'1000\n');const C=await commit('consumer changes units');
   const snapshots:string[]=[],at=new Date().toISOString();for(const [index,H] of [A,C].entries()){
     const path=join(f.root,'member-snapshot-'+index),s=await Snapshot.create(path,'fixture/reception',index+10,[],[]);s.manifest.candidate={repository:'fixture/reception',pr:index+10,H,B,mergeBase:B,targetRef:'fixture',observedAt:at};await s.artifact(JSON.stringify({explicitFixture:true,H,B}),{kind:'pr',round:1,retrievedAt:at,provenance:'explicit-local-fixture',status:200});s.manifest.rounds.push({number:1,startedAt:at,finishedAt:at,coverage:{},sources:[],notes:[],gaps:[],limitations:['explicit_fixture'],current:true});await s.save();await s.close();snapshots.push(path);
@@ -34,8 +35,8 @@ export async function integrationFixture(t:test.TestContext){
 }
 /** The new PR identity is explicitly a local fixture. Its tests are real W2
  * executions; no recorded member PASS or fabricated PR publication is reused. */
-export async function candidateFixture(t:test.TestContext){
-  const f=await integrationFixture(t),produced=await runIntegration(f.store,f.path);assert.equal(produced.phase,'produced');assert.ok('result' in produced);const c=produced.result!.candidate,objects=join(produced.directory,'candidate.git'),snapshot=join(f.root,'integration-pr-snapshot'),at=new Date().toISOString(),s=await Snapshot.create(snapshot,c.repository,99,[],[]);
+export async function candidateFixture(t:test.TestContext,scenario?:MemberScenario){
+  const f=await integrationFixture(t,scenario),produced=await runIntegration(f.store,f.path);assert.equal(produced.phase,'produced');assert.ok('result' in produced);const c=produced.result!.candidate,objects=join(produced.directory,'candidate.git'),snapshot=join(f.root,'integration-pr-snapshot'),at=new Date().toISOString(),s=await Snapshot.create(snapshot,c.repository,99,[],[]);
   s.manifest.candidate={repository:c.repository,pr:99,H:c.H,B:c.B,targetRef:c.target,mergeBase:c.B,observedAt:at};await s.artifact(raw({explicitFixture:true,newPR:99,H:c.H,B:c.B,source:'local fixture of independently collected PR identity; no GitHub publication'}),{kind:'pr',round:1,retrievedAt:at,provenance:'explicit-local-fixture',status:200});s.manifest.rounds.push({number:1,startedAt:at,finishedAt:at,coverage:{},sources:[],notes:[],gaps:[],limitations:['explicit_PR_identity_fixture'],current:true});await s.save();await s.close();
   const verification=join(f.root,'integration-own-verification'),verified=await verify({snapshots:[snapshot],objects,plan:join(f.root,'units-test.json'),output:verification});assert.equal(verified.exit,0);assert.equal(verified.report.observedSampleFailures,0);const packet=await readPacket(snapshot,verification,join(f.root,'integration-context.json')),imported=f.q.import(packet);assert.equal(packet.summary.evidenceComplete,true);
   const link={schemaVersion:1,kind:'tongxu-integration-candidate',integration:f.request.id,item:imported.item,packet:imported.packet,fingerprint:packet.fingerprint,source:'explicit fixture new PR99, own actual W2 verification'},receiverPlan={...f.plan,item:imported.item,objects,sourcePaths:['scale.json','consumer.json']},receiverPath=join(f.root,'integration-receiver.json');await writeFile(receiverPath,raw(receiverPlan));

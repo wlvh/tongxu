@@ -18,8 +18,8 @@ const paths = (p: unknown, max: number): p is string[] => Array.isArray(p) && p.
 export type ProjectContract = {
   sourceCandidate: Candidate; materialPaths: string[]; protectedPaths: string[]; contract: string;
   testPlan: string; testPlanSha256: string; dependencyHash: string | null; generatedDirectories: string[];
-  priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown };
-  queueOperation?: { store: string; operation: string };
+  priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown };
+  queueOperation?: { store: string; operation: string;sourceReviewOperation?:string;memberReturnSha256?:string };
 };
 export type ProjectRequest = {
   schemaVersion: 1; kind: 'tongxu-project-repair-request'; executionRoot: string; objects: string; candidate: Candidate;
@@ -36,7 +36,7 @@ export function validateProjectContract(p: ProjectContract, grant: Grant) {
   if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || !paths(grant.allowedPaths, 32) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
   if (!Array.isArray(p.generatedDirectories) || p.generatedDirectories.length > 16 || p.generatedDirectories.some(x => !relative(x) || p.generatedDirectories.some(y => y !== x && (x.startsWith(y + '/') || y.startsWith(x + '/')))) || new Set(p.generatedDirectories).size !== p.generatedDirectories.length) throw new Error('invalid_project_output_directories');
   if (p.priorReview && (!digest.test(p.priorReview.bindingHash) || !digest.test(p.priorReview.inputSha256) || typeof p.priorReview.report !== 'string' || Buffer.byteLength(JSON.stringify(p.priorReview)) > 192 * 1024)) throw new Error('invalid_project_prior_review');
-  if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || p.queueOperation.operation !== p.priorReview?.operation)) throw new Error('invalid_project_queue_binding');
+  if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || (p.queueOperation.sourceReviewOperation??p.queueOperation.operation) !== p.priorReview?.operation || (p.queueOperation.sourceReviewOperation!==undefined||p.queueOperation.memberReturnSha256!==undefined||p.priorReview?.integrationMember!==undefined)&&(!/^[a-f0-9-]{36}$/.test(p.queueOperation.sourceReviewOperation??'')||!digest.test(p.queueOperation.memberReturnSha256??'')||!p.priorReview?.integrationMember))) throw new Error('invalid_project_queue_binding');
 }
 export async function projectTestPlan(p: ProjectContract) {
   const bytes = await regular(p.testPlan);

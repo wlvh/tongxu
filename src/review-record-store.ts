@@ -24,7 +24,12 @@ BEGIN SELECT RAISE(ABORT,'repair_record_is_bound'); END`;
 export class ReviewRecords {
   constructor(private db: DatabaseSync, private transaction: <T>(f: () => T) => T,
     private source: (id: string, requireCurrent: boolean) => Row,
-    private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void) {}
+    private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void,
+    private memberSource?:(operation:string,reference:unknown,current:boolean)=>Row) {}
+  private repairSource(id:string,plan:Row,current:boolean):Row{
+    if(plan.memberReturn!==undefined){if(!this.memberSource)throw new Error('member_repair_source_consumer_required');return this.memberSource(id,plan.memberReturn,current);}
+    const s=this.source(id,current);return {...s,kind:'individual-return',reception:s.receiver};
+  }
   private event(kind: string, object: string, data: unknown) { this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind, object, JSON.stringify(data), now()); }
   private events(object: string, kind?: string): Row[] { return (this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all(object) as Row[]).filter(e => !kind || e.kind === kind).map(e => ({ ...e, data: JSON.parse(e.data) })); }
   private blob(bytes: Buffer) { const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); this.bytes(sha256); return sha256; }
@@ -62,20 +67,19 @@ export class ReviewRecords {
         const replacement=JSON.parse(plan.toString()),nextRequest=JSON.parse(request.toString());
         if(x.repair.phase!=='closed_unstarted'||replacement.replacesClosedBinding!==x.repair.bindingHash||nextRequest.executionRoot===x.repair.executionRoot)throw new Error('queue_repair_fixed_input_changed');
       }
-      const s = this.source(id, true);
+      const p = JSON.parse(plan.toString()), r = JSON.parse(request.toString()), c = JSON.parse(config.toString()),s=this.repairSource(id,p,true);
       this.repairGate?.(id,{plan,request,config},observations);
-      if(s.receiver.subject)throw new Error('composition_requires_member_scoped_repair_and_reverification');
-      if (op.status !== 'complete' || s.receiver.judgment.verdict !== 'RETURN_FOR_WORK' || !s.receiver.controllerReturned) throw new Error('repair_requires_completed_return');
-      const p = JSON.parse(plan.toString()), r = JSON.parse(request.toString()), c = JSON.parse(config.toString());
-      if (p.operation !== id || p.judgmentId !== s.receiver.judgmentId || p.bindingHash !== s.receiver.bindingHash || p.packet !== op.packet || canonical(p.context) !== canonical(s.context)) throw new Error('queue_repair_source_mismatch');
-      if (r.candidate.H !== s.candidate.H || r.candidate.B !== s.candidate.B || r.candidate.repository !== s.candidate.repository || r.candidate.pr !== s.candidate.pr || r.candidate.target !== s.candidate.targetRef || c.executionKind !== s.receiver.executionKind) throw new Error('queue_repair_candidate_or_execution_mismatch');
+      if(s.reception.subject)throw new Error('composition_requires_member_scoped_repair_and_reverification');
+      if (op.status !== 'complete' || s.reception.judgment.verdict !== 'RETURN_FOR_WORK' || !s.reception.controllerReturned) throw new Error('repair_requires_completed_return');
+      if (p.operation !== id || p.judgmentId !== s.reception.judgmentId || p.bindingHash !== s.reception.bindingHash || p.packet !== op.packet || canonical(p.context) !== canonical(s.context)) throw new Error('queue_repair_source_mismatch');
+      if (r.candidate.H !== s.candidate.H || r.candidate.B !== s.candidate.B || r.candidate.repository !== s.candidate.repository || r.candidate.pr !== s.candidate.pr || r.candidate.target !== s.candidate.targetRef || c.executionKind !== s.reception.executionKind) throw new Error('queue_repair_candidate_or_execution_mismatch');
       if (!r.authorization?.allowRepair || !text(r.authorization.source)) throw new Error('queue_repair_authorization_missing');
       if (this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target)) throw new Error('target_occupied_or_unknown');
       if (this.reflectionDue(chainKey(s))) throw new Error('simplification_reflection_due');
       const seats = Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
-      const bindingHash = hash(canonical({ operation: id, packet: op.packet, originalBinding: s.receiver.bindingHash, plan: hash(plan), request: hash(request), config: hash(config) }));
-      const repair = { bindingHash, ...(result.repair?{previousBindingHash:result.repair.bindingHash}:{}),...(p.governance?{authorityIntent:p.governance.authorityIntent,resourceRequests:p.governance.resourceRequests}:{}), phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.receiver.judgmentId, sourceBindingHash: s.receiver.bindingHash, scope: s.context.scope.id, registeredAt: now() };
+      const bindingHash = hash(canonical({ operation: id, packet: op.packet, originalBinding: s.reception.bindingHash, plan: hash(plan), request: hash(request), config: hash(config) }));
+      const repair = { bindingHash, ...(result.repair?{previousBindingHash:result.repair.bindingHash}:{}),...(p.governance?{authorityIntent:p.governance.authorityIntent,resourceRequests:p.governance.resourceRequests}:{}),...(s.kind==='integration-member-return'?{memberReturn:p.memberReturn,memberReturnSha256:p.memberReturn.sourceSha256,sourceReceptionOperation:s.receptionOperation}:{}), phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.reception.judgmentId, sourceBindingHash: s.reception.bindingHash, scope: s.context.scope.id, registeredAt: now() };
       const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
       this.db.prepare("UPDATE operations SET status='repairing',generation=?,finished_at=NULL,result=? WHERE id=?").run(generation, JSON.stringify({ ...result, repair }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
@@ -85,7 +89,7 @@ export class ReviewRecords {
   }
   check(id: string, bindingHash: string, effect?: () => void,observations:OwnerObservation[]=[]) {
     return this.transaction(() => {
-      this.requireMode(); const x = this.fixed(id); this.source(id, true);
+      this.requireMode(); const x = this.fixed(id); this.repairSource(id,JSON.parse(x.plan.toString()),true);
       this.repairGate?.(id,undefined,observations);
       const c = this.db.prepare('SELECT * FROM claims WHERE operation=?').get(id) as Row;
       if (x.op.status !== 'repairing' || x.repair.phase === 'returned' || x.repair.bindingHash !== bindingHash || !c || c.generation !== x.op.generation || c.target !== x.op.target) throw new Error('queue_repair_claim_changed');
@@ -144,7 +148,7 @@ export class ReviewRecords {
   }
   publishedRepair(id: string, publicationOperation: string) {
     return this.transaction(() => {
-      this.requireMode(); const x = this.fixed(id), r = x.repair.result, p = this.publication(publicationOperation), source = this.source(id, false), published = this.source(publicationOperation, false);
+      this.requireMode(); const x = this.fixed(id), r = x.repair.result, p = this.publication(publicationOperation), source = this.repairSource(id,JSON.parse(x.plan.toString()),false), published = this.source(publicationOperation, false);
       if (x.repair.phase !== 'returned' || !r.actualRepairPerformed || !(x.repair.counters.actualFileWrites>0) || r.executionKind !== 'native_capture' || !['completed','completed_recovered_candidate'].includes(r.status) || p.stages.comment?.lastState !== 'verified' || p.stages.status?.lastState !== 'verified' || p.document.candidate.H !== r.after.H || p.document.candidate.B !== source.candidate.B || p.document.candidate.repository !== source.candidate.repository || p.document.candidate.pr !== source.candidate.pr || p.document.candidate.targetRef !== source.candidate.targetRef || canonical(published.context.scope)!==canonical(source.context.scope)) throw new Error('published_repair_not_bound_to_verified_new_candidate');
       const chain=chainKey(source),key = `published-repair:${chain}`, known = this.events(key, 'repair_batch_published'), duplicate = known.find(e => e.data.H === r.after.H);
       if (duplicate) return { ...duplicate.data, duplicate: true };

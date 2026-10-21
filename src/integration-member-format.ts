@@ -1,0 +1,8 @@
+import type {DatabaseSync} from 'node:sqlite';
+type Row=Record<string,any>;
+export const memberRepairFormatKey='integration_member_repair_format';
+export const memberRepairFormatContract='member-repair-original-parent-v1';
+const guard=`CREATE TRIGGER integration_member_repair_guard BEFORE UPDATE ON operations
+WHEN NEW.status='repairing' AND (OLD.status!='repairing' OR json_extract(NEW.result,'$.repair.bindingHash') IS NOT json_extract(OLD.result,'$.repair.bindingHash')) AND EXISTS(SELECT 1 FROM events WHERE object=NEW.id AND kind='integration_member_repair_bound')
+BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM events a WHERE a.id=(SELECT MAX(id) FROM events) AND a.object=NEW.id AND a.kind='integration_member_repair_admitted' AND json_extract(a.data,'$.packet')=NEW.packet AND json_extract(a.data,'$.planSha256')=json_extract(NEW.result,'$.repair.planSha256') AND json_extract(a.data,'$.requestSha256')=json_extract(NEW.result,'$.repair.requestSha256') AND json_extract(a.data,'$.configSha256')=json_extract(NEW.result,'$.repair.configSha256') AND json_extract(a.data,'$.memberReturnSha256')=json_extract(NEW.result,'$.repair.memberReturnSha256')) THEN RAISE(ABORT,'integration_member_repair_current_admission_required') END; END`;
+export function memberRepairGuards(db:DatabaseSync,install=false){const old=db.prepare("SELECT sql FROM sqlite_schema WHERE name='integration_member_repair_guard'").get() as Row|undefined;if(old){if(old.sql!==guard)throw new Error('integration_member_repair_guard_changed');}else if(install)db.exec(guard);else throw new Error('integration_member_repair_guard_missing');}
