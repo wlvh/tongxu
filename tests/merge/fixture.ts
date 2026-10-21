@@ -16,7 +16,10 @@ import { prepareManagedMerge } from '../../src/managed-merge.js';
 
 const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));let commentId=7200000000;
 export async function ready(t:test.TestContext,mode='normal'){
-  const f=await setup(t);const received=await runReception(f.path),operation=received.operation;
+  const f=await setup(t);const received=await runReception(f.path);return readyFromReception(t,f,received,mode);
+}
+export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>){
+  const operation=received.operation;
   f.q.enableSupplements();f.q.reviewRecords().enable();f.q.enableCompositions();f.q.enableReceiverCorrections();
   const sources:Record<string,any>={},sourcePath=join(f.root,'owner-provider-data.json'),exe=join(f.root,'owner-provider.mjs');
   const code=`#!${process.execPath}\nimport fs from 'node:fs';const args=process.argv.slice(2),data=JSON.parse(fs.readFileSync(${JSON.stringify(sourcePath)},'utf8'));if(args.includes('graphql')){const node=args.find(x=>x.startsWith('id=')).slice(3);console.log(JSON.stringify(Object.values(data).find(x=>x.comment.node_id===node).graph));}else console.log(JSON.stringify(data[args.at(-1).split('/').at(-1)].comment));`;
@@ -34,8 +37,8 @@ export async function ready(t:test.TestContext,mode='normal'){
   const c=e.manifest.candidate,action:ActionRequest={schemaVersion:1,scopeId:e.context.scope.id,scopeVersion:e.context.scope.version,scopeBodySha256:scopeBodyHash(body),repository:c.repository,target:c.targetRef,action:'merge',item:f.item,candidate:{H:c.H,B:c.B,subjectSha256:null},paths:[],resourceRefs:['existing-fixture-slot']};
   const confirmation=adopt({kind:'confirm_action',adoption:scope.sha,performerRole:'background',request:action,expiresAt:new Date(Date.now()+3600000).toISOString()}),observations=[scope.observation,confirmation.observation],intent='fixture-managed-merge';a.reserveAction(intent,action,'background',confirmation.sha,observations);
   const request:ResourceRequest={schemaVersion:1,ledgerId:ledger.profile.ledgerId,repository:c.repository,operation,authorityIntent:intent,resourceRef:'existing-fixture-slot',unit:'fixture-task',quantity:1,role:'background',actionSha256:actionHash(action)};
-  const binding:ManagedMergeBinding={schemaVersion:1,operation,item:f.item,packet:r.result.packet,repository:c.repository,repositoryId:99,pr:c.pr,H:c.H,B:c.B,targetRef:c.targetRef,T:r.result.tree,receptionOperation:operation,judgmentId:r.receiver.judgmentId,receptionBindingHash:r.receiver.bindingHash,authorityIntent:intent,resourceRequests:[resourceRequestHash(request)],scope:{id:action.scopeId,version:action.scopeVersion,bodySha256:action.scopeBodySha256},arrangement:{id:e.context.arrangement.id,version:e.context.arrangement.version},subjectSha256:null,integrationReference:null,method:'merge'};
-  const publisher=await publisherFixture(t,binding,mode);f.q.merges().configure(bytes(publisher.profile));
+  const binding:ManagedMergeBinding={schemaVersion:1,operation,item:f.item,packet:r.result.packet,repository:c.repository,repositoryId:99,pr:c.pr,H:c.H,B:c.B,targetRef:c.targetRef,T:r.result.tree,receptionOperation:operation,judgmentId:r.receiver.judgmentId,receptionBindingHash:r.receiver.bindingHash,authorityIntent:intent,resourceRequests:[resourceRequestHash(request)],scope:{id:action.scopeId,version:action.scopeVersion,bodySha256:action.scopeBodySha256},arrangement:{id:e.context.arrangement.id,version:e.context.arrangement.version},subjectSha256:null,integrationReference:r.receiver.integrationSha256??null,method:'merge'};
+  const publisher=await publisherFixture(t,binding,mode,actualFixtureMerge);f.q.merges().configure(bytes(publisher.profile));
   const plan=bytes({binding,resources:[request]});await prepareManagedMerge(f.store,plan);
   const fresh=async()=>{const values=[];for(const ref of a.sourceRequests(confirmation.sha))values.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(f.root,'fresh-owner-'+randomUUID())));return values;};
   return {...f,receiverPlan:f.plan,operation,binding,request,publisher,ledger,a,scope,confirmation,adopt,observations,sourcePath,plan,fresh};

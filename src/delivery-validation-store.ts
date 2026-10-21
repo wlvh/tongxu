@@ -1,4 +1,5 @@
 import type {DatabaseSync} from 'node:sqlite';
+import {installTestAuthorityGuard,requireTestAuthorityConsumer} from './test-authority.js';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {now} from './contract.js';
@@ -32,6 +33,7 @@ export class DeliveryValidationRecords{
   private original(id:string){const e=this.events(id).find(e=>e.kind==='delivery_validation_registered');if(!e)throw new Error('delivery_validation_not_registered');const p=parseDeliveryValidation(this.bytes(e.data.originalSha256));if(p.id!==id||deliveryValidationSha(p)!==e.data.planSha256||e.data.batchSha256!==p.batchSha256||e.data.member!==p.member||e.data.testPlanSha256!==p.testPlan.sha256||canonical(e.data.snapshotSha256)!==canonical(p.snapshots.map(s=>s.sha256)))throw new Error('delivery_validation_original_changed');return {plan:p,record:e.data};}
   private registered(){return (this.db.prepare("SELECT object FROM events WHERE kind='delivery_validation_registered'").all() as Row[]).map(e=>this.original(e.object.slice('delivery-validation:'.length)));}
   private guards(){
+    installTestAuthorityGuard(this.db);
     // Installed only in a write transaction. Reading old captures never upgrades
     // their database; an already-open older consumer cannot register an alias.
     for(const [name,sql] of [['delivery_validation_authority_unique',authorityBindingIndex],['delivery_validation_authority_guard',authorityBindingGuard]]){
@@ -41,6 +43,7 @@ export class DeliveryValidationRecords{
   }
   private bindAuthority(p:DeliveryValidationPlan,bind:boolean){
     if(p.authorityIntent===null)return;
+    requireTestAuthorityConsumer(this.db,p.authorityIntent,'delivery-validation:'+p.id);
     const sha=deliveryValidationSha(p);
     // Legacy records precede the binding event. They still consume their exact
     // reservation; ambiguous historical aliases never choose a new winner.

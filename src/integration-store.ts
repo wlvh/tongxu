@@ -6,6 +6,8 @@ import {now} from './contract.js';
 import {parseIntegrationRequest,integrationRequestSha256,type IntegrationRequest} from './integration-contract.js';
 import type {OwnerObservation} from './authority-source.js';
 import {requireIntegrationCapture,type IntegrationCapture} from './integration-producer.js';
+import {enableIntegrationFormat} from './queue-format.js';
+import {installTestAuthorityGuard,requireTestAuthorityConsumer} from './test-authority.js';
 
 type Row=Record<string,any>;
 export type IntegrationSource={
@@ -33,12 +35,11 @@ export class IntegrationRecords{
     // Reconstructing fixed objects is a verification/preparation action, not
     // authority for a model to edit members or for a publisher to update refs.
     if(a.role!=='background'||r.action!=='test'||r.item!==s.item||a.binding?.packet!==s.packet||a.binding?.fingerprint!==s.fingerprint||r.candidate?.H!==c.H||r.candidate?.B!==c.B||r.candidate?.subjectSha256!==p.subjectSha256||r.resourceRefs.length||r.paths.length)throw new Error('integration_authority_binding_mismatch');
-    if(this.db.prepare("SELECT 1 FROM events WHERE kind='delivery_validation_authority_bound' AND json_extract(data,'$.value.authorityIntent')=?").get(p.authorityIntent))throw new Error('integration_test_intent_already_bound');
-    const prior=this.db.prepare("SELECT object FROM events WHERE kind='integration_authority_bound' AND json_extract(data,'$.value.authorityIntent')=?").get(p.authorityIntent) as Row|undefined;if(prior&&prior.object!=='integration:'+p.id)throw new Error('integration_test_intent_already_bound');
+    requireTestAuthorityConsumer(this.db,p.authorityIntent,'integration:'+p.id);
   }
   prepare(raw:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
     const p=parseIntegrationRequest(raw),requestSha256=integrationRequestSha256(p);if(this.events(p.id).length){const old=this.original(p.id);if(old.record.requestSha256!==requestSha256)throw new Error('integration_request_id_changed');return {...this.stateOf(p.id),duplicate:true};}
-    const s=this.current(p);this.authorityCheck(p,s,observations);
+    const s=this.current(p);this.authorityCheck(p,s,observations);enableIntegrationFormat(this.db);installTestAuthorityGuard(this.db);
     for(const row of this.db.prepare("SELECT object FROM events WHERE kind='integration_prepared' AND json_extract(data,'$.value.operation')=?").all(p.operation) as Row[]){const state=this.stateOf(row.object.slice('integration:'.length));if(state.phase==='produced')throw new Error('integration_source_already_has_candidate');if(!['closed_unstarted','failed_ended'].includes(state.phase))throw new Error('integration_original_unresolved');}
     const subject=s.composition.subject;if(!subject.testedHead||!subject.testedTree||s.report.stages.length!==subject.members.length+1||s.report.stages.some((x:Row)=>!x.head||!x.tree||!x.mergeOutput&&x.index!==0))throw new Error('integration_complete_composition_tree_required');
     const source={operation:s.operation,item:s.item,packet:s.packet,fingerprint:s.fingerprint,context:s.context,composition:s.composition,report:s.report,manifestSha256:s.manifestSha256,reportSha256:s.reportSha256,contextSha256:s.contextSha256,originals:[...s.originals.keys()].sort()};for(const [sha,b] of s.originals){if(hash(b)!==sha)throw new Error('integration_original_changed');this.blob(b);}
@@ -59,6 +60,15 @@ export class IntegrationRecords{
     for(const [sha,b] of c.originals){if(hash(b)!==sha)throw new Error('integration_original_changed');this.blob(b);}if(c.success){this.blob(c.diff);this.blob(c.bundle);}this.event(id,'result',value);return {...this.stateOf(id),duplicate:false};
   });}
   artifacts(id:string){return this.transaction(()=>{const s=this.stateOf(id);if(s.phase!=='produced')throw new Error('integration_candidate_not_produced');return {state:s,bundle:this.bytes(s.result!.bundleSha256),diff:this.bytes(s.result!.diffSha256)};});}
+  candidateMaterial(id:string){return this.transaction(()=>{
+    const original=this.original(id),state=this.stateOf(id);if(state.phase!=='produced')throw new Error('integration_candidate_not_produced');
+    const encoded=(b:Buffer)=>{let text:string;try{text=new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(b);if(!Buffer.from(text).equals(b))throw new Error();return {encoding:'utf8',text};}catch{return {encoding:'base64',text:b.toString('base64')};}};
+    return {id,requestSha256:state.requestSha256,source:original.source,current:state.currentSource,selectionReason:original.request.selectionReason,selectionSource:original.request.source,candidate:state.result!.candidate,diff:{sha256:state.result!.diffSha256,...encoded(this.bytes(state.result!.diffSha256))},bundleSha256:state.result!.bundleSha256,originals:original.source.originals.map((sha256:string)=>{const b=this.bytes(sha256);return {sha256,bytes:b.length,...encoded(b)};}),sourceAcceptanceTransferred:false,permissionGranted:false};
+  });}
+  candidateProducer(candidate:Row):string|null{return this.transaction(()=>{
+    const matches=(this.db.prepare("SELECT object,data FROM events WHERE kind='integration_result' AND json_extract(data,'$.value.success')=1").all() as Row[]).filter(e=>{const c=JSON.parse(e.data).value.candidate;return c.H===candidate.H&&c.B===candidate.B&&c.target===candidate.targetRef&&c.repository.toLowerCase()===candidate.repository.toLowerCase();});
+    if(matches.length>1)throw new Error('integration_candidate_producer_ambiguous');if(!matches.length)return null;const id=matches[0]!.object.slice('integration:'.length);this.stateOf(id);return id;
+  });}
   closeUnstarted(id:string){return this.transaction(()=>{const s=this.stateOf(id);if(s.phase!=='prepared_not_started'&&s.phase!=='closed_unstarted')throw new Error('integration_original_started_or_closed');if(s.phase!=='closed_unstarted')this.event(id,'closed_unstarted',{originalRequestPreserved:true,newGitProcesses:0});return this.stateOf(id);});}
   problem(id:string,reason:string){return this.transaction(()=>{this.original(id);this.event(id,'problem',{reason,observedAt:now(),automaticResend:false});});}
   private stateOf(id:string){const x=this.original(id),events=this.events(id),result=events.find(e=>e.kind==='integration_result')?.data;if(result)for(const sha of result.originals)this.bytes(sha);let current=false;try{const s=this.source(x.request.operation);current=s.current&&s.packet===x.source.packet&&s.fingerprint===x.source.fingerprint;}catch{}

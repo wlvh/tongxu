@@ -9,12 +9,12 @@ import type { MergeProfile } from '../../src/merge-provider.js';
 
 /** Real child process + HTTP requests to an explicit local fake provider.
  * No supplier, GitHub mutation, credential or real merge. */
-export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal'){
+export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal',actualFixtureMerge?:()=>Promise<string>){
   const root=await mkdtemp(join(await realpath(tmpdir()),'tongxu-merge-http-fixture-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const requests:Array<{method:string;path:string;body:string;headers:Record<string,unknown>}>=[];
   const overrides=new Map<string,{value:unknown;status:number;nextPage:boolean}>();
   let mode=initialMode,merged=false,merges=0,actualBase=b.B,actualTree=b.T,target=b.targetRef;
-  const M='d'.repeat(40),later='e'.repeat(40),repoRoot=`/repos/${b.repository}`;
+  let M='d'.repeat(40);const later='e'.repeat(40),repoRoot=`/repos/${b.repository}`;
   const pr=()=>({number:b.pr,state:merged?'closed':'open',draft:mode==='draft',merged,mergeable:true,mergeable_state:'clean',merge_commit_sha:merged?M:null,merged_by:merged?{id:33}:null,user:{id:44},head:{sha:mode==='head-changed'?later:b.H,repo:{id:b.repositoryId}},base:{sha:'0'.repeat(40),ref:target,repo:{id:b.repositoryId,full_name:b.repository}}});
   const server=createServer(async(req,res)=>{
     let body='';for await(const chunk of req)body+=chunk.toString();const path=req.url!;requests.push({method:req.method!,path,body,headers:req.headers});
@@ -26,7 +26,7 @@ export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,
       if(mode==='refused'){status=409;value={message:'explicit fixture head precondition refusal',merged:false};}
       else{
         const payload=JSON.parse(body);if(payload.sha!==b.H||payload.merge_method!=='merge'||JSON.stringify(payload)!==JSON.stringify(JSON.parse(JSON.stringify(payload)))){status=409;value={message:'fixture invalid request'};}
-        else{merged=true;merges++;if(mode==='base-race')actualBase=later;if(mode==='tree-race')actualTree=later;if(mode==='wrong-target')target='other';value={merged:true,sha:M};if(mode==='lost-after-merge'){res.destroy();return;}}
+        else{if(actualFixtureMerge)M=await actualFixtureMerge();merged=true;merges++;if(mode==='base-race')actualBase=later;if(mode==='tree-race')actualTree=later;if(mode==='wrong-target')target='other';value={merged:true,sha:M};if(mode==='lost-after-merge'){res.destroy();return;}}
       }
     }else if(req.method!=='GET'){status=405;value={message:'fixture disallowed mutation'};}
     else if(path===repoRoot)value={id:b.repositoryId,full_name:b.repository,archived:false,disabled:false,allow_merge_commit:true};

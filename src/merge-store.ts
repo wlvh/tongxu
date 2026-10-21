@@ -78,6 +78,7 @@ export class MergeRecords {
     if(c.repository.toLowerCase()!==b.repository.toLowerCase()||c.pr!==b.pr||c.H!==b.H||c.B!==b.B||c.targetRef!==b.targetRef||s.tree!==b.T||!s.evidenceComplete||s.receiver.bindingHash!==b.receptionBindingHash||j.judgmentId!==b.judgmentId||j.verdict!=='ACCEPT_WITHIN_SCOPE'||j.findings.some((f:Row)=>f.priority<2))throw new Error('managed_merge_exact_accepted_judgment_required');
     if((this.profile().executionKind==='fixture')!==(s.receiver.executionKind==='fixture'))throw new Error('managed_merge_execution_kind_mismatch');
     if(b.subjectSha256!==null)throw new Error('composition_requires_verified_integration_reception');
+    if(b.integrationReference!==(s.receiver.integrationSha256??null)||b.integrationReference&&j.consumedIntegration!==b.integrationReference)throw new Error('managed_merge_integration_reception_required');
     return a;
   }
   prepare(raw:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{

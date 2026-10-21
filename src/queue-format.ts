@@ -1,4 +1,5 @@
 import type {DatabaseSync} from 'node:sqlite';
+import {integrationFormatKey,integrationFormatContract,integrationFormatGuards} from './integration-format.js';
 
 type Row=Record<string,any>;
 const key='delivery_assessment_format';
@@ -19,19 +20,26 @@ function guards(db:DatabaseSync,install=false){for(const g of assessmentGuards){
  * version and let their existing guard checks and opt-ins continue to apply. */
 export function queueFeatureVersion(db:DatabaseSync):number{
   const version=queueFormatVersion(db),hasMeta=db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta'").get(),saved=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row|undefined)?.value:undefined;
-  if(version!==17){if(saved!==undefined)throw new Error('delivery_assessment_format_downgraded');return version;}
+  const integration=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(integrationFormatKey) as Row|undefined)?.value:undefined;
+  if(version!==18&&integration!==undefined)throw new Error('integration_format_downgraded');
+  if(version===18){if(integration!==integrationFormatContract)throw new Error('integration_format_changed');integrationFormatGuards(db);}
+  if(![17,18].includes(version)){if(saved!==undefined)throw new Error('delivery_assessment_format_downgraded');return version;}
   let value:Row;try{value=JSON.parse(saved);}catch{throw new Error('delivery_assessment_format_missing');}
   if(!value||value.contract!==contract||!feature(value.featureVersion)||Object.keys(value).sort().join(',')!=='contract,featureVersion')throw new Error('delivery_assessment_format_changed');
   guards(db);return value.featureVersion;
 }
-export function requireAssessmentFormat(db:DatabaseSync){if(queueFormatVersion(db)!==17)throw new Error('delivery_assessment_prepare_format_upgrade_required');queueFeatureVersion(db);}
+export function requireAssessmentFormat(db:DatabaseSync){if(![17,18].includes(queueFormatVersion(db)))throw new Error('delivery_assessment_prepare_format_upgrade_required');queueFeatureVersion(db);}
 export function enableAssessmentFormat(db:DatabaseSync){
-  const version=queueFeatureVersion(db);if(queueFormatVersion(db)===17)return false;if(!feature(version))throw new Error('unsupported_queue_schema_or_mode');
+  const version=queueFeatureVersion(db);if([17,18].includes(queueFormatVersion(db)))return false;if(!feature(version))throw new Error('unsupported_queue_schema_or_mode');
   guards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(key,JSON.stringify({contract,featureVersion:version}));db.exec('PRAGMA user_version=17');return true;
 }
 /** Called inside the original feature's transaction, after its own guards. */
 export function setQueueFeatureVersion(db:DatabaseSync,version:number){
   const old=queueFeatureVersion(db);if(!feature(version)||version<old)throw new Error('queue_feature_version_cannot_regress');
-  if(queueFormatVersion(db)===17)db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify({contract,featureVersion:version}),key);
+  if([17,18].includes(queueFormatVersion(db)))db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify({contract,featureVersion:version}),key);
   else db.exec('PRAGMA user_version='+version);
+}
+export function enableIntegrationFormat(db:DatabaseSync){
+  queueFeatureVersion(db);if(queueFormatVersion(db)===18)return false;
+  enableAssessmentFormat(db);integrationFormatGuards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(integrationFormatKey,integrationFormatContract);db.exec('PRAGMA user_version=18');return true;
 }

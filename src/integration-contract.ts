@@ -28,3 +28,8 @@ export function parseIntegrationRequest(raw:Buffer):IntegrationRequest{
   return p;
 }
 export const integrationRequestSha256=(p:IntegrationRequest)=>hash(canonical(p));
+export type IntegrationCandidateRequest={schemaVersion:1;kind:'tongxu-integration-candidate';integration:string;item:string;packet:number;fingerprint:string;source:string};
+export function parseIntegrationCandidate(raw:Buffer):IntegrationCandidateRequest{
+  if(raw.length>32*1024)throw new Error('integration_candidate_request_invalid');let p:any;try{p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw));}catch{throw new Error('integration_candidate_request_invalid');}
+  if(!exactKeys(p,['schemaVersion','kind','integration','item','packet','fingerprint','source'])||p.schemaVersion!==1||p.kind!=='tongxu-integration-candidate'||!messageId(p.integration)||!isAuthorityDigest(p.item)||!isAuthorityDigest(p.fingerprint)||!Number.isSafeInteger(p.packet)||p.packet<1||!text(p.source,2048))throw new Error('integration_candidate_request_invalid');return p;
+}

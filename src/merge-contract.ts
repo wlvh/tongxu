@@ -10,7 +10,10 @@ const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function parseMergeBinding(x:any):ManagedMergeBinding{
   if(!exactKeys(x,['schemaVersion','operation','item','packet','repository','repositoryId','pr','H','B','targetRef','T','receptionOperation','judgmentId','receptionBindingHash','authorityIntent','resourceRequests','scope','arrangement','subjectSha256','integrationReference','method'])||x.schemaVersion!==1||x.method!=='merge'||!uuid.test(x.operation)||!uuid.test(x.receptionOperation)||!isAuthorityDigest(x.item)||!isAuthorityDigest(x.receptionBindingHash)||!text(x.judgmentId,128)||!text(x.authorityIntent,128)||![x.packet,x.repositoryId,x.pr].every(n=>Number.isSafeInteger(n)&&n>0)||!repoPattern.test(x.repository)||![x.H,x.B,x.T].every(s=>typeof s==='string'&&shaPattern.test(s))||!validBranchRef(x.targetRef)||!Array.isArray(x.resourceRequests)||!x.resourceRequests.length||x.resourceRequests.length>8||new Set(x.resourceRequests).size!==x.resourceRequests.length||!x.resourceRequests.every(isAuthorityDigest)||!(x.subjectSha256===null||isAuthorityDigest(x.subjectSha256))||!(x.integrationReference===null||isAuthorityDigest(x.integrationReference)))throw new Error('managed_merge_binding_invalid');
   if(!exactKeys(x.scope,['id','version','bodySha256'])||!text(x.scope.id,128)||!text(x.scope.version,128)||!isAuthorityDigest(x.scope.bodySha256)||!exactKeys(x.arrangement,['id','version'])||!text(x.arrangement.id,128)||!text(x.arrangement.version,128))throw new Error('managed_merge_scope_binding_invalid');
-  if(x.subjectSha256===null&&x.integrationReference!==null)throw new Error('unplanned_merge_integration_reference');return x;
+  // A materialized integration has its own individual PR reception. Its
+  // source composition is carried by integrationReference, not an invented
+  // composition subject for the new PR. The consumer verifies that reference.
+  return x;
 }
 export const mergeBindingHash=(b:ManagedMergeBinding)=>hash(canonical(b));
 export function mergePayload(b:ManagedMergeBinding){
