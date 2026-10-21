@@ -11,6 +11,7 @@ import type { SampleSet, Comparison } from './comparison.js';
 import { runSandbox, validateDependencies, dependencyDigest, runtimeResources } from './sandbox.js';
 import { DockerRuntime, parseDockerConfig } from './docker-sandbox.js';
 import type { DockerConfig,DockerStartGate } from './docker-sandbox.js';
+import type {W2ExecutionIntent} from './w2-execution-contract.js';
 
 const exec = promisify(execFile);
 type Tool = { id: string; argv: string[]; timeoutMs: number; expectedSampleIds?: string[] };
@@ -137,7 +138,7 @@ async function checkout(cache: string, destination: string, head: string): Promi
   return [...(await git(destination, 'ls-files', '-z')).toString().split('\0').filter(Boolean), '.git/HEAD', '.git/index', '.git/config'];
 }
 
-export type VerificationHooks={startGate:DockerStartGate;registered:(run:string,planSha256:string,inputManifests:string[])=>void};
+export type VerificationHooks={startGate:DockerStartGate;registered:(run:string,planSha256:string,inputManifests:string[])=>void;executionRegistered?:(intent:W2ExecutionIntent)=>void|Promise<void>};
 export async function verify(o: VerifyOptions,hooks?:VerificationHooks): Promise<{ exit: number; report: Report }> {
   const planBytes = await readFile(o.plan); const plan = parsePlan(JSON.parse(planBytes.toString()));
   if(hooks&&!plan.executor)throw new Error('guarded_verification_requires_docker');
@@ -202,7 +203,11 @@ export async function verify(o: VerifyOptions,hooks?:VerificationHooks): Promise
         if (current !== original || result.dependencyHash !== report.dependencyHash) { result.status = 'blocked'; result.gaps.push('input_changed_before_tool'); stage.gaps.push('input_changed'); break; }
         const resultDirectory = join(o.output, `result-${i}-${tool.id}-${randomUUID()}`); await mkdir(resultDirectory, { mode: 0o700 });
         const common = { work, resultDirectory, dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, onSpawn: async (pid: number) => { result.pid = pid; if (!docker) result.processGroup = pid; await save(); } };
-        if (docker) { result.dockerExecutionDirectory = `docker-tool-${i}-${tool.id}-${randomUUID()}`; await save(); }
+        if (docker) {
+          result.dockerExecutionDirectory = `docker-tool-${i}-${tool.id}-${randomUUID()}`;await save();
+          try{await hooks?.executionRegistered?.({run:report.id,stage:i,tool:tool.id,head:stage.head!,tree:stage.tree!,planHash:report.planHash,directory:result.dockerExecutionDirectory});}
+          catch(e){result.status='blocked';delete result.dockerExecutionDirectory;result.gaps.push(safeCode(e));await save();throw e;}
+        }
         const execution = docker ? await docker.run({ ...common, directory: join(o.output, result.dockerExecutionDirectory!), binding: { run: report.id, stage: i, tool: tool.id, head: stage.head!, tree: stage.tree!, planHash: report.planHash },startGate:hooks?.startGate }) : await runSandbox(common);
         Object.assign(result, { status: execution.status, exitCode: execution.exitCode, signal: execution.signal, durationMs: execution.durationMs, stdout: await store.blob(execution.stdout), stderr: await store.blob(execution.stderr), finishedAt: now() });
         if ('record' in execution) result.sandbox = await store.blob(execution.record as Buffer);

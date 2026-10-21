@@ -40,7 +40,7 @@ export async function runDeliveryValidation(store:string,planPath:string,action:
       if(action==='close-unstarted')throw new Error('delivery_validation_started_or_unknown');
       if(!await exists(join(directory,'producer.json')))throw new Error('delivery_validation_original_producer_missing');
       await freezeSources();
-      const capture=await readDeliveryValidationCapture(directory,p,{id:p.id,planSha256,run:prior.run,testPlanSha256:p.testPlan.sha256}),result=records.complete(p.id,capture);return {...records.state(p.id),result,duplicate:true,newModelInputs:0,newVerificationRuns:0};
+      const capture=await readDeliveryValidationCapture(directory,p,{id:p.id,planSha256,run:prior.run,testPlanSha256:p.testPlan.sha256},records.executions(p.id)),result=records.complete(p.id,capture);return {...records.state(p.id),result,duplicate:true,newModelInputs:0,newVerificationRuns:0};
     }
     if(action!=='run')return {id:p.id,phase:'not_registered',newModelInputs:0,newVerificationRuns:0,userOutcomeAccepted:false};
     const testPlan=await regular(p.testPlan.path,64*1024),snapshots:Buffer[]=[];if(hash(testPlan)!==p.testPlan.sha256)throw new Error('delivery_validation_test_plan_changed');for(const ref of p.snapshots){const bundle=await loadBundle(ref.path);if(hash(bundle.bytes)!==ref.sha256)throw new Error('delivery_validation_snapshot_changed');snapshots.push(bundle.bytes);}
@@ -51,9 +51,10 @@ export async function runDeliveryValidation(store:string,planPath:string,action:
     const runtimeModules=Object.fromEntries(await Promise.all(['delivery-validation','delivery-validation-store','delivery-validation-capture','delivery-validation-contract','delivery-store','queue-store','authority-store','authority-source','verification','docker-sandbox'].map(async name=>[name,hash(await readFile(new URL('./'+name+'.js',import.meta.url)))])));
     await verify({snapshots:snapshotPaths,objects:p.objects,plan:join(directory,'test-plan.json'),output},{
       registered:(run,testPlanSha256,inputManifests)=>{if(canonical(inputManifests)!==canonical(p.snapshots.map(s=>s.sha256)))throw new Error('delivery_validation_snapshot_changed');records.markStarted(p.id,run,testPlanSha256);writeFileSync(join(directory,'producer.json'),canonical({kind:'tongxu-managed-delivery-validation',executionMethod:'existing-w2-verifier',binding:{id:p.id,planSha256,run,testPlanSha256},controllerPid:process.pid,node:{executable:process.execPath,version:process.version},runtimeModules,newModelInputs:0,registeredAt:new Date().toISOString()}),{flag:'wx',mode:0o600});},
+      executionRegistered:async intent=>{await refresh();records.registerExecution(p.id,intent,observations);},
       startGate:{refresh:async()=>{await refresh();records.check(p.id,observations);},start:effect=>records.startEffect(p.id,observations,effect)}
     });
-    const state=records.state(p.id);if(!state.run)throw new Error('delivery_validation_original_run_missing');const capture=await readDeliveryValidationCapture(directory,p,{id:p.id,planSha256,run:state.run,testPlanSha256:p.testPlan.sha256}),result=records.complete(p.id,capture);return {...records.state(p.id),result,duplicate:false,newModelInputs:0,newVerificationRuns:1};
+    const state=records.state(p.id);if(!state.run)throw new Error('delivery_validation_original_run_missing');const capture=await readDeliveryValidationCapture(directory,p,{id:p.id,planSha256,run:state.run,testPlanSha256:p.testPlan.sha256},records.executions(p.id)),result=records.complete(p.id,capture);return {...records.state(p.id),result,duplicate:false,newModelInputs:0,newVerificationRuns:1};
   }catch(e){const reason=code(e);if(registered)try{q.deliveryValidations().problem(p.id,reason);}catch{}await fixedFile(join(directory,'problem-'+randomUUID()+'.json'),Buffer.from(canonical({reason,detail:e instanceof Error?e.stack??e.message:String(e),automaticResend:false}))).catch(()=>{});throw e;}
   finally{if(lock?.isTransaction)lock.exec('ROLLBACK');lock?.close();q.close();}
 }

@@ -9,6 +9,7 @@ import {scopeBodyHash,type ActionRequest} from './authority-contract.js';
 import {readRecompositionTestCapture} from './recomposition-test-capture.js';
 import type {QueueStore} from './queue-store.js';
 import type {MemberRecompositionPlan} from './member-recomposition-contract.js';
+import type {W2ExecutionIntent} from './w2-execution-contract.js';
 
 async function observations(q:QueueStore,authorization:string,directory:string){
   const a=q.authority(),root=join(directory,'owner-check-'+randomUUID());await privateDirectory(root,true);const result:OwnerObservation[]=[];
@@ -34,7 +35,8 @@ export function recompositionTestRuntime(q:QueueStore,p:MemberRecompositionPlan,
     check(){return records.check(p.id,fresh);},
     effect<T>(effect:()=>T){return records.effect(p.id,fresh,effect);},
     registered(run:string,planSha256:string,inputManifests:string[]){const binding=records.registerRun(p.id,run,planSha256,inputManifests,fresh);freezeSync(join(directory,'test-producer.json'),Buffer.from(canonical({kind:'tongxu-managed-recomposition-test',executionMethod:'existing-w2-verifier',newModelInputs:0,binding})));},
-    async complete(){const s=records.state(p.id);if(!s.binding)throw new Error('recomposition_test_original_run_required');const c=await readRecompositionTestCapture(directory,s.binding);records.complete(p.id,c);return c.packet;},
+    async executionRegistered(intent:W2ExecutionIntent){await refresh();records.registerExecution(p.id,intent,fresh);},
+    async complete(){const s=records.state(p.id);if(!s.binding)throw new Error('recomposition_test_original_run_required');const c=await readRecompositionTestCapture(directory,s.binding,records.executions(p.id));records.complete(p.id,c);return c.packet;},
     async settle(){
       if(state()?.phase!=='recorded')throw new Error('recomposition_test_original_execution_unknown');const results=[];
       for(const id of g.testResourceRequests){try{const old=q.resources().status(id);if(old.pendingResultAttempt&&!['consumed','released'].includes(old.state))await resourceAction(q.directory,id,'lookup','background');results.push(await resourceAction(q.directory,id,'record-result','background'));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'resource_result_unavailable'});}}

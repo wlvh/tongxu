@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,rm} from 'node:fs/promises';
+import {readFile,writeFile,rm,rename} from 'node:fs/promises';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {governedRecompositionFixture,observedSnapshot,freshOwner} from './governed-recomposition-fixture.js';
@@ -15,6 +15,7 @@ import {resourceAction} from '../../src/resource-claims.js';
 import {RecompositionTestRecords} from '../../src/recomposition-test-store.js';
 import {MemberRecompositionRecords} from '../../src/member-recomposition-store.js';
 import {DockerRuntime} from '../../src/docker-sandbox.js';
+import {pathToFileURL} from 'node:url';
 
 test('governed repaired member runs its own W2 and original resource, then separate integration and independent reception',async t=>{
   const f=await governedRecompositionFixture(t),before=await readFile(f.model.trace),author=await f.authorState(),r=await runMemberRecomposition(f.recompositionPath);assert.equal(r.phase,'new_integration_candidate_requires_own_reception');assert.ok('candidate' in r);assert.equal(r.newModelInputs,0);assert.deepEqual(await f.authorState(),author);assert.ok((await readFile(f.model.trace)).equals(before));
@@ -71,8 +72,16 @@ test('GRT-F01: changing report classification cannot hide an unknown actual Dock
   const stripped=JSON.parse(reportBytes.toString());stripped.executionComplete=false;stripped.stages[0].tools=[{id:tool.id,argv:tool.argv,status:'blocked',startedAt:tool.startedAt,gaps:['fixture_report_claims_no_execution']}];
   const omitted=JSON.parse(reportBytes.toString());omitted.executionComplete=false;omitted.stages=[];
   for(const value of [blocked,stripped,omitted]){await writeFile(reportPath,raw(value));await assert.rejects(runMemberRecomposition(f.recompositionPath),/w2_original_execution_unknown/);assert.equal(f.q.recompositionTests().state(f.recompositionPlan.id).phase,'started_or_unknown');assert.equal(f.q.resources().status(f.testResource).state,'held');assert.equal(f.ledger.state().settlements.length,settlements);}
+  const executionDirectory=join(original.directory,'verification',tool.dockerExecutionDirectory),retained=join(original.directory,'verification/retained-unknown-tool-original');await rename(executionDirectory,retained);await writeFile(reportPath,raw(stripped));await assert.rejects(runMemberRecomposition(f.recompositionPath),/w2_original_execution_unknown/);assert.equal(f.q.resources().status(f.testResource).state,'held');assert.equal(f.ledger.state().settlements.length,settlements);assert.ok(f.q.recompositionTests().executions(f.recompositionPlan.id)!.some(e=>e.directory===tool.dockerExecutionDirectory));
+  const legacyRoot=process.env.TONGXU_RECOMPOSITION_LEGACY_ROOT;if(legacyRoot){const legacy=await import(pathToFileURL(join(legacyRoot,'dist/src/member-recomposition.js')).href);await assert.rejects(legacy.runMemberRecomposition(f.recompositionPath),/w2_execution_registry_capture_required/);assert.equal(f.q.resources().status(f.testResource).state,'held');assert.equal(f.ledger.state().settlements.length,settlements);}
+  await rename(retained,executionDirectory);
   // Even a known ended directory must stay represented; the report cannot
   // turn executed work into an unstarted tool before accounting for it.
   await writeFile(executionPath,executionBytes);await writeFile(reportPath,raw(stripped));await assert.rejects(runMemberRecomposition(f.recompositionPath),/w2_original_execution_unknown/);assert.equal(f.ledger.state().settlements.length,settlements);
   await writeFile(reportPath,reportBytes);const result=await runMemberRecomposition(f.recompositionPath);assert.equal(result.phase,'new_integration_candidate_requires_own_reception');assert.equal(f.q.recompositionTests().state(f.recompositionPlan.id).binding!.run,original.binding!.run);assert.equal(f.ledger.state().settlements.length,settlements+1);assert.equal(f.q.resources().status(f.testResource).claimAttempts,1);
+});
+
+test('a refused pre-invocation registration is known unstarted only when the original queue has no execution intent',async t=>{
+  const f=await governedRecompositionFixture(t),register=RecompositionTestRecords.prototype.registerExecution;let rejected=false;RecompositionTestRecords.prototype.registerExecution=function(id,intent,observations){rejected=true;f.q.control(f.context.scope.id,'investment','stopped','Explicit stop before execution registration and Docker invocation');return register.call(this,id,intent,observations);};t.after(()=>{RecompositionTestRecords.prototype.registerExecution=register;});
+  await assert.rejects(runMemberRecomposition(f.recompositionPath),/member_recomposition_original_verification_incomplete/);assert.equal(rejected,true);assert.deepEqual(f.q.recompositionTests().executions(f.recompositionPlan.id),[]);const state=f.q.recompositionTests().state(f.recompositionPlan.id);assert.equal(state.phase,'recorded');assert.equal(state.result.executionComplete,false);assert.equal(state.result.terminalExecutionProven,true);assert.equal(f.q.resources().status(f.testResource).outcome.outcome.state,'failed');
 });
