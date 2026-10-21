@@ -217,7 +217,7 @@ PRAGMA user_version=4;`);
   private taskRecords(){return new TaskRecords(this.db,fn=>fn());}
   taskLinks(){return this.taskLinkRecords(fn=>this.transaction(fn));}
   private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
-  async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.tasks().observe(p,source.observation);this.taskLinks().observe(source);return source;}
+  async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.transaction(()=>{this.taskRecords().observe(p,source.observation);this.taskLinkRecords(fn=>fn()).observe(source);});return source;}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
   private taskInboxRecords(transaction:<T>(f:()=>T)=>T){
     const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});

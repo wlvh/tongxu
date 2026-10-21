@@ -14,6 +14,7 @@ import {canonical} from '../../src/comparison.js';
 import {workbenchState} from '../../src/workbench.js';
 import {observeTask} from '../../src/secretary-tools.js';
 import {exists} from '../../src/repair-workspace.js';
+import {observeTaskLinkSource} from '../../src/task-link-source.js';
 import type {TaskOwnerRequest} from '../../src/task-inbox.js';
 import {messageAuthority} from './message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
@@ -95,4 +96,22 @@ test('format16 refuses active or unknown original roles, then preserves a proven
 
 test('adding original Owner and resource profiles after format16 never downgrades it and still uses their exact consumer',async t=>{
   const f=await fixture(t),ledger=await ledgerFixture(t),spec=ledger.profile.resources[0]!,request={...f.request('governed'),authorityIntent:'bounded-messages',resourceBudget:[{ledgerId:ledger.profile.ledgerId,resourceRef:spec.ref,unit:spec.unit,quantity:1}]};await f.link(f.item);f.q.taskInbox().enqueue(raw(request));const selected=await prepareTaskOwner(f.store,f.task,'governed'),plan=JSON.parse(await readFile(selected.plan,'utf8'));await messageAuthority({...f,item:f.task,plan,write:async()=>writeFile(selected.plan,canonical(plan))});f.q.resources().configure(raw(ledger.profile));assert.equal(f.q.status().schemaVersion,16);const result=await workTaskOwner(f.store,f.task,1);assert.equal(result.runs[0]?.completed,true);assert.equal(result.runs[0]?.resourcesSettled,true);assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
+});
+
+test('TCL-F01: other execute permission cannot stand in for the Git owner executable bit',async t=>{
+  const f=await fixture(t);await chmod(join(f.p.workspace,'sample.js'),0o755);f.git(['add','sample.js']);f.git(['-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','owner executable fixture']);const head=f.git(['rev-parse','HEAD']),candidate=await f.packet({pr:15,H:head}),linked=await f.link(candidate.item);assert.equal(linked.current,true);
+  await chmod(join(f.p.workspace,'sample.js'),0o645);await assert.rejects(resolveTaskCandidate(f.store,f.task,linked.link),/no_longer_current/);assert.equal(f.q.taskLinks().state(f.task)[0]!.reason,'task_link_selected_mode_changed');assert.equal((await f.calls()).length,0);
+});
+
+test('TCL-F02: an old signed clean observation cannot overwrite a newer dirty index observation',async t=>{
+  const f=await fixture(t),linked=await f.link(f.item),old=await observeTaskLinkSource(f.p),original=await readFile(join(f.p.workspace,'sample.js'));await writeFile(join(f.p.workspace,'sample.js'),'export const newIndex=42;\n');f.git(['add','sample.js']);await writeFile(join(f.p.workspace,'sample.js'),original);await f.q.refreshTaskLinkSource(f.task);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,false);
+  assert.throws(()=>f.q.taskLinks().observe(old),/task_link_source_observation_older/);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,false);assert.equal(f.q.taskLinks().material(f.task),null);
+  f.git(['reset','--','sample.js']);const fresh=await f.q.refreshTaskLinkSource(f.task);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,true);assert.equal((await f.link(f.item)).link,linked.link);assert.throws(()=>f.q.taskLinks().observe(old),/task_link_source_observation_older/);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,true);assert.equal(fresh.executableModeContract,'git-owner-execute-bit');
+});
+
+test('equal-time conflicting source observations stay blocked until a strictly newer actual observation',async t=>{
+  const f=await fixture(t);await f.link(f.item);t.mock.timers.enable({apis:['Date'],now:Date.now()+60000});const clean=await f.q.refreshTaskLinkSource(f.task),original=await readFile(join(f.p.workspace,'sample.js'));
+  await writeFile(join(f.p.workspace,'sample.js'),'export const stagedConflict=73;\n');f.git(['add','sample.js']);await writeFile(join(f.p.workspace,'sample.js'),original);await f.q.refreshTaskLinkSource(f.task);assert.equal(f.q.taskLinks().state(f.task)[0]!.reason,'task_link_source_order_conflict');
+  f.q.taskLinks().observe(clean);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,false);f.git(['reset','--','sample.js']);await f.q.refreshTaskLinkSource(f.task);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,false);
+  t.mock.timers.tick(1);await f.q.refreshTaskLinkSource(f.task);assert.equal(f.q.taskLinks().state(f.task)[0]!.current,true);assert.equal((await f.calls()).length,0);
 });
