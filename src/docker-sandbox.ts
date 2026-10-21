@@ -19,7 +19,8 @@ export function parseDockerConfig(value: unknown): DockerConfig {
 }
 type Binding = { run: string; stage: number; tool: string; head: string; tree: string; planHash: string };
 type OutputMount = { source: string; path: string; writable: boolean };
-type Options = { directory: string; work?: string; resultDirectory?: string; dependencies?: string; readOnlyWork?: true; outputMounts?: OutputMount[]; argv: string[]; timeoutMs: number; maxBytes: number; binding?: Binding; onSpawn?: (pid: number) => Promise<void> };
+export type DockerStartGate={refresh?:()=>Promise<void>;start?:(effect:()=>void)=>void};
+type Options = { directory: string; work?: string; resultDirectory?: string; dependencies?: string; readOnlyWork?: true; outputMounts?: OutputMount[]; argv: string[]; timeoutMs: number; maxBytes: number; binding?: Binding; onSpawn?: (pid: number) => Promise<void>;startGate?:DockerStartGate };
 type Connection = { config: DockerConfig; clientSha256: string; engineId: string; serverVersion: string; imageEnv: string[]; uid: number; gid: number };
 type RecordData = {
   schemaVersion: 1; kind: 'tongxu-docker-execution'; id: string; name: string; directory: string;
@@ -28,7 +29,7 @@ type RecordData = {
   createArgs: string[]; phase: string; containerId?: string; clientPid?: number; clientExit?: number | null;
   before?: any; after?: any; status?: Execution['status']; exitCode?: number | null; reason?: string;
   capture?: { complete: boolean; stdoutSha256: string; stderrSha256: string; stdoutBytes: number; stderrBytes: number };
-  cleanup?: 'removed' | 'unknown'; finishedAt?: string;
+  cleanup?: 'removed' | 'unknown'; finishedAt?: string; startGateRejected?:true;
 };
 async function atomic(root: string, name: string, value: unknown) {
   const temp = join(root, `.tmp-${randomUUID()}`); await writeFile(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); await rename(temp, join(root, name));
@@ -108,7 +109,7 @@ async function validateMounts(o: Options) {
 
 export class DockerRuntime {
   constructor(readonly connection: Connection, readonly settings: string) {}
-  static async prepare(value: unknown, directory: string): Promise<DockerRuntime> {
+  static async prepare(value: unknown, directory: string,startGate?:DockerStartGate): Promise<DockerRuntime> {
     const config = parseDockerConfig(value), resolvedClient = await realpath(config.client);
     const client = await lstat(resolvedClient), socket = await lstat(config.endpoint.slice(7));
     if (!client.isFile() || !(client.mode & 0o111) || !socket.isSocket() || await realpath(config.endpoint.slice(7)) !== config.endpoint.slice(7)) throw new Error('invalid_local_docker_connection');
@@ -122,7 +123,7 @@ export class DockerRuntime {
     await atomic(directory, 'connection.json', connection);
     const runtime = new DockerRuntime(connection, settings);
     const probe = `const fs=require('node:fs'),cp=require('node:child_process');const lines=new Map(fs.readFileSync('/proc/self/status','utf8').split(String.fromCharCode(10)).map(l=>{const i=l.indexOf(':');return [l.slice(0,i),l.slice(i+1).trim()]}));console.log(JSON.stringify({node:process.version,git:cp.execFileSync('/usr/bin/git',['--version'],{encoding:'utf8'}).trim(),uid:process.getuid(),seccomp:lines.get('Seccomp')==='2',noNewPrivileges:lines.get('NoNewPrivs')==='1',capabilitiesEmpty:/^0+$/.test(lines.get('CapEff'))}));`;
-    const r = await runtime.run({ directory: join(directory, 'probe'), argv: [config.node, '-e', probe], timeoutMs: 10_000, maxBytes: 16_384 });
+    const r = await runtime.run({ directory: join(directory, 'probe'), argv: [config.node, '-e', probe], timeoutMs: 10_000, maxBytes: 16_384,startGate });
     let observed: any; try { observed = JSON.parse(r.stdout.toString()); } catch { /* fail closed */ }
     if (r.status !== 'completed' || r.exitCode !== 0 || !observed?.seccomp || !observed.noNewPrivileges || !observed.capabilitiesEmpty || observed.uid !== uid || !/^v(?:2[4-9]|[3-9][0-9])\./.test(observed.node)) throw new Error('docker_runtime_probe_failed');
     await atomic(directory, 'probe-result.json', observed); return runtime;
@@ -147,7 +148,11 @@ export class DockerRuntime {
       r.containerId = created.stdout.trim(); r.phase = 'created'; await save();
       r.before = await inspect(this.connection, this.settings, o.directory, r.containerId); assertContainer(r, r.before); await save();
       r.phase = 'start_intent'; await save();
-      const child = spawn(this.connection.config.client, command(this.connection.config, this.settings, ['start', '--attach', r.containerId]), { env: clientEnv(this.settings), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      const launch=()=>spawn(this.connection.config.client, command(this.connection.config, this.settings, ['start', '--attach', r.containerId!]), { env: clientEnv(this.settings), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      const spawned:{child?:ReturnType<typeof launch>}={};
+      try{await o.startGate?.refresh?.();const effect=()=>{spawned.child=launch();};if(o.startGate?.start)o.startGate.start(effect);else effect();if(!spawned.child)throw new Error('docker_start_gate_did_not_launch');}
+      catch(e){if(!spawned.child)r.startGateRejected=true;throw e;}
+      const child=spawned.child;
       r.clientPid = child.pid; r.phase = 'running_or_unknown';
       const receive = (file: string, chunk: Buffer) => {
         const kept = chunk.subarray(0, Math.max(0, o.maxBytes - total)); total += chunk.length;
@@ -175,6 +180,10 @@ export class DockerRuntime {
       r.cleanup = 'removed'; r.phase = 'finished'; r.finishedAt = now(); await save();
     } catch (e) {
       r.status = 'unknown'; r.reason = e instanceof Error && /^[a-z0-9_]+$/.test(e.message) ? e.message : 'docker_execution_error'; r.phase = 'unknown'; await writes; await save();
+      // A denied start is different from an interrupted running container.
+      // Remove only after inspecting this exact still-created, never-started
+      // container. Any ambiguity keeps the original unknown record intact.
+      if(r.startGateRejected&&r.containerId&&!r.clientPid){try{const current=await inspect(this.connection,this.settings,o.directory,r.containerId);assertContainer(r,current);if(current.State.Running===false&&current.State.Status==='created'){r.after=current;const removed=await call(this.connection.config,this.settings,o.directory,['rm',r.containerId]);if(!removed.exit&&!await inspect(this.connection,this.settings,o.directory,r.containerId)){r.status='unavailable';r.phase='not_started';r.cleanup='removed';r.finishedAt=now();await save();}}}catch{/* preserve unknown */}}
     }
     return { status: r.status ?? 'unknown', exitCode: r.exitCode ?? null, signal: null, stdout: await regular(stdoutFile), stderr: await regular(stderrFile), durationMs: Date.now() - started, record: await regular(join(o.directory, 'execution.json')) };
   }
@@ -211,6 +220,8 @@ export async function reconcileDocker(directory: string, action: 'inspect' | 'st
       result.outcome = container.State.Running ? 'running_or_unknown' : container.State.Status === 'created' ? 'not_started' : container.State.Status === 'exited' ? 'ended' : 'unknown';
       await atomic(recovery, 'result.json', result);
       if (!container.State.Running && action === 'stop') { const removed = await call(config, settings, recovery, ['rm', container.Id]); result.cleanup = removed.exit === 0 && !(await inspect(c, settings, recovery, container.Id)) ? 'removed' : 'unknown'; }
+    } else if(r.phase==='not_started'&&r.startGateRejected===true&&!r.clientPid&&r.cleanup==='removed'&&r.after?.State?.Running===false&&r.after?.State?.Status==='created'){
+      assertContainer(r,r.after);result.outcome='not_started';result.cleanup='removed';result.startGateRejected=true;
     } else if (r.phase === 'finished' && r.cleanup === 'removed' && result.originalCaptureComplete) {
       if (!r.containerId || r.before?.Id !== r.containerId || r.after?.Id !== r.containerId || r.after?.State?.Running !== false || r.after?.State?.Status !== 'exited') throw new Error('docker_original_exit_unverified');
       assertContainer(r, r.before); assertContainer(r, r.after); result.outcome = 'original_completed_record';

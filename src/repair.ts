@@ -116,7 +116,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const material = (t: Tree) => project ? projectMaterial(t, plan.project!) : t;
   const modelTests = (t: any) => project ? projectModelTestResult(t) : t;
   const contract = project ? plan.project!.contract : 'Finite numbers, low<=high: clamp returns the value bounded inclusively to [low,high], preserving fractional values.';
-  const runTests = async(directory: string) => { await refreshExternal?.();externalGate?.(); return project ? testProject(plan.workspace, directory, plan.project!) : testClamp(plan.workspace, directory, plan.nodeExecutable); };
+  const runTests = async(directory: string) => { await refreshExternal?.();externalGate?.(); return project ? testProject(plan.workspace, directory, plan.project!,{refresh:refreshExternal,start:externalGate}) : testClamp(plan.workspace, directory, plan.nodeExecutable); };
   const checkTests = (result: any) => { if (project && !result.executionHealthy) throw new Error('project_test_environment_or_capture_failed'); };
   const currentCandidate = () => localCandidate(plan.workspace, plan.candidate.B, project);
   const supplied=await fixedInputs(plan),roles={fact:'verifier_fact',impact:'verifier_impact',reviewer:'reviewer'} as const;

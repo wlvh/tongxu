@@ -7,7 +7,7 @@ import { save } from './live-process.js';
 import { git, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
 import { parsePlan, fingerprint } from './verification.js';
 import { validateDependencies, dependencyDigest } from './sandbox.js';
-import { DockerRuntime, reconcileDocker } from './docker-sandbox.js';
+import { DockerRuntime, reconcileDocker,type DockerStartGate } from './docker-sandbox.js';
 import { samples, canonical } from './comparison.js';
 import type { Candidate } from './live-codex.js';
 import type { RepairConfig, RepairPlan } from './repair.js';
@@ -160,7 +160,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
 
 /** Run unchanged registered tools against a disposable exact Git input. The
  * writable repair workspace and all trusted controller records stay unmounted. */
-export async function testProject(workspace: string, directory: string, p: ProjectContract) {
+export async function testProject(workspace: string, directory: string, p: ProjectContract,startGate?:DockerStartGate) {
   const fixed = await projectTestPlan(p), current = await tree(workspace, true), inputHash = treeHash(current);
   const sourceHead = await git(workspace, ['rev-parse', 'HEAD']), sourceHeadTree = await git(workspace, ['rev-parse', sourceHead + '^{tree}']);
   if (fixed.dependencies && Object.keys(current).some(path => path === 'node_modules' || path.startsWith('node_modules/'))) throw new Error('project_dependency_overlaps_source');
@@ -187,7 +187,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
   save(join(directory, 'test-progress.json'), { phase: 'runtime_requested' });
-  const runtime = await DockerRuntime.prepare(fixed.plan.executor, join(directory, 'runtime')), tools = [];
+  const runtime = await DockerRuntime.prepare(fixed.plan.executor, join(directory, 'runtime'),startGate), tools = [];
   let executionHealthy = true;
   for (const [index, tool] of fixed.plan.tools.entries()) {
     let observed: unknown[] = [];
@@ -202,7 +202,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
     const resultDirectory = join(output, String(index)); await mkdir(resultDirectory, { mode: 0o700 });
     save(join(directory, 'test-progress.json'), { phase: 'tool_requested', toolIndex: index });
     const writable: string[] = (tool as any).writableOutputs ?? [];
-    const r = await runtime.run({ directory: join(directory, 'tool-' + index), work, readOnlyWork: true, outputMounts: generated.map(m => ({ ...m, writable: writable.includes(m.path) })), resultDirectory, dependencies: fixed.dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, binding: { run: inputHash, stage: index, tool: tool.id, head: H, tree: T, planHash: p.testPlanSha256 } });
+    const r = await runtime.run({ directory: join(directory, 'tool-' + index), work, readOnlyWork: true, outputMounts: generated.map(m => ({ ...m, writable: writable.includes(m.path) })), resultDirectory, dependencies: fixed.dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, binding: { run: inputHash, stage: index, tool: tool.id, head: H, tree: T, planHash: p.testPlanSha256 },startGate });
     // Never invoke Git in a checkout after candidate-controlled commands.
     const artifacts = await generatedEvidence(generated);
     save(join(directory, 'generated-state-' + index + '.json'), artifacts);
@@ -252,7 +252,7 @@ export async function reconcileProjectTests(operation: string, p: ProjectContrac
         if (record.clientPid && processState(record.clientPid) !== 'ended') throw new Error('project_test_client_active_or_unknown');
         const state = await reconcileDocker(directory, 'inspect', plan.executor!);
         if (!['ended', 'original_completed_record', 'ended_from_original_recovery', 'not_started'].includes(state.outcome)) throw new Error('project_test_container_active_or_unknown');
-        if (state.outcome === 'not_started') await reconcileDocker(directory, 'stop', plan.executor!);
+        if (state.outcome === 'not_started'&&state.cleanup!=='removed') await reconcileDocker(directory, 'stop', plan.executor!);
       }
     }
   };

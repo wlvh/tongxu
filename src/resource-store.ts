@@ -40,6 +40,10 @@ export class ResourceRecords {
     let state=claim?claim.state:sent.length?'claim_unknown':'prepared_not_sent';
     if(!claim&&refusal&&refusal.id>sent.at(-1)!.id)state='refused';
     if(!claim&&sent.length&&f.events.some(e=>e.kind==='resource_dispatch_closed_unstarted'&&e.data.phase==='claim'&&e.data.dispatchEvent===sent.at(-1)!.id))state='prepared_not_sent';
+    const latestReply=replies.at(-1),latestProblem=f.events.findLast(e=>e.kind==='resource_problem');
+    // Keep the original claim identity, but never use an earlier held answer
+    // after a newer lookup/transport failure makes its current state unknown.
+    if(claim?.state==='unknown'||claim?.state==='held'&&(latestReply?.data.reply.result.state!=='present'||latestProblem&&latestProblem.id>(latestReply?.id??0)))state='claim_unknown';
     if(outcome&&(!claim?.outcomeSha256||claim.outcomeSha256!==outcome.data.outcomeSha256))state=claim&&['consumed','released'].includes(claim.state)?'result_conflict':'result_pending';
     const issues=f.events.filter(e=>e.kind==='resource_problem').map(e=>e.data);
     const pendingResultAttempt=Boolean(settlement.length&&!f.events.some(e=>e.kind==='resource_dispatch_closed_unstarted'&&e.data.phase==='result'&&e.data.dispatchEvent===settlement.at(-1)!.id));
@@ -104,7 +108,7 @@ export class ResourceRecords {
     if(command.command==='record_result'&&canonical(command.outcome)!==canonical(s.outcome?.outcome))throw new Error('resource_result_request_changed');
     if(r.state==='present'&&known&&(r.claim.id!==known.id||['consumed','released'].includes(known.state)&&(r.claim.state!==known.state||r.claim.outcomeSha256!==known.outcomeSha256)))throw new Error('resource_original_claim_or_terminal_conflict');
     if(r.state==='present'&&known&&known.state==='held'&&r.claim.state==='unknown'){
-      this.event('resource_problem','resource:'+id,{kind:'provider_cannot_currently_confirm_claim',rawSha256:this.blob(observation.raw),originalClaim:known.id});return this.statusOf(id);
+      this.event('resource_problem','resource:'+id,{kind:'provider_cannot_currently_confirm_claim',rawSha256:this.blob(observation.raw),originalClaim:known.id});
     }
     this.event('resource_reply_observed','resource:'+id,{command:command.command,reply:observation.reply,rawSha256:this.blob(observation.raw),directory:observation.directory,capturedAt:observation.capturedAt});return this.statusOf(id);
   });}

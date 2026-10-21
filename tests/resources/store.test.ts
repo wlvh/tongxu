@@ -128,3 +128,8 @@ test('persisted execution proof and provider originals are revalidated before re
   const observed=f.q.status().events.find((e:any)=>e.kind==='resource_reply_observed'),ref=JSON.parse(observed.data).rawSha256,raw=Buffer.from((db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(ref) as any).bytes);
   db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('broken provider source'),ref);assert.throws(()=>f.resources.status(f.id),/original_missing_or_changed/);db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(raw,ref);assert.equal(f.resources.status(f.id).state,'consumed');
 });
+test('a failed lookup invalidates an older held observation until the original provider confirms it again',async t=>{
+  const f=await ready(t);await f.claim();assert.equal(f.resources.requireHeldForExecution(f.id,f.request.operation,f.request.authorityIntent).state,'held');
+  f.resources.problem(f.id,'explicit fixture latest lookup transport failed','fixture-failed-lookup');assert.equal(f.resources.status(f.id).state,'claim_unknown');assert.throws(()=>f.resources.requireHeldForExecution(f.id,f.request.operation,f.request.authorityIntent),/fresh_original_held_resource_claim_required/);
+  const restored=await f.lookup();assert.equal(restored.state,'held');assert.equal(f.resources.requireHeldForExecution(f.id,f.request.operation,f.request.authorityIntent).claimAttempts,1);assert.equal(f.ledger.state().claims.length,1);
+});

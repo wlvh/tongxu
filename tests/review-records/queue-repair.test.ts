@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile,writeFile,mkdir } from 'node:fs/promises';
+import { readFile,writeFile,mkdir,access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setup } from '../w3/receiver-fixture.js';
 import { fixture } from '../w5/repair-fixture.js';
@@ -16,6 +16,8 @@ import { QueueStore } from '../../src/queue-store.js';
 import { DatabaseSync } from 'node:sqlite';
 import { fixture as ledgerFixture } from '../resources/provider-fixture.js';
 import { authorizeRepairFixture } from './repair-authority-fixture.js';
+import { resourceAction } from '../../src/resource-claims.js';
+import { reconcileProjectTests } from '../../src/project-repair.js';
 const dockerPath=process.env.TONGXU_TEST_DOCKER_CONFIG;
 if(!dockerPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG required');
 const docker=JSON.parse(await readFile(dockerPath,'utf8'));
@@ -59,6 +61,8 @@ test('an existing repair entry cannot bypass a newly registered coordination han
   const plan={schemaVersion:1,kind:'tongxu-task-coordination',name:'write-handoff-fixture',revision:'r1',previous:null,source:'Explicit local fixture coordination; original reviewer return is not a new writing handoff',authorityIntent:null,mode:'parallel',actors:[{id:'A',tool:'codex'},{id:'B',tool:'codex'}],tasks:[task('A',f.plan.item),task('B',other.item)],shared:[],dependencies:[]};
   f.q.coordination().register(Buffer.from(JSON.stringify(plan)));const before=await readFile(f.model.trace),judgment=JSON.stringify(f.original.receiver.judgment);
   await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);assert.equal(JSON.stringify(f.q.receiverState(f.operation).receiver.judgment),judgment);
+  const c=await f.packet({pr:3,H:f.H}),next={...plan,previous:hash((await import('../../src/comparison.js')).canonical(plan)),revision:'r2',actors:[...plan.actors,{id:'C',tool:'codex'}],tasks:[task('C',c.item),task('B',other.item)]};f.q.coordination().register(Buffer.from(JSON.stringify(next)));
+  await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);
 });
 test('governed repair requires the exact current action and held original resource, then reports its real terminal result without a second claim',async t=>{
   const f=await setupRepair(t),ledger=await ledgerFixture(t),authority=await authorizeRepairFixture(f,ledger.profile),before=await readFile(f.model.trace);
@@ -82,6 +86,19 @@ test('a lost original ledger claim is looked up before repair and is never claim
   assert.equal(ledger.state().claims.length,1);assert.equal(f.q.resources().status(authority.resourceId).state,'claim_unknown');assert.deepEqual(await readFile(f.model.trace),before);
   const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
   assert.equal(result.resources[0].state,'consumed');
+});
+test('a newer provider unknown blocks repair despite an older fresh held reply; a later confirmed original permits continuation',async t=>{
+  const f=await setupRepair(t),ledger=await ledgerFixture(t),authority=await authorizeRepairFixture(f,ledger.profile);await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));
+  await resourceAction(f.store,authority.resourceId,'claim','implementer');const db=new DatabaseSync(join(ledger.root,'original-fixture.sqlite'));const original=(db.prepare('SELECT result FROM requests').get() as any).result,value=JSON.parse(original);value.claim.state='unknown';db.prepare('UPDATE requests SET result=?').run(JSON.stringify(value));db.close();
+  const before=await readFile(f.model.trace);await assert.rejects(runQueueRepair(f.planPath),/original_resource_unresolved|held_resource_claim_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.resources().status(authority.resourceId).state,'claim_unknown');assert.throws(()=>f.q.resources().requireHeldForExecution(authority.resourceId,f.operation,authority.intent),/fresh_original_held_resource_claim_required/);
+  const restored=new DatabaseSync(join(ledger.root,'original-fixture.sqlite'));restored.prepare('UPDATE requests SET result=?').run(original);restored.close();const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(ledger.state().claims.length,1);assert.equal(result.resources[0].state,'consumed');
+});
+test('Owner revocation during test preparation is rechecked at the actual Docker start boundary',async t=>{
+  const f=await setupRepair(t),ledger=await ledgerFixture(t),authority=await authorizeRepairFixture(f,ledger.profile);await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));const before=await readFile(f.model.trace),running=runQueueRepair(f.planPath).then(value=>({value,error:null as Error|null}),error=>({value:null,error:error as Error}));
+  const baseline=join(f.request.executionRoot,'operation/attempt-1/baseline'),deadline=Date.now()+8000;let observed=false;while(Date.now()<deadline){try{await access(join(baseline,'test-intent.json'));observed=true;break;}catch{await new Promise(r=>setTimeout(r,5));}}
+  assert.equal(observed,true);await authority.adopt({kind:'revoke',decision:authority.confirmed.sha});const outcome=await running;assert.match(outcome.error?.message??'',/docker_runtime_probe_failed|owner_decision_revoked/);assert.deepEqual(await readFile(f.model.trace),before);
+  const record=JSON.parse(await readFile(join(baseline,'runtime/probe/execution.json'),'utf8'));assert.equal(record.startGateRejected,true);assert.equal(record.phase,'not_started');assert.equal(record.cleanup,'removed');assert.equal(record.clientPid,undefined);assert.equal(record.after.State.Status,'created');assert.equal(record.after.State.Running,false);
+  const prepared=JSON.parse(await readFile(join(f.request.executionRoot,'plan.json'),'utf8'));await reconcileProjectTests(join(f.request.executionRoot,'operation'),prepared.project);assert.deepEqual(await readFile(f.model.trace),before);
 });
 test('queue stop is checked before dispatch and is not bypassed by changing the operation or root',async t=>{
   const f=await setupRepair(t),before=await readFile(f.model.trace);f.q.control('scope','implementation','stopped','fixture:stop');
