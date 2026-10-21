@@ -39,7 +39,7 @@ export async function runIntegration(store:string,requestPath:string,action:'pre
         const result=await captureIntegrationGit(root,step,effect=>records.effect(p.id,observations,()=>{if(processes===0)checkIntegrationContinuationBoundary(proof);const value=effect();if(Number.isSafeInteger((value as any)?.pid))processes++;return value;}),refresh);
         if(result.successful){const boundary=await recordIntegrationBoundary(m,name,result,lastBoundary);records.boundary(p.id,boundary.bytes);lastBoundary=boundary.sha256;}return result;
       });}catch(e){records.problem(p.id,reason(e));}
-      const capture=await readIntegrationCapture(m);return {...records.complete(p.id,capture),newGitProcesses:processes,newModelInputs:0,recovery:'continued_verified_ended_prefix',reusedGitSteps:proof.completedSteps.length,continuation:controllerId};
+      const capture=await readIntegrationCapture(records.sourceMaterial(p.id));return {...records.complete(p.id,capture),newGitProcesses:processes,newModelInputs:0,recovery:'continued_verified_ended_prefix',reusedGitSteps:proof.completedSteps.length,continuation:controllerId};
     }
     if(action==='reconcile')return {...records.state(p.id),newGitProcesses:0,newModelInputs:0};
     if(await realpath(p.objects)!==p.objects||!(await lstat(p.objects)).isDirectory())throw new Error('integration_object_source_invalid');
@@ -50,7 +50,7 @@ export async function runIntegration(store:string,requestPath:string,action:'pre
     const producer=Buffer.from(canonical({kind:'tongxu-fixed-git-integration',requestSha256,sourceSha256:hash(canonical(m.source)),objectSourceSha256:hash(canonical(objectSource)),directory,controllerPid:process.pid,controllerId,continuationProtocol:integrationContinuationProtocol,runtimeModules,node:{executable:process.execPath,version:process.version},startedAt:new Date().toISOString(),newModelInputs:0,targetUpdates:0}));await frozen(join(directory,'producer.json'),producer);producerSha256=hash(producer);
     const initialBoundary=await recordIntegrationBoundary(m,'initial',null,null);records.boundary(p.id,initialBoundary.bytes);let lastBoundary=initialBoundary.sha256,processes=0;
     try{await integrationRecipe({...m,objectSource},async(name,step)=>{const result=await captureIntegrationGit(join(directory,'steps',name),step,effect=>records.effect(p.id,observations,()=>{const value=effect();if(Number.isSafeInteger((value as any)?.pid))processes++;return value;}),refresh);if(result.successful){const boundary=await recordIntegrationBoundary(m,name,result,lastBoundary);records.boundary(p.id,boundary.bytes);lastBoundary=boundary.sha256;}return result;});}catch(e){records.problem(p.id,reason(e));}
-    const capture=await readIntegrationCapture(m);return {...records.complete(p.id,capture),newGitProcesses:processes,newModelInputs:0};
+    const capture=await readIntegrationCapture(records.sourceMaterial(p.id));return {...records.complete(p.id,capture),newGitProcesses:processes,newModelInputs:0};
   }catch(e){try{q.integrations().problem(p.id,reason(e));}catch{}throw e;}
   finally{try{if(controllerId&&producerSha256)await integrationControllerReturned(directory,controllerId,producerSha256);}finally{if(lock?.isTransaction)lock.exec('ROLLBACK');lock?.close();q.close();}}
 }

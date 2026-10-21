@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile,readdir,stat,rename,rm,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,unlinkSync} from 'node:fs';
 import {integrationFixture,raw} from './fixture.js';
 import {integrationAuthority} from './authority-fixture.js';
 import {IntegrationRecords} from '../../src/integration-store.js';
@@ -76,4 +76,26 @@ test('MIC-F01: final capture replay binds each original step to its recorded bou
   IntegrationRecords.prototype.boundary=function(...args){const value=boundary.apply(this,args);if(value.name==='018-bundle-verify'&&!restore)restore=alteredPrefix(f.directory);return value;};t.after(()=>{IntegrationRecords.prototype.boundary=boundary;});
   await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/boundary_capture_changed/);assert.ok(restore);assert.equal((await readdir(join(f.directory,'steps'))).length,19);assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');restore();IntegrationRecords.prototype.boundary=boundary;
   const recovered=await runIntegration(f.store,f.path,'reconcile');assert.equal(recovered.phase,'produced');assert.equal(recovered.newGitProcesses,0);assert.equal(await f.count(),0);
+});
+test('MIC-F01: an anchored success cannot turn into failed or not-started; exact originals restore the same request',options,async t=>{
+  const f=await paused(t),admit=IntegrationRecords.prototype.continueEnded,step=join(f.directory,'steps/000-git-version'),boundaryPath=join(f.directory,'boundaries/000-git-version.json');
+  const exit=await readFile(join(step,'exit.json')),process=await readFile(join(step,'process.json')),boundary=await readFile(boundaryPath),before=await readdir(join(f.directory,'steps'));
+  t.after(()=>{IntegrationRecords.prototype.continueEnded=admit;});
+  for(const variant of ['changed-exit','false-not-started','moved-boundary']){
+    let changed=false;
+    IntegrationRecords.prototype.continueEnded=function(...args){const value=admit.apply(this,args);changed=true;
+      if(variant==='false-not-started'){unlinkSync(join(step,'process.json'));unlinkSync(join(step,'exit.json'));writeFileSync(join(step,'not-started.json'),raw({spawnInvoked:false,reason:'explicit_disguised_old_success_fixture'}));}
+      else {writeFileSync(join(step,'exit.json'),raw({...JSON.parse(exit.toString()),code:1}));
+        if(variant==='moved-boundary'){writeFileSync(join(f.directory,'boundaries/retained-original.json'),boundary);writeFileSync(boundaryPath,raw({...JSON.parse(boundary.toString()),stepSha256:'0'.repeat(64)}));}
+      }return value;
+    };
+    await assert.rejects(runIntegration(f.store,f.path,'continue-ended'),/integration_boundary_capture_changed/);assert.equal(changed,true);
+    assert.equal(f.q.integrations().state(f.request.id).phase,'started_or_unknown');assert.deepEqual(await readdir(join(f.directory,'steps')),before);
+    assert.throws(()=>f.q.integrations().prepare(raw({...f.request,id:'bypass-'+variant}),[]),/integration_original_unresolved/);
+    await writeFile(join(f.root,'classification-'+variant+'.json'),raw({explicitFaultFixture:true,variant,phase:f.q.integrations().state(f.request.id).phase,newGitProcesses:0,newModelInputs:0,currentExit:variant==='false-not-started'?null:JSON.parse(await readFile(join(step,'exit.json'),'utf8')),boundarySha256:hash(await readFile(boundaryPath)),originalBoundarySha256:hash(boundary)}));
+    await writeFile(join(step,'exit.json'),exit);await writeFile(join(step,'process.json'),process);await writeFile(boundaryPath,boundary);
+    await rm(join(step,'not-started.json'),{force:true});await rm(join(f.directory,'boundaries/retained-original.json'),{force:true});IntegrationRecords.prototype.continueEnded=admit;
+  }
+  const restored=await runIntegration(f.store,f.path,'continue-ended');assert.equal(restored.phase,'produced');assert.equal(restored.newGitProcesses,12);assert.ok('reusedGitSteps' in restored);assert.equal(restored.reusedGitSteps,7);
+  assert.equal((await runIntegration(f.store,f.path,'continue-ended')).newGitProcesses,0);assert.equal(await f.count(),0);
 });
