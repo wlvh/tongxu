@@ -26,6 +26,7 @@ export function parseTaskControlCatalog(raw:Buffer):TaskControlCatalog{
  * task inbox and message executor. The access key never becomes Owner proof. */
 export class TaskControls{
   private active=new Map<string,Promise<unknown>>();
+  private preparing=new Set<Promise<unknown>>();
   private accepting=true;
   private constructor(private readonly frozen:Frozen[],readonly catalogSha256:string){}
   static async load(path:string,sha256:string,sources:Source[]){
@@ -42,11 +43,14 @@ export class TaskControls{
   }
   async state(id?:string){const selected=id?[this.selected(id)]:this.frozen;return Promise.all(selected.map(async f=>{try{return {...await this.stateOf(f),available:true};}catch(e){return {id:f.entry.id,title:f.entry.title,source:f.entry.source,available:false,reason:errorCode(e),permissionsGranted:false,ownerApproval:false};}}));}
   async begin(id:string,beforeRegistration?:()=>void){
+    if(!this.accepting)throw new Error('task_control_server_closing');const pending=this.beginPrepared(id,beforeRegistration);this.preparing.add(pending);try{return await pending;}finally{this.preparing.delete(pending);}
+  }
+  private async beginPrepared(id:string,beforeRegistration?:()=>void){
     if(!this.accepting)throw new Error('task_control_server_closing');const f=this.selected(id),running=this.active.get(id);if(running)return {accepted:true,duplicate:true,action:id,state:await this.state(id)};
     const q=await QueueStore.open(f.source.store);try{
       if(q.taskLinks().hasSource(f.source.item))await q.refreshTaskLinkSource(f.source.item);else{const p=q.tasks().definition(f.source.item);q.tasks().observe(p,await observeTaskWorkspace(p));}
       const current=q.tasks().current(f.source.item);if(current.packet!==f.entry.packet||current.fingerprint!==f.entry.sourceSha256)throw new Error('task_control_candidate_changed');
-      beforeRegistration?.();q.taskInbox().enqueue(f.bytes);
+      if(!this.accepting)throw new Error('task_control_server_closing');beforeRegistration?.();q.taskInbox().enqueue(f.bytes);
     }finally{q.close();}
     // No new scheduler state: repeated and competing controllers encounter the
     // same original request, selection, runtime lock and capture checks.
@@ -57,5 +61,5 @@ export class TaskControls{
   async execute(id:string,beforeRegistration?:()=>void){const registration=await this.begin(id,beforeRegistration),running=this.active.get(id),execution=running?await running:null;return {registration,execution,state:await this.state(id)};}
   async report(id:string){const f=this.selected(id),state=await this.stateOf(f);if(!state.run)throw new Error('task_control_report_not_returned');return QueueStore.observeMessageReport(f.source.store,f.source.item,state.run,f.request.id);}
   async cancel(id:string){const f=this.selected(id),q=await QueueStore.open(f.source.store);try{const result=q.taskInbox().cancelUnsent(f.source.item,f.request.id,'fixed-task-control:'+this.catalogSha256+':'+id);return {action:id,result,state:await this.state(id),cancelIsNotProcessTermination:true};}finally{q.close();}}
-  async drain(){this.accepting=false;await Promise.allSettled([...this.active.values()]);}
+  async drain(){this.accepting=false;while(this.preparing.size||this.active.size)await Promise.allSettled([...this.preparing,...this.active.values()]);}
 }

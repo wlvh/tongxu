@@ -56,3 +56,9 @@ test('direct contacts use exact original authority and provider claims; revoked 
     const result=await controls.execute('contact');assert.equal((result.execution as any).completed,!revoked);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,revoked?0:1);assert.equal(ledger.state().claims.length,revoked?0:1);assert.equal(ledger.state().settlements.length,revoked?0:1);await controls.execute('contact');assert.equal((await f.calls()).filter(x=>x.kind==='input').length,revoked?0:1);
   }
 });
+
+test('server closing during source preparation waits for that preparation and prevents late request registration',async t=>{
+  const f=await controlFixture(t),open=QueueStore.open;let release!:()=>void,entered!:()=>void;const blocked=new Promise<void>(r=>release=r),reached=new Promise<void>(r=>entered=r);let first=true;
+  QueueStore.open=async function(path:string){const q=await open.call(QueueStore,path);if(path===f.store&&first){first=false;entered();await blocked;}return q;};
+  try{const pending=f.controls.begin('contact'),rejected=assert.rejects(pending,/server_closing/);await reached;let drained=false;const closing=f.controls.drain().then(()=>{drained=true;});await Promise.resolve();assert.equal(drained,false);release();await rejected;await closing;assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);}finally{release();QueueStore.open=open;}
+});
