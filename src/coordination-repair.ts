@@ -33,6 +33,7 @@ export async function runCoordinatedRepair(store:string,planPath:string,requestP
     const consumption=await runCoordination(store,planPath,requestPath,false,expected),state=consumption.state;
     const dependencies=plan.dependencies.filter(d=>d.producer===task.id&&d.capability===outputs[0]!.id);
     const consumed=dependencies.length>0&&dependencies.every(d=>state.tasks.find(t=>t.id===d.task)?.stages.find(s=>s.stage===d.stage)?.phasePrerequisitesMet===true);
-    return {completed:consumed&&consumption.readonlyTasksCompleted,status:consumed?'candidate_consumed':'dependent_task_waiting',coordination:id,investigation,repair:result,consumption,readonlyModelRequests:investigation.newModelRequests+consumption.newModelRequests,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
+    const resourcesSettled=[...Object.values(investigation.results),...Object.values(consumption.results)].every(r=>r.resourcesSettled!==false)&&(result.resources??[]).every((r:any)=>['consumed','released'].includes(r.state));
+    return {completed:consumed&&consumption.readonlyTasksCompleted&&resourcesSettled,status:!resourcesSettled?'original_resource_result_pending':consumed?'candidate_consumed':'dependent_task_waiting',resourcesSettled,coordination:id,investigation,repair:result,consumption,readonlyModelRequests:investigation.newModelRequests+consumption.newModelRequests,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
   }finally{if(lock.isTransaction)lock.exec('ROLLBACK');lock.close();}
 }

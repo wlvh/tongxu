@@ -40,6 +40,7 @@ export async function continueMessage(store:string,originalPlanPath:string,reque
       const attempt=(prior?.attempt??0)+1,path=join(slot,'attempt-'+attempt),context=Buffer.from(canonical(source.context));
       if(context.length>512*1024)throw new Error('continuation_complete_context_too_large');
       const plan:MessagePlan={schemaVersion:1,kind:'tongxu-addressed-readonly-messages',executionKind:original.executionKind,source:request.source+'; explicit new context for original '+run,authorityIntent:request.authorityIntent,participants:[{...source.participant,parent:null}],messages:[{id:source.pending.id,from:null,to:source.pending.to,body:continuationMessagePrefix+source.pending.body,replies:[]}],material:[{name:'retained-context.json',path:join(path,'context.json'),sha256:hash(context)}],consumeMaterial:['retained-context.json'],timeoutMs:original.timeoutMs,billing:request.billing};
+      if(original.resourceBudget)plan.resourceBudget=original.resourceBudget;
       const planBytes=Buffer.from(canonical(plan));parseMessagePlan(planBytes);
       // Reserve first, so rejected replacements cannot create new path-based
       // opportunities. The immutable blobs recover an interrupted preparation.

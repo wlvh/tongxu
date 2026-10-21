@@ -58,8 +58,11 @@ export class ResourceRecords {
     const intentBindings=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared' AND json_extract(data,'$.authorityIntent')=?").all(request.authorityIntent) as Row[]).map(e=>JSON.parse(e.data));
     if(intentBindings.some(e=>e.operation!==request.operation||e.packet!==action.binding?.packet||e.actionSha256!==request.actionSha256))throw new Error('authority_intent_already_bound_to_original_operation');
     const slot=hash(canonical([request.operation,request.ledgerId,request.resourceRef]));
-    const prior=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]).map(e=>JSON.parse(e.data)).find(e=>e.slot===slot);
-    if(prior)throw new Error('original_resource_slot_already_bound');
+    const prior=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]).map(e=>JSON.parse(e.data)).filter(e=>e.slot===slot);
+    // A different fixed action may use the same provider resource after its
+    // predecessor settled, was refused, or never claimed. Unknown/held and
+    // same-action requests cannot be replaced with another intent.
+    if(prior.some(p=>p.actionSha256===request.actionSha256||!['prepared_not_sent','refused','consumed','released'].includes(this.statusOf(p.requestSha256).state)))throw new Error('original_resource_slot_already_bound');
     this.blob(Buffer.from(canonical(request)));const entry={requestSha256:id,slot,operation:request.operation,authorityIntent:request.authorityIntent,actionSha256:request.actionSha256,role:request.role,packet:action.binding?.packet,profileSha256:hash(canonical(p)),preparedAt:now()};
     this.event('resource_request_prepared','resource:'+id,entry);return {...this.statusOf(id),duplicate:false};
   });}
@@ -69,7 +72,8 @@ export class ResourceRecords {
     const result=JSON.parse(op.result??'null'),stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
     const claim=this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row;
     const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim.generation===op.generation;
-    if(!ownMerge&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
+    const message=result?.messageResources?.[action.request.payloadSha256],ownMessage=action.request.action==='coordinate'&&op.status==='messaging'&&message?.phase==='resources_pending'&&message.authorityIntent===request.authorityIntent&&message.resourceRequests?.includes(resourceRequestHash(request));
+    if(!ownMerge&&!ownMessage&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
     if(claim&&!ownMerge)throw new Error('resource_target_execution_active_or_unknown');
   }
   requireHeldForExecution(id:string,operation:string,intent:string){return this.transaction(()=>{
@@ -95,6 +99,7 @@ export class ResourceRecords {
     if(state.state!=='prepared_not_sent'&&!(state.state==='refused'&&retryRefused))throw new Error('resource_original_request_requires_lookup_not_resend');
     if(state.claimAttempts>=3)throw new Error('resource_refused_retry_bound');
     const action=this.authority(f.request.authorityIntent,observations);this.matchAction(f.request,action);
+    const slot=hash(canonical([f.request.operation,f.request.ledgerId,f.request.resourceRef]));for(const row of this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]){const prior=JSON.parse(row.data);if(prior.slot===slot&&prior.requestSha256!==id&&!['prepared_not_sent','refused','consumed','released'].includes(this.statusOf(prior.requestSha256).state))throw new Error('resource_previous_action_claim_unresolved');}
     this.blob(capabilities.raw);this.event('resource_claim_dispatched','resource:'+id,{requestSha256:id,originalOperation:f.request.operation,directory,attempt:state.claimAttempts+1,capabilitiesSha256:hash(capabilities.raw),registeredAt:now(),controllerPid:process.pid});
     return this.statusOf(id);
   });}

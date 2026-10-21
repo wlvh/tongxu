@@ -6,7 +6,8 @@ import { hash,privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { QueueStore } from './queue-store.js';
 import { coordinationPlanId,parseCoordinationPlan } from './coordination-contract.js';
-import { parseCoordinationExecution,coordinationTaskBody,coordinationMessageId } from './coordination-execution-contract.js';
+import { parseCoordinationExecution,coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority } from './coordination-execution-contract.js';
+import {authorizeCoordinationMessage} from './coordination-authority.js';
 import { runMessages } from './messages.js';
 import type { MessagePlan } from './message-contract.js';
 async function directory(path:string){try{await privateDirectory(path,true);}catch(e:any){if(e.code!=='EEXIST')throw e;await privateDirectory(path,false);}}
@@ -23,13 +24,14 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
     const records=q.coordination();records.register(raw);const execution=records.execution(id,requestBytes),prepared:Record<string,any>={},results:Record<string,any>={},errors:Record<string,string>={};let newModelRequests=0;
     const select=async(taskId:string,purpose:'investigate'|'consume')=>{
       const task=plan.tasks.find(t=>t.id===taskId)!,prior=records.dispatchSelection(id,taskId,purpose),context=records.context(id),actor=request.actors.find(a=>a.id===task.actor)!,attempt=(prior?.attempt??0)+1,path=join(root,'dispatch-'+hash(canonical([taskId,purpose])),'attempt-'+attempt);
-      const message:MessagePlan={schemaVersion:1,kind:'tongxu-addressed-readonly-messages',executionKind:request.executionKind,source:request.source+'; coordination '+id+' task '+taskId+' '+purpose,authorityIntent:request.authorityIntents[taskId]!,participants:[{...actor,item:task.item,role:'issue_owner',parent:null}],messages:[{id:coordinationMessageId(taskId,purpose),from:null,to:actor.id,body:coordinationTaskBody(request,taskId,purpose),replies:[]}],material:[{name:'coordination-context.json',path:join(path,'context.json'),sha256:context.sha256}],consumeMaterial:['coordination-context.json'],billing:request.billing,timeoutMs:request.timeoutMs};
+      const message:MessagePlan={schemaVersion:1,kind:'tongxu-addressed-readonly-messages',executionKind:request.executionKind,source:request.source+'; coordination '+id+' task '+taskId+' '+purpose,...coordinationMessageAuthority(request,id,taskId,purpose,attempt),participants:[{...actor,item:task.item,role:'issue_owner',parent:null}],messages:[{id:coordinationMessageId(taskId,purpose),from:null,to:actor.id,body:coordinationTaskBody(request,taskId,purpose),replies:[]}],material:[{name:'coordination-context.json',path:join(path,'context.json'),sha256:context.sha256}],consumeMaterial:['coordination-context.json'],billing:request.billing,timeoutMs:request.timeoutMs};
       records.selectDispatch(id,taskId,purpose,execution.requestSha256,Buffer.from(canonical(message)),context.sha256);const selected=records.dispatchSelection(id,taskId,purpose)!;
       const parsed=JSON.parse(selected.plan.toString());records.bindMessages(id,selected.plan,selected.contextSha256,[{task:taskId,messageId:parsed.messages[0].id}]);await directory(dirname(selected.directory));await directory(selected.directory);await fixedFile(join(selected.directory,'context.json'),selected.context);await fixedFile(join(selected.directory,'plan.json'),selected.plan);const result={task:taskId,purpose,run:selected.run,attempt:selected.attempt,planPath:join(selected.directory,'plan.json'),contextSha256:selected.contextSha256,messageId:parsed.messages[0].id};prepared[taskId+':'+purpose]=result;return result;
     };
     const perform=async(taskId:string,purpose:'investigate'|'consume')=>{
       try{
         const selected=await select(taskId,purpose);if(prepareOnly)return;
+        if(request.delegatedCoordination){let sent=false;try{sent=q.messages().status(selected.run).messages.some(m=>Boolean(m.sent));}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}if(!sent){const fixed=records.dispatchSelection(id,taskId,purpose)!;await authorizeCoordinationMessage(q,request.delegatedCoordination,JSON.parse(fixed.plan.toString()),JSON.parse(fixed.context.toString()).bindings[taskId]);}}
         const result=await runMessages(store,selected.planPath,false,selected.run);newModelRequests+=result.newModelRequests;results[taskId+':'+purpose]=result;if(!result.completed)return;
         records.feedback(id,result.run,selected.messageId);
         const task=plan.tasks.find(t=>t.id===taskId)!;if(purpose==='investigate')for(const output of task.outputs.filter(o=>o.stage==='investigate'))records.recordMessageOutput(id,taskId,output.id,result.run,selected.messageId);

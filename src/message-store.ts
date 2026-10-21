@@ -11,7 +11,7 @@ type Row=Record<string,any>;
 /** Transport records beside the original queue. They are neither formal
  * judgments nor resource balances and never confer writing/merge authority. */
 export class MessageRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row,private coordinationGate?:(run:string,messageId?:string,participant?:string)=>void){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row,private coordinationGate?:(run:string,messageId?:string,participant?:string)=>void,private resourceGate?:(run:string,action:Row)=>void){}
   private events(run:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'message_%' ORDER BY id").all('messages:'+run) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('message_original_missing_or_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
@@ -28,16 +28,18 @@ export class MessageRecords {
     const refs=(objects:Record<string,Buffer>)=>Object.fromEntries(Object.entries(objects).map(([name,b])=>[name,{sha256:this.blob(b),bytes:b.length}]));
     this.event(run,'registered',{run,planSha256:this.blob(Buffer.from(canonical(p))),originalPlanSha256:this.blob(raw),bindings,materials:refs(materials),assemblies:refs(assemblies),registeredAt:now()});return {...this.view(run),duplicate:false};
   });}
-  private gate(run:string,observations:OwnerObservation[]){
+  private gate(run:string,observations:OwnerObservation[],requireResources=true){
     const f=this.fixed(run);for(const a of f.plan.participants){const before=f.r.bindings[a.id],current=this.item(a.item);if(!current.current||current.packet!==before.packet||current.fingerprint!==before.fingerprint)throw new Error('message_candidate_or_material_changed');if((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(current.context.scope.id) as Row)?.stopped)throw new Error('new_investment_stopped');}
     const parent=this.continuationParentValue(run);if(parent)this.continuationSourceValue(parent);
-    if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('message_configured_resource_consumer_not_yet_bound');
+    const configured=this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();if(configured&&!f.plan.resourceBudget)throw new Error('message_configured_resource_consumer_not_yet_bound');
     if(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()){
       if(f.plan.authorityIntent===null)throw new Error('message_coordination_authority_required');const a=this.authority(f.plan.authorityIntent,observations),request=a.request,first=f.r.bindings[f.plan.participants[0]!.id];
-      if(!['background','coordinator','secretary'].includes(a.role)||request.action!=='coordinate'||request.payloadSha256!==run||request.paths.length||request.resourceRefs.length||request.scopeId!==first.context.scope.id||request.scopeVersion!==first.context.scope.version||(a.executionKind==='fixture')!==(f.plan.executionKind==='fixture'))throw new Error('message_coordination_authority_mismatch');
+      if(!['background','coordinator','secretary'].includes(a.role)||request.action!=='coordinate'||request.payloadSha256!==run||request.paths.length||canonical([...request.resourceRefs].sort())!==canonical((f.plan.resourceBudget??[]).map(x=>x.resourceRef).sort())||request.scopeId!==first.context.scope.id||request.scopeVersion!==first.context.scope.version||(a.executionKind==='fixture')!==(f.plan.executionKind==='fixture'))throw new Error('message_coordination_authority_mismatch');
+      if(f.plan.resourceBudget&&requireResources){if(!this.resourceGate)throw new Error('message_resource_consumer_unavailable');this.resourceGate(run,a);}
     }else if(f.plan.authorityIntent!==null)throw new Error('message_authority_profile_missing');
     return f;
   }
+  admission(run:string,observations:OwnerObservation[]){return this.transaction(()=>{this.gate(run,observations,false);this.coordinationGate?.(run);return this.view(run);});}
   check(run:string,observations:OwnerObservation[],messageId?:string){return this.transaction(()=>{this.gate(run,observations);this.coordinationGate?.(run,messageId);return this.view(run);});}
   startRuntime(run:string,participant:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.gate(run,observations),p=f.plan.participants.find(p=>p.id===participant);if(!p)throw new Error('message_participant_missing');const prior=this.runtime(f,participant);
@@ -112,6 +114,7 @@ export class MessageRecords {
     }
     if(directory!==join(this.directory,'continuation-'+run,'attempt-'+((prior?.attempt??0)+1)))throw new Error('continuation_original_slot_required');
     const source=this.continuationSourceValue(run),last=source.pending,expectedMessage={id:last.id,from:null,to:last.to,body:continuationMessagePrefix+last.body,replies:[]};
+    if(canonical(parsed.resourceBudget??[])!==canonical(f.plan.resourceBudget??[]))throw new Error('continuation_original_resource_budget_changed');
     if(nextRun===run||canonical(JSON.parse(context.toString()))!==canonical(source.context)||canonical(parsed.participants)!==canonical([{...source.participant,parent:null}])||canonical(parsed.messages)!==canonical([expectedMessage])||parsed.executionKind!==f.plan.executionKind||parsed.timeoutMs!==f.plan.timeoutMs||canonical(parsed.consumeMaterial)!==canonical(['retained-context.json'])||canonical(parsed.material)!==canonical([{name:'retained-context.json',path:join(directory,'context.json'),sha256:hash(context)}]))throw new Error('continuation_final_message_changed');
     const value={originalRun:run,originalMessage:f.plan.messages.at(-1)!.id,attempt:(prior?.attempt??0)+1,nextRun,directory,requestSha256:this.blob(request),contextSha256:this.blob(context),planSha256:this.blob(plan),nativeSessionResumed:false,selectedAt:now()};this.event(run,'continuation_selected',value);return value;
   });}

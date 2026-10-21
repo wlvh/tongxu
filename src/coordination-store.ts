@@ -5,7 +5,7 @@ import { now } from './contract.js';
 import { exactKeys } from './authority-contract.js';
 import { coordinationPartId,coordinationPlanId,parseCoordinationPlan,type CoordinationStage } from './coordination-contract.js';
 import { messagePlanId,parseMessagePlan } from './message-contract.js';
-import { parseCoordinationExecution,coordinationExecutionIdentity,coordinationTaskBody,coordinationMessageId } from './coordination-execution-contract.js';
+import { parseCoordinationExecution,coordinationExecutionIdentity,coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority } from './coordination-execution-contract.js';
 import { join } from 'node:path';
 import { projectModelTestResult } from './project-repair.js';
 
@@ -75,7 +75,7 @@ export class CoordinationRecords {
       if(prior.attempt>=3)throw new Error('coordination_unstarted_preparation_limit');
     }
     const attempt=(prior?.attempt??0)+1,directory=join(this.directory,'coordination-'+id,'dispatch-'+hash(canonical([taskId,purpose])),'attempt-'+attempt),plan=parseMessagePlan(rawPlan),actor=request.actors.find(a=>a.id===task.actor)!;
-    const expected={schemaVersion:1,kind:'tongxu-addressed-readonly-messages',executionKind:request.executionKind,source:request.source+'; coordination '+id+' task '+taskId+' '+purpose,authorityIntent:request.authorityIntents[taskId],participants:[{...actor,item:task.item,role:'issue_owner',parent:null}],messages:[{id:coordinationMessageId(taskId,purpose),from:null,to:actor.id,body:coordinationTaskBody(request,taskId,purpose),replies:[]}],material:[{name:'coordination-context.json',path:join(directory,'context.json'),sha256:contextSha256}],consumeMaterial:['coordination-context.json'],billing:request.billing,timeoutMs:request.timeoutMs};
+    const expected={schemaVersion:1,kind:'tongxu-addressed-readonly-messages',executionKind:request.executionKind,source:request.source+'; coordination '+id+' task '+taskId+' '+purpose,...coordinationMessageAuthority(request,id,taskId,purpose,attempt),participants:[{...actor,item:task.item,role:'issue_owner',parent:null}],messages:[{id:coordinationMessageId(taskId,purpose),from:null,to:actor.id,body:coordinationTaskBody(request,taskId,purpose),replies:[]}],material:[{name:'coordination-context.json',path:join(directory,'context.json'),sha256:contextSha256}],consumeMaterial:['coordination-context.json'],billing:request.billing,timeoutMs:request.timeoutMs};
     if(canonical(plan)!==canonical(expected)||!f.events.some(e=>e.kind==='coordination_context_prepared'&&e.data.sha256===contextSha256))throw new Error('coordination_selected_task_changed');
     const value={task:taskId,purpose,attempt,directory,run:messagePlanId(plan),planSha256:this.blob(rawPlan),contextSha256,requestSha256};this.event(id,'dispatch_selected',value);return value;
   });}
