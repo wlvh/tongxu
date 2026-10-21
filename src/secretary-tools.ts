@@ -1,4 +1,5 @@
 import { mkdir, readdir } from 'node:fs/promises';
+import {lstatSync} from 'node:fs';
 import { join } from 'node:path';
 import { QueueStore } from './queue-store.js';
 import { canonical } from './comparison.js';
@@ -55,6 +56,7 @@ export class SecretaryTools {
   private pending=new Map<string,{request:string;result:Promise<unknown>}>();
   constructor(readonly store: string, readonly item: string, readonly candidate: Candidate, readonly directory: string,private readonly controls?:TaskControls) {}
   async check() { if (await exists(join(this.directory, 'revoked.json'))) throw new Error('secretary_run_revoked'); }
+  private checkRegistration(beforeRegistration?:()=>void){beforeRegistration?.();try{lstatSync(join(this.directory,'revoked.json'));}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return;throw e;}throw new Error('secretary_run_revoked');}
   async call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void):Promise<any>{
     const identity=canonical(p),old=this.pending.get(p.callId);if(old){if(old.request!==identity)throw new Error('secretary_conflicting_query_id');return old.result;}
     const result=this.perform(p,beforeRegistration);this.pending.set(p.callId,{request:identity,result});try{return await result;}finally{this.pending.delete(p.callId);}
@@ -67,7 +69,7 @@ export class SecretaryTools {
     if (await exists(path)) { const prior = JSON.parse((await regular(path)).toString()); if (canonical(prior.request) !== canonical(p)) throw new Error('secretary_conflicting_query_id'); return prior.response; }
     if (++this.calls > 8) throw new Error('secretary_query_budget');
     const state = await observeTask(this.store, this.item, this.candidate);
-    const data = p.tool === 'tongxu_task_status' ? state : p.tool==='tongxu_contact_options'?{...this.controls!.manifest(),states:await this.controls!.state()}:p.tool==='tongxu_contact_task'?await this.controls!.execute(p.arguments.action,beforeRegistration):p.tool==='tongxu_contact_report'?await this.controls!.report(p.arguments.action):state.operations.find((o: Row) => o.id === p.arguments.operation);
+    const data = p.tool === 'tongxu_task_status' ? state : p.tool==='tongxu_contact_options'?{...this.controls!.manifest(),states:await this.controls!.state()}:p.tool==='tongxu_contact_task'?await this.controls!.execute(p.arguments.action,()=>this.checkRegistration(beforeRegistration)):p.tool==='tongxu_contact_report'?await this.controls!.report(p.arguments.action):state.operations.find((o: Row) => o.id === p.arguments.operation);
     if (!data) throw new Error('secretary_operation_outside_task');
     const after=p.tool==='tongxu_contact_task'?await observeTask(this.store,this.item,this.candidate):state;
     const observation = { queryId: p.callId, observedAt: new Date().toISOString(), eventRevision: after.eventRevision, data, localLedgerOnly: true };

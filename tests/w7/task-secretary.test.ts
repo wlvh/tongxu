@@ -7,6 +7,7 @@ import {runSecretary,type SecretaryPlan} from '../../src/secretary.js';
 import {SecretaryTools} from '../../src/secretary-tools.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
+import {QueueStore} from '../../src/queue-store.js';
 
 async function fixture(t:test.TestContext,mode='normal'){
   const f=await controlFixture(t),trace=join(f.root,'secretary-contacts.ndjson'),exe=join(f.root,'task-secretary-fixture.mjs');await writeFile(trace,'');
@@ -44,4 +45,10 @@ test('a secretary tool losing its live call before registration cannot queue a c
 
 test('read-only secretary rejects contact configuration instead of silently gaining actions',async t=>{
   const f=await fixture(t);await writeFile(f.path,canonical({...f.p,kind:'tongxu-readonly-secretary'}));await assert.rejects(runSecretary(f.path,f.output),/secretary_task_controls_invalid/);assert.equal((await f.logs()).length,0);assert.equal((await f.calls()).length,0);
+});
+
+test('a secretary revocation arriving during source refresh stops registration and every owner input',async t=>{
+  const f=await fixture(t),directory=join(f.root,'revocation-gate');await mkdir(directory);const gate=new SecretaryTools(f.store,f.task,f.p.candidate,directory,f.controls),open=QueueStore.open;let revoke=false;
+  QueueStore.open=async function(path:string){const q=await open.call(QueueStore,path);if(path===f.store&&!revoke){revoke=true;await writeFile(join(directory,'revoked.json'),'{"source":"explicit fixture revocation during preparation"}');}return q;};
+  try{await assert.rejects(gate.call({tool:'tongxu_contact_task',arguments:{action:'contact'},callId:'revoked-during-refresh'}),/secretary_run_revoked/);assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);}finally{QueueStore.open=open;}
 });
