@@ -10,7 +10,7 @@ type Row=Record<string,any>;
 /** Consumer bindings in the original operations/events/blobs. The provider
  * remains the only owner of quantity, competition and accounting. */
 export class MessageResourceRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords,private continuation:(run:string)=>Row|null,private continuationSource:(run:string)=>Row,private prefixProof:(run:string)=>Row){}
   private bytes(sha:string){const row=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=row&&Buffer.from(row.bytes);if(!b||hash(b)!==sha)throw new Error('message_resource_original_changed');return b;}
   private blob(bytes:Buffer){const sha=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,bytes);this.bytes(sha);return sha;}
   private event(kind:string,run:string,value:Row){const sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('message_resource_'+kind,'message-resource:'+run,JSON.stringify({value,sha256}),now());}
@@ -25,7 +25,7 @@ export class MessageResourceRecords {
     const requests=p.resourceBudget.map((b:Row)=>parseResourceRequest({schemaVersion:1,ledgerId:b.ledgerId,repository:action.request.repository,operation,authorityIntent:p.authorityIntent,resourceRef:b.resourceRef,unit:b.unit,quantity:b.quantity,role:action.role,actionSha256:action.requestSha256},r.configuration(b.ledgerId))),resourceRequests=requests.map(resourceRequestHash);
     let old:Row|null=null;try{old=this.binding(run);}catch(e){if(!(e instanceof Error)||e.message!=='message_resource_binding_required')throw e;}
     if(old){if(old.operation!==operation||old.authorityIntent!==p.authorityIntent||canonical(old.resourceRequests)!==canonical(resourceRequests))throw new Error('message_original_resource_binding_fixed');return {...this.stateValue(run),requests,duplicate:true};}
-    if(op.status!=='complete'||Object.values(result.messageResources??{}).some((x:any)=>x.phase!=='returned'))throw new Error('message_resource_operation_active_or_unknown');
+    if(op.status!=='complete'||Object.values(result.messageResources??{}).some((x:any)=>x.phase!=='returned'&&!(x.phase==='partial_returned'&&x.resourceRequests.every((id:string)=>r.settledOutcome(id)))))throw new Error('message_resource_operation_active_or_unknown');
     const value={run,operation,item:op.item,packet:op.packet,authorityIntent:p.authorityIntent,role:action.role,resourceRequests,planSha256:run,registeredAt:now()},bindingSha256=hash(canonical(value));this.event('bound',run,value);
     result.messageResources={...(result.messageResources??{}),[run]:{bindingSha256,phase:'resources_pending',authorityIntent:p.authorityIntent,resourceRequests}};this.db.prepare("UPDATE operations SET status='messaging',result=? WHERE id=?").run(JSON.stringify(result),operation);
     for(const request of requests)r.prepare(request,observations,action.role);
@@ -47,9 +47,16 @@ export class MessageResourceRecords {
     const proofSha256=this.blob(Buffer.from(canonical(proof)));if(stage.phase==='returned'){if(stage.proofSha256!==proofSha256)throw new Error('message_resource_result_changed');return {...this.stateValue(run),duplicate:true};}
     if(op.status!=='messaging')throw new Error('message_resource_operation_mismatch');Object.assign(stage,{phase:'returned',proofSha256,finishedAt:now()});this.db.prepare("UPDATE operations SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),op.id);this.event('completed',run,{operation:op.id,proofSha256});return {...this.stateValue(run),duplicate:false};
   });}
+  closePartialForContinuation(run:string,nextRun:string){return this.transaction(()=>{
+    const b=this.stateValue(run),{op,result}=this.operation(b.operation),stage=result.messageResources[run],selection=this.continuation(run);if(selection?.nextRun!==nextRun)throw new Error('message_resource_exact_continuation_required');
+    const proof={...this.prefixProof(run),nextRun:stage.phase==='partial_returned'?stage.nextRun:nextRun},proofSha256=hash(canonical(proof));
+    if(stage.phase==='partial_returned'){if(stage.proofSha256!==proofSha256)throw new Error('message_partial_resource_result_changed');this.bytes(proofSha256);return {...this.stateValue(run),currentSelectedNextRun:nextRun,duplicate:true};}
+    this.continuationSource(run);if(op.status!=='messaging'||stage.phase!=='resources_pending')throw new Error('message_resource_original_partial_operation_required');
+    Object.assign(stage,{phase:'partial_returned',nextRun,proofSha256:this.blob(Buffer.from(canonical(proof))),finishedAt:now(),originalRunCompleted:false});this.db.prepare("UPDATE operations SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),op.id);this.event('partial_returned',run,{operation:op.id,nextRun,proofSha256,originalRunCompleted:false});return {...this.stateValue(run),duplicate:false};
+  });}
   outcome(operation:string,action:Row,claimedAt:string):ResourceOutcome {
-    const run=action.request.payloadSha256,b=this.binding(run),{op,result}=this.operation(operation),stage=result.messageResources?.[run],proof=this.completedProof(run);
-    if(b.operation!==operation||b.authorityIntent!==action.requestId||op.status!=='complete'||stage?.phase!=='returned'||hash(canonical(proof))!==stage.proofSha256||proof.messages.some((m:Row)=>Date.parse(m.sentAt)<Date.parse(claimedAt)))throw new Error('message_resource_execution_still_unknown');this.bytes(stage.proofSha256);
-    return {state:'completed',source:'verified_message_captures',executionKind:proof.executionKind==='fixture'?'fixture':'external',proof:Buffer.from(canonical({operation,authorityIntent:action.requestId,bindingSha256:b.bindingSha256,proofSha256:stage.proofSha256,run}))};
+    const run=action.request.payloadSha256,b=this.stateValue(run),{op,result}=this.operation(operation),stage=result.messageResources?.[run],partial=stage?.phase==='partial_returned',proof:Row=partial?{...this.prefixProof(run),nextRun:stage.nextRun}:this.completedProof(run);
+    if(b.operation!==operation||b.authorityIntent!==action.requestId||op.status!=='complete'||!['returned','partial_returned'].includes(stage?.phase)||hash(canonical(proof))!==stage.proofSha256||proof.messages.some((m:Row)=>Date.parse(m.sentAt)<Date.parse(claimedAt)))throw new Error('message_resource_execution_still_unknown');this.bytes(stage.proofSha256);
+    return {state:partial?'failed':'completed',source:partial?'verified_partial_message_handoff':'verified_message_captures',executionKind:proof.executionKind==='fixture'?'fixture':'external',proof:Buffer.from(canonical({operation,authorityIntent:action.requestId,bindingSha256:b.bindingSha256,proofSha256:stage.proofSha256,run,...(partial?{nextRun:stage.nextRun,originalRunCompleted:false}:{})}))};
   }
 }

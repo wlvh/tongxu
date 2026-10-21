@@ -17,7 +17,7 @@ function statusOf(task) {
   if((task.collaboration?.messages||[]).some(r=>!r.available))return ['协作原件待核','wait'];
   const runs=(task.collaboration?.messages||[]).filter(r=>r.available&&r.current&&r.messages.length>0);
   if(runs.some(r=>r.messages.some(m=>m.sendRegistered&&m.state!=='Reply')))return ['协作已投入，结果待核','wait'];
-  if(runs.some(r=>r.messages.some(m=>m.state!=='Reply')))return ['协作仍有待发送消息','wait'];
+  if(runs.some(r=>r.messages.some(m=>m.state!=='Reply'&&!m.continuedIn)))return ['协作仍有待发送消息','wait'];
   if(runs.some(r=>r.resourcesSettled===false))return ['报告已返回，结算待核','wait'];
   if(runs.length)return ['协作报告已返回',''];
   const o = task.operations.filter(o => o.currentPacket).at(-1);
@@ -41,7 +41,7 @@ function card(t) {
 }
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
-  const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.length-replies;
+  const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.filter(m=>m.state!=='Reply'&&!m.continuedIn).length;
   const n = el('div'); append(n, intro(state.title, state.goal, '真实队列 · 只读'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+'，不代表批准'), metric(waiting.length+pending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
   const cards = el('section', null, 'task-grid'); state.tasks.forEach(t => cards.append(card(t))); n.append(cards);
   append(n, append(el('section', null, 'note-card'), el('h3', '结论与限制，一起保留'), el('p', '每份报告对应原候选与原操作。旧判断、首次失败、等待和恢复不会因为后来通过而消失。发布记录中的 pending 也不自动表示仍有模型在运行。')));
@@ -78,7 +78,7 @@ function collaborationView(t) {
     if(run.resourcesSettled!==null)append(box,el('p','原资源结算：'+(run.resourcesSettled?'本次结果凭据匹配':'未完成，保留原认领'),'small'));
     if(!run.messages.length)append(box,el('p','尚无实际发给本任务的消息；其他任务的回复不计为本任务完成。','small'));
     run.participants.forEach(p=>append(box,el('p',p.tool+' · '+p.id+' · '+(p.started?(p.ended?(p.completeCapture?'完整捕获已核':'执行结束，捕获待核'):'执行中或结束状态未知'):'尚未启动')+(p.sessionId?' · 会话 '+p.sessionId:''),'small wrap')));
-    run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label={Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
+    run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label=m.continuedIn?'原消息未发送，已由新上下文补齐':{Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.continuedIn?'接续运行 '+m.continuedIn.slice(0,8):m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
     if(run.continuation)append(box,el('p','另有新上下文接续记录；不能据此认定原会话已恢复。','small'));n.append(box);
   });return n;
 }

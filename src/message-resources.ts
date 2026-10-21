@@ -24,7 +24,18 @@ export async function completeMessageResources(q:QueueStore,run:string,p:Message
   for(const id of binding.resourceRequests){try{const previous=q.resources().status(id);if(previous.pendingResultAttempt&&!['consumed','released'].includes(previous.state))await resourceAction(q.directory,id,'lookup',binding.role);results.push(await resourceAction(q.directory,id,'record-result',binding.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
   return results;
 }
+/** Account for an exactly captured prefix before handing the one never-sent
+ * final message to another consumer. This never refunds or retries a claim. */
+export async function settlePartialMessageResources(q:QueueStore,run:string,nextRun:string,p:MessagePlan){
+  if(!p.resourceBudget)return [];
+  const binding=q.messageResources().closePartialForContinuation(run,nextRun),results=[];
+  for(const id of binding.resourceRequests){const current=await resourceAction(q.directory,id,'lookup',binding.role);
+    if(q.resources().settledOutcome(id)){results.push(current);continue;}
+    if(!['held','result_pending'].includes(current.state))throw new Error('message_original_partial_resource_state_unresolved');
+    results.push(await resourceAction(q.directory,id,'record-result',binding.role));if(!q.resources().settledOutcome(id))throw new Error('message_original_partial_resource_result_unresolved');
+  }return results;
+}
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return true;
-  try{const b=q.messageResources().state(run);return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
+  try{const b=q.messageResources().state(run);return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
 }

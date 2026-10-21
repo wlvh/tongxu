@@ -22,6 +22,13 @@ export class CollaborationView {
     return {id,revision:c.plan.revision,current:c.current&&selected};
   }
   private selected(run:string,item:string){const m=this.sources.message(run),participants=m.plan.participants.filter((p:Row)=>p.item===item);if(!participants.length)throw new Error('report_not_found');return {m,participants,ids:new Set(participants.map((p:Row)=>p.id))};}
+  private continuationResult(m:Row){
+    const link=m.continuation;if(!link)return null;let complete=false;
+    if(link.completed===true){try{const child=this.sources.message(link.nextRun),reply=child.messages[0];complete=child.messages.length===1&&reply.state==='Reply'&&reply.reply?.finalSha256===link.finalSha256&&reply.reply?.reportedConsumption===true&&child.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.captureVerification?.proof.successfulCapture===true);
+      if(child.plan.resourceBudget){const binding=this.sources.messageResource(link.nextRun);complete=complete&&binding.phase==='returned'&&binding.resourceRequests.every((id:string)=>this.sources.settled(id));}
+    }catch{complete=false;}}
+    return {nextRun:link.nextRun,completed:complete,nativeSessionResumed:false};
+  }
   messageReport(item:string,run:string,id:string){
     const {m,participants,ids}=this.selected(run,item),message=m.messages.find((x:Row)=>x.id===id&&ids.has(x.to));
     if(!message?.reply||typeof message.reply.finalText!=='string'||hash(message.reply.finalText)!==message.reply.finalSha256)throw new Error('report_not_found');
@@ -31,13 +38,13 @@ export class CollaborationView {
   state(item:string){
     this.sources.item(item);const messageRows=this.events('message_registered',item),coordRows=this.events('coordination_registered',item);if(messageRows.length>64||coordRows.length>64)throw new Error('collaboration_history_limit');
     const messages=messageRows.map(row=>{const run=row.object.slice(9);try{
-      const {m,participants,ids}=this.selected(run,item),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false;
+      const {m,participants,ids}=this.selected(run,item),arrangement=this.arrangement(run),current=participants.every((p:Row)=>this.current(m.registration.bindings[p.id],item))&&arrangement?.current!==false,continuation=this.continuationResult(m);
       let resources:Row[]=[];let resourcesSettled:boolean|null=m.plan.resourceBudget?false:null;
-      if(m.plan.resourceBudget){try{const binding=this.sources.messageResource(run);resources=binding.resourceRequests.map((id:string)=>this.resource(id));resourcesSettled=binding.phase==='returned'&&resources.length===m.plan.resourceBudget.length&&resources.every(r=>r.settled);}catch(e){resources=[{state:'unknown',settled:false,error:safe(e)}];}}
+      if(m.plan.resourceBudget){try{const binding=this.sources.messageResource(run);resources=binding.resourceRequests.map((id:string)=>this.resource(id));resourcesSettled=['returned','partial_returned'].includes(binding.phase)&&resources.length===m.plan.resourceBudget.length&&resources.every(r=>r.settled);}catch(e){resources=[{state:'unknown',settled:false,error:safe(e)}];}}
       return {run,available:true,current,arrangement,executionKind:m.plan.executionKind,registeredAt:m.registration.registeredAt,resources,resourcesSettled,
         participants:participants.map((p:Row)=>{const r=m.runtimes.find((r:Row)=>r.participant===p.id);return {id:p.id,tool:p.tool,role:p.role,sessionId:r?.route?.sessionId??null,threadId:r?.route?.threadId??null,started:!!r?.started,ended:!!r?.ended,completeCapture:r?.captureVerification?.proof.successfulCapture===true};}),
-        messages:m.messages.filter((x:Row)=>ids.has(x.to)).map((x:Row)=>({id:x.id,to:x.to,from:x.from!==null&&ids.has(x.from)?x.from:null,fromUnselectedParticipant:x.from!==null&&!ids.has(x.from),state:x.state,sendRegistered:!!x.sent,delivered:!!x.delivery,replyRecorded:!!x.reply,reportSha256:x.reply?.finalSha256??null,consumptionConfirmed:x.reply?.reportedConsumption===true,sessionId:x.reply?.sessionId??null,turnId:x.reply?.turnId??null})),
-        continuation:m.continuation?{nextRun:m.continuation.nextRun,completed:m.continuation.completed===true,nativeSessionResumed:false}:null,problemCount:m.problems.length};
+        messages:m.messages.filter((x:Row)=>ids.has(x.to)).map((x:Row)=>({id:x.id,to:x.to,from:x.from!==null&&ids.has(x.from)?x.from:null,fromUnselectedParticipant:x.from!==null&&!ids.has(x.from),state:x.state,sendRegistered:!!x.sent,delivered:!!x.delivery,replyRecorded:!!x.reply,reportSha256:x.reply?.finalSha256??null,consumptionConfirmed:x.reply?.reportedConsumption===true,sessionId:x.reply?.sessionId??null,turnId:x.reply?.turnId??null,continuedIn:x.state==='Held'&&!x.sent&&x.id===m.plan.messages.at(-1).id&&continuation?.completed?continuation.nextRun:null})),
+        continuation,problemCount:m.problems.length};
     }catch(e){return {run,available:false,error:safe(e)};}});
     const coordination=coordRows.map(row=>{const id=row.object.slice(13);try{const c=this.sources.coordination(id),tasks=c.plan.tasks.filter((t:Row)=>t.item===item),ids=new Set(tasks.map((t:Row)=>t.id));return {id,available:true,revision:c.plan.revision,current:c.current,mode:c.plan.mode,
       tasks:tasks.map((t:Row)=>({id:t.id,actor:t.actor,originActor:t.originActor,dispatch:t.dispatch,originActorContactVerified:false,executionContext:'fresh_managed_context',stages:c.tasks.find((s:Row)=>s.id===t.id).stages.map((s:Row)=>({stage:s.stage,phasePrerequisitesMet:s.phasePrerequisitesMet,blockers:s.blockers,executionAuthorized:false}))})),

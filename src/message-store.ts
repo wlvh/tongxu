@@ -11,7 +11,7 @@ type Row=Record<string,any>;
 /** Transport records beside the original queue. They are neither formal
  * judgments nor resource balances and never confer writing/merge authority. */
 export class MessageRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row,private coordinationGate?:(run:string,messageId?:string,participant?:string)=>void,private resourceGate?:(run:string,action:Row)=>void){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private item:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[])=>Row,private coordinationGate?:(run:string,messageId?:string,participant?:string)=>void,private resourceGate?:(run:string,action:Row)=>void,private resourceResult?:(run:string)=>boolean){}
   private events(run:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'message_%' ORDER BY id").all('messages:'+run) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('message_original_missing_or_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
@@ -80,7 +80,7 @@ export class MessageRecords {
   });}
   record(run:string,participant:string,p:DialogProof){requireDialogProof(p,run,participant);const f=this.fixed(run);if(p.directory!==this.runtime(f,participant).started?.directory||!f.plan.participants.some(a=>a.id===participant)||p.messageId!==null&&!f.plan.messages.some(m=>m.id===p.messageId&&m.to===participant))throw new Error('message_runtime_role_mismatch');return p.kind==='route'?this.route(run,participant,p.data):p.kind==='ended'?this.ended(run,participant,p.data,p.originals,p.verifiedRefusalIds,p.verifiedClaudeMessageIds):p.kind==='delivered'?this.delivered(run,p.messageId!,p.data):p.kind==='refused'?this.refused(run,p.messageId!,p.data):this.reply(run,p.messageId!,p.data);}
   problem(run:string,id:string|null,reason:string){return this.transaction(()=>{this.fixed(run);this.event(run,'problem',{id,reason:reason.slice(0,512),at:now()});return this.view(run);});}
-  private continuationSourceValue(run:string){
+  private continuationSourceValue(run:string,requireCurrent=true){
     const f=this.fixed(run),s=this.view(run),pending=s.messages.filter(m=>!m.sent),last=s.messages.at(-1)!;
     if(s.messages.length<2||pending.length!==1||pending[0]!.id!==last.id||s.messages.slice(0,-1).some(m=>m.state!=='Reply'||m.reply?.reportedConsumption!==true))throw new Error('continuation_requires_completed_prefix_and_one_unsent_final');
     for(const r of s.runtimes){
@@ -88,7 +88,7 @@ export class MessageRecords {
       if(!r.started.directory.startsWith(join(this.directory,'messages-'+run)+'/'))throw new Error('copied_queue_cannot_take_original_control');
       if(!r.ended||r.captureVerification?.proof.successfulCapture!==true&&r.ended.proof.knownUnstarted!==true)throw new Error('continuation_original_runtime_active_or_unknown');
     }
-    for(const a of f.plan.participants){const before=f.r.bindings[a.id],current=this.item(a.item);if(!current.current||current.packet!==before.packet||current.fingerprint!==before.fingerprint)throw new Error('continuation_original_candidate_or_material_changed');}
+    if(requireCurrent)for(const a of f.plan.participants){const before=f.r.bindings[a.id],current=this.item(a.item);if(!current.current||current.packet!==before.packet||current.fingerprint!==before.fingerprint)throw new Error('continuation_original_candidate_or_material_changed');}
     const participant=f.plan.participants.find(a=>a.id===last.to)!;
     const roleInputs=f.e.filter(e=>e.kind==='message_send_registered'&&f.plan.messages.find(m=>m.id===e.data.id)?.to===last.to).map(e=>({messageId:e.data.id,sha256:e.data.inputSha256,text:this.bytes(e.data.inputSha256).toString()}));
     const originalRoute=s.runtimes.find(r=>r.participant===last.to)?.route??null,reports=s.messages.slice(0,-1).map(m=>({messageId:m.id,recipient:m.sent.recipient,receipt:m.reply}));
@@ -96,6 +96,7 @@ export class MessageRecords {
     return {run,plan:f.plan,pending:last,participant,context,newNativeContextRequired:true,nativeSessionResumed:false};
   }
   continuationSource(run:string){return this.transaction(()=>this.continuationSourceValue(run));}
+  partialExecutionProof(run:string){return this.transaction(()=>{const source=this.continuationSourceValue(run,false),m=this.view(run);return {run,executionKind:m.plan.executionKind,pendingMessage:source.pending.id,originalRunCompleted:false,messages:m.messages.slice(0,-1).map(x=>({id:x.id,sessionId:x.reply.sessionId,turnId:x.reply.turnId,inputSha256:x.sent.inputSha256,sentAt:x.sent.registeredAt,finalSha256:x.reply.finalSha256,reportedConsumption:x.reply.reportedConsumption})),captures:m.runtimes.filter(r=>r.started).map(r=>({participant:r.participant,originals:r.ended.originals,proof:r.captureVerification!.proof}))};});}
   private continuationParentValue(run:string){
     const links=this.db.prepare("SELECT object FROM events WHERE kind='message_continuation_selected' AND json_extract(data,'$.value.nextRun')=?").all(run) as Row[];
     if(!links.length)return null;if(links.length!==1)throw new Error('continuation_parent_ambiguous');const parent=links[0]!.object.slice(9),f=this.fixed(parent),selected=f.e.findLast(e=>e.kind==='message_continuation_selected')?.data;if(selected?.nextRun!==run)throw new Error('continuation_selection_superseded');return parent as string;
@@ -104,13 +105,21 @@ export class MessageRecords {
   continuation(run:string){return this.transaction(()=>{
     const f=this.fixed(run),selected=f.e.findLast(e=>e.kind==='message_continuation_selected')?.data;
     if(!selected)return null;
-    this.bytes(selected.requestSha256);this.bytes(selected.contextSha256);const plan=this.bytes(selected.planSha256);if(messagePlanId(parseMessagePlan(plan))!==selected.nextRun)throw new Error('continuation_plan_changed');return {...selected,plan};
+    const request=this.bytes(selected.requestSha256);this.bytes(selected.contextSha256);const plan=this.bytes(selected.planSha256);if(messagePlanId(parseMessagePlan(plan))!==selected.nextRun)throw new Error('continuation_plan_changed');return {...selected,plan,request};
   });}
   selectContinuation(run:string,request:Buffer,context:Buffer,plan:Buffer,directory:string,replaceKnownUnstarted:boolean){return this.transaction(()=>{
     const f=this.fixed(run),prior=f.e.findLast(e=>e.kind==='message_continuation_selected')?.data,parsed=parseMessagePlan(plan),nextRun=messagePlanId(parsed),requestSha256=hash(request);
     if(prior){
       if(prior.requestSha256===requestSha256){if(prior.planSha256!==hash(plan)||prior.contextSha256!==hash(context)||prior.directory!==directory)throw new Error('continuation_original_preparation_changed');return prior;}
       if(!replaceKnownUnstarted)throw new Error('continuation_original_selection_is_fixed');
+      const invested=this.db.prepare("SELECT data FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+prior.nextRun) as Row|undefined;
+      const handoff=this.db.prepare("SELECT data FROM events WHERE kind='message_resource_partial_returned' AND object=?").get('message-resource:'+run) as Row|undefined;
+      if(invested||handoff){for(const record of [invested,handoff])if(record){const x=JSON.parse(record.data);if(canonical(JSON.parse(this.bytes(x.sha256).toString()))!==canonical(x.value))throw new Error('continuation_original_resource_binding_changed');}
+        const old=JSON.parse(this.bytes(prior.requestSha256).toString()),next=JSON.parse(request.toString());delete old.billing;delete next.billing;delete old.replaceKnownUnstarted;delete next.replaceKnownUnstarted;const same=canonical(old)===canonical(next);
+        // A settled original prefix is history. It must not permanently pin
+        // an unstarted, unclaimed successor to a revoked grant. Any actual
+        // successor investment, or unresolved original accounting, stays fixed.
+        if(invested||this.resourceResult?.(run)!==true){if(!same)throw new Error('continuation_invested_request_is_fixed');return prior;}if(same)return prior;}
       if(this.events(prior.nextRun).length){const previous=this.view(prior.nextRun);if(previous.messages.some(m=>m.sent)||previous.runtimes.some(r=>r.started&&r.ended?.proof.knownUnstarted!==true))throw new Error('continuation_unknown_or_sent_never_replace');}
       if(prior.attempt>=3)throw new Error('continuation_preparation_attempt_limit');
     }
@@ -123,7 +132,8 @@ export class MessageRecords {
   continuationResult(run:string,nextRun:string,result:Row){return this.transaction(()=>{
     const f=this.fixed(run),selected=f.e.findLast(e=>e.kind==='message_continuation_selected')?.data;if(!selected||selected.nextRun!==nextRun)throw new Error('continuation_selection_changed');
     const actual=this.view(nextRun),complete=actual.messages.length===1&&actual.messages[0]!.state==='Reply'&&actual.messages[0]!.reply?.reportedConsumption===true&&actual.runtimes.filter(r=>r.started).every(r=>r.captureVerification?.proof.successfulCapture===true);
-    if(result.completed!==complete||result.run!==nextRun)throw new Error('continuation_actual_result_mismatch');const value={nextRun,completed:complete,nativeSessionResumed:false,finalSha256:actual.messages[0]!.reply?.finalSha256??null,originalMessageUnmodified:true},old=f.e.findLast(e=>e.kind==='message_continuation_result');if(!old||canonical(old.data)!==canonical(value))this.event(run,'continuation_result',value);return value;
+    if(result.completed!==complete||result.run!==nextRun)throw new Error('continuation_actual_result_mismatch');const resourcesSettled=!actual.plan.resourceBudget||this.resourceResult?.(nextRun)===true;
+    const value={nextRun,completed:complete&&resourcesSettled,messagesCompleted:complete,resourcesSettled,nativeSessionResumed:false,finalSha256:actual.messages[0]!.reply?.finalSha256??null,originalMessageUnmodified:true},old=f.e.findLast(e=>e.kind==='message_continuation_result');if(!old||canonical(old.data)!==canonical(value))this.event(run,'continuation_result',value);return value;
   });}
   private view(run:string){const f=this.fixed(run);for(const category of ['materials','assemblies'])for(const r of Object.values(f.r[category]) as Row[])if(this.bytes(r.sha256).length!==r.bytes)throw new Error('message_frozen_input_changed');for(const e of f.e.filter(e=>e.kind==='message_runtime_ended'))for(const r of Object.values(e.data.originals) as Row[])if(this.bytes(r.sha256).length!==r.bytes)throw new Error('message_closed_capture_changed');
     const messages=f.plan.messages.map(m=>{const sent=f.e.find(e=>e.kind==='message_send_registered'&&e.data.id===m.id)?.data,delivered=f.e.find(e=>e.kind==='message_delivered'&&e.data.id===m.id)?.data,reply=f.e.find(e=>e.kind==='message_reply'&&e.data.id===m.id)?.data,refused=f.e.find(e=>e.kind==='message_refused'&&e.data.id===m.id)?.data;const invalidCapture=sent&&this.runtime(f,m.to).captureVerification?.proof.successfulCapture===false;return {...m,state:invalidCapture?'Unknown':reply?'Reply':delivered?'Delivered':refused?'Refused':sent?'Unknown':'Held',sent:sent??null,delivery:delivered?.receipt??null,reply:reply?.receipt??null,refusal:refused?.receipt??null};});

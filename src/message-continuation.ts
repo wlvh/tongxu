@@ -7,6 +7,7 @@ import { hash,privateDirectory } from './snapshot.js';
 import { regular } from './repair-workspace.js';
 import { QueueStore } from './queue-store.js';
 import { runMessages } from './messages.js';
+import {settlePartialMessageResources} from './message-resources.js';
 import { checkMessageBilling,continuationMessagePrefix,messageId,messagePlanId,parseMessagePlan,type MessagePlan } from './message-contract.js';
 
 export type ContinuationRequest={schemaVersion:1;kind:'tongxu-complete-unsent-message';source:string;allowNewContext:true;authorityIntent:string|null;billing:MessagePlan['billing'];replaceKnownUnstarted:boolean};
@@ -49,10 +50,11 @@ export async function continueMessage(store:string,originalPlanPath:string,reque
     const fixed=records.continuation(run)!;if(fixed.nextRun!==selected!.nextRun)throw new Error('continuation_selection_changed');
     const path=fixed.directory;await directory(path);
     const context=Buffer.from(canonical(source.context));if(hash(context)!==fixed.contextSha256)throw new Error('continuation_original_context_changed');
-    await immutable(join(path,'context.json'),context);await immutable(join(path,'plan.json'),fixed.plan);await immutable(join(path,'request.json'),requestBytes);
+    await immutable(join(path,'context.json'),context);await immutable(join(path,'plan.json'),fixed.plan);await immutable(join(path,'request.json'),fixed.request);
     const preparation={originalRun:run,nextRun:fixed.nextRun,originalMessage:fixed.originalMessage,attempt:fixed.attempt,directory:path,planPath:join(path,'plan.json'),contextSha256:fixed.contextSha256,nativeSessionResumed:false,newNativeContextRequired:true,originalMessageUnmodified:true};
     if(prepareOnly)return {...preparation,prepared:true,newModelRequests:0};
-    const result=await runMessages(store,preparation.planPath,false,fixed.nextRun);const link=records.continuationResult(run,fixed.nextRun,result);
-    return {...preparation,prepared:true,completed:link.completed,newModelRequests:result.newModelRequests,originalRunCompleted:false,result};
+    const originalResources=await settlePartialMessageResources(q,run,fixed.nextRun,original);
+    const result=await runMessages(store,preparation.planPath,false,fixed.nextRun,request.replaceKnownUnstarted?request.billing:undefined);const link=records.continuationResult(run,fixed.nextRun,result);
+    return {...preparation,prepared:true,completed:link.completed,newModelRequests:result.newModelRequests,originalRunCompleted:false,originalResources,result};
   }finally{q?.close();if(locked)lock.exec('ROLLBACK');lock.close();}
 }
