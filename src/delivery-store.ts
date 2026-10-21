@@ -2,7 +2,7 @@ import type {DatabaseSync} from 'node:sqlite';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {now} from './contract.js';
-import {isAuthorityDigest} from './authority-contract.js';
+import {isAuthorityDigest,type DeliveryOutcomeProposal} from './authority-contract.js';
 import {parseDeliveryBatch,deliveryBatchSha,type DeliveryBatch} from './delivery-contract.js';
 
 type Row=Record<string,any>;
@@ -40,12 +40,33 @@ export class DeliveryRecords{
     const snapshot={batchSha256:sha,members,scope},data={batchSha256:sha,revision:p.revision,previous:p.previous,manifestSha256:this.blob(Buffer.from(canonical(p))),originalSha256:this.blob(raw),snapshotSha256:this.blob(Buffer.from(canonical(snapshot)))};
     this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('delivery_batch_registered','delivery:'+p.id,canonical(data),now());return {...this.stateOf(sha),duplicate:false};
   });}
+  private evidenceSet(sha:string,validations:Row[]){const evidence={schemaVersion:1,kind:'tongxu-delivery-evidence-set',batchSha256:sha,validations};return {evidence,evidenceSha256:hash(canonical(evidence))};}
+  evidence(sha:string){return this.transaction(()=>{this.original(sha);return this.evidenceSet(sha,this.validations(sha));});}
+  private outcomeHistory(id:string){
+    const events=this.db.prepare("SELECT * FROM events WHERE kind='delivery_outcome_recorded' AND object=? ORDER BY id").all('delivery-outcome:'+id) as Row[];
+    return events.map(e=>{const ref=JSON.parse(e.data),v=JSON.parse(this.bytes(ref.sha256).toString());if(canonical(v)!==canonical(ref.value))throw new Error('delivery_outcome_index_changed');const evidence=JSON.parse(this.bytes(v.evidenceSha256).toString());if(evidence.batchSha256!==v.batchSha256)throw new Error('delivery_outcome_evidence_changed');
+      let sourceOriginalsVerified=false,reason:string|null=null;try{const d=this.inspectDecision(v.proposalSha256),p=d.proposal;if(p.kind!=='delivery_outcome'||p.batchSha256!==v.batchSha256||p.evidenceSha256!==v.evidenceSha256||canonical(p)!==canonical(v.proposal)||d.executionKind!==v.executionKind||d.source.sourceUrl!==v.source)throw new Error('delivery_outcome_source_binding_changed');sourceOriginalsVerified=true;}catch(e){reason=e instanceof Error?e.message:'delivery_outcome_source_unavailable';}
+      const revoked=!!this.db.prepare("SELECT 1 FROM events WHERE kind='authority_revoked' AND json_extract(data,'$.decision')=?").get(v.proposalSha256);return {...v,sourceOriginalsVerified,reason,revoked,sourceFreshness:'not_rechecked'};
+    });
+  }
+  private outcomeCheck(p:DeliveryOutcomeProposal){
+    const state=this.stateOf(p.batchSha256);if(!state.currentVersion||!state.currentMaterials||!state.scope.currentAdoption||state.scope.adoption!==p.adoption)throw new Error('delivery_outcome_current_batch_required');
+    if(state.evidenceSha256!==p.evidenceSha256)throw new Error('delivery_outcome_evidence_changed');if(state.latestOutcomeDecision!==p.previousOutcome)throw new Error('delivery_outcome_previous_changed');return {batchId:state.id,batchSha256:p.batchSha256,evidenceSha256:p.evidenceSha256};
+  }
+  checkOutcome(p:DeliveryOutcomeProposal){return this.transaction(()=>this.outcomeCheck(p));}
+  recordOutcome(sha:string){return this.transaction(()=>{
+    const d=this.inspectDecision(sha),p=d.proposal as DeliveryOutcomeProposal;if(p.kind!=='delivery_outcome')throw new Error('explicit_delivery_outcome_required');
+    const batch=this.original(p.batchSha256).manifest,old=this.outcomeHistory(batch.id).find(x=>x.proposalSha256===sha);if(old)return {proposalSha256:sha,duplicate:true,permissionsGranted:false};
+    this.outcomeCheck(p);const {evidence}=this.evidenceSet(p.batchSha256,this.validations(p.batchSha256)),evidenceSha256=this.blob(Buffer.from(canonical(evidence)));if(evidenceSha256!==p.evidenceSha256)throw new Error('delivery_outcome_evidence_changed');
+    const value={proposalSha256:sha,proposal:p,batchSha256:p.batchSha256,evidenceSha256,executionKind:d.executionKind,source:d.source.sourceUrl,recordedAt:now()},sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('delivery_outcome_recorded','delivery-outcome:'+batch.id,canonical({sha256,value}),value.recordedAt);return {proposalSha256:sha,duplicate:false,permissionsGranted:false};
+  });}
   private stateOf(sha:string){
     const {manifest:p,snapshot,registeredAt}=this.original(sha),latest=this.events(p.id).at(-1)!,currentVersion=JSON.parse(latest.data).batchSha256===sha;
     const members=snapshot.members.map((m:Row)=>{let current=false,reason:string|null=null;try{const c=this.currentItem(m.item);current=c.current&&c.packet===m.packet&&c.fingerprint===m.fingerprint&&hash(canonical(c.context))===m.contextSha256;if(!current)reason='delivery_member_changed';}catch{reason='delivery_member_unavailable';}return {...m,current,reason};});
     let scope:ScopeState;try{scope=this.scope(p);}catch(e){scope={...snapshot.scope,currentAdoption:false,sourceOriginalsVerified:false,reason:e instanceof Error?e.message:'delivery_scope_unavailable',sourceFreshness:'not_rechecked'};}
     const validations=this.validations(sha),scenarioEvidence=p.scenarios.map(s=>{const v=validations.filter(v=>v.phase!=='closed_unstarted'&&v.scenarios.some((x:Row)=>x.id===s.id)).at(-1),r=v?.scenarios.find((x:Row)=>x.id===s.id);return {scenario:s.id,validation:v?.id??null,phase:v?.phase??'not_executed',reportSha256:v?.reportSha256??null,demonstrationFixture:v?.demonstrationFixture??null,executionVerified:v?.captureComplete===true&&r?.passed!==null&&r?.passed!==undefined,passed:r?.passed??null};}),currentMaterials=members.every((m:Row)=>m.current),scenarioExecutionVerified=scenarioEvidence.every(s=>s.executionVerified);
-    return {batchSha256:sha,id:p.id,revision:p.revision,previous:p.previous,title:p.title,repository:p.repository,issue:p.issue,target:p.target,scope:{...p.scope,...scope},goals:p.goals,nonGoals:p.nonGoals,scenarios:p.scenarios,related:p.related,registeredAt,currentVersion,members,currentMaterials,validations,scenarioEvidence,scenarioExecutionVerified,scenarioAssertionsPassed:scenarioExecutionVerified&&scenarioEvidence.every(s=>s.passed===true),currentScenarioEvidence:scenarioExecutionVerified&&currentVersion&&currentMaterials&&(p.scope.adoption===null||scope.currentAdoption),userOutcomeAccepted:false,productionActionAllowed:false,externalStateRechecked:false};
+    const {evidenceSha256}=this.evidenceSet(sha,validations),outcomes=this.outcomeHistory(p.id),latestOutcome=outcomes.at(-1),currentOutcome=!!latestOutcome&&latestOutcome.batchSha256===sha&&latestOutcome.evidenceSha256===evidenceSha256&&latestOutcome.sourceOriginalsVerified&&!latestOutcome.revoked&&currentVersion&&currentMaterials&&scope.currentAdoption,acceptedWithinRecordedSource=currentOutcome&&latestOutcome?.proposal.outcome==='accepted',userOutcomeAccepted=acceptedWithinRecordedSource&&latestOutcome?.executionKind==='github';
+    return {batchSha256:sha,id:p.id,revision:p.revision,previous:p.previous,title:p.title,repository:p.repository,issue:p.issue,target:p.target,scope:{...p.scope,...scope},goals:p.goals,nonGoals:p.nonGoals,scenarios:p.scenarios,related:p.related,registeredAt,currentVersion,members,currentMaterials,validations,scenarioEvidence,evidenceSha256,latestOutcomeDecision:latestOutcome?.proposalSha256??null,outcomes,currentOutcome,acceptedWithinRecordedSource,userOutcomeAccepted,scenarioExecutionVerified,scenarioAssertionsPassed:scenarioExecutionVerified&&scenarioEvidence.every(s=>s.passed===true),currentScenarioEvidence:scenarioExecutionVerified&&currentVersion&&currentMaterials&&(p.scope.adoption===null||scope.currentAdoption),productionActionAllowed:false,externalStateRechecked:false};
   }
   state(sha:string){return this.transaction(()=>this.stateOf(sha));}
   manifest(sha:string){return this.transaction(()=>this.original(sha).manifest);}

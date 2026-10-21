@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest } from './authority-contract.js';
+import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 
 type Row=Record<string,any>;
@@ -24,7 +24,7 @@ const guards=[
  * a second operation scheduler nor a resource balance. Nothing executes here. */
 export class AuthorityRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,
-    private currentItem:(id:string)=>Row){}
+    private currentItem:(id:string)=>Row,private deliveryOutcomes?:{check:(p:DeliveryOutcomeProposal)=>unknown;record:(sha:string)=>unknown}){}
   private event(kind:string,object:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind,object,JSON.stringify(data),now());}
   private events(object:string,kind?:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all(object) as Row[]).filter(e=>!kind||e.kind===kind).map(e=>({...e,data:JSON.parse(e.data)}));}
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
@@ -91,6 +91,7 @@ export class AuthorityRecords {
     else{
       const a=this.adoption(p.adoption).proposal;
       if(p.kind==='confirm_action'&&(p.request.scopeId!==a.scopeId||p.request.scopeVersion!==a.scopeVersion||p.request.scopeBodySha256!==scopeBodyHash(a.body)))throw new Error('owner_request_scope_mismatch');
+      if(p.kind==='delivery_outcome'){if(!this.deliveryOutcomes)throw new Error('delivery_outcome_consumer_required');this.deliveryOutcomes.check(p);}
     }
   }
   private observe(value:OwnerObservation){
@@ -101,7 +102,7 @@ export class AuthorityRecords {
     const entry={...data,originalCommentSha256:this.blob(commentRaw),originalEditorSha256:this.blob(graphRaw)};
     if(!previous||canonical(entry)!==canonical(previous))this.event('authority_source_observed',object,entry);return entry;
   }
-  apply(proposalSha256:string,observation:OwnerObservation){return this.transaction(()=>{
+  apply(proposalSha256:string,observation:OwnerObservation,dependencyObservations:OwnerObservation[]=[]){return this.transaction(()=>{
     const prepared=this.prepared(proposalSha256);
     if(observation.proposalSha256!==proposalSha256||Date.parse(observation.createdAt)<Date.parse(prepared.createdAt)-60000)throw new Error('owner_source_proposal_mismatch');
     const source=this.observe(observation),object='authority-decision:'+proposalSha256,old=this.events(object,'authority_decision_applied')[0];
@@ -109,17 +110,20 @@ export class AuthorityRecords {
     const p=prepared.proposal;
     // Expiry is validated again at the actual adoption boundary, never extended.
     parseOwnerProposal(p,this.profile().profile,Date.now());this.proposalContext(p);
-    if(p.kind==='control'){
-      const scope=this.adoption(p.adoption).proposal.scopeId,previous=this.events(scope,'authority_control_applied').filter(e=>e.data.control===p.control).at(-1)?.data;
+    if(p.kind==='delivery_outcome')this.freshDecision(p.adoption,dependencyObservations);
+    const control=p.kind==='control'?{kind:p.control,state:p.state}:p.kind==='delivery_outcome'&&p.outcome==='stopped'?{kind:'investment',state:'stopped'}:null;
+    if(control&&'adoption' in p){
+      const scope=this.adoption(p.adoption).proposal.scopeId,previous=this.events(scope,'authority_control_applied').filter(e=>e.data.control===control.kind).at(-1)?.data;
       if(previous&&(Date.parse(source.updatedAt)<Date.parse(previous.sourceUpdatedAt)||source.updatedAt===previous.sourceUpdatedAt&&source.commentId<=previous.sourceCommentId))throw new Error('owner_control_source_order_conflict');
     }
     const record={proposalSha256,kind:p.kind,source,executionKind:source.executionKind};this.event('authority_decision_applied',object,record);
     if(p.kind==='adopt_scope')this.event('authority_scope_adopted','authority-scope:'+p.scopeId,{proposalSha256,scopeId:p.scopeId,scopeVersion:p.scopeVersion,scopeBodySha256:scopeBodyHash(p.body),previousAdoption:p.previousAdoption,sourceUrl:source.sourceUrl});
     if(p.kind==='revoke')this.event('authority_revoked','authority-decision:'+p.decision,{decision:p.decision,revocation:proposalSha256,existingOperationsPreserved:true});
-    if(p.kind==='control'){
-      const scope=this.adoption(p.adoption).proposal.scopeId,prior=this.db.prepare('SELECT revision FROM controls WHERE scope=? AND kind=?').get(scope,p.control) as Row|undefined,revision=(prior?.revision??0)+1,at=now();
-      this.event('authority_control_applied',scope,{proposalSha256,adoption:p.adoption,control:p.control,state:p.state,revision,sourceUpdatedAt:source.updatedAt,sourceCommentId:source.commentId});
-      this.db.prepare('INSERT INTO controls VALUES(?,?,?,?,?,?,?) ON CONFLICT(scope,kind) DO UPDATE SET stopped=excluded.stopped,revision=excluded.revision,source=excluded.source,requested_at=excluded.requested_at,effective_at=excluded.effective_at').run(scope,p.control,p.state==='stopped'?1:0,revision,source.sourceUrl,source.updatedAt,at);
+    if(p.kind==='delivery_outcome')this.deliveryOutcomes!.record(proposalSha256);
+    if(control&&'adoption' in p){
+      const scope=this.adoption(p.adoption).proposal.scopeId,prior=this.db.prepare('SELECT revision FROM controls WHERE scope=? AND kind=?').get(scope,control.kind) as Row|undefined,revision=(prior?.revision??0)+1,at=now();
+      this.event('authority_control_applied',scope,{proposalSha256,adoption:p.adoption,control:control.kind,state:control.state,revision,sourceUpdatedAt:source.updatedAt,sourceCommentId:source.commentId});
+      this.db.prepare('INSERT INTO controls VALUES(?,?,?,?,?,?,?) ON CONFLICT(scope,kind) DO UPDATE SET stopped=excluded.stopped,revision=excluded.revision,source=excluded.source,requested_at=excluded.requested_at,effective_at=excluded.effective_at').run(scope,control.kind,control.state==='stopped'?1:0,revision,source.sourceUrl,source.updatedAt,at);
     }
     return {...record,duplicate:false,externalActionSent:false};
   });}

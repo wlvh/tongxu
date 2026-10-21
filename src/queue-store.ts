@@ -244,7 +244,7 @@ PRAGMA user_version=4;`);
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);
     return {item:id,packet:item.current_packet,fingerprint:packet.fingerprint,candidate:evidence.manifest.candidate,context:evidence.context,subjectSha256:summary.composition?.sha256??null,current:!item.observation_conflict&&this.receiverCandidateCurrent(item),prerequisites:this.prerequisites(item),evidenceComplete:summary.evidenceComplete};
   }
-  authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id)); }
+  authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id),{check:p=>this.deliveryRecords(fn=>fn()).checkOutcome(p),record:sha=>this.deliveryRecords(fn=>fn()).recordOutcome(sha)}); }
   deliveries(){return this.deliveryRecords(fn=>this.transaction(fn));}
   private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha));}
   deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}

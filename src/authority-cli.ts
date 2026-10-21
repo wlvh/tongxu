@@ -23,9 +23,10 @@ export async function authorityMain(args:string[]){
     const {profile}=records.configuration();
     if(command==='apply'){
       if(!/^[1-9]\d*$/.test(values.comment!)||!Number.isSafeInteger(Number(values.comment)))throw new Error('authority_comment_invalid');
-      records.proposal(values['proposal-sha']!);
-      const observation=await readOwnerSource(profile,values['proposal-sha']!,Number(values.comment),values.evidence!);
-      return records.apply(values['proposal-sha']!,observation);
+      const p=records.proposal(values['proposal-sha']!).proposal;
+      const observation=await readOwnerSource(profile,values['proposal-sha']!,Number(values.comment),values.evidence!),dependencies=[];
+      if(p.kind==='delivery_outcome')for(const [i,ref] of records.sourceRequests(p.adoption).entries())dependencies.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(values.evidence!,'adoption-'+i)));
+      return records.apply(values['proposal-sha']!,observation,dependencies);
     }
     // Freeze all request bytes before any provider call. No user pathname is
     // reread after a source observation or an intent has been registered.

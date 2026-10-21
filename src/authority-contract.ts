@@ -18,13 +18,14 @@ export type ActionRequest = {
   paths: string[]; resourceRefs: string[];
   payloadSha256?: string;
 };
+export type DeliveryOutcomeProposal={kind:'delivery_outcome';adoption:string;batchSha256:string;evidenceSha256:string;previousOutcome:string|null;outcome:'accepted'|'rejected'|'needs_evidence'|'stopped';rationale:string};
 export type OwnerProposal =
   { kind: 'adopt_scope'; scopeId: string; scopeVersion: string; body: ScopeBody; previousAdoption: string | null } |
   { kind: 'accept_baseline'; adoption: string; material: Record<'goals'|'rules'|'capabilities',{name:string;sha256:string}> } |
   { kind: 'confirm_action'; adoption: string; performerRole: AuthorityRole; request: ActionRequest; expiresAt: string } |
   { kind: 'delegate'; adoption: string; roles: AuthorityRole[]; targets: string[]; actions: AuthorityAction[]; paths: string[]; resourceRefs: string[]; expiresAt: string } |
   { kind: 'revoke'; decision: string } |
-  { kind: 'control'; adoption: string; control: 'implementation' | 'investment' | 'merge'; state: 'stopped' | 'open' };
+  { kind: 'control'; adoption: string; control: 'implementation' | 'investment' | 'merge'; state: 'stopped' | 'open' } | DeliveryOutcomeProposal;
 export type PreparedProposal = { schemaVersion: 1; requestId: string; profileSha256: string; repository: string; issue: number; createdAt: string; proposal: OwnerProposal };
 
 export const authorityDigest = /^[a-f0-9]{64}$/;
@@ -66,6 +67,8 @@ export function parseOwnerProposal(x:any,profile:AuthorityProfile,at:number):Own
     if(!exactKeys(x,['kind','decision'])||!isAuthorityDigest(x.decision))throw new Error('owner_revocation_invalid');
   } else if(x.kind==='control') {
     if(!exactKeys(x,['kind','adoption','control','state'])||!isAuthorityDigest(x.adoption)||!['implementation','investment','merge'].includes(x.control)||!['stopped','open'].includes(x.state))throw new Error('owner_control_invalid');
+  } else if(x.kind==='delivery_outcome') {
+    if(!exactKeys(x,['kind','adoption','batchSha256','evidenceSha256','previousOutcome','outcome','rationale'])||![x.adoption,x.batchSha256,x.evidenceSha256].every(isAuthorityDigest)||!(x.previousOutcome===null||isAuthorityDigest(x.previousOutcome))||!['accepted','rejected','needs_evidence','stopped'].includes(x.outcome)||!text(x.rationale,4096))throw new Error('owner_delivery_outcome_invalid');
   } else throw new Error('owner_proposal_kind_invalid');
   if('expiresAt' in x){const end=Date.parse(x.expiresAt);if(!authorityTime(x.expiresAt)||!Number.isFinite(end)||end<=at||end-at>profile.maxGrantDurationMs)throw new Error('owner_authorization_expiry_invalid');}
   return x;
