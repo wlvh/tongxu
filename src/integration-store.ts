@@ -8,6 +8,7 @@ import type {OwnerObservation} from './authority-source.js';
 import {requireIntegrationCapture,type IntegrationCapture} from './integration-producer.js';
 import {enableIntegrationFormat} from './queue-format.js';
 import {installTestAuthorityGuard,requireTestAuthorityConsumer} from './test-authority.js';
+import {requireIntegrationContinuation,type IntegrationContinuationProof} from './integration-continuation.js';
 
 type Row=Record<string,any>;
 export type IntegrationSource={
@@ -55,8 +56,20 @@ export class IntegrationRecords{
   check(id:string,observations:OwnerObservation[]){return this.transaction(()=>this.checkOf(id,observations));}
   start(id:string,observations:OwnerObservation[]){return this.transaction(()=>{this.checkOf(id,observations);const s=this.stateOf(id);if(s.phase!=='prepared_not_started')throw new Error('integration_original_started_or_closed');this.guards();this.event(id,'started',{controllerPid:process.pid,startedAt:now()});return this.stateOf(id);});}
   effect<T>(id:string,observations:OwnerObservation[],f:()=>T):T{return this.transaction(()=>{if(this.stateOf(id).phase!=='started_or_unknown')throw new Error('integration_not_running');this.checkOf(id,observations);this.guards();return f();});}
+  boundary(id:string,bytes:Buffer){return this.transaction(()=>{
+    const x=this.original(id),b=JSON.parse(bytes.toString()),prior=this.events(id).filter(e=>e.kind==='integration_step_boundary'),previous=prior.at(-1)?.data;
+    if(this.stateOf(id).phase!=='started_or_unknown'||b.protocol!=='ended-fixed-prefix-v1'||b.requestSha256!==x.record.requestSha256||b.previousSha256!==(previous?.sha256??null)||(!previous&&b.name!=='initial')||prior.some(e=>e.data.name===b.name))throw new Error('integration_boundary_sequence_changed');
+    const value={name:b.name,sha256:this.blob(bytes),previousSha256:b.previousSha256,producerSha256:b.producerSha256};this.event(id,'step_boundary',value);return value;
+  });}
+  continueEnded(id:string,proof:IntegrationContinuationProof,controllerId:string,observations:OwnerObservation[]){return this.transaction(()=>{
+    const p=requireIntegrationContinuation(proof),x=this.original(id);if(this.stateOf(id).phase!=='started_or_unknown'||p.material.requestSha256!==x.record.requestSha256||p.material.directory!==x.record.directory||canonical(p.material.source)!==canonical(x.source)||!/^[a-f0-9-]{36}$/.test(controllerId))throw new Error('integration_continuation_binding_changed');
+    const boundaries=this.events(id).filter(e=>e.kind==='integration_step_boundary');if(boundaries.at(-1)?.data.sha256!==p.lastBoundarySha256||canonical(boundaries.map(e=>e.data.name))!==canonical(['initial',...p.completedSteps])||boundaries.some(e=>!p.originals.has(e.data.sha256)))throw new Error('integration_continuation_original_boundary_changed');
+    this.checkOf(id,observations);this.guards();for(const [sha,b] of p.originals){if(hash(b)!==sha)throw new Error('integration_continuation_original_changed');this.blob(b);}
+    this.event(id,'continuation_admitted',{controllerId,controllerPid:process.pid,requestSha256:x.record.requestSha256,producerSha256:p.producerSha256,lastBoundarySha256:p.lastBoundarySha256,completedSteps:p.completedSteps,nextStep:p.nextStep,originals:[...p.originals.keys()].sort(),checkedAt:now(),sameOriginalRequest:true});
+  });}
   complete(id:string,capture:IntegrationCapture){return this.transaction(()=>{
     const c=requireIntegrationCapture(capture),x=this.original(id),events=this.events(id),subject=x.source.composition.subject;
+    if(events.filter(e=>e.kind==='integration_step_boundary').some(e=>!c.originals.has(e.data.sha256)))throw new Error('integration_original_boundary_changed');
     if(!events.some(e=>e.kind==='integration_started')||events.some(e=>e.kind==='integration_closed_unstarted')||c.binding.requestSha256!==x.record.requestSha256||c.binding.operation!==x.request.operation||c.binding.subjectSha256!==x.request.subjectSha256||c.success&&(c.candidate.B!==subject.B||c.candidate.T!==subject.testedTree||c.candidate.target!==subject.targetRef||c.candidate.repository!==subject.repository))throw new Error('integration_capture_binding_changed');
     const value=c.success?{success:true,candidate:c.candidate,prefixes:c.prefixes,diffSha256:hash(c.diff),bundleSha256:hash(c.bundle),originals:[...new Set([...c.originals.keys(),hash(c.diff),hash(c.bundle)])].sort(),steps:c.steps,completedAt:c.completedAt,requiresOwnValidation:true,requiresOwnReception:true,onlyPrivateCandidateCreated:true,technicalAcceptanceGranted:false,targetUpdated:false}:{success:false,reason:c.reason,originals:[...c.originals.keys()].sort(),steps:c.steps,partialPrivateArtifactMayExist:true,technicalAcceptanceGranted:false,targetUpdated:false};
     const old=events.find(e=>e.kind==='integration_result');if(old){if(canonical(old.data)!==canonical(value))throw new Error('integration_result_changed');return {...this.stateOf(id),duplicate:true};}

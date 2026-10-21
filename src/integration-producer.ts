@@ -1,3 +1,4 @@
+import {readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {hash} from './snapshot.js';
@@ -55,6 +56,10 @@ export async function readIntegrationCapture(m:IntegrationMaterial){
   }catch(e){const why=e instanceof Error?e.message:'';if(!knownFailure&&!['integration_reconstructed_tree_changed','integration_commit_identity_changed','integration_commit_readback_changed','integration_git_source_identity_changed'].includes(why))throw e;
     value={success:false,binding:{requestSha256:m.requestSha256,operation:m.request.operation,subjectSha256:m.request.subjectSha256},reason:knownFailure??why,originals,steps:endedSteps,partialPrivateArtifactMayExist:true};
   }
+  // Capture the immutable boundary and continuation declarations that existed
+  // before this result. Controller-return notes written after completion are
+  // separately retained in their original admission event, not unstable result inputs.
+  if(p.continuationProtocol==='ended-fixed-prefix-v1')for(const folder of ['boundaries','continuations'])if(await exists(join(m.directory,folder)))for(const name of (await readdir(join(m.directory,folder))).sort()){if(!/^[a-z0-9-]+\.json$/.test(name))throw new Error('integration_continuation_record_changed');const b=await regular(join(m.directory,folder,name),8*1024*1024);value.originals.set(hash(b),b);}
   value.originals.set(hash(layout),layout);value.originals.set(hash(producer),producer);issued.set(value,digest(value));return value;
 }
 export function requireIntegrationCapture(value:IntegrationCapture){if(!issued.has(value)||issued.get(value)!==digest(value))throw new Error('integration_managed_capture_required');return value;}
