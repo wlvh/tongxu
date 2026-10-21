@@ -142,3 +142,15 @@ test('NT-F03: cancellation after admission but before resource binding prevents 
   const original=QueueStore.prototype.begin;let cancelled=false;QueueStore.prototype.begin=function(item,run){const result=original.call(this,item,run);if(item===f.a.item&&!cancelled){cancelled=true;f.q.taskInbox().cancelUnsent(item,'governed','explicit fixture cancellation at committed transaction boundary');}return result;};
   try{const result=await runMessages(f.store,selected.plan);assert.equal(result.newModelRequests,0);assert.equal(result.completed,false);assert.equal(cancelled,true);assert.equal(ledger.state().claims.length,0);assert.equal((await f.calls()).length,0);assert.equal(f.q.taskInbox().status(f.a.item)[0]!.phase,'cancelled');}finally{QueueStore.prototype.begin=original;}
 });
+
+test('native-impact BOM counterexample: HEAD and working file retain the exact UTF-8 bytes',async t=>{
+  const f=await fixture(t),bytes=Buffer.from('\ufeffexport const bom=1;\n');await writeFile(join(f.definition.workspace,'sample.js'),bytes);const git=(args:string[])=>execFileSync('/usr/bin/git',['-C',f.definition.workspace,...args]);git(['add','sample.js']);git(['-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','explicit BOM fixture']);
+  const observed=await observeTaskWorkspace(f.definition);assert.equal(observed.files[0]!.sha256,hash(bytes));assert.equal(observed.headFiles![0]!.sha256,hash(bytes));assert.deepEqual(Buffer.from(observed.files[0]!.text!),bytes);assert.deepEqual(Buffer.from(observed.headFiles![0]!.text!),bytes);assert.doesNotThrow(()=>f.q.tasks().observe(f.definition,observed));
+  const plain=Buffer.from('export const bom=1;\n');await writeFile(join(f.definition.workspace,'sample.js'),plain);const onlyHead=await observeTaskWorkspace(f.definition);assert.equal(onlyHead.headFiles![0]!.sha256,hash(bytes));assert.equal(onlyHead.files[0]!.sha256,hash(plain));assert.notEqual(onlyHead.headFiles![0]!.sha256,onlyHead.files[0]!.sha256);assert.doesNotThrow(()=>f.q.tasks().observe(f.definition,onlyHead));
+  git(['add','sample.js']);git(['-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','plain HEAD fixture']);await writeFile(join(f.definition.workspace,'sample.js'),bytes);const onlyWorking=await observeTaskWorkspace(f.definition);assert.equal(onlyWorking.headFiles![0]!.sha256,hash(plain));assert.equal(onlyWorking.files[0]!.sha256,hash(bytes));assert.doesNotThrow(()=>f.q.tasks().observe(f.definition,onlyWorking));
+});
+
+test('native-impact dangling-link counterexample: an existing broken link is not a missing file',async t=>{
+  const f=await fixture(t),p={...f.definition,id:'dangling',paths:['dangling.js']};await symlink(join(f.root,'missing-target'),join(p.workspace,'dangling.js'));await assert.rejects(observeTaskWorkspace(p),/task_selected_symlink/);
+  await symlink(join(f.root,'missing-directory'),join(p.workspace,'linked-dir'));await assert.rejects(observeTaskWorkspace({...p,paths:['linked-dir/absent.js']}),/task_selected_symlink/);
+});
