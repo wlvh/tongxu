@@ -8,7 +8,7 @@ import { parseGh } from './transport.js';
 import { save } from './live-process.js';
 
 export type HttpReply = { status: number; value: any; directory: string; body: Buffer; headers:Record<string,string> };
-export type DispatchHooks = { intent(directory: string): void; started(pid: number): void };
+export type DispatchHooks = { intent(directory: string): void; started(pid: number): void; dispatch?(directory:string,effect:()=>void):void };
 export async function ordinaryFile(path: string, limit: number): Promise<Buffer> {
   if (!isAbsolute(path) || resolve(path) !== path || await realpath(path) !== path) throw new Error('publication_path_not_canonical');
   const s = await lstat(path); if (!s.isFile() || s.isSymbolicLink() || s.nlink !== 1 || s.size > limit) throw new Error('publication_file_invalid');
@@ -36,21 +36,39 @@ export class PublicationHttp {
     save(join(dir, 'request.json'), { command: this.executable, executableHash: this.executableHash, args, method, endpoint, bodySha256: hash(input), preparedAt: new Date().toISOString() });
     const env: NodeJS.ProcessEnv = { ...(this.readOnly?{PATH:'/usr/bin:/bin',HOME:this.existingGitHubAuth?process.env.HOME:dir,GH_CONFIG_DIR:this.existingGitHubAuth?process.env.GH_CONFIG_DIR:dir,GH_TOKEN:this.existingGitHubAuth?process.env.GH_TOKEN:undefined,GITHUB_TOKEN:this.existingGitHubAuth?process.env.GITHUB_TOKEN:undefined}:process.env), GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', PAGER: 'cat' };
     delete env.GH_DEBUG; delete env.GH_FORCE_TTY;
-    hooks?.intent(dir); // Last synchronous local gate; no await before spawn.
-    const child = spawn(this.executable, args, { cwd: dir, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    save(join(dir, 'process.json'), { pid: child.pid ?? null });
-    let failure: string | null = null, size = 0;
-    const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
-    const capture = (name: string, b: Buffer) => { size += b.length; if (size > 8 * 1024 * 1024) { failure = 'publication_http_output_limit'; stop(); return; } appendFileSync(join(dir, name), b); };
-    const result = new Promise<{ code: number | null; signal: string | null }>(resolve => {
-      child.once('error', () => { failure = 'publication_gh_spawn_failed'; }); child.stdin.on('error', () => { failure ??= 'publication_gh_input_failed'; });
-      child.stdout.on('data', b => capture('stdout.http', b)); child.stderr.on('data', b => capture('stderr.txt', b));
-      child.once('close', (code, signal) => { clearTimeout(timer); const exit = { code, signal }; save(join(dir, 'exit.json'), { ...exit, failure, finishedAt: new Date().toISOString() }); resolve(exit); });
-    });
-    const timer = setTimeout(() => { failure = 'publication_http_timeout'; stop(); }, 30000);
-    try { if (child.pid) hooks?.started(child.pid); else failure = 'publication_gh_spawn_failed'; }
-    catch (e) { stop(); await result; throw e; }
-    if (!failure) child.stdin.end(input); else child.stdin.end();
+    let failure:string|null=null,result:Promise<void>|undefined,stop=()=>{},invoked=false,accepting=true,spawnAttempted=false,inputMayHaveBeenSubmitted=false;
+    // The controller can hold its original queue transaction through both
+    // process creation and input submission. There is no await in this effect.
+    const send=()=>{
+      if(!accepting||invoked)throw new Error('publication_dispatch_effect_not_current');invoked=true;
+      hooks?.intent(dir);
+      spawnAttempted=true;
+      const child=spawn(this.executable,args,{cwd:dir,env,detached:true,stdio:['pipe','pipe','pipe']});
+      stop=()=>{if(child.pid)try{process.kill(-child.pid,'SIGKILL');}catch{}};
+      let size=0;
+      const capture=(name:string,b:Buffer)=>{size+=b.length;if(size>8*1024*1024){failure='publication_http_output_limit';stop();return;}appendFileSync(join(dir,name),b);};
+      result=new Promise<void>(resolve=>{
+        child.once('error',()=>{failure='publication_gh_spawn_failed';});child.stdin.on('error',()=>{failure??='publication_gh_input_failed';});
+        child.stdout.on('data',b=>capture('stdout.http',b));child.stderr.on('data',b=>capture('stderr.txt',b));
+        child.once('close',(code,signal)=>{clearTimeout(timer);save(join(dir,'exit.json'),{code,signal,failure,finishedAt:new Date().toISOString()});resolve();});
+      });
+      const timer=setTimeout(()=>{failure='publication_http_timeout';stop();},30000);
+      save(join(dir,'process.json'),{pid:child.pid??null});
+      if(child.pid)hooks?.started(child.pid);else failure='publication_gh_spawn_failed';
+      if(!failure){
+        save(join(dir,'submission-intent.json'),{bodySha256:hash(input),bytes:input.length,at:new Date().toISOString()});
+        inputMayHaveBeenSubmitted=true;child.stdin.end(input);
+        save(join(dir,'submitted.json'),{bodySha256:hash(input),bytes:input.length,at:new Date().toISOString(),remoteAcceptanceVerified:false});
+      }else child.stdin.end();
+    };
+    try{
+      const returned:unknown=hooks?.dispatch?hooks.dispatch(dir,send):send();
+      if(returned&&typeof (returned as any).then==='function'){void Promise.resolve(returned).catch(()=>undefined);throw new Error('publication_dispatch_must_be_synchronous');}
+      if(!invoked)throw new Error('publication_dispatch_effect_not_invoked');
+    }catch(e){
+      accepting=false;stop();await result;
+      save(join(dir,'dispatch-error.json'),{reason:e instanceof Error?e.message:'publication_dispatch_unknown',spawnAttempted,inputMayHaveBeenSubmitted,remoteAcceptanceVerified:false,at:new Date().toISOString()});throw e;
+    }finally{accepting=false;}
     await result;
     if (failure) throw new Error(failure);
     const raw = await readFile(join(dir, 'stdout.http'));
