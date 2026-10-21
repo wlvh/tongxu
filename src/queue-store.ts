@@ -411,11 +411,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(requireCurrent&&(!m.current||!summary.evidenceComplete))throw new Error('integration_original_or_validation_no_longer_current');
     const {current:_current,...material}=m,memberReturns=this.integrationMemberRecords(fn=>fn()).contextFor(m.source.composition.subject.members,m.source.context,excludeReception),memberRepairs=this.memberRecompositionRecords(fn=>fn()).forSubject(m.source.composition.sha256);return {sha256:ref.sha256,association:proof,...material,memberReturns,memberReturnEvidenceSha256:hash(canonical(memberReturns)),...(memberRepairs.length?{memberRepairs,memberRepairEvidenceSha256:hash(canonical(memberRepairs))}:{})};
   }
-  private integrationAdmission(op:Row,status:'receiving'|'merging'){
-    const material=this.integrationMaterial(this.packet(op.packet),true,op.id);if(!material)return;
+  private integrationAdmission(op:Row,status:'receiving'|'merging',authority?:Row){
+    const material=this.integrationMaterial(this.packet(op.packet),true,op.id);if(!material&&!authority)return;
     if(!this.receiverCandidateCurrent(this.item(op.item)))throw new Error('integration_current_candidate_required');
     const refutation=this.memberRefutationEvidence(this.packet(op.packet),true);if(refutation)installMemberRefutationOriginalsGuard(this.db);
-    this.event('integration_consumer_admitted',op.id,{packet:op.packet,status,integrationSha256:material.sha256,...(refutation?{memberRefutationSha256:refutation.sha256,memberRefutationTerminalSha256:refutation.repair.terminalRecordSha256}:{})});
+    this.event('integration_consumer_admitted',op.id,{...authority,packet:op.packet,status,integrationSha256:material?.sha256??null,...(refutation?{memberRefutationSha256:refutation.sha256,memberRefutationTerminalSha256:refutation.repair.terminalRecordSha256}:{})});
   }
   static async observeIntegration(directory:string,id:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');return q.integrationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private integrationSource(operation:string):IntegrationSource{
@@ -544,7 +544,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const b=this.receiverAuthorization(op,plan,observations,true);if(!b)return;
     const old=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(op.id) as Row|undefined;
     if(!old||canonical(JSON.parse(old.data))!==canonical(b)||record.authorityIntent!==b.authorityIntent||canonical(record.resourceRequests)!==canonical(b.resourceRequests))throw new Error('receiver_original_authority_binding_changed');
-    this.event('authority_receiver_admitted',op.id,{...b,inputSha256:record.inputSha256,bindingHash:record.bindingHash});
+    return {...b,inputSha256:record.inputSha256,bindingHash:record.bindingHash};
   }
   reviewRecords(): ReviewRecords {
     const coordination=this.coordinationRecords(fn=>fn());
@@ -1108,7 +1108,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
-      this.integrationAdmission(op,'receiving');this.receiverAuthorityAdmission(op,record,fixed.plan,observations);this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
+      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,record,fixed.plan,observations));this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
       this.event('receiver_reserved', id, { generation, judgmentId: record.judgmentId, bindingHash: record.bindingHash });
       return { duplicate: false, receiver: record };
@@ -1120,7 +1120,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
       this.pairPlanCheck(op, receiver.planSha256); this.receiverGate(op); if (!this.pairedApplicability(op, receiver)) throw new Error('paired_prerequisite_changed_before_dispatch'); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
       result.externalActionSent = receiver.executionKind === 'fixture' ? false : 'unknown'; result.externalActionKind = 'readonly_model_request'; result.externalProductionActionSent = false;
-      this.integrationAdmission(op,'receiving');this.receiverAuthorityAdmission(op,receiver,this.blob(receiver.planSha256),observations);this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
+      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,receiver,this.blob(receiver.planSha256),observations));this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
   }
   receiverDispatch(id:string,bindingHash:string,observations:OwnerObservation[]=[]):void{this.transaction(()=>this.dispatchReceiver(id,bindingHash,observations));}
   receiverEffect<T>(id:string,bindingHash:string,observations:OwnerObservation[],effect:()=>T):T{
@@ -1194,10 +1194,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const r = { ...receiver, phase: judgment ? 'returned' : 'closed_unresolved', finishedAt: now(), judgment, closeSource: closeSource ?? null, blobs,
         ...(invalid ? { invalidResult: { kind: 'completed_invalid_judgment', reason: invalid.reason, finalTextSha256: hash(invalid.finalText), executionCompleted: true, validJudgment: false } } : {}),
         currentMaterialMatches: current, newTaskSentOnRecovery: false };
+      // Files survive a rolled-back dispatch transaction. A missing queue
+      // timestamp cannot turn a captured launch/input into proof of no send.
+      const queueDispatchRegistered=Boolean(receiver.dispatchRegisteredAt),capturedInputPresent=Boolean(originals['stdin.ndjson']?.length),executionEvidence=['launch.json','process.json','stdout.ndjson'].filter(name=>Boolean(originals[name]?.length)),dispatchPossible=queueDispatchRegistered||capturedInputPresent||executionEvidence.length>0;
       const completed = { ...result, status: invalid ? 'receiver_invalid_result' : 'receiver_evaluated', receiver: r, independentReception: judgment ? receiver.executionKind === 'fixture' ? 'fixture_judgment_recorded' : receiver.subject?'composition_judgment_recorded':'judgment_recorded' : invalid ? 'completed_output_not_a_valid_judgment' : 'closed_without_judgment',
         productionActionAllowed: false, externalProductionActionSent: false, externalActionKind: 'readonly_model_request',
-        externalActionSent: receiver.executionKind === 'fixture' ? false : judgment || invalid ? true : receiver.dispatchRegisteredAt ? 'unknown' : false,
-        modelDispatchStatus: judgment ? 'returned_final' : invalid ? 'returned_invalid' : receiver.dispatchRegisteredAt ? 'submitted_or_unknown' : 'not_dispatched', modelRequestRegistered: Boolean(receiver.dispatchRegisteredAt),
+        externalActionSent: receiver.executionKind === 'fixture' ? false : judgment || invalid ? true : dispatchPossible ? 'unknown' : false,
+        modelDispatchStatus: judgment ? 'returned_final' : invalid ? 'returned_invalid' : dispatchPossible ? 'submitted_or_unknown' : 'not_dispatched',modelRequestRegistered:queueDispatchRegistered,
+        queueDispatchRegistered,dispatchCapture:{capturedInputPresent,inputSha256:capturedInputPresent?hash(originals['stdin.ndjson']!):null,executionEvidence,queueRegistrationMissing:dispatchPossible&&!queueDispatchRegistered},
         controlsAtReturn: this.db.prepare('SELECT kind,stopped,revision FROM controls WHERE scope=? ORDER BY kind').all(parse(item, 'context').scope.id),
         gaps: [...result.gaps.filter((g: string) => g !== 'independent_receiver_unavailable' || !judgment || receiver.executionKind === 'fixture'), ...(!current ? ['newer_material_requires_own_reception'] : []), ...(invalid ? ['receiver_judgment_invalid'] : !judgment ? ['original_receiver_result_unresolved'] : [])],
         next: judgment ? 'read_scoped_judgment_no_automatic_merge' : invalid ? 'read_invalid_original_explicit_bounded_correction_available' : 'retain_unresolved_original_no_automatic_retry' };
