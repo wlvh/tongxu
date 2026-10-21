@@ -23,7 +23,7 @@ export class DeliveryControls{
   async apply(id:string,body:any){
     if(!this.writable)throw new Error('read_only_workbench');if(!exactKeys(body,['proposalSha256','commentId'])||!isAuthorityDigest(body.proposalSha256)||!Number.isSafeInteger(body.commentId)||body.commentId<=0)throw new Error('delivery_outcome_source_invalid');const {entry,source}=this.select(id),q=await QueueStore.open(source.store);
     try{const batch=q.deliveries().state(entry.batchSha256);this.assertMember(batch,source);const a=q.authority(),p=a.proposal(body.proposalSha256).proposal;if(p.kind!=='delivery_outcome'||p.batchSha256!==entry.batchSha256)throw new Error('delivery_outcome_not_selected');
-      if(batch.outcomes.some(o=>o.proposalSha256===body.proposalSha256))return {duplicate:true,originalDecisionRecorded:true,externalStateRechecked:false,permissionsGranted:false};
+      if(batch.outcomes.some(o=>o.proposalSha256===body.proposalSha256)){const original=a.inspectRecordedDecision(body.proposalSha256);if(original.source.commentId!==body.commentId)throw new Error('delivery_outcome_source_changed');return {duplicate:true,originalDecisionRecorded:true,externalStateRechecked:false,permissionsGranted:false};}
       // Runtime input supplies only an exact source comment ID. Paths, source
       // executable and queries stay under the existing trusted profile.
       const {profile}=a.configuration(),parent=join(source.store,'delivery-owner-sources');await mkdir(parent,{recursive:true,mode:0o700});const root=join(parent,body.proposalSha256+'-'+randomUUID()),observation=await readOwnerSource(profile,body.proposalSha256,body.commentId,root),dependencies=[];
