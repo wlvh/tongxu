@@ -5,6 +5,7 @@ import { hash } from './snapshot.js';
 import { now } from './contract.js';
 import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
+import {installRecompositionTestGuards} from './recomposition-test-guards.js';
 
 type Row=Record<string,any>;
 const profileKey='owner_authority_profile';
@@ -180,6 +181,7 @@ export class AuthorityRecords {
    * operation. Reentry never dispatches or returns a new one-shot permission. */
   reserveAction(requestId:string,request:ActionRequest,role:AuthorityRole,authorization:string,observations:OwnerObservation[]){return this.transaction(()=>{
     this.profile();if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(requestId))throw new Error('authority_action_request_id_invalid');parseActionRequest(request);
+    if(request.action==='test'&&request.payloadSha256)installRecompositionTestGuards(this.db);
     const object='authority-intent:'+requestId,old=this.events(object,'authority_action_reserved')[0];
     if(old){if(old.data.requestSha256!==actionHash(request)||old.data.role!==role||old.data.authorization!==authorization)throw new Error('authority_action_request_id_changed');return {...old.data,duplicate:true,next:'read_original_execution_before_any_dispatch',externalActionSent:false};}
     const checked=this.check(request,role,authorization,observations);

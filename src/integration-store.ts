@@ -39,7 +39,7 @@ export class IntegrationRecords{
     if(!p.authorityIntent)throw new Error('integration_authority_required');const a=this.authority(p.authorityIntent,observations),r=a.request,c=s.composition.subject.members.at(-1).candidate;
     // Reconstructing fixed objects is a verification/preparation action, not
     // authority for a model to edit members or for a publisher to update refs.
-    if(a.role!=='background'||r.action!=='test'||r.item!==s.item||a.binding?.packet!==s.packet||a.binding?.fingerprint!==s.fingerprint||r.candidate?.H!==c.H||r.candidate?.B!==c.B||r.candidate?.subjectSha256!==p.subjectSha256||r.resourceRefs.length||r.paths.length)throw new Error('integration_authority_binding_mismatch');
+    if(a.role!=='background'||r.action!=='test'||r.payloadSha256!==undefined||r.item!==s.item||a.binding?.packet!==s.packet||a.binding?.fingerprint!==s.fingerprint||r.candidate?.H!==c.H||r.candidate?.B!==c.B||r.candidate?.subjectSha256!==p.subjectSha256||r.resourceRefs.length||r.paths.length)throw new Error('integration_authority_binding_mismatch');
     requireTestAuthorityConsumer(this.db,p.authorityIntent,'integration:'+p.id);
   }
   prepare(raw:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{

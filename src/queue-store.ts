@@ -7,7 +7,8 @@ import {parseIntegrationCandidate} from './integration-contract.js';
 import {IntegrationMemberRecords,type IntegrationMemberSource} from './integration-member-store.js';
 import {memberReturnReference,type IntegrationMemberReturn} from './integration-member-contract.js';
 import {MemberRecompositionRecords} from './member-recomposition-store.js';
-import type {RecompositionLink} from './member-recomposition-contract.js';
+import type {RecompositionLink,MemberRecompositionPlan} from './member-recomposition-contract.js';
+import {RecompositionTestRecords,type RecompositionTestSource} from './recomposition-test-store.js';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -285,6 +286,19 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private integrationApplicability(op:Row,receiver:Row){try{const proof=this.memberRefutationEvidence(this.packet(op.packet),true);if((receiver.memberRefutationSha256??null)!==(proof?.sha256??null))return false;const m=this.integrationMaterial(this.packet(op.packet),true,op.id),empty=hash(canonical([]));return !m||(receiver.memberReturnEvidenceSha256??empty)===m.memberReturnEvidenceSha256&&(receiver.memberRepairEvidenceSha256??empty)===(m.memberRepairEvidenceSha256??empty);}catch{return false;}}
   memberRecompositions(){return this.memberRecompositionRecords(fn=>this.transaction(fn));}
   private memberRecompositionRecords(transaction:<T>(fn:()=>T)=>T){return new MemberRecompositionRecords(this.db,transaction,p=>this.memberRecompositionSource(p));}
+  recompositionTests(){return this.recompositionTestRecords(fn=>this.transaction(fn));}
+  private recompositionTestRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new RecompositionTestRecords(this.db,transaction,this.directory,(p,m,t,current)=>this.recompositionTestSource(p,m,t,current),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()));}
+  private recompositionTestSource(p:MemberRecompositionPlan,newManifest:Buffer,testPlan:Buffer,current:boolean):RecompositionTestSource{
+    const matches=this.db.prepare("SELECT * FROM operations WHERE json_extract(result,'$.repair.planSha256')=?").all(p.repairPlan.sha256) as Row[];
+    if(matches.length!==1)throw new Error('recomposition_test_original_repair_ambiguous');const op=matches[0]!,repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('recomposition_read_cannot_authorize');},()=>{throw new Error('recomposition_read_cannot_authorize');}).state(op.id).repair;
+    const original=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id),selected=original.request.member,old=original.proof.integration.source.composition.subject.members,member=original.proof.member,manifest=JSON.parse(newManifest.toString()),c=manifest.candidate;
+    if(original.state.requestSha256!==p.memberReturn.requestSha256||original.state.sourceSha256!==p.memberReturn.sourceSha256||canonical(repair.memberReturn)!==canonical(p.memberReturn)||op.status!=='complete'||op.item!==selected.item||op.packet!==selected.packet||repair.phase!=='returned'||!repair.controllerReturned||!['completed','completed_recovered_candidate'].includes(repair.result.status)||!repair.result.actualRepairPerformed||!(repair.counters.actualFileWrites>0)||!['fixture','native_capture'].includes(repair.result.executionKind))throw new Error('recomposition_test_completed_repair_required');
+    const repairPlan=JSON.parse(this.blob(repair.planSha256).toString());if(repairPlan.store!==this.directory||repairPlan.operation!==op.id||canonical(repairPlan.memberReturn)!==canonical(p.memberReturn)||hash(newManifest)!==p.newMember.sha256||hash(testPlan)!==p.testPlan.sha256||!c||c.H!==repair.result.after.H||c.H===selected.H||['repository','pr','B','targetRef'].some(k=>c[k]!==old[selected.index].candidate[k]))throw new Error('recomposition_test_fixed_input_mismatch');
+    if(current){this.memberRepairSource(op.id,p.memberReturn,true);if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND stopped=1 AND kind IN ('investment','implementation','candidate')").get(member.context.scope.id))throw new Error('member_recomposition_stopped');}
+    const previous=this.integrationRecords(fn=>fn()).sourceMaterial(original.request.integration),originals=new Map<string,Buffer>([...original.originals,...previous.originals].map(x=>[x.sha256,x.bytes]));for(const sha of [repair.planSha256,repair.resultSha256,repair.evidenceSha256])originals.set(sha,this.blob(sha));originals.set(p.newMember.sha256,newManifest);originals.set(p.testPlan.sha256,testPlan);
+    const contextBytes=Buffer.from(canonical(member.context)),contextSha256=hash(contextBytes);originals.set(contextSha256,contextBytes);
+    return {operation:op.id,item:op.item,packet:op.packet,fingerprint:this.packet(op.packet).fingerprint,candidate:member.manifest.candidate,context:member.context,subjectSha256:null,executionKind:repair.result.executionKind,inputManifests:old.map((m:Row,i:number)=>i===selected.index?p.newMember.sha256:m.manifestHash),contextSha256,proof:{memberReturn:p.memberReturn,selectedMember:original.proof.selectedMember,previousIntegration:original.request.integration,repair:{operation:op.id,planSha256:repair.planSha256,bindingHash:repair.bindingHash,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256},newMemberManifestSha256:p.newMember.sha256,testPlanSha256:p.testPlan.sha256,priorAcceptanceTransferred:false},originals};
+  }
   private memberRecompositionSource(p:RecompositionLink){
     const original=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id),s=original.state,source=original.proof,repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('recomposition_read_cannot_authorize');},()=>{throw new Error('recomposition_read_cannot_authorize');}).state(p.repair.operation).repair,item=this.item(p.composition.item),packet=this.packet(p.composition.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),composition=summary.composition;
     if(s.requestSha256!==p.memberReturn.requestSha256||s.sourceSha256!==p.memberReturn.sourceSha256||canonical(repair.memberReturn)!==canonical(p.memberReturn)||repair.phase!=='returned'||repair.bindingHash!==p.repair.bindingHash||repair.resultSha256!==p.repair.resultSha256||repair.evidenceSha256!==p.repair.evidenceSha256||!['completed','completed_recovered_candidate'].includes(repair.result.status)||!repair.result.actualRepairPerformed||!(repair.counters.actualFileWrites>0))throw new Error('member_recomposition_completed_repair_required');
@@ -444,7 +458,15 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   resources(): ResourceRecords {return this.resourceRecords(fn=>this.transaction(fn));}
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
-    return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);if(dispatch){if(action.request.action==='implement')this.memberRepairResourceGate(action,request);const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;if(queueFormatVersion(this.db)>=20||receiver){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{})});}}});
+    return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{
+      if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);
+      if(dispatch){
+        if(action.request.action==='implement')this.memberRepairResourceGate(action,request);
+        const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
+        const test=action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
+        if(queueFormatVersion(this.db)>=20||receiver||test){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{})});}
+      }
+    });
   }
   private receiverResourceClaimGate(action:Row,request:ResourceRequest){
     const row=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(request.operation) as Row|undefined;if(!row)throw new Error('receiver_resource_binding_required');
@@ -474,6 +496,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate')return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
+    if(kind==='test'&&action.request.payloadSha256)return this.recompositionTestRecords(fn=>fn()).outcome(operation,action,claimedAt);
     if(kind==='merge'){
       const original=this.mergesResourceOutcome(operation,action,claimedAt);
       return original;

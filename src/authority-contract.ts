@@ -45,7 +45,7 @@ export function parseAuthorityProfile(bytes:Buffer):AuthorityProfile {
 }
 export function parseActionRequest(x:any):ActionRequest {
   if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');
-  if(Object.hasOwn(x,'payloadSha256')&&(x.action!=='coordinate'||!isAuthorityDigest(x.payloadSha256)))throw new Error('authority_action_payload_invalid');
+  if(Object.hasOwn(x,'payloadSha256')&&(!['coordinate','test'].includes(x.action)||!isAuthorityDigest(x.payloadSha256)))throw new Error('authority_action_payload_invalid');
   if(x.candidate!==null&&(!exactKeys(x.candidate,['H','B','subjectSha256'])||typeof x.candidate.H!=='string'||!shaPattern.test(x.candidate.H)||typeof x.candidate.B!=='string'||!shaPattern.test(x.candidate.B)||!(x.candidate.subjectSha256===null||isAuthorityDigest(x.candidate.subjectSha256))))throw new Error('authority_action_candidate_invalid');
   if(x.action!=='coordinate'&&(x.item===null||x.candidate===null))throw new Error('authority_action_exact_candidate_required');
   if((x.item===null)!==(x.candidate===null))throw new Error('authority_action_item_candidate_mismatch');

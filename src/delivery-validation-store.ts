@@ -65,7 +65,7 @@ export class DeliveryValidationRecords{
     const selected=batch.members.find((m:Row)=>m.item===p.member),item=this.member(p.member);if(!selected||!item.current||item.packet!==selected.packet||item.fingerprint!==selected.fingerprint)throw new Error('delivery_validation_member_changed');
     if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(batch.scope.id))throw new Error('new_investment_stopped');
     const profile=this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get();
-    if(profile){if(!p.authorityIntent||!batch.scope.currentAdoption)throw new Error('delivery_validation_authority_required');const a=this.authority(p.authorityIntent,observations),r=a.request;if(a.role!=='background'||r.action!=='test'||r.item!==p.member||a.adoption!==batch.scope.adoption||r.resourceRefs.length||r.candidate?.H!==item.candidate.H||r.candidate?.B!==item.candidate.B||r.candidate?.subjectSha256!==(item.subjectSha256??null))throw new Error('delivery_validation_authority_binding_mismatch');}
+    if(profile){if(!p.authorityIntent||!batch.scope.currentAdoption)throw new Error('delivery_validation_authority_required');const a=this.authority(p.authorityIntent,observations),r=a.request;if(a.role!=='background'||r.action!=='test'||r.payloadSha256!==undefined||r.item!==p.member||a.adoption!==batch.scope.adoption||r.resourceRefs.length||r.candidate?.H!==item.candidate.H||r.candidate?.B!==item.candidate.B||r.candidate?.subjectSha256!==(item.subjectSha256??null))throw new Error('delivery_validation_authority_binding_mismatch');}
     else if(p.authorityIntent!==null)throw new Error('delivery_validation_authority_profile_missing');
     this.predecessors(p,batch.id);return {batch,item};
   }
