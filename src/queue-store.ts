@@ -23,6 +23,7 @@ import { TaskInbox } from './task-inbox.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
 import { observeTaskWorkspace } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
+import {LocalScopeControls} from './scope-controls.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
@@ -546,13 +547,15 @@ PRAGMA user_version=4;`);
   }
   control(scope: string, kind: string, state: string, source: string): Row {
     if (!scope || scope.length > 128 || !source || source.length > 2048 || !['implementation', 'investment', 'merge'].includes(kind) || !['stopped', 'open'].includes(state)) throw new Error('invalid_shadow_control');
-    return this.transaction(() => {
+    return this.transaction(() => this.applyLocalControl(scope,kind,state,source));
+  }
+  scopeControls(){return new LocalScopeControls(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id),(scope,kind,state,source)=>this.applyLocalControl(scope,kind,state,source));}
+  private applyLocalControl(scope:string,kind:string,state:string,source:string):Row{
       const prior = this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scope, kind) as Row | undefined;
       const revision = (prior?.revision ?? 0) + 1, at = now();
       this.db.prepare('INSERT INTO controls VALUES(?,?,?,?,?,?,?) ON CONFLICT(scope,kind) DO UPDATE SET stopped=excluded.stopped,revision=excluded.revision,source=excluded.source,requested_at=excluded.requested_at,effective_at=excluded.effective_at').run(scope, kind, state === 'stopped' ? 1 : 0, revision, source, at, at);
       this.event('shadow_control', scope, { kind, state, revision, source });
       return { scope, kind, state, revision, requestedAt: at, effectiveAt: at, effect: 'local_shadow_only', externalControl: 'unverified' };
-    });
   }
   private prerequisites(item: Row): string[] {
     const gaps: string[] = [], visiting = new Set<string>(), visited = new Set<string>();
@@ -983,7 +986,7 @@ PRAGMA user_version=4;`);
   private itemStatus(item: Row): Row {
     const composition = parse(this.packet(item.current_packet), 'summary').composition;
     if(composition)this.packetEvidence(this.packet(item.current_packet));
-    return { id: item.id, candidate: parse(item, 'candidate'), ...(parse(item,'candidate').kind==='development-task'?{developmentTask:{...this.taskRecords().status(item.id),inbox:this.taskInboxRecords(fn=>fn()).status(item.id),candidateLinks:this.taskLinkRecords(fn=>fn()).state(item.id)}}:{}), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
+    return { id: item.id, candidate: parse(item, 'candidate'), ...(parse(item,'candidate').kind==='development-task'?{developmentTask:{...this.taskRecords().status(item.id),inbox:this.taskInboxRecords(fn=>fn()).status(item.id),controllerReturns:this.taskInboxRecords(fn=>fn()).controllerReturns(item.id),candidateLinks:this.taskLinkRecords(fn=>fn()).state(item.id)}}:{}), ...(composition ? { compositionCurrent: !item.observation_conflict && this.receiverCandidateCurrent(item) } : {}), currentPacket: item.current_packet, eventSource:this.eventSourceStates(item).map(s=>({registered:s.registered,current:s.current,materialBound:s.materialBound,reason:s.reason??null})), latestObservation: item.latest_observation, latestSourceObservation: item.latest_source_observation, observationConflict: Boolean(item.observation_conflict), context: parse(item, 'context'), summary: this.effectiveSummary(item, this.packet(item.current_packet)), dependencyGaps: this.prerequisites(item), ...(item.observation_conflict ? { materialHistory: (this.db.prepare('SELECT id,manifest_hash,report_hash,summary FROM packets WHERE item=? ORDER BY id').all(item.id) as Row[]).map(p => ({ packet: p.id, manifestHash: p.manifest_hash, reportHash: p.report_hash, summary: parse(p, 'summary') })) } : {}) };
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.

@@ -123,15 +123,18 @@ export async function startWorkbench(planPath: string) {
         if(!controls){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
         const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel)$/.exec(url.pathname);
-        if(req.method!=='POST'||!action){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
+        if(req.method!=='POST'||!action&&!scope){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>1024){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
-        if(!exactKeys(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks))),[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
-        json(res,action[2]==='start'?202:200,action[2]==='start'?await controls.begin(action[1]!):await controls.cancel(action[1]!));return;
+        let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
+        if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls.setScope(scope[1]!,scope[2]!,body.revision));return;}
+        if(!exactKeys(body,[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
+        json(res,action![2]==='start'?202:200,action![2]==='start'?await controls.begin(action![1]!):await controls.cancel(action![1]!));return;
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{taskControls:await controls.state()}: {})}); return; }
+      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {})}); return; }
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
       if(message){const source=p.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -142,5 +145,5 @@ export async function startWorkbench(planPath: string) {
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
-  return { url: 'http://' + host + '/#' + token,mode:controls?'bounded_task_contacts':'read_only',close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??'read_only',close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await closed;} };
 }
