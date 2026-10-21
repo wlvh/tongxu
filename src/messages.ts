@@ -7,7 +7,7 @@ import { QueueStore } from './queue-store.js';
 import { regular,exists } from './repair-workspace.js';
 import { hash,privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
-import { parseMessagePlan,messagePlanId,type MessagePlan } from './message-contract.js';
+import { parseMessagePlan,messagePlanId,checkMessageBilling,type MessagePlan } from './message-contract.js';
 import { assembleRolePrompt } from './role-prompts.js';
 import { messagePolicy,ReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec } from './message-runtime.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
@@ -19,7 +19,7 @@ async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise
   const a=q.authority(),intent=a.reservedAction(p.authorityIntent),{profile}=a.configuration(),all=[];
   for(const source of a.sourceRequests(intent.authorization))all.push(await readOwnerSource(profile,source.proposalSha256,source.commentId,join(directory,'owner-read-'+randomUUID())));return all;
 }
-async function billing(p:MessagePlan){const b=await regular(p.billing.evidence,128*1024),age=Date.now()-Date.parse(p.billing.observedAt);if(hash(b)!==p.billing.evidenceSha256||age< -60000||age>1800000)throw new Error('message_current_billing_evidence_required');}
+async function billing(p:MessagePlan,current?:MessagePlan['billing']){const proof=current??p.billing;checkMessageBilling(proof);const b=await regular(proof.evidence,128*1024),age=Date.now()-Date.parse(proof.observedAt);if(hash(b)!==proof.evidenceSha256||age< -60000||age>1800000)throw new Error('message_current_billing_evidence_required');return proof;}
 function completed(state:Row){return state.messages.every((m:Row)=>m.state==='Reply'&&m.reply.reportedConsumption)&&state.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.captureVerification?.proof.successfulCapture===true);}
 async function replay(q:QueueStore,run:string,directory:string){
   const r=q.messages(),s=r.status(run),frozen=r.frozen(run),errors:string[]=[];for(const runtime of s.runtimes){if(!runtime.started)continue;const p=runtime.started.directory;try{
@@ -31,7 +31,7 @@ async function replay(q:QueueStore,run:string,directory:string){
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string){
+export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string,currentBilling?:MessagePlan['billing']){
   const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
   // The caller may have selected a frozen operation before handing us a path.
   // Compare before opening the queue or creating/starting any runtime, and use
@@ -59,8 +59,8 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
     const runtimes=new Map<string,ReadonlyDialog>(),specs=new Map<string,RuntimeSpec>();let sent=0,activeMessage:string|null=null;
     try{
-      await billing(p);await prepareMessageResources(q,run,p,await observations(q,p,directory));
-      for(const m of p.messages){activeMessage=m.id;await checkParent();await billing(p);await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
+      records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
+      for(const m of p.messages){activeMessage=m.id;await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
@@ -71,7 +71,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
         const sender=m.from===null?null:state.runtimes.find((r:Row)=>r.participant===m.from)?.route;if(m.from!==null&&!sender)throw new Error('message_sender_route_missing');
         const materialConsumption=(p.consumeMaterial??[]).map(name=>({name,sha256:hash(frozen.materials[name]!)})),references=[...upstream.map(x=>x.receipt.finalSha256),...materialConsumption.map(m=>m.sha256)];
         const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:references,...(materialConsumption.length?{materialConsumptionReferences:materialConsumption}:{}),responseContract:{messageId:m.id,consumed:references,report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
-        const final=await runtime.send(envelope,async()=>{await checkParent();await billing(p);await refreshMessageResources(q,run,p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
+        const final=await runtime.send(envelope,async()=>{await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
         if(!final.data.reportedConsumption)throw new Error('message_reply_did_not_confirm_input_consumption');
       }
     }catch(e){records.problem(run,activeMessage,e instanceof Error?e.message:'message_delivery_unknown');}

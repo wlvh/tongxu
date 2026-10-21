@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseMessagePlan,messagePlanId,continuationMessagePrefix,type MessagePlan } from './message-contract.js';
+import { parseMessagePlan,messagePlanId,continuationMessagePrefix,checkMessageBilling,type MessagePlan } from './message-contract.js';
 import type { OwnerObservation } from './authority-source.js';
 import { requireDialogProof,type DialogProof } from './message-runtime.js';
 import { inspectRolePrompt } from './role-prompts.js';
@@ -40,6 +40,7 @@ export class MessageRecords {
     return f;
   }
   admission(run:string,observations:OwnerObservation[]){return this.transaction(()=>{this.gate(run,observations,false);this.coordinationGate?.(run);return this.view(run);});}
+  observeBilling(run:string,billing:MessagePlan['billing']){return this.transaction(()=>{const f=this.fixed(run);checkMessageBilling(billing);const raw=Buffer.from(canonical(billing)),sha256=hash(raw),latest=f.e.findLast(e=>e.kind==='message_billing_observed');if(latest&&Date.parse(billing.observedAt)<Date.parse(latest.data.billing.observedAt))throw new Error('message_billing_observation_older');if(!latest||latest.data.sha256!==sha256)this.event(run,'billing_observed',{sha256:this.blob(raw),billing,originalPlanUnmodified:true});return sha256;});}
   check(run:string,observations:OwnerObservation[],messageId?:string){return this.transaction(()=>{this.gate(run,observations);this.coordinationGate?.(run,messageId);return this.view(run);});}
   startRuntime(run:string,participant:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.gate(run,observations),p=f.plan.participants.find(p=>p.id===participant);if(!p)throw new Error('message_participant_missing');const prior=this.runtime(f,participant);
@@ -55,7 +56,8 @@ export class MessageRecords {
     const runtime=this.runtime(f,m.to),route=runtime.route;if(!route||runtime.ended)throw new Error('message_recipient_not_running');
     const parsed=JSON.parse(envelope.toString());if(parsed.messageId!==id||canonical(parsed.to)!==canonical(route)||parsed.run!==run)throw new Error('message_envelope_address_mismatch');
     const current=this.view(run),references:string[]=[];for(const prior of m.replies){const upstream=current.messages.find(m=>m.id===prior);if(upstream?.state!=='Reply'||!upstream.reply?.reportedConsumption)throw new Error('message_upstream_reply_required');references.push(upstream.reply.finalSha256);}for(const name of f.plan.consumeMaterial??[])references.push(f.r.materials[name].sha256);if(canonical(parsed.replyReferences)!==canonical(references)||canonical(parsed.responseContract?.consumed)!==canonical(references))throw new Error('message_consumption_references_changed');
-    this.event(run,'send_registered',{id,recipient:route,inputSha256:this.blob(envelope),registeredAt:now()});return this.view(run);
+    const billing=f.e.findLast(e=>e.kind==='message_billing_observed')?.data.sha256;
+    this.event(run,'send_registered',{id,recipient:route,inputSha256:this.blob(envelope),registeredAt:now(),...(billing?{billingObservationSha256:billing}:{})});return this.view(run);
   });}
   private delivered(run:string,id:string,receipt:Row){return this.transaction(()=>{const f=this.fixed(run),sent=f.e.find(e=>e.kind==='message_send_registered'&&e.data.id===id)?.data;if(!sent||receipt.inputSha256!==sent.inputSha256||receipt.sessionId!==sent.recipient.sessionId||receipt.threadId!==sent.recipient.threadId)throw new Error('message_send_intent_required');const old=f.e.find(e=>e.kind==='message_delivered'&&e.data.id===id);if(old){if(canonical(old.data.receipt)!==canonical(receipt))throw new Error('message_delivery_receipt_changed');return this.view(run);}this.event(run,'delivered',{id,receipt});return this.view(run);});}
   private refused(run:string,id:string,receipt:Row){return this.transaction(()=>{const f=this.fixed(run),sent=f.e.find(e=>e.kind==='message_send_registered'&&e.data.id===id)?.data;if(!sent||receipt.inputSha256!==sent.inputSha256||receipt.sessionId!==sent.recipient.sessionId||f.e.some(e=>e.kind==='message_delivered'&&e.data.id===id))throw new Error('message_refusal_does_not_match_unsuccessful_send');const old=f.e.find(e=>e.kind==='message_refused'&&e.data.id===id);if(old){if(canonical(old.data.receipt)!==canonical(receipt))throw new Error('message_refusal_changed');return this.view(run);}this.event(run,'refused',{id,receipt});return this.view(run);});}

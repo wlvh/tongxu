@@ -50,6 +50,7 @@ export class ResourceRecords {
     return {id,request:f.request,profileSha256:hash(canonical(f.profile)),executionKind:f.profile.executionKind,state,claim,claimAttempts:sent.length,resultAttempts:settlement.length,pendingResultAttempt,outcome:outcome?.data??null,issues,originalOperation:f.request.operation,resourceBalanceStored:false,automaticRefund:false,newExecutionAllowed:false};
   }
   status(id:string){return this.transaction(()=>this.statusOf(id));}
+  settledOutcome(id:string){return this.transaction(()=>{const s=this.statusOf(id);if(!s.outcome)return false;this.validateOutcome(s);return ['consumed','released'].includes(s.state)&&Boolean(s.claim?.outcomeSha256)&&s.claim.outcomeSha256===s.outcome.outcomeSha256;});}
   prepare(request:ResourceRequest,observations:OwnerObservation[],callerRole:AuthorityRole){return this.transaction(()=>{
     const p=this.profile(request.ledgerId);parseResourceRequest(request,p);const id=resourceRequestHash(request);
     if(request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');

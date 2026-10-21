@@ -70,6 +70,11 @@ export class CoordinationRecords {
     const f=this.fixed(id),{task}=this.currentTask(f,taskId),request=parseCoordinationExecution(this.bytes(requestSha256),f.plan);if(!['investigate','consume'].includes(purpose)||!f.events.some(e=>e.kind==='coordination_execution_prepared'&&e.data.requestSha256===requestSha256))throw new Error('coordination_execution_request_required');
     const prior=this.selected(f,taskId,purpose);if(prior){
       if(prior.requestSha256===requestSha256||!request.refreshUnsent)return prior;
+      // A provider request is an actual investment even when no model input
+      // has been sent. Keep its original selection; only append fresh billing
+      // observations when resuming the same operation and claim.
+      const resource=this.db.prepare("SELECT data FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+prior.run) as Row;
+      if(resource){const record=JSON.parse(resource.data);if(canonical(JSON.parse(this.bytes(record.sha256).toString()))!==canonical(record.value))throw new Error('coordination_original_resource_binding_changed');return prior;}
       let state:Row|null=null;try{state=this.message(prior.run).state;}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}
       if(state&&(state.messages.some((m:Row)=>m.sent)||state.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true)))return prior;
       if(prior.attempt>=3)throw new Error('coordination_unstarted_preparation_limit');

@@ -32,7 +32,7 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
       try{
         const selected=await select(taskId,purpose);if(prepareOnly)return;
         if(request.delegatedCoordination){let sent=false;try{sent=q.messages().status(selected.run).messages.some(m=>Boolean(m.sent));}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}if(!sent){const fixed=records.dispatchSelection(id,taskId,purpose)!;await authorizeCoordinationMessage(q,request.delegatedCoordination,JSON.parse(fixed.plan.toString()),JSON.parse(fixed.context.toString()).bindings[taskId]);}}
-        const result=await runMessages(store,selected.planPath,false,selected.run);newModelRequests+=result.newModelRequests;results[taskId+':'+purpose]=result;if(!result.completed)return;
+        const result=await runMessages(store,selected.planPath,false,selected.run,request.refreshUnsent?request.billing:undefined);newModelRequests+=result.newModelRequests;results[taskId+':'+purpose]=result;if(!result.completed)return;
         records.feedback(id,result.run,selected.messageId);
         const task=plan.tasks.find(t=>t.id===taskId)!;if(purpose==='investigate')for(const output of task.outputs.filter(o=>o.stage==='investigate'))records.recordMessageOutput(id,taskId,output.id,result.run,selected.messageId);
         // Consume only the stages whose complete producer outputs were already

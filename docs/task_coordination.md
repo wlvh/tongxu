@@ -52,8 +52,8 @@ TC06 固定本地样例实际验证：未回复共享阶段被阻但调查继续
 
 已配置账本的队列要求消息计划带固定 `resourceBudget`（原 ledgerId/resourceRef/unit/quantity）并有准确 coordinate 授权。预算进入原消息摘要，原 claim ID 另在同一队列的 operation/events/blobs 绑定，避免“消息摘要依赖 claim，而 claim 又依赖消息摘要”的循环。发送前查原请求、核最新 held；完整捕获及材料消费确认后，资源结果从原会话／输入／最终消息／结束证据生成。模型报告不能提供资源权限或已消费标志。
 
-只读执行配置可显式引用 `delegatedCoordination:{authorization,adoption,resources}`。它只引用已采用且当前有效的 Owner 委托，程序不会创建、扩大或代签委托。程序在准确输入生成后，为该任务／用途／有界尝试固定 coordinator intent 和 payload，再执行实际来源检查。采用这一方式时 `authorityIntents` 各值为 null；原逐操作 intent 方式继续保留。变更授权或计费前置只可更新已核零发送的准备；已发送／未知的原选择不改。
+只读执行配置可显式引用 `delegatedCoordination:{authorization,adoption,resources}`。它只引用已采用且当前有效的 Owner 委托，程序不会创建、扩大或代签委托。程序在准确输入生成后，为该任务／用途／有界尝试固定 coordinator intent 和 payload，再执行实际来源检查。采用这一方式时 `authorityIntents` 各值为 null；原逐操作 intent 方式继续保留。变更授权或计费前置只可替换已核零发送且没有原资源绑定的准备；已有资源绑定、已发送或未知的原选择不改。`refreshUnsent` 可以为保留的原选择追加当前计费证据：原计划、任务、授权、资源请求和认领不变，实际发送记录引用该次计费观察。原计费证据过期时先停止投入，提供当前证据后查回原认领再继续，不能换一个新任务绕过未知状态。
 
 每个消息资源消费者复用候选的原 operation，不另建调度账本。调查和修复属于不同的固定动作时，同一原资源可以顺序使用；此前请求尚未认领、已明确拒绝或已结算才可进入新的不同动作。相同动作、活跃、held、unknown 或未解决结算不得通过换 intent 重复认领，实际 dispatch 再核一次。资源数量和竞争仍由原 provider 决定。
 
-`completed` 表示该消息的完整回复与消费已核，`resourcesSettled` 单列原资源结果是否已确认；单入口总完成同时要求资源结算成立。已完成后的撤销不阻止事实清理。只读回放不调用资源 provider；普通重入可 lookup 原丢失结算，不重发消息或结算写入。部分／未知消息继续保留原 claim 和原运行，不将它们变成成功或自动退还。资源受管的部分消息交接／显式取消仍需后续准确恢复路径，不能据首条完整成功链宣布全部失败场景完成。
+`completed` 表示该消息的完整回复与消费已核，`resourcesSettled` 单列原资源结果是否已确认；单入口总完成同时要求资源结算成立。必须保存并验证本次执行 outcome，且原供应方 consumed/released 结果的 outcome 摘要与之完全一致；仅“资源已释放”不证明本次执行已结算。已完成后的撤销不阻止事实清理。只读回放不调用资源 provider；普通重入可 lookup 原丢失结算，不重发消息或结算写入。部分／未知消息继续保留原 claim 和原运行，不将它们变成成功或自动退还。资源受管的部分消息交接／显式取消仍需后续准确恢复路径，不能据首条完整成功链宣布全部失败场景完成。

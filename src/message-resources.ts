@@ -26,5 +26,5 @@ export async function completeMessageResources(q:QueueStore,run:string,p:Message
 }
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return true;
-  try{const b=q.messageResources().state(run);return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>['consumed','released'].includes(q.resources().status(id).state));}catch{return false;}
+  try{const b=q.messageResources().state(run);return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
 }
