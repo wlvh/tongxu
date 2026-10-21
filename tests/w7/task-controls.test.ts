@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
+import {writeFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {controlFixture} from './task-controls-fixture.js';
 import {TaskControls,parseTaskControlCatalog} from '../../src/task-controls.js';
@@ -61,4 +64,15 @@ test('server closing during source preparation waits for that preparation and pr
   const f=await controlFixture(t),open=QueueStore.open;let release!:()=>void,entered!:()=>void;const blocked=new Promise<void>(r=>release=r),reached=new Promise<void>(r=>entered=r);let first=true;
   QueueStore.open=async function(path:string){const q=await open.call(QueueStore,path);if(path===f.store&&first){first=false;entered();await blocked;}return q;};
   try{const pending=f.controls.begin('contact'),rejected=assert.rejects(pending,/server_closing/);await reached;let drained=false;const closing=f.controls.drain().then(()=>{drained=true;});await Promise.resolve();assert.equal(drained,false);release();await rejected;await closing;assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);}finally{release();QueueStore.open=open;}
+});
+
+test('TCU-F01: a second real CLI replacing the packet at the registration boundary cannot redirect the frozen contact',async t=>{
+  const f=await controlFixture(t),definition=join(f.root,'original-definition.json');await writeFile(definition,canonical(f.definition));
+  await assert.rejects(f.controls.execute('contact',()=>{writeFileSync(join(f.definition.workspace,'sample.js'),'export const changedAtRegistration=919;\n');execFileSync(process.execPath,[fileURLToPath(new URL('../../src/task-cli.js',import.meta.url)),'add','--store',f.store,'--definition',definition],{encoding:'utf8'});}),/task_request_expected_source_changed/);
+  assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);assert.notEqual(f.q.tasks().current(f.task).packet,f.catalog.contacts[0]!.packet);
+});
+
+test('TCU-F02: a same-origin cancel cannot withdraw a different original request with the same task and id',async t=>{
+  const f=await controlFixture(t);f.q.taskInbox().enqueue(raw({...f.request,question:'A separate original request B with the same id'}));const before=f.q.status(),app=await startWorkbench(f.planPath);t.after(()=>app.close());const u=new URL(app.url),headers={Authorization:'Bearer '+u.hash.slice(1),'Content-Type':'application/json',Origin:u.origin};
+  assert.equal((await f.controls.state())[0]!.available,false);const response=await fetch(u.origin+'/api/task-control/contact/cancel',{method:'POST',headers,body:'{}'});assert.equal(response.status,503);assert.equal((await response.json() as any).error,'task_control_original_request_changed');assert.deepEqual(f.q.status(),before);assert.equal(f.q.taskInbox().status(f.task)[0]!.phase,'queued');assert.equal((await f.calls()).length,0);
 });

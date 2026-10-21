@@ -31,8 +31,9 @@ export class TaskInbox {
     const input=source.inputs.find((x:Row)=>x.messageId===from.messageId),context=input?.material?.find((m:Row)=>m.name==='task-owner-context.json');if(context){const associated=JSON.parse(context.text).candidateAssociation;if(associated)this.checkAssociation?.(from.task,associated.association.link);}
     return {task:from.task,run:from.run,messageId:from.messageId,sourceSha256:current.fingerprint,route:r.route,reply:m.reply};
   }
-  enqueue(raw:Buffer){return this.transaction(()=>{
+  enqueue(raw:Buffer,expected?:{packet:number;sourceSha256:string}){return this.transaction(()=>{
     const p=parseTaskOwnerRequest(raw),current=this.tasks.current(p.task),events=this.events(p.task),requestSha256=hash(canonical(p)),old=events.find(e=>e.kind==='task_inbox_queued'&&e.data.id===p.id)?.data;
+    if(expected&&(current.packet!==expected.packet||current.fingerprint!==expected.sourceSha256))throw new Error('task_request_expected_source_changed');
     if(old){if(old.requestSha256!==requestSha256)throw new Error('task_request_id_is_fixed');return {...old,duplicate:true};}
     const owner=events.find(e=>e.kind==='task_inbox_queued')?.data;if(owner){const first=parseTaskOwnerRequest(this.bytes(owner.requestSha256));if(canonical(first.participant)!==canonical(p.participant)||first.executionKind!==p.executionKind)throw new Error('task_original_responsibility_is_fixed');}
     if(events.filter(e=>e.kind==='task_inbox_queued').length>=32)throw new Error('task_inbox_bound');
@@ -45,8 +46,8 @@ export class TaskInbox {
     for(const e of f.events.filter(e=>e.kind==='task_inbox_queued')){if(e.data.id===id)break;if(f.events.some(c=>c.kind==='task_inbox_cancelled'&&c.data.id===e.data.id))continue;const previous=this.entry(task,e.data.id);if(!previous.selected||!this.completed(previous.selected.run))throw new Error('task_original_responsibility_pending');}
     return f;
   }
-  cancelUnsent(task:string,id:string,source:string){return this.transaction(()=>{
-    if(typeof source!=='string'||!source.trim()||source.length>2048)throw new Error('task_cancel_source_required');const f=this.entry(task,id),prior=f.events.find(e=>e.kind==='task_inbox_cancelled'&&e.data.id===id);if(prior)return {...prior.data,duplicate:true};
+  cancelUnsent(task:string,id:string,source:string,expectedRequestSha256?:string){return this.transaction(()=>{
+    if(typeof source!=='string'||!source.trim()||source.length>2048)throw new Error('task_cancel_source_required');const f=this.entry(task,id),prior=f.events.find(e=>e.kind==='task_inbox_cancelled'&&e.data.id===id);if(expectedRequestSha256!==undefined&&f.queued.requestSha256!==expectedRequestSha256)throw new Error('task_control_original_request_changed');if(prior)return {...prior.data,duplicate:true};
     let proof:Row={selectionCreated:false};
     if(f.selected){
       if(this.db.prepare("SELECT 1 FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+f.selected.run))throw new Error('task_original_resource_investment_must_be_resolved');

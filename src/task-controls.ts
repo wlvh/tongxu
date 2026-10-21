@@ -50,7 +50,7 @@ export class TaskControls{
     const q=await QueueStore.open(f.source.store);try{
       if(q.taskLinks().hasSource(f.source.item))await q.refreshTaskLinkSource(f.source.item);else{const p=q.tasks().definition(f.source.item);q.tasks().observe(p,await observeTaskWorkspace(p));}
       const current=q.tasks().current(f.source.item);if(current.packet!==f.entry.packet||current.fingerprint!==f.entry.sourceSha256)throw new Error('task_control_candidate_changed');
-      if(!this.accepting)throw new Error('task_control_server_closing');beforeRegistration?.();q.taskInbox().enqueue(f.bytes);
+      if(!this.accepting)throw new Error('task_control_server_closing');beforeRegistration?.();q.taskInbox().enqueue(f.bytes,{packet:f.entry.packet,sourceSha256:f.entry.sourceSha256});
     }finally{q.close();}
     // No new scheduler state: repeated and competing controllers encounter the
     // same original request, selection, runtime lock and capture checks.
@@ -60,6 +60,6 @@ export class TaskControls{
   private async executeFrozen(f:Frozen){try{const p=await prepareTaskOwner(f.source.store,f.source.item,f.request.id);const result=await runMessages(f.source.store,p.plan,false,p.run);return {action:f.entry.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests};}catch(e){return {action:f.entry.id,completed:false,reason:errorCode(e),automaticResend:false};}}
   async execute(id:string,beforeRegistration?:()=>void){const registration=await this.begin(id,beforeRegistration),running=this.active.get(id),execution=running?await running:null;return {registration,execution,state:await this.state(id)};}
   async report(id:string){const f=this.selected(id),state=await this.stateOf(f);if(!state.run)throw new Error('task_control_report_not_returned');return QueueStore.observeMessageReport(f.source.store,f.source.item,state.run,f.request.id);}
-  async cancel(id:string){const f=this.selected(id),q=await QueueStore.open(f.source.store);try{const result=q.taskInbox().cancelUnsent(f.source.item,f.request.id,'fixed-task-control:'+this.catalogSha256+':'+id);return {action:id,result,state:await this.state(id),cancelIsNotProcessTermination:true};}finally{q.close();}}
+  async cancel(id:string){const f=this.selected(id),q=await QueueStore.open(f.source.store);try{const result=q.taskInbox().cancelUnsent(f.source.item,f.request.id,'fixed-task-control:'+this.catalogSha256+':'+id,f.requestSha256);return {action:id,result,state:await this.state(id),cancelIsNotProcessTermination:true};}finally{q.close();}}
   async drain(){this.accepting=false;while(this.preparing.size||this.active.size)await Promise.allSettled([...this.preparing,...this.active.values()]);}
 }
