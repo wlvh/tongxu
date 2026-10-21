@@ -18,7 +18,7 @@ function guards(db:DatabaseSync,install=false){for(const g of assessmentGuards){
  * receiver/authority/resource features have been enabled. Preserve their exact
  * version and let their existing guard checks and opt-ins continue to apply. */
 export function queueFeatureVersion(db:DatabaseSync):number{
-  const version=queueFormatVersion(db),saved=(db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row|undefined)?.value;
+  const version=queueFormatVersion(db),hasMeta=db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta'").get(),saved=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row|undefined)?.value:undefined;
   if(version!==17){if(saved!==undefined)throw new Error('delivery_assessment_format_downgraded');return version;}
   let value:Row;try{value=JSON.parse(saved);}catch{throw new Error('delivery_assessment_format_missing');}
   if(!value||value.contract!==contract||!feature(value.featureVersion)||Object.keys(value).sort().join(',')!=='contract,featureVersion')throw new Error('delivery_assessment_format_changed');
