@@ -37,7 +37,9 @@
     "coordination": "node dist/src/coordination-cli.js",
     "test:coordination": "npm run build && node --test dist/tests/coordination/*.test.js",
     "tasks": "node dist/src/task-cli.js",
-    "test:tasks": "npm run build && node --test dist/tests/w6/task-intake.test.js"
+    "test:tasks": "npm run build && node --test dist/tests/w6/task-intake.test.js",
+    "deliveries": "node dist/src/delivery-cli.js",
+    "test:deliveries": "npm run build && node --test dist/tests/w7/delivery-*.test.js"
   },
   "dependencies": {
     "typescript": "^5.9.3"
