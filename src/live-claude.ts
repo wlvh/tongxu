@@ -31,7 +31,7 @@ function streamFinal(events:any[],wire:Buffer,launch:any,identity:any){
   checkMessageClaudeReceipt(events,session,input.uuid,input.message.content);messageClaudeFinal(events,session,'2.1.304',input.uuid);
   return {init:inits[0],result:events.find(e=>e.type==='result'),logicalInput:input.message.content as string,inputUuid:input.uuid as string,system};
 }
-export async function runClaude(o: { executable: string; directory: string; system: string; input: string; timeoutMs: number; beforeDispatch?: () => void;refreshBeforeDispatch?:()=>Promise<void> }) {
+export async function runClaude(o: { executable: string; directory: string; system: string; input: string; timeoutMs: number; beforeDispatch?: () => void;refreshBeforeDispatch?:()=>Promise<void>;dispatchGate?:<T>(effect:()=>T)=>T }) {
   await newStage(o.directory);
   const identity = await executable(o.executable, messageClaudeExecutables); save(join(o.directory, 'executable.json'), identity);const version=messageClaudeVersion(identity.version),protocol=version==='2.1.304'?'claude-stream-json/2.1.304':'claude-text/2.1.233',session=version==='2.1.304'?randomUUID():'',inputUuid=version==='2.1.304'?randomUUID():null;
   for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) if (process.env[key]) throw new Error('api_billing_override_present');
@@ -43,11 +43,13 @@ export async function runClaude(o: { executable: string; directory: string; syst
   // role needs no filesystem, shell, web, MCP, or subagent tool at runtime.
   const args = claudeExecutionArgs(o.system,protocol,session);
   await o.refreshBeforeDispatch?.();
-  // Last synchronous queue gate, after preflight and immediately before spawn.
-  o.beforeDispatch?.();
-  const child = new LiveProcess(o.directory, o.executable, args, o.directory, { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
+  // A governed caller holds its original transaction through both the spawn
+  // and first input submission. A gate/commit failure preserves that capture
+  // as unknown and closes only our own process; it never permits a resend.
+  let started:LiveProcess|undefined;
+  const start=()=>{o.beforeDispatch?.();started=new LiveProcess(o.directory,o.executable,args,o.directory,{...process.env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});if(version==='2.1.304')started.send(messageClaudeInput(version,session,inputUuid!,o.input));else started.writeText(o.input);return started;};
+  let child:LiveProcess;try{child=o.dispatchGate?o.dispatchGate(start):start();}catch(e){await started?.close();throw e;}
   try {
-    if(version==='2.1.304')child.send(messageClaudeInput(version,session,inputUuid!,o.input));else child.writeText(o.input);
     const init = await child.waitFor(m => m.type === 'system' && m.subtype === 'init', 30_000);
     save(join(o.directory, 'init.json'), init);
     if(version==='2.1.304')checkMessageClaudeInit(init,session,version);else if (!init.session_id || init.claude_code_version !== '2.1.233' || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || !Array.isArray(init.tools) || init.tools.length || !Array.isArray(init.mcp_servers) || init.mcp_servers.length) throw new Error('claude_role_boundary_not_applied');

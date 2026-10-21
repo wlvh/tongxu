@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile,writeFile,mkdir,access } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile,writeFile,mkdir,access,cp } from 'node:fs/promises';
+import { join,basename } from 'node:path';
 import { setup } from '../w3/receiver-fixture.js';
 import { fixture } from '../w5/repair-fixture.js';
 import { runReception } from '../../src/receiver.js';
@@ -139,6 +139,12 @@ test('governed repair requires the exact current action and held original resour
   f.q.authority().enableGovernedRepair();const db=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.throws(()=>db.prepare("UPDATE operations SET status='repairing' WHERE id=?").run(f.operation),/authority_consumer_binding_required/);}finally{db.close();}
   await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(result.counters.actualFileWrites,1);assert.equal(result.resources.length,1);assert.equal(result.resources[0].state,'consumed',JSON.stringify(result.resources));assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);assert.equal(f.q.resources().status(authority.resourceId).outcome.source,'verified_repair_terminal');
   const trace=await readFile(f.model.trace);await authority.adopt({kind:'revoke',decision:authority.confirmed.sha});const repeat=await runQueueRepair(f.planPath);assert.equal(repeat.repairStatus,'completed');assert.deepEqual(await readFile(f.model.trace),trace);assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
+});
+test('enabling governed reception preserves a subsequent actual governed repair and original resource settlement',async t=>{
+  const hooks:Array<()=>unknown>=[],owned={after:(fn:()=>unknown)=>hooks.push(fn)} as unknown as test.TestContext,f=await setupRepair(owned),ledger=await ledgerFixture(owned),authority=await authorizeRepairFixture(f,ledger.profile);
+  t.after(async()=>{f.q.close();if(process.env.TONGXU_RECEIVER_AUTHORITY_EVIDENCE){const root=process.env.TONGXU_RECEIVER_AUTHORITY_EVIDENCE;await mkdir(root,{recursive:true});for(const path of [f.root,f.model.root,ledger.root])await cp(path,join(root,basename(path)),{recursive:true});}for(const fn of hooks.reverse())try{await fn();}catch{}});
+  f.q.authority().enableGovernedReceiver();await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));
+  const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(result.counters.actualFileWrites,1);assert.equal(result.resources[0].state,'consumed');assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);assert.equal(f.q.authority().enableGovernedReceiver().duplicate,true);
 });
 test('candidate, authorization, fixed-context and original-finding mismatches stop before any repair model',async t=>{
   const f=await setupRepair(t),before=await readFile(f.model.trace);

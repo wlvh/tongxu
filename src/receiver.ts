@@ -9,6 +9,7 @@ import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt } from './
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { runClaude, readClaudeExecution, claudeExecutionArgs } from './live-claude.js';
+import {receiverGovernance,settleReceiverResources} from './receiver-authority.js';
 
 const exec = promisify(execFile), digest = /^[a-f0-9]{64}$/, uuid = /^[a-f0-9-]{36}$/;
 export type ReceiverPlan = {
@@ -17,6 +18,7 @@ export type ReceiverPlan = {
   memberSources?:Array<{index:number;manifestHash:string;sourcePaths:string[]}>;
   billing: { mode: 'existing_subscription_only'; evidence: string; evidenceSha256: string; observedAt: string; usageCreditsEnabled: false };
   timeoutMs: number; executionKind: 'native_capture' | 'fixture';
+  governance?:{authorityIntent:string;resourceRequests:string[]};
 };
 async function file(path: string, max = 4 * 1024 * 1024): Promise<Buffer> {
   if (!isAbsolute(path) || resolve(path) !== path || await realpath(path) !== path) throw new Error('receiver_path_not_canonical');
@@ -40,6 +42,7 @@ export function parseReceiverPlan(bytes: Buffer): ReceiverPlan {
   for (const path of [p.store, p.objects, p.claudeExecutable]) if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path) throw new Error('invalid_receiver_path');
   const b = p.billing;
   if (b?.mode !== 'existing_subscription_only' || b.usageCreditsEnabled !== false || !digest.test(b.evidenceSha256) || !Number.isFinite(Date.parse(b.observedAt))) throw new Error('receiver_billing_boundary_missing');
+  if(p.governance!==undefined){const g=p.governance;if(!g||Object.keys(g).sort().join()!=='authorityIntent,resourceRequests'||typeof g.authorityIntent!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(g.authorityIntent)||!Array.isArray(g.resourceRequests)||g.resourceRequests.length>32||new Set(g.resourceRequests).size!==g.resourceRequests.length||g.resourceRequests.some(r=>typeof r!=='string'||!digest.test(r)))throw new Error('receiver_governance_invalid');}
   return p;
 }
 function freshBilling(p: ReceiverPlan) { const age = Date.now() - Date.parse(p.billing.observedAt); if (age < -60000 || age > 86400000) throw new Error('receiver_billing_boundary_stale'); }
@@ -139,7 +142,7 @@ async function reconcile(q: QueueStore, operation: string, closeSource?: string)
     catch (e) { return { operation, status: 'receiver_unknown', newTaskSent: false, productionActionAllowed: false, reason: e instanceof Error ? e.message : 'receiver_original_unavailable', next: 'retain_original; reconcile_complete_capture_or_explicitly_close_ended' }; }
   });
 }
-export async function reconcileReception(store: string, operation: string, closeSource?: string) { const q = await QueueStore.open(store); try { return await reconcile(q, operation, closeSource); } finally { q.close(); } }
+export async function reconcileReception(store: string, operation: string, closeSource?: string) { const q = await QueueStore.open(store); try { const result=await reconcile(q,operation,closeSource),p=parseReceiverPlan(q.receiverState(operation).plan);return p.governance?{...result,resources:await settleReceiverResources(q,operation,p)}:result; } finally { q.close(); } }
 export async function correctReception(planPath: string) {
   const bytes = await file(planPath,1024*1024), p=JSON.parse(bytes.toString());
   if (Object.keys(p).sort().join() !== 'bindingHash,kind,material,operation,reason,receiverPlan,schemaVersion,source,store' || p.schemaVersion!==1 || p.kind!=='tongxu-ended-result-correction' || !uuid.test(p.operation) || !digest.test(p.bindingHash) || !Array.isArray(p.material) || p.material.length>10 || [p.source,p.reason].some(x=>typeof x!=='string'||!x.trim()||x.length>2048||x.includes('\0'))) throw new Error('receiver_correction_plan_invalid');
@@ -191,23 +194,28 @@ async function runFixedReception(bytes: Buffer) {
   try {
     q.requireReceiverMode();
     q.enableMemberRefutationSourceChecks(p.item);
-    q.requireReceiverEntry(p.item);
+    const entry=q.requireReceiverEntry(p.item,bytes),governance=receiverGovernance(q,p);
+    if(entry.governed&&!entry.original){q.authority().enableGovernedReceiver();await governance.refresh(false);}
     const begin = q.begin(p.item, 'independent-receiver'); if (begin.blocked) return begin;
     const operation = begin.operation as string, original = q.receiverState(operation);
-    if (original.receiver) { if (original.receiver.planSha256 !== hash(bytes)) throw new Error('receiver_plan_changed'); return await reconcile(q, operation); }
+    if (original.receiver) { if (original.receiver.planSha256 !== hash(bytes)) throw new Error('receiver_plan_changed');const result=await reconcile(q,operation);return p.governance?{...result,resources:await settleReceiverResources(q,operation,p)}:result; }
     q.evaluate(operation);
-    const prepared = await prepare(p, q, operation), reserved = q.reserveReceiver(operation, { ...prepared, plan: bytes, executionKind: p.executionKind });
+    const prepared=await prepare(p,q,operation);await governance.claim(operation,bytes);if(p.governance)await governance.refresh();
+    const reserved = q.reserveReceiver(operation, { ...prepared, plan: bytes, executionKind: p.executionKind },governance.observations);
     if (reserved.duplicate) return await reconcile(q, operation);
     const r = reserved.receiver;
+    let output:Record<string,any>;
     try {
-      return await mutex(r.directory, async () => {
+      output=await mutex(r.directory, async () => {
         await writeFile(join(r.directory, 'binding-input.json'), prepared.input, { flag: 'wx', mode: 0o600 });
         await writeFile(join(r.directory,'role-prompt.json'),prepared.promptAssembly,{flag:'wx',mode:0o600});
         await runClaude({ executable: p.claudeExecutable, directory: join(r.directory, 'claude'), system: prepared.system.toString(), input: prepared.input.toString(), timeoutMs: p.timeoutMs,
-          beforeDispatch: () => { freshBilling(p); q.receiverDispatch(operation, r.bindingHash); } });
+          ...(p.governance?{refreshBeforeDispatch:()=>governance.refresh(),dispatchGate:<T>(effect:()=>T)=>{freshBilling(p);return q.receiverEffect(operation,r.bindingHash,governance.observations,effect);}}:{beforeDispatch:()=>{freshBilling(p);q.receiverDispatch(operation,r.bindingHash);}}) });
         return consume(q, operation);
       });
-    } catch (e) { return { operation, status: 'receiver_unknown', newTaskSent: q.receiverState(operation).receiver.phase === 'dispatch_registered', productionActionAllowed: false, reason: e instanceof Error ? e.message : 'receiver_execution_unavailable', next: 'inspect_original_then_reconcile_no_resend' }; }
+    } catch (e) {let attempted=q.receiverState(operation).receiver.phase==='dispatch_registered';const wire=join(r.directory,'claude/stdin.ndjson');if(!attempted&&await exists(wire))attempted=(await file(wire)).length>0;output={ operation, status: 'receiver_unknown', newTaskSent: attempted, delivery:attempted?'submitted_or_unknown':'not_submitted',productionActionAllowed: false, reason: e instanceof Error ? e.message : 'receiver_execution_unavailable', next: 'inspect_original_then_reconcile_no_resend' }; }
     finally { q.receiverControllerReturned(operation); }
+    if(output.receiver)output={...output,receiver:q.receiverState(operation).receiver};
+    return p.governance?{...output,resources:await settleReceiverResources(q,operation,p)}:output;
   } finally { q.close(); }
 }

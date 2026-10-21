@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile,cp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
+import {readFileSync} from 'node:fs';
 import {runClaude,readClaudeExecution} from '../../src/live-claude.js';
 import {recoverStage} from '../../src/relay.js';
 import {hash} from '../../src/snapshot.js';
@@ -17,6 +18,11 @@ test('304 single execution preserves logical and wire input separately and recov
   const trace=await readFile(f.trace,'utf8'),recovered=await recoverStage(directory,'claude');
   assert.equal(recovered.finalText,result.finalText);assert.equal(recovered.inputSha256,result.inputSha256);assert.equal(recovered.inputUuid,result.inputUuid);
   await rm(join(directory,'completed.json'));assert.equal((await recoverStage(directory,'claude')).finalText,result.finalText);assert.equal(await readFile(f.trace,'utf8'),trace);
+});
+test('304 governed dispatch submits the exact first user message before releasing its synchronous effect gate',async t=>{
+  const f=await messageFixture(t,'304'),directory=join(f.root,'gated'),seen:unknown[]=[];
+  const result=await runClaude({executable:f.claude,directory,system:'Explicit gated fixture',input,timeoutMs:1000,dispatchGate:effect=>{const value=effect(),wire=JSON.parse(readFileSync(join(directory,'stdin.ndjson'),'utf8'));assert.equal(wire.type,'user');assert.equal(wire.message.content,input);assert.equal(wire.client_composed,true);seen.push(wire.uuid);return value;}});
+  assert.deepEqual(seen,[result.inputUuid]);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);
 });
 
 test('304 single execution rejects an incomplete command, child execution, a wrong input and terminal tail',async t=>{

@@ -20,6 +20,7 @@ import type { Candidate } from './contract.js';
 import { canonical } from './comparison.js';
 import { ReviewRecords } from './review-record-store.js';
 import { AuthorityRecords } from './authority-store.js';
+import type {OwnerObservation} from './authority-source.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
 import {resourceRequestHash,type ResourceRequest} from './resource-contract.js';
 import { MergeRecords } from './merge-store.js';
@@ -443,7 +444,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   resources(): ResourceRecords {return this.resourceRecords(fn=>this.transaction(fn));}
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
-    return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);if(dispatch){if(action.request.action==='implement')this.memberRepairResourceGate(action,request);if(queueFormatVersion(this.db)>=20){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request)});}}});
+    return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);if(dispatch){if(action.request.action==='implement')this.memberRepairResourceGate(action,request);const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;if(queueFormatVersion(this.db)>=20||receiver){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{})});}}});
+  }
+  private receiverResourceClaimGate(action:Row,request:ResourceRequest){
+    const row=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(request.operation) as Row|undefined;if(!row)throw new Error('receiver_resource_binding_required');
+    const b=JSON.parse(row.data),{op,receiver}=this.receiverOperation(request.operation),p=JSON.parse(this.blob(b.planSha256).toString());
+    if(receiver||op.status!=='complete'||b.packet!==op.packet||b.authorityIntent!==action.requestId||b.actionSha256!==action.requestSha256||!b.resourceRequests.includes(resourceRequestHash(request))||canonical(p.governance?.resourceRequests)!==canonical(b.resourceRequests))throw new Error('receiver_resource_binding_changed');this.receiverGate(op);return b;
   }
   private memberRepairResourceGate(action:Row,request:ResourceRequest){
     const row=this.db.prepare("SELECT data FROM events WHERE kind='member_repair_resource_bound' AND object=? ORDER BY id DESC LIMIT 1").get(request.operation) as Row|undefined;
@@ -509,10 +515,36 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {state,source:'captured_managed_merge_result',executionKind:stage.executionKind,proof:Buffer.from(canonical({operation,authorityIntent:action.requestId,bindingHash:stage.bindingHash,phase:stage.phase,readbackSha256:stage.readback.sha256,attempts:stage.attempts}))};
   }
   requireUnprofiledConsumer(): void { if(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get())throw new Error('authority_consumer_binding_required'); }
-  requireReceiverEntry(id:string): void {
-    if(!this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get())return;
+  requireReceiverEntry(id:string,plan?:Buffer): {governed:boolean;original:boolean} {
+    const governed=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     const i=this.item(id),op=this.db.prepare('SELECT result FROM operations WHERE packet=?').get(i.current_packet) as Row|undefined;
-    if(!op||!parse(op,'result')?.receiver)this.requireUnprofiledConsumer();
+    const original=Boolean(op&&parse(op,'result')?.receiver),g=plan?JSON.parse(plan.toString()).governance:undefined;
+    if(!governed&&g!==undefined)throw new Error('receiver_authority_profile_missing');
+    if(governed&&!original&&!g)throw new Error('authority_consumer_binding_required');return {governed,original};
+  }
+  private receiverAuthorization(op:Row,plan:Buffer,observations:OwnerObservation[],requireHeld:boolean){
+    const p=JSON.parse(plan.toString()),g=p.governance,configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
+    if(!configured){if(g!==undefined)throw new Error('receiver_authority_profile_missing');return null;}
+    if(!this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()||!g||Object.keys(g).sort().join()!=='authorityIntent,resourceRequests'||typeof g.authorityIntent!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(g.authorityIntent)||!Array.isArray(g.resourceRequests)||g.resourceRequests.length>32||new Set(g.resourceRequests).size!==g.resourceRequests.length||g.resourceRequests.some((id:unknown)=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id)))throw new Error('receiver_authority_consumer_binding_required');
+    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    if(p.kind!=='tongxu-queue-receiver'||p.item!==op.item||p.store!==this.directory||!['receiver','background'].includes(action.role)||action.request.action!=='receive'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.binding?.fingerprint!==this.packet(op.packet).fingerprint||action.request.paths.length||(action.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('receiver_exact_authority_mismatch');
+    const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,op.id,g.authorityIntent):resources.status(id));
+    if(claims.some((r:Row)=>r.request.operation!==op.id||r.request.authorityIntent!==g.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('receiver_original_resource_operation_mismatch');
+    if(new Set(claims.map((r:Row)=>r.request.resourceRef)).size!==claims.length||canonical(claims.map((r:Row)=>r.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('receiver_resource_claim_set_mismatch');
+    if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!claims.length)throw new Error('receiver_configured_resource_claim_required');
+    return {authorityIntent:g.authorityIntent,resourceRequests:g.resourceRequests as string[],actionSha256:action.requestSha256,role:action.role,planSha256:hash(plan),packet:op.packet,operation:op.id};
+  }
+  receiverResourceAdmission(id:string,plan:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
+    const {op,receiver}=this.receiverOperation(id);if(receiver||op.status!=='complete')throw new Error('receiver_original_started_or_unknown');this.receiverGate(op);const b=this.receiverAuthorization(op,plan,observations,false);if(!b)return {governed:false,newModelInputs:0};
+    const sql="CREATE UNIQUE INDEX receiver_authority_unique ON events(json_extract(data,'$.authorityIntent')) WHERE kind='authority_receiver_bound'",oldIndex=this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='receiver_authority_unique'").get() as Row|undefined;if(oldIndex&&oldIndex.sql!==sql)throw new Error('receiver_authority_guard_changed');if(!oldIndex)this.db.exec(sql);
+    const old=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(id) as Row|undefined;
+    if(old&&canonical(JSON.parse(old.data))!==canonical(b))throw new Error('receiver_original_authority_binding_changed');this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(plan),plan);if(!old)this.event('authority_receiver_bound',id,b);return {...b,newModelInputs:0};
+  });}
+  private receiverAuthorityAdmission(op:Row,record:Row,plan:Buffer,observations:OwnerObservation[]){
+    const b=this.receiverAuthorization(op,plan,observations,true);if(!b)return;
+    const old=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(op.id) as Row|undefined;
+    if(!old||canonical(JSON.parse(old.data))!==canonical(b)||record.authorityIntent!==b.authorityIntent||canonical(record.resourceRequests)!==canonical(b.resourceRequests))throw new Error('receiver_original_authority_binding_changed');
+    this.event('authority_receiver_admitted',op.id,{...b,inputSha256:record.inputSha256,bindingHash:record.bindingHash});
   }
   reviewRecords(): ReviewRecords {
     const coordination=this.coordinationRecords(fn=>fn());
@@ -1040,7 +1072,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return (this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE item=? AND json_extract(result,'$.receiver.dispatchRegisteredAt') IS NOT NULL").get(item) as Row).n;
   }
   /** Later phase of the same operation; no second queue or automatic retries. */
-  reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; promptAssembly?:Buffer;bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string }): Row {
+  reserveReceiver(id: string, fixed: { plan: Buffer; input: Buffer; system: Buffer; promptAssembly?:Buffer;bindingHash: string; judgmentId: string; fingerprint: string; executionKind: string },observations:OwnerObservation[]=[]): Row {
     this.requireReceiverMode();
     if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
     if (queueFeatureVersion(this.db) >= 6 && !this.supplementGuardInstalled()) throw new Error('receiver_supplement_guard_missing_enable_when_idle');
@@ -1069,27 +1101,30 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if(this.eventSourceStates(this.item(op.item)).some(s=>s.registered)&&canonical(JSON.parse(fixed.input.toString()).data.evidence.sourceEvents)!==canonical(sourceEvents))throw new Error('receiver_event_source_input_mismatch');
       const integration=this.integrationMaterial(this.packet(op.packet),true,op.id),input=JSON.parse(fixed.input.toString());if(integration&&(input.binding.integrationSha256!==integration.sha256||input.binding.memberReturnEvidenceSha256!==integration.memberReturnEvidenceSha256||input.binding.memberRepairEvidenceSha256!==integration.memberRepairEvidenceSha256||canonical(input.data.evidence.integration)!==canonical(integration)))throw new Error('receiver_integration_input_mismatch');
       const refutation=this.memberRefutationEvidence(this.packet(op.packet),true);if(refutation&&(input.binding.memberRefutationSha256!==refutation.sha256||canonical(input.data.evidence.memberRefutation)!==canonical(refutation)))throw new Error('member_refutation_input_mismatch');
-      const record = { ...(refutation?{memberRefutationSha256:refutation.sha256}:{}),judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+      const governance=JSON.parse(fixed.plan.toString()).governance;
+      const record = { ...(governance?{authorityIntent:governance.authorityIntent,resourceRequests:governance.resourceRequests}:{}),...(refutation?{memberRefutationSha256:refutation.sha256}:{}),judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
         ...(integration?{integrationSha256:integration.sha256,memberReturnEvidenceSha256:integration.memberReturnEvidenceSha256,...(integration.memberRepairEvidenceSha256?{memberRepairEvidenceSha256:integration.memberRepairEvidenceSha256}:{})}:{}),
         ...(fixed.promptAssembly?{promptAssemblySha256:hash(fixed.promptAssembly)}:{}),
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
-      this.integrationAdmission(op,'receiving');this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
+      this.integrationAdmission(op,'receiving');this.receiverAuthorityAdmission(op,record,fixed.plan,observations);this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
       this.event('receiver_reserved', id, { generation, judgmentId: record.judgmentId, bindingHash: record.bindingHash });
       return { duplicate: false, receiver: record };
     });
   }
-  receiverDispatch(id: string, bindingHash: string): void {
-    this.transaction(() => {
+  private dispatchReceiver(id: string, bindingHash: string,observations:OwnerObservation[]): void {
       if (!this.receiverGuardsInstalled()) throw new Error('receiver_storage_guards_missing_enable_when_idle');
       const { op, result, receiver } = this.receiverOperation(id);
       if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
       this.pairPlanCheck(op, receiver.planSha256); this.receiverGate(op); if (!this.pairedApplicability(op, receiver)) throw new Error('paired_prerequisite_changed_before_dispatch'); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
       result.externalActionSent = receiver.executionKind === 'fixture' ? false : 'unknown'; result.externalActionKind = 'readonly_model_request'; result.externalProductionActionSent = false;
-      this.integrationAdmission(op,'receiving');this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
-    });
+      this.integrationAdmission(op,'receiving');this.receiverAuthorityAdmission(op,receiver,this.blob(receiver.planSha256),observations);this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
+  }
+  receiverDispatch(id:string,bindingHash:string,observations:OwnerObservation[]=[]):void{this.transaction(()=>this.dispatchReceiver(id,bindingHash,observations));}
+  receiverEffect<T>(id:string,bindingHash:string,observations:OwnerObservation[],effect:()=>T):T{
+    return this.transaction(()=>{this.dispatchReceiver(id,bindingHash,observations);return effect();});
   }
   receiverControllerReturned(id: string): void {
     this.transaction(() => {

@@ -24,6 +24,7 @@
 - [角色 prompt 装配及工具权限](prompts/README.md)
 - [无 PR 任务与原负责人待办](docs/task_intake.md)、[准确候选关联](docs/task_candidate_link.md)
 - [任务协调与共同部分](docs/task_coordination.md)、[工作台／秘书的受管联系](docs/task_controls.md)
+- [受治理的新独立接收](docs/governed_reception.md)
 - [本人来源与委托](docs/owner_authority.md)、[原资源认领](docs/resource_claims.md)、[三类停止控制](docs/scope_controls.md)
 - [成果批次与本人决定](docs/delivery_outcomes.md)、[实际场景后的独立判断](docs/delivery_assessment.md)
 - [最小集成候选](docs/minimal_integration.md)、[成员修复与反证后新接收](docs/integration_member_repair.md)、[已结束部分构造接续](docs/integration_continuation.md)
@@ -85,7 +86,7 @@ python3 prototypes/build_product_ui.py
 | #2 | G0 / W0 | 基线及持续开发安排已保存 | 原52场景逐项收口，保留真实外部前置 |
 | #3 | G1 / W1 | 固定真实 H/B/target 的只读 CLI、缺口和恢复 | 新远端候选须取得自己的观察，不能借旧快照 |
 | #4 | G1 / W2 | Linux/bubblewrap 与现有 Docker 路线；固定树、前缀和原结果 | 新组合使用自己的测试计划、授权与证据 |
-| #5 | G1 / W3 | 独立接收、结果发布、本人来源、资源、组合接收、最小集成、受管合并入口 | 受治理重组／新接收的消费者连接、远端候选与正式退回通知；真实治理与发布身份另列 |
+| #5 | G1 / W3 | 独立接收及准确授权／资源接入、结果发布、组合接收、最小集成、受管合并入口 | 受治理重组测试与后继授权、远端候选与正式退回通知；真实治理与发布身份另列 |
 | #6 | G2 / W4 | 原生协议、完整角色提示、会话来源关联和受管消息 | 已有会话的继续／引导／中断须按实际能力验证，元数据不授予控制权 |
 | #7 | G2 / W5 | 事实与影响核实、综合、工程修复再审、原判断补充和复盘记录 | 已有工作区准确责任接续、正式通知与组合旅程；真实后果只从原记录取得 |
 | #8 | G3 / W6 | 无 PR 接入、原负责人待办、阶段协调、共同能力及修复产物消费 | 受管角色主动联络的余项、原现场交接与两条完整旅程 |
