@@ -19,7 +19,9 @@ import {DeliveryAssessmentRecords} from '../../src/delivery-assessment-store.js'
 import {MessageRecords} from '../../src/message-store.js';
 import {parseMessagePlan} from '../../src/message-contract.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
-import {startWorkbench} from '../../src/workbench.js';
+import {startWorkbench,workbenchState,parseWorkbenchPlan} from '../../src/workbench.js';
+import {runInNewContext} from 'node:vm';
+import {observeTask} from '../../src/secretary-tools.js';
 import {SecretaryTools} from '../../src/secretary-tools.js';
 import {assessmentMain} from '../../src/delivery-assessment-cli.js';
 
@@ -98,4 +100,9 @@ test('actual legacy new-open and preopened readers cannot keep a pre-assessment 
   const {QueueStore:OldQueueStore}=await import(pathToFileURL(legacyModule!).href),f=await fixture(t,{governed:true}),before=f.q.deliveries().state(f.p.batchSha256);await f.a!.adopt({kind:'delivery_outcome',adoption:f.a!.scope.sha,batchSha256:f.p.batchSha256,evidenceSha256:before.evidenceSha256,previousOutcome:null,outcome:'accepted',rationale:'Explicit fixture acceptance of only the original evidence'});
   const old=await OldQueueStore.open(f.store);t.after(()=>old.close());assert.equal(old.deliveries().state(f.p.batchSha256).acceptedWithinRecordedSource,true);const requestPath=join(f.root,'assessment-request.json');await writeFile(requestPath,raw(f.p));await runDeliveryAssessment(f.store,requestPath,'prepare');
   assert.equal(f.q.deliveries().state(f.p.batchSha256).acceptedWithinRecordedSource,false);const previous=old.deliveries().state(f.p.batchSha256);assert.equal(previous.currentOutcome,false);assert.equal(previous.acceptedWithinRecordedSource,false);assert.equal(previous.outcomes.length,1);await assert.rejects(OldQueueStore.open(f.store),/unsupported_queue_schema_or_mode/);assert.equal((await f.calls()).length,0);
+});
+test('explicitly closed unsent assessments remain history, not a phantom pending message in the shared view',async t=>{
+  const f=await prepared(t,{staleBilling:true});await runDeliveryAssessment(f.store,f.requestPath);const p=parseWorkbenchPlan(raw({schemaVersion:1,kind:'tongxu-local-workbench',title:'Closed original assessment',goal:'Observe exact request lifecycle',sources:[{id:'selected',title:'Original candidate',store:f.store,item:f.item}]})),before=await workbenchState(p),js=await readFile(new URL('../../../web/workbench/app.js',import.meta.url),'utf8'),fn=js.slice(js.indexOf('function statusOf('),js.indexOf('\nasync function api('));assert.equal(runInNewContext(fn+';statusOf(task)',{task:before.tasks[0]})[0],'协作仍有待发送消息');
+  const closed=await runDeliveryAssessment(f.store,f.requestPath,'close-unstarted');assert.equal(closed.phase,'closed_unstarted');const after=await workbenchState(p),m=after.tasks[0]!.collaboration.messages[0];assert.equal(m.current,false);assert.equal(m.closedUnstarted,true);assert.equal(m.messages[0].state,'Held');assert.equal(m.messages[0].sendRegistered,false);assert.notEqual(runInNewContext(fn+';statusOf(task)',{task:after.tasks[0]})[0],'协作仍有待发送消息');assert.equal(after.tasks[0]!.collaboration.messages.filter((r:any)=>r.current).flatMap((r:any)=>r.messages).length,0);
+  const c=f.q.status().items.find((x:any)=>x.id===f.item).candidate,secretary=await observeTask(f.store,f.item,{repository:c.repository,pr:c.pr,H:c.H,B:c.B,target:c.targetRef});assert.deepEqual(secretary.collaboration.messages,after.tasks[0]!.collaboration.messages);assert.equal((await f.calls()).length,0);
 });

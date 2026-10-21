@@ -130,7 +130,7 @@ function collaborationView(t) {
     if(run.resourcesSettled!==null)append(box,el('p','原资源结算：'+(run.resourcesSettled?'本次结果凭据匹配':'未完成，保留原认领'),'small'));
     if(!run.messages.length)append(box,el('p','尚无实际发给本任务的消息；其他任务的回复不计为本任务完成。','small'));
     run.participants.forEach(p=>append(box,el('p',p.tool+' · '+p.id+' · '+(p.started?(p.ended?(p.completeCapture?'完整捕获已核':'执行结束，捕获待核'):'执行中或结束状态未知'):'尚未启动')+(p.sessionId?' · 会话 '+p.sessionId:''),'small wrap')));
-    run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label=m.continuedIn?'原消息未发送，已由新上下文补齐':{Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.continuedIn?'接续运行 '+m.continuedIn.slice(0,8):m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
+    run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label=run.closedUnstarted?'未发送请求已关闭，原记录保留':m.continuedIn?'原消息未发送，已由新上下文补齐':{Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.continuedIn?'接续运行 '+m.continuedIn.slice(0,8):m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
     if(run.continuation)append(box,el('p','另有新上下文接续记录；不能据此认定原会话已恢复。','small'));n.append(box);
   });return n;
 }
