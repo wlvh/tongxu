@@ -1,5 +1,6 @@
+import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
 import {IntegrationRecords,type IntegrationSource} from './integration-store.js';
-import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion,enableIntegrationFormat,enableMemberRepairFormat,enableMemberRecompositionFormat} from './queue-format.js';
+import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion,enableIntegrationFormat,enableMemberRepairFormat,enableMemberRecompositionFormat,enableMemberRefutationFormat} from './queue-format.js';
 import {parseIntegrationCandidate} from './integration-contract.js';
 import {IntegrationMemberRecords,type IntegrationMemberSource} from './integration-member-store.js';
 import {memberReturnReference,type IntegrationMemberReturn} from './integration-member-contract.js';
@@ -278,7 +279,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   integrationMemberReturns(){return this.integrationMemberRecords(fn=>this.transaction(fn));}
   private integrationMemberRecords(transaction:<T>(fn:()=>T)=>T){return new IntegrationMemberRecords(this.db,transaction,p=>this.integrationMemberSource(p),()=>{enableMemberRecompositionFormat(this.db);});}
   private memberReceptionCurrent(item:string){return !this.integrationMemberRecords(fn=>fn()).hasPendingForItem(item);}
-  private integrationApplicability(op:Row,receiver:Row){try{const m=this.integrationMaterial(this.packet(op.packet),true,op.id),empty=hash(canonical([]));return !m||(receiver.memberReturnEvidenceSha256??empty)===m.memberReturnEvidenceSha256&&(receiver.memberRepairEvidenceSha256??empty)===(m.memberRepairEvidenceSha256??empty);}catch{return false;}}
+  private integrationApplicability(op:Row,receiver:Row){try{const proof=this.memberRefutationEvidence(this.packet(op.packet),true);if((receiver.memberRefutationSha256??null)!==(proof?.sha256??null))return false;const m=this.integrationMaterial(this.packet(op.packet),true,op.id),empty=hash(canonical([]));return !m||(receiver.memberReturnEvidenceSha256??empty)===m.memberReturnEvidenceSha256&&(receiver.memberRepairEvidenceSha256??empty)===(m.memberRepairEvidenceSha256??empty);}catch{return false;}}
   memberRecompositions(){return this.memberRecompositionRecords(fn=>this.transaction(fn));}
   private memberRecompositionRecords(transaction:<T>(fn:()=>T)=>T){return new MemberRecompositionRecords(this.db,transaction,p=>this.memberRecompositionSource(p));}
   private memberRecompositionSource(p:RecompositionLink){
@@ -291,6 +292,52 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {proof:{parent:source.parent,selectedMember:source.selectedMember,selectedFindings:source.selectedFindings,memberReturn:p.memberReturn,repair:{...p.repair,result:repair.result},composition:{...p.composition,subject:composition.subject},previousIntegration:{id:original.request.integration,candidate:source.integration.candidate,subject:source.integration.source.composition.subject},permissionGranted:false,priorAcceptanceTransferred:false},originals};
   }
   memberRepairInput(operation:string,reference:unknown,current=true){return this.transaction(()=>this.memberRepairSource(operation,reference,current));}
+  private memberRefutationProof(request:MemberRefutationRequest){
+    const original=this.integrationMemberRecords(fn=>fn()).material(request.memberReturn.id),reference=request.memberReturn;
+    if(original.state.requestSha256!==reference.requestSha256||original.state.sourceSha256!==reference.sourceSha256)throw new Error('member_refutation_original_return_changed');
+    const r=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('refutation_cannot_authorize');},()=>{throw new Error('refutation_cannot_authorize');}).state(request.repair.operation).repair;
+    if(canonical(r.memberReturn)!==canonical(reference)||r.phase!=='returned'||['planSha256','bindingHash','resultSha256','evidenceSha256'].some(k=>r[k]!==request.repair[k as keyof typeof request.repair]))throw new Error('member_refutation_original_repair_changed');
+    const result=JSON.parse(this.blob(r.resultSha256).toString()),evidence=JSON.parse(this.blob(r.evidenceSha256).toString()),H=original.request.member.H,c=original.proof.member.manifest.candidate,decision=result.data?.decision??result.data?.factReport;
+    if(canonical(result)!==canonical(r.result)||canonical(evidence.counters)!==canonical(r.counters)||result.status!=='skipped_refuted'||result.actualRepairPerformed!==false||result.before.H!==H||result.after.H!==H||r.counters.actualFileWrites!==0||r.counters.fixedNewCandidates!==0||r.counters.writeHandoffs!==0||decision?.decision!=='refuted'||decision.candidateH!==H||!decision.report?.trim()||result.sourceCandidate?.H!==H||result.sourceCandidate.B!==c.B||result.sourceCandidate.repository!==c.repository||result.sourceCandidate.pr!==c.pr||result.sourceCandidate.target!==c.targetRef)throw new Error('member_refutation_ended_unchanged_result_required');
+    const parent=this.receiverOperation(original.request.reception.operation),packet=this.packet(parent.op.packet),e=this.packetEvidence(packet);
+    if(parent.op.status!=='complete'||parent.receiver?.phase!=='returned'||parent.receiver.bindingHash!==original.request.reception.bindingHash||canonical(parent.receiver.judgment)!==canonical(original.proof.parent.judgment))throw new Error('member_refutation_original_parent_changed');
+    return {schemaVersion:1,kind:'tongxu-member-refutation-evidence',memberReturn:reference,selectedFindings:original.proof.selectedFindings,
+      parent:{...original.proof.parent,item:parent.op.item,candidate:e.manifest.candidate,context:e.context,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash},
+      member:{item:original.request.member.item,packet:original.request.member.packet,fingerprint:original.request.member.fingerprint,candidate:c},
+      repair:{...request.repair,result,counters:r.counters,terminalRecordSha256:evidence.terminalRecordSha256},source:request.source,
+      permissionGranted:false,priorAcceptanceTransferred:false,individualReceptionInferred:false};
+  }
+  private memberRefutationOriginal(id:string){
+    const row=this.db.prepare("SELECT data FROM events WHERE kind='member_refutation_attached' AND object=?").get('member-refutation:'+id) as Row|undefined;if(!row)throw new Error('member_refutation_not_recorded');
+    const value=JSON.parse(row.data),request=parseMemberRefutationRequest(this.blob(value.requestSha256)),proof=JSON.parse(this.blob(value.proofSha256).toString()),packet=this.packet(value.packet),ref=parse(packet,'summary').memberRefutation;
+    if(request.id!==id||canonical(proof)!==canonical(this.memberRefutationProof(request))||packet.item!==proof.parent.item||packet.fingerprint!==value.fingerprint||canonical(ref)!==canonical({id,sha256:value.proofSha256}))throw new Error('member_refutation_record_changed');
+    return {value,request,proof};
+  }
+  private memberRefutationEvidence(packet:Row,current:boolean):Row|null{
+    const ref=parse(packet,'summary').memberRefutation;if(!ref)return null;const {proof,value}=this.memberRefutationOriginal(ref.id);
+    if(ref.sha256!==value.proofSha256||packet.item!==proof.parent.item)throw new Error('member_refutation_packet_changed');
+    if(current){const member=this.item(proof.member.item),memberPacket=this.packet(member.current_packet);
+      if(member.current_packet!==proof.member.packet||memberPacket.fingerprint!==proof.member.fingerprint||member.observation_conflict||!this.receiverCandidateCurrent(member)||packet.manifest_hash!==proof.parent.manifestSha256||packet.report_hash!==proof.parent.reportSha256||packet.context_hash!==proof.parent.contextSha256)throw new Error('member_refutation_source_no_longer_current');}
+    return {sha256:ref.sha256,...proof};
+  }
+  memberRefutation(id:string){return this.transaction(()=>{const original=this.memberRefutationOriginal(id);let current=false,reason:string|null=null;
+    try{const packet=this.packet(original.value.packet),item=this.item(packet.item);this.memberRefutationEvidence(packet,true);current=item.current_packet===packet.id&&!item.observation_conflict&&this.receiverCandidateCurrent(item);if(!current)reason='member_refutation_source_no_longer_current';}catch(e){reason=e instanceof Error?e.message:'member_refutation_source_unavailable';}
+    const op=this.db.prepare('SELECT id,status,result FROM operations WHERE packet=?').get(original.value.packet) as Row|undefined,receiver=op?parse(op,'result')?.receiver:null;
+    return {...original.value,id,current,reason,proof:original.proof,reception:op?{operation:op.id,status:op.status,phase:receiver?.phase??null,planSha256:receiver?.planSha256??null}:null,duplicate:true,newModelInputs:0};});}
+  attachMemberRefutation(raw:Buffer){return this.transaction(()=>{
+    const request=parseMemberRefutationRequest(raw),requestSha256=hash(raw),known=this.db.prepare("SELECT 1 FROM events WHERE kind='member_refutation_attached' AND object=?").get('member-refutation:'+request.id);
+    if(known){const old=this.memberRefutationOriginal(request.id);if(canonical(old.request)!==canonical(request))throw new Error('member_refutation_request_changed');return {...old.value,id:request.id,duplicate:true,newModelInputs:0};}
+    const original=this.integrationMemberRecords(fn=>fn()).material(request.memberReturn.id);if(!original.state.current)throw new Error('member_refutation_source_no_longer_current');
+    const proof=this.memberRefutationProof(request),packet=this.packet(proof.parent.packet);
+    if(parse(packet,'summary').memberRefutation)throw new Error('member_refutation_single_source_limit');
+    this.requireReceiverEntry(proof.parent.item);
+    if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(proof.parent.context.scope.id))throw new Error('new_investment_stopped');
+    enableMemberRefutationFormat(this.db);
+    const bytes=Buffer.from(canonical(proof)),proofSha256=hash(bytes);for(const b of [raw,bytes])this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(b),b);
+    const attached=this.supplementReceiverCurrent(proof.parent.operation,{judgmentId:proof.parent.judgment.judgmentId,bindingHash:proof.parent.judgment.bindingHash,source:request.source,reason:'Ended unchanged-member refutation requires a new independent judgment; no prior acceptance is restored.',material:[{name:'complete-original-member-refutation.json',bytes}]},{id:request.id,sha256:proofSha256});
+    const value={item:attached.item,packet:attached.packet,fingerprint:attached.fingerprint,previousOperation:proof.parent.operation,requestSha256,proofSha256,memberReturn:request.memberReturn,repair:request.repair,newModelInputs:0,permissionGranted:false,priorAcceptanceTransferred:false};
+    this.event('member_refutation_attached','member-refutation:'+request.id,value);return {...value,id:request.id,duplicate:false};
+  });}
   /** Hold the original queue transaction through the synchronous spawn. A
    * separately committed stop/source update cannot slip between the last
    * read and the actual new Git or isolated test process. */
@@ -620,14 +667,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.blob(correction.finalTextSha256); this.blob(correction.priorInputSha256); this.blob(correction.planSha256);
       for (const m of correction.material) this.blob(m.sha256);
     }
+    const refutation=parse(packet,'summary').memberRefutation;if(refutation){if(!refutation.id||!refutation.sha256||hash(this.blob(refutation.sha256))!==refutation.sha256)throw new Error('member_refutation_material_changed');}
     return { context, manifest, report };
   }
   /** Explicit new evidence packet, never a retry of the prior native task. */
   supplementReceiver(id: string, fixed: { judgmentId: string; bindingHash: string; source: string; reason: string; material: Array<{ name: string; bytes: Buffer }> }): Row {
-    return this.transaction(() => {
+    return this.transaction(()=>this.supplementReceiverCurrent(id,fixed));
+  }
+  private supplementReceiverCurrent(id:string,fixed:{judgmentId:string;bindingHash:string;source:string;reason:string;material:Array<{name:string;bytes:Buffer}>},memberRefutation?:{id:string;sha256:string}):Row{
       if (queueFeatureVersion(this.db) < 6 || !this.supplementGuardInstalled()) throw new Error('receiver_supplements_not_enabled');
       const { op, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet), summary = parse(packet, 'summary');
-      if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.judgment?.verdict !== 'INSUFFICIENT_EVIDENCE' || receiver.judgmentId !== fixed.judgmentId || receiver.bindingHash !== fixed.bindingHash || !receiver.controllerReturned) throw new Error('supplement_requires_completed_insufficient_judgment');
+      if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.judgment?.verdict !== (memberRefutation?'RETURN_FOR_WORK':'INSUFFICIENT_EVIDENCE') || receiver.judgmentId !== fixed.judgmentId || receiver.bindingHash !== fixed.bindingHash || !receiver.controllerReturned) throw new Error('supplement_requires_completed_insufficient_judgment');
       this.packetEvidence(packet);
       for (const ref of Object.values(receiver.blobs) as Row[]) this.blob(ref.sha256);
       const material = fixed.material.map(m => ({ name: m.name, sha256: hash(m.bytes), bytes: m.bytes.length, identity: materialIdentity(m.bytes) }));
@@ -648,13 +698,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       for (const bytes of [judgment, ...fixed.material.map(m => m.bytes)]) { this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(bytes), bytes); this.blob(hash(bytes)); }
       const supplement = { depth: (summary.supplement?.depth ?? 0) + 1, previous: summary.supplement ?? null, previousPacket: op.packet, previousOperation: id, priorJudgmentSha256, priorInputSha256: receiver.inputSha256, priorBindingHash: receiver.bindingHash, priorJudgmentId: receiver.judgmentId, source: fixed.source, reason: fixed.reason, material, identity };
       const fingerprint = hash(canonical({ previous: packet.fingerprint, added: identity }));
-      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, baseFingerprint: this.basePacketFingerprint(packet), supplement }), now());
+      const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id, fingerprint, packet.manifest_hash, packet.report_hash, packet.context_hash, JSON.stringify({ ...summary, baseFingerprint: this.basePacketFingerprint(packet), supplement,...(memberRefutation?{memberRefutation}:{}) }), now());
       const packetId = Number(inserted.lastInsertRowid);
       this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId, item.id);
       const result = { item: item.id, packet: packetId, previousPacket: op.packet, previousOperation: id, identity, fingerprint, depth: supplement.depth, mode: 'shadow', productionActionAllowed: false };
       this.event('receiver_supplement_registered', id, result);
       return { ...result, duplicate: false, currentPacket: packetId, modelDispatched: false };
-    });
   }
   import(packet: Packet): Row {
     return this.transaction(() => {
@@ -689,8 +738,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       }
       // A fresh W1/W2 observation of this same candidate must not erase received
       // supplementary originals or reset the candidate's registered call budget.
-      const supplement = priorSummary?.supplement, correction = priorSummary?.correction,eventSources=priorSummary?.eventSources,integration=priorSummary?.integration;
-      const inherited={...(supplement?{supplement}:{}),...(correction?{correction}:{}),...(eventSources?{eventSources}:{}),...(integration?{integration}:{})};
+      const supplement = priorSummary?.supplement, correction = priorSummary?.correction,eventSources=priorSummary?.eventSources,integration=priorSummary?.integration,memberRefutation=priorSummary?.memberRefutation;
+      const inherited={...(supplement?{supplement}:{}),...(correction?{correction}:{}),...(eventSources?{eventSources}:{}),...(integration?{integration}:{}),...(memberRefutation?{memberRefutation}:{})};
       const fingerprint = Object.keys(inherited).length ? hash(canonical({ base: packet.fingerprint,...inherited })) : packet.fingerprint;
       const summary = Object.keys(inherited).length ? { ...packet.summary, baseFingerprint: packet.fingerprint,...inherited } : packet.summary;
       const inserted = this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(id, fingerprint, packet.manifestHash, packet.reportHash, packet.contextHash, JSON.stringify(summary), now());
@@ -853,8 +902,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         })) })));
       const supplements = [];
       for (let s = parse(packet, 'summary').supplement; s; s = s.previous) supplements.unshift({ ...s, previous: undefined, priorJudgment: JSON.parse(this.blob(s.priorJudgmentSha256).toString()), material: s.material.map((m: Row) => ({ ...m, text: new TextDecoder('utf8', { fatal: true }).decode(this.blob(m.sha256)) })) });
-      const correction = parse(packet, 'summary').correction;
-      return { operation: id, packet: op.packet, fingerprint: packet.fingerprint, context, manifest, report, plan: JSON.parse(this.blob(report.plan.sha256).toString()), outputs,...(integration?{integration}:{}),
+      const correction = parse(packet, 'summary').correction,memberRefutation=this.memberRefutationEvidence(packet,true);
+      return { ...(memberRefutation?{memberRefutation}:{}),operation: id, packet: op.packet, fingerprint: packet.fingerprint, context, manifest, report, plan: JSON.parse(this.blob(report.plan.sha256).toString()), outputs,...(integration?{integration}:{}),
         ...(correction ? { correction: { ...correction, originalFinalText: this.blob(correction.finalTextSha256).toString(), material: correction.material.map((m: Row) => ({ ...m, text: new TextDecoder('utf8', { fatal: true }).decode(this.blob(m.sha256)) })), originalResultIsValidJudgment: false } } : {}),
         ...(parse(packet,'summary').composition?{composition:parse(packet,'summary').composition}:{}),
         sourceEvents:(parse(packet,'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r)),
@@ -969,7 +1018,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private receiverGate(op: Row): void {
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
     if(parse(packet,'summary').composition)this.requireCompositionMode();
-    this.basePacketFingerprint(packet); this.pairedPrerequisite(op.item);
+    this.basePacketFingerprint(packet); this.pairedPrerequisite(op.item);this.memberRefutationEvidence(packet,true);
     if(!this.memberReceptionCurrent(item.id))throw new Error('member_return_requires_repair_or_refutation_reception');
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
@@ -1010,7 +1059,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const sourceEvents=(parse(this.packet(op.packet),'summary').eventSources??[]).map((r:Row)=>storedEventMaterial(this.db,r));
       if(this.eventSourceStates(this.item(op.item)).some(s=>s.registered)&&canonical(JSON.parse(fixed.input.toString()).data.evidence.sourceEvents)!==canonical(sourceEvents))throw new Error('receiver_event_source_input_mismatch');
       const integration=this.integrationMaterial(this.packet(op.packet),true,op.id),input=JSON.parse(fixed.input.toString());if(integration&&(input.binding.integrationSha256!==integration.sha256||input.binding.memberReturnEvidenceSha256!==integration.memberReturnEvidenceSha256||input.binding.memberRepairEvidenceSha256!==integration.memberRepairEvidenceSha256||canonical(input.data.evidence.integration)!==canonical(integration)))throw new Error('receiver_integration_input_mismatch');
-      const record = { judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
+      const refutation=this.memberRefutationEvidence(this.packet(op.packet),true);if(refutation&&(input.binding.memberRefutationSha256!==refutation.sha256||canonical(input.data.evidence.memberRefutation)!==canonical(refutation)))throw new Error('member_refutation_input_mismatch');
+      const record = { ...(refutation?{memberRefutationSha256:refutation.sha256}:{}),judgmentId: fixed.judgmentId, bindingHash: fixed.bindingHash, contractVersion: 6, packetFingerprint: fixed.fingerprint, eventSourcePacket:op.packet,planSha256: hash(fixed.plan), inputSha256: hash(fixed.input), systemSha256: hash(fixed.system),
         ...(integration?{integrationSha256:integration.sha256,memberReturnEvidenceSha256:integration.memberReturnEvidenceSha256,...(integration.memberRepairEvidenceSha256?{memberRepairEvidenceSha256:integration.memberRepairEvidenceSha256}:{})}:{}),
         ...(fixed.promptAssembly?{promptAssemblySha256:hash(fixed.promptAssembly)}:{}),
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
@@ -1090,7 +1140,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if (op.status === 'complete') return { operation: id, duplicate: true, ...this.currentReceiverResult(op, result) };
       if (op.status !== 'receiving' || (!judgment && !closeSource)) throw new Error('receiver_completion_unverified');
       this.receiverClaim(op); this.packetEvidence(this.packet(op.packet));
-      if (invalid && (judgment || closeSource !== 'verified_completed_invalid_judgment' || !['receiver_final_binding_or_judgment_invalid','receiver_invalid_json','receiver_prerequisite_not_consumed','receiver_integration_not_consumed'].includes(invalid.reason) || JSON.parse(originals['completed.json']?.toString() ?? '{}').finalText !== invalid.finalText || JSON.parse(originals['capture-status.json']?.toString() ?? '{}').status !== 'complete')) throw new Error('receiver_invalid_completion_proof_missing');
+      if (invalid && (judgment || closeSource !== 'verified_completed_invalid_judgment' || !['receiver_final_binding_or_judgment_invalid','receiver_invalid_json','receiver_prerequisite_not_consumed','receiver_integration_not_consumed','receiver_member_refutation_not_consumed'].includes(invalid.reason) || JSON.parse(originals['completed.json']?.toString() ?? '{}').finalText !== invalid.finalText || JSON.parse(originals['capture-status.json']?.toString() ?? '{}').status !== 'complete')) throw new Error('receiver_invalid_completion_proof_missing');
       if (invalid) originals = { ...originals, 'invalid-final.txt': Buffer.from(invalid.finalText) };
       const blobs: Record<string, Row> = {};
       for (const [name, bytes] of Object.entries(originals)) {
