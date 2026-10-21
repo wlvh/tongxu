@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { QueueStore } from './queue-store.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
-import {TaskControls} from './task-controls.js';
+import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
 
@@ -140,7 +140,7 @@ export async function startWorkbench(planPath: string) {
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (match) { json(res, 200, await workbenchReport(p, match[1]!, match[2]!)); return; }
       json(res, 404, { error: 'route_not_found' });
-    } catch (e) { json(res, e instanceof Error && e.message === 'report_not_found' ? 404 : 503, { error: safeError(e) }); }
+    } catch (e) { json(res, e instanceof Error && e.message === 'report_not_found' ? 404 : 503, { error: safeError(e),...(e instanceof TaskControlRegistrationError?e.diagnostic:{}) }); }
   });
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
