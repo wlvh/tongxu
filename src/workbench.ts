@@ -5,22 +5,27 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { QueueStore } from './queue-store.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
+import {TaskControls} from './task-controls.js';
+import {exactKeys,isAuthorityDigest} from './authority-contract.js';
+import {messagePath} from './message-contract.js';
 
 type Row = Record<string, any>;
 export type WorkbenchPlan = {
-  schemaVersion: 1; kind: 'tongxu-local-workbench'; title: string; goal: string;
+  schemaVersion: 1; kind: 'tongxu-local-workbench'|'tongxu-controlled-workbench'; title: string; goal: string;
   sources: Array<{ id: string; title: string; store: string; item: string }>;
+  controls?:{path:string;sha256:string};
 };
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && !!v.trim() && v.length <= max && !v.includes('\0');
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-local-workbench' || !text(p.title, 100) || !text(p.goal, 1000) || !Array.isArray(p.sources) || !p.sources.length || p.sources.length > 8) throw new Error('invalid_workbench_plan');
+  if (p.schemaVersion !== 1 || !['tongxu-local-workbench','tongxu-controlled-workbench'].includes(p.kind) || !text(p.title, 100) || !text(p.goal, 1000) || !Array.isArray(p.sources) || !p.sources.length || p.sources.length > 8) throw new Error('invalid_workbench_plan');
+  if(p.kind==='tongxu-controlled-workbench'?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):Object.hasOwn(p,'controls'))throw new Error('invalid_workbench_controls');
   const ids = new Set(), tasks = new Set();
   for (const s of p.sources) {
     if (!s || typeof s.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(s.id) || !text(s.title, 100) || !/^[a-f0-9]{64}$/.test(s.item) || typeof s.store !== 'string' || !isAbsolute(s.store) || resolve(s.store) !== s.store || ids.has(s.id) || tasks.has(s.store + ':' + s.item)) throw new Error('invalid_workbench_source');
     ids.add(s.id); tasks.add(s.store + ':' + s.item);
   }
-  return { schemaVersion: 1, kind: 'tongxu-local-workbench', title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })) };
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -86,7 +91,7 @@ export async function workbenchState(p: WorkbenchPlan) {
       for (const ev of q.events.filter((ev: Row) => ev.object === e.object && ['pair_registered', 'pair_independent_inspection', 'pair_shared_waiting', 'pair_shared_consumed'].includes(ev.kind))) events.push({ id: a.id + ':' + ev.id, source: a.id, title: a.title + ' → ' + b.title, kind: ev.kind, observedAt: ev.observed_at });
     }
   }
-  return { schemaVersion: 1, title: p.title, goal: p.goal, mode: 'read_only', tasks, events: events.sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.id.localeCompare(b.id)), modelCallsStartedByWorkbench: 0, crossStoreAtomic: false, remoteRechecked: false, productionActionAllowed: false };
+  return { schemaVersion: 1, title: p.title, goal: p.goal, mode: p.controls?'bounded_task_contacts':'read_only', tasks, events: events.sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.id.localeCompare(b.id)), ...(p.controls?{modelCallsStartedByThisRead:0}:{modelCallsStartedByWorkbench:0}), crossStoreAtomic: false, remoteRechecked: false, productionActionAllowed: false };
 }
 async function workbenchReport(p: WorkbenchPlan, source: string, operation: string) {
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
@@ -97,6 +102,7 @@ async function workbenchReport(p: WorkbenchPlan, source: string, operation: stri
 }
 export async function startWorkbench(planPath: string) {
   const p = parseWorkbenchPlan(await regular(planPath)), token = randomBytes(32).toString('hex');
+  const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
   const assets = new Map<string, { type: string; bytes: Buffer }>();
   for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   let host = '';
@@ -111,12 +117,21 @@ export async function startWorkbench(planPath: string) {
   const server = createServer(async (req, res) => {
     try {
       if (req.headers.host !== host || req.headers.origin && req.headers.origin !== 'http://' + host) { json(res, 403, { error: 'local_origin_required' }); return; }
-      if (req.method !== 'GET') { json(res, 405, { error: 'read_only_workbench' }); return; }
       const url = new URL(req.url ?? '/', 'http://' + host);
       if (url.search) { json(res, 400, { error: 'query_not_supported' }); return; }
+      if(req.method!=='GET'){
+        if(!controls){json(res,405,{error:'read_only_workbench'});return;}
+        if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
+        const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel)$/.exec(url.pathname);
+        if(req.method!=='POST'||!action){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>1024){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
+        if(!exactKeys(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks))),[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
+        json(res,action[2]==='start'?202:200,action[2]==='start'?await controls.begin(action[1]!):await controls.cancel(action[1]!));return;
+      }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, await workbenchState(p)); return; }
+      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{taskControls:await controls.state()}: {})}); return; }
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
       if(message){const source=p.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -127,5 +142,5 @@ export async function startWorkbench(planPath: string) {
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
-  return { url: 'http://' + host + '/#' + token, close: () => new Promise<void>((ok, reject) => server.close(e => e ? reject(e) : ok())) };
+  return { url: 'http://' + host + '/#' + token,mode:controls?'bounded_task_contacts':'read_only',close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await closed;} };
 }
