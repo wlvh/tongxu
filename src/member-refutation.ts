@@ -8,6 +8,8 @@ import {parseMemberRefutationPlan} from './member-refutation-contract.js';
 import {parseQueueRepairPlan,runQueueRepair} from './queue-repair.js';
 import {parseReceiverPlan,runReception,reconcileReception} from './receiver.js';
 import {QueueStore} from './queue-store.js';
+import {prepareRefutationReceiver,readRefutationReceiver} from './member-refutation-authority.js';
+import {settleReceiverResources} from './receiver-authority.js';
 
 async function freeze(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(!(await regular(path,4*1024*1024)).equals(bytes))throw new Error('member_refutation_frozen_input_changed');}}
 /** Consume an ended refutation, then use the original receiver. Nothing in a
@@ -30,10 +32,15 @@ export async function runMemberRefutation(path:string,action:'prepare'|'run'='ru
     if(receiverPlan.executionKind!==original.proof.parent.executionKind)throw new Error('member_refutation_execution_kind_changed');
     const request=Buffer.from(canonical({schemaVersion:1,kind:'tongxu-member-refutation',id:p.id,memberReturn:p.memberReturn,repair:{operation:repairPlan.operation,planSha256:p.repairPlan.sha256,bindingHash:repair.bindingHash,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256},source:p.source}));
     await freeze(join(directory,'association.json'),request);const attached=q.attachMemberRefutation(request),state=q.memberRefutation(p.id);
+    let effectivePath=receiverPath,effectiveBytes=receiverBytes,effectivePlan=receiverPlan;
+    if(p.governance){
+      if(!state.reception?.phase){const prepared=await prepareRefutationReceiver(q,p,receiverPlan,directory);if(!prepared.ready)return {id:p.id,directory,item:attached.item,packet:attached.packet,proofSha256:attached.proofSha256,...prepared,newModelInputs:0,priorAcceptanceTransferred:false};}
+      const originalReceiver=await readRefutationReceiver(p,directory);effectivePath=originalReceiver.path;effectiveBytes=originalReceiver.bytes;effectivePlan=originalReceiver.plan;
+    }
     if(action==='prepare')return {id:p.id,directory,item:attached.item,packet:attached.packet,proofSha256:attached.proofSha256,phase:state.reception?.phase??'prepared_not_sent',originalReception:state.reception,newModelInputs:0,priorAcceptanceTransferred:false};
     let reception:any;
-    if(state.reception?.phase){if(state.reception.planSha256!==hash(receiverBytes))throw new Error('member_refutation_original_receiver_plan_changed');reception=await reconcileReception(p.store,state.reception.operation);}
-    else{if(!state.current)throw new Error('member_refutation_source_no_longer_current');reception=await runReception(receiverPath);}
+    if(state.reception?.phase){if(state.reception.planSha256!==hash(effectiveBytes))throw new Error('member_refutation_original_receiver_plan_changed');reception=await reconcileReception(p.store,state.reception.operation);if(effectivePlan.governance)reception={...reception,resources:await settleReceiverResources(q,state.reception.operation,effectivePlan)};}
+    else{if(!state.current)throw new Error('member_refutation_source_no_longer_current');reception=await runReception(effectivePath);}
     const after=q.memberRefutation(p.id);
     return {id:p.id,directory,item:attached.item,packet:attached.packet,proofSha256:attached.proofSha256,memberUnchanged:true,actualRepairPerformed:false,originalReturnPreserved:true,priorAcceptanceTransferred:false,individualMemberAccepted:false,current:after.current,reception,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
   }finally{if(lock?.isTransaction)lock.exec('ROLLBACK');lock?.close();q.close();}
