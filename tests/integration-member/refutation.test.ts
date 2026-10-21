@@ -7,6 +7,7 @@ import {QueueStore} from '../../src/queue-store.js';
 import {runQueueRepair} from '../../src/queue-repair.js';
 import {runMemberRefutation} from '../../src/member-refutation.js';
 import {memberRepairMain} from '../../src/integration-member-cli.js';
+import {runReception,reconcileReception} from '../../src/receiver.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
 import {memberInputFixture} from './repair-fixture.js';
@@ -52,4 +53,17 @@ test('changed member observation prevents a prepared fresh reception, while orig
 });
 test('a completed final missing the exact refutation receipt is retained as invalid, not accepted',options,async t=>{
   const f=await fixture(t);await writeFile(f.plan.claudeExecutable,(await readFile(f.plan.claudeExecutable,'utf8')).replace('mode="return"','mode="ignore-refutation"'));const result=await runMemberRefutation(f.refutationPath);assert.ok('reception' in result);assert.equal(result.reception.status,'receiver_invalid_result');assert.equal(result.reception.receiver.invalidResult.reason,'receiver_member_refutation_not_consumed');const trace=await readFile(f.trace);await runMemberRefutation(f.refutationPath);assert.ok((await readFile(f.trace)).equals(trace));
+});
+test('MRF-F01: the standard receiver also refuses changed refutation captures and workspace, then restores the exact original without a substitute task',options,async t=>{
+  const f=await fixture(t);await runMemberRefutation(f.refutationPath,'prepare');const trace=await readFile(f.trace),model=await readFile(f.model.trace),capture=join(f.request.executionRoot,'operation/attempt-1/fact-and-repair/stdout.ndjson'),original=await readFile(capture),source=join(f.request.executionRoot,'workspace/src/normalize.mjs'),code=await readFile(source);
+  await writeFile(capture,Buffer.concat([original,Buffer.from('\nchanged fixture capture\n')]));
+  await assert.rejects(runMemberRefutation(f.refutationPath),/completion_evidence_changed/);await assert.rejects(runReception(f.receiverPath),/completion_evidence_changed/);assert.ok((await readFile(f.trace)).equals(trace));assert.equal(f.q.memberRefutation(f.refutationPlan.id).current,false);
+  await writeFile(capture,original);await writeFile(source,Buffer.concat([code,Buffer.from('// unaccounted fixture modification\n')]));await assert.rejects(runReception(f.receiverPath),/completed_workspace_changed/);assert.ok((await readFile(f.trace)).equals(trace));await writeFile(source,code);
+  await writeFile(f.plan.claudeExecutable,(await readFile(f.plan.claudeExecutable,'utf8')).replace('mode="return"','mode="complete"'));const received=await runReception(f.receiverPath);assert.equal(received.receiver.judgment.verdict,'ACCEPT_WITHIN_SCOPE');assert.equal(received.receiver.currentMaterialMatches,true);assert.ok((await readFile(f.model.trace)).equals(model));
+  const after=await readFile(f.trace);await writeFile(capture,Buffer.concat([original,Buffer.from('\nchanged after reception\n')]));const historical=await reconcileReception(f.store,received.operation);assert.equal(historical.receiver.judgment.verdict,'ACCEPT_WITHIN_SCOPE');assert.equal(historical.receiver.currentMaterialMatches,false);assert.ok((await readFile(f.trace)).equals(after));await writeFile(capture,original);
+});
+test('MRF-F01 actual dispatch rechecks capture integrity after receiver preparation',options,async t=>{
+  const f=await fixture(t),dispatch=QueueStore.prototype.receiverDispatch,capture=join(f.request.executionRoot,'operation/attempt-1/fact-and-repair/stdout.ndjson'),original=await readFile(capture),trace=await readFile(f.trace);let injected=false;
+  const fs=await import('node:fs');QueueStore.prototype.receiverDispatch=function(...args){if(!injected){injected=true;fs.writeFileSync(capture,Buffer.concat([original,Buffer.from('\nlate changed capture\n')]));}return dispatch.apply(this,args);};t.after(()=>{QueueStore.prototype.receiverDispatch=dispatch;});
+  const result=await runMemberRefutation(f.refutationPath);assert.ok('reception' in result);assert.equal(result.reception.status,'receiver_unknown');assert.equal(result.reception.newTaskSent,false);assert.equal(result.reception.reason,'completion_evidence_changed');assert.ok((await readFile(f.trace)).equals(trace));await writeFile(capture,original);
 });

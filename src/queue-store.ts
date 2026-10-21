@@ -1,4 +1,6 @@
 import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
+import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
+import {installMemberRefutationOriginalsGuard} from './member-refutation-format.js';
 import {IntegrationRecords,type IntegrationSource} from './integration-store.js';
 import {queueFeatureVersion,queueFormatVersion,setQueueFeatureVersion,enableIntegrationFormat,enableMemberRepairFormat,enableMemberRecompositionFormat,enableMemberRefutationFormat} from './queue-format.js';
 import {parseIntegrationCandidate} from './integration-contract.js';
@@ -316,7 +318,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private memberRefutationEvidence(packet:Row,current:boolean):Row|null{
     const ref=parse(packet,'summary').memberRefutation;if(!ref)return null;const {proof,value}=this.memberRefutationOriginal(ref.id);
     if(ref.sha256!==value.proofSha256||packet.item!==proof.parent.item)throw new Error('member_refutation_packet_changed');
-    if(current){const member=this.item(proof.member.item),memberPacket=this.packet(member.current_packet);
+    if(current){const repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('refutation_cannot_authorize');},()=>{throw new Error('refutation_cannot_authorize');}).state(proof.repair.operation).repair;
+      verifyMemberRefutationOriginals(repair.executionRoot,proof.repair.terminalRecordSha256,proof.repair.result,repair.requestSha256);
+      const member=this.item(proof.member.item),memberPacket=this.packet(member.current_packet);
       if(member.current_packet!==proof.member.packet||memberPacket.fingerprint!==proof.member.fingerprint||member.observation_conflict||!this.receiverCandidateCurrent(member)||packet.manifest_hash!==proof.parent.manifestSha256||packet.report_hash!==proof.parent.reportSha256||packet.context_hash!==proof.parent.contextSha256)throw new Error('member_refutation_source_no_longer_current');}
     return {sha256:ref.sha256,...proof};
   }
@@ -324,15 +328,19 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     try{const packet=this.packet(original.value.packet),item=this.item(packet.item);this.memberRefutationEvidence(packet,true);current=item.current_packet===packet.id&&!item.observation_conflict&&this.receiverCandidateCurrent(item);if(!current)reason='member_refutation_source_no_longer_current';}catch(e){reason=e instanceof Error?e.message:'member_refutation_source_unavailable';}
     const op=this.db.prepare('SELECT id,status,result FROM operations WHERE packet=?').get(original.value.packet) as Row|undefined,receiver=op?parse(op,'result')?.receiver:null;
     return {...original.value,id,current,reason,proof:original.proof,reception:op?{operation:op.id,status:op.status,phase:receiver?.phase??null,planSha256:receiver?.planSha256??null}:null,duplicate:true,newModelInputs:0};});}
+  enableMemberRefutationSourceChecks(item:string){return this.transaction(()=>{if(parse(this.packet(this.item(item).current_packet),'summary').memberRefutation)installMemberRefutationOriginalsGuard(this.db);});}
   attachMemberRefutation(raw:Buffer){return this.transaction(()=>{
     const request=parseMemberRefutationRequest(raw),requestSha256=hash(raw),known=this.db.prepare("SELECT 1 FROM events WHERE kind='member_refutation_attached' AND object=?").get('member-refutation:'+request.id);
     if(known){const old=this.memberRefutationOriginal(request.id);if(canonical(old.request)!==canonical(request))throw new Error('member_refutation_request_changed');return {...old.value,id:request.id,duplicate:true,newModelInputs:0};}
     const original=this.integrationMemberRecords(fn=>fn()).material(request.memberReturn.id);if(!original.state.current)throw new Error('member_refutation_source_no_longer_current');
     const proof=this.memberRefutationProof(request),packet=this.packet(proof.parent.packet);
+    const repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('refutation_cannot_authorize');},()=>{throw new Error('refutation_cannot_authorize');}).state(request.repair.operation).repair;
+    verifyMemberRefutationOriginals(repair.executionRoot,proof.repair.terminalRecordSha256,proof.repair.result,repair.requestSha256);
     if(parse(packet,'summary').memberRefutation)throw new Error('member_refutation_single_source_limit');
     this.requireReceiverEntry(proof.parent.item);
     if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(proof.parent.context.scope.id))throw new Error('new_investment_stopped');
     enableMemberRefutationFormat(this.db);
+    installMemberRefutationOriginalsGuard(this.db);
     const bytes=Buffer.from(canonical(proof)),proofSha256=hash(bytes);for(const b of [raw,bytes])this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(b),b);
     const attached=this.supplementReceiverCurrent(proof.parent.operation,{judgmentId:proof.parent.judgment.judgmentId,bindingHash:proof.parent.judgment.bindingHash,source:request.source,reason:'Ended unchanged-member refutation requires a new independent judgment; no prior acceptance is restored.',material:[{name:'complete-original-member-refutation.json',bytes}]},{id:request.id,sha256:proofSha256});
     const value={item:attached.item,packet:attached.packet,fingerprint:attached.fingerprint,previousOperation:proof.parent.operation,requestSha256,proofSha256,memberReturn:request.memberReturn,repair:request.repair,newModelInputs:0,permissionGranted:false,priorAcceptanceTransferred:false};
@@ -405,7 +413,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private integrationAdmission(op:Row,status:'receiving'|'merging'){
     const material=this.integrationMaterial(this.packet(op.packet),true,op.id);if(!material)return;
     if(!this.receiverCandidateCurrent(this.item(op.item)))throw new Error('integration_current_candidate_required');
-    this.event('integration_consumer_admitted',op.id,{packet:op.packet,status,integrationSha256:material.sha256});
+    const refutation=this.memberRefutationEvidence(this.packet(op.packet),true);if(refutation)installMemberRefutationOriginalsGuard(this.db);
+    this.event('integration_consumer_admitted',op.id,{packet:op.packet,status,integrationSha256:material.sha256,...(refutation?{memberRefutationSha256:refutation.sha256,memberRefutationTerminalSha256:refutation.repair.terminalRecordSha256}:{})});
   }
   static async observeIntegration(directory:string,id:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');return q.integrationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private integrationSource(operation:string):IntegrationSource{

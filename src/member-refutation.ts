@@ -20,6 +20,7 @@ export async function runMemberRefutation(path:string,action:'prepare'|'run'='ru
     for(const [name,ref] of [['repair-plan.json',p.repairPlan],['receiver-plan.json',p.receiverPlan]] as const){const fixed=join(directory,name);if(!await exists(fixed)){const bytes=await regular(ref.path);if(hash(bytes)!==ref.sha256)throw new Error('member_refutation_input_changed');await freeze(fixed,bytes);}if(hash(await regular(fixed))!==ref.sha256)throw new Error('member_refutation_input_changed');}
     const repairPath=join(directory,'repair-plan.json'),repairPlan=parseQueueRepairPlan(await regular(repairPath)),receiverPath=join(directory,'receiver-plan.json'),receiverBytes=await regular(receiverPath),receiverPlan=parseReceiverPlan(receiverBytes);
     if(repairPlan.store!==p.store||receiverPlan.store!==p.store||canonical(repairPlan.memberReturn)!==canonical(p.memberReturn))throw new Error('member_refutation_store_or_source_changed');
+    q.enableMemberRefutationSourceChecks(receiverPlan.item);
     let repair=q.reviewRecords().state(repairPlan.operation).repair;
     if(repair.phase!=='returned'||repair.result?.status!=='skipped_refuted'||repair.result.actualRepairPerformed!==false)throw new Error('member_refutation_ended_refutation_required');
     // This revalidates the real terminal/capture, with no new repair invocation.

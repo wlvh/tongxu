@@ -21,6 +21,19 @@ test('an actual preopened format20 receiver cannot dispatch after refutation, an
   await assert.rejects(oldReception(f.receiverPath),/member_recomposition_format_downgraded/);assert.ok((await readFile(f.trace)).equals(trace));assert.ok((await readFile(f.model.trace)).equals(model));
   const begun=f.q.begin(prepared.item,'fixture-old-binding');f.q.evaluate(begun.operation);const db=new DatabaseSync(join(f.store,'queue.sqlite'));t.after(()=>db.close());const row=db.prepare('SELECT result FROM operations WHERE id=?').get(begun.operation)!,result=JSON.parse(String(row.result));
   result.receiver={contractVersion:6,packetFingerprint:f.q.receiverEvidence(begun.operation).fingerprint};
-  assert.throws(()=>db.prepare("UPDATE operations SET status='receiving',result=? WHERE id=?").run(JSON.stringify(result),begun.operation),/member_refutation_complete_input_required/);
+  assert.throws(()=>db.prepare("UPDATE operations SET status='receiving',result=? WHERE id=?").run(JSON.stringify(result),begun.operation),/member_refutation_complete_input_required|member_refutation_originals_admission_required/);
   assert.equal(f.q.receiverState(begun.operation).receiver,undefined);assert.ok((await readFile(f.trace)).equals(trace));
+});
+test('a previously prepared09 refutation gains the shared source guard and a preopened09 receiver cannot bypass it',{
+  skip:!process.env.TONGXU_TEST_DOCKER_CONFIG||!process.env.TONGXU_TEST_LEGACY_REFUTATION_SOURCE,timeout:120000
+},async t=>{
+  const f=await (await memberInputFixture(t,'project-refuted',false)).prepareRepair();await runQueueRepair(f.planPath);
+  const root=process.env.TONGXU_TEST_LEGACY_REFUTATION_SOURCE!,{QueueStore:Old}=await import(pathToFileURL(join(root,'dist/src/queue-store.js')).href),{runReception:oldReception}=await import(pathToFileURL(join(root,'dist/src/receiver.js')).href),{runMemberRefutation:oldRefutation}=await import(pathToFileURL(join(root,'dist/src/member-refutation.js')).href);
+  const ref=async(path:string)=>({path,sha256:hash(await readFile(path))}),plan=join(f.root,'refutation.json');await writeFile(plan,raw({schemaVersion:1,kind:'tongxu-member-refutation-reception',id:'prepared09-refutation',store:f.store,memberReturn:f.memberReturn,repairPlan:await ref(f.planPath),receiverPlan:await ref(f.receiverPath),source:'Explicit isolated old09-to-shared-guard continuation; no official CLI.'}));
+  await oldRefutation(plan,'prepare');const old=await Old.open(f.store),open=Old.open,close=old.close.bind(old);Old.open=async()=>old;old.close=()=>{};t.after(()=>{Old.open=open;close();});
+  const capture=join(f.request.executionRoot,'operation/attempt-1/fact-and-repair/stdout.ndjson'),original=await readFile(capture),trace=await readFile(f.trace);await writeFile(capture,Buffer.concat([original,Buffer.from('\nchanged fixture source\n')]));
+  await assert.rejects(runMemberRefutation(plan,'prepare'),/completion_evidence_changed/);
+  await assert.rejects(oldReception(f.receiverPath),/member_refutation_originals_admission_required/);assert.ok((await readFile(f.trace)).equals(trace));
+  await writeFile(capture,original);const current=await runMemberRefutation(plan);assert.ok('reception' in current);assert.equal(current.reception.receiver.judgment.verdict,'RETURN_FOR_WORK');assert.equal(current.reception.receiver.currentMaterialMatches,true);
+  const after=await readFile(f.trace);await runMemberRefutation(plan);assert.ok((await readFile(f.trace)).equals(after));
 });

@@ -190,6 +190,7 @@ async function runFixedReception(bytes: Buffer) {
   const p = parseReceiverPlan(bytes), q = await QueueStore.open(p.store);
   try {
     q.requireReceiverMode();
+    q.enableMemberRefutationSourceChecks(p.item);
     q.requireReceiverEntry(p.item);
     const begin = q.begin(p.item, 'independent-receiver'); if (begin.blocked) return begin;
     const operation = begin.operation as string, original = q.receiverState(operation);
