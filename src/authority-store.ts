@@ -62,7 +62,7 @@ export class AuthorityRecords {
     const proposal=parseOwnerProposal(decoded,profile,Date.now());
     this.proposalContext(proposal);
     const prepared:PreparedProposal={schemaVersion:1,requestId,profileSha256,repository:profile.repository,issue:profile.issue,createdAt:now(),proposal};
-    const proposalSha256=this.blob(Buffer.from(canonical(prepared))),entry={requestId,proposalSha256,originalSha256:this.blob(raw),kind:proposal.kind};
+    const proposalSha256=this.blob(Buffer.from(canonical(prepared))),entry={requestId,proposalSha256,originalSha256:this.blob(raw),kind:proposal.kind,...(proposal.kind==='delivery_outcome'?{batchSha256:proposal.batchSha256}:{})};
     this.event('authority_proposal_prepared',object,entry);return {...entry,prepared,ownerComment:ownerDecisionText(proposalSha256),duplicate:false,externalActionSent:false};
   });}
   private prepared(sha:string):PreparedProposal{

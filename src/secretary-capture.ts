@@ -3,7 +3,7 @@ import { isDeepStrictEqual as equal } from 'node:util';
 import { regular } from './repair-workspace.js';
 import { checkConfig, disabledFeatures } from './live-codex.js';
 import { secretaryDeveloperInstructions,coordinatingSecretaryDeveloperInstructions, secretarySchema } from './repair-native.js';
-import { secretaryToolSpecs,coordinatingSecretaryToolSpecs } from './secretary-tools.js';
+import {selectedSecretaryTools} from './secretary-tools.js';
 import type { SecretaryPlan } from './secretary.js';
 import { hash } from './snapshot.js';
 
@@ -20,7 +20,7 @@ export async function verifySecretaryCapture(directory: string, p: SecretaryPlan
     request('initialize', { clientInfo: { name: p.taskControls?'tongxu-task-secretary':'tongxu-readonly-secretary', version: '0.1.0' }, capabilities: { experimentalApi: true } }),
     { method: 'initialized', params: {} },
     request('account/read', { refreshToken: false }), request('config/read', { includeLayers: false, cwd }), request('account/rateLimits/read', {}),
-    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: p.taskControls?coordinatingSecretaryDeveloperInstructions:secretaryDeveloperInstructions, dynamicTools: p.taskControls?coordinatingSecretaryToolSpecs:secretaryToolSpecs, environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
+    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: p.taskControls?coordinatingSecretaryDeveloperInstructions:secretaryDeveloperInstructions, dynamicTools: selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true), environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
     request('account/rateLimits/read', {}), request('turn/start', { threadId: binding.threadId, input: [{ type: 'text', text: question }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: secretarySchema })
   ];
   const replies = new Map<number, any>(), expectedToolReplies: any[] = [];
