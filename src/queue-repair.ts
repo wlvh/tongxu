@@ -5,7 +5,7 @@ import { QueueStore } from './queue-store.js';
 import { reconcileReception } from './receiver.js';
 import { prepareProjectRepair, type ProjectRequest } from './project-repair.js';
 import { runRepair } from './repair.js';
-import { regular, exists, processState } from './repair-workspace.js';
+import { regular, exists, processState,tree,treeHash,git } from './repair-workspace.js';
 import { hash } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { randomUUID } from 'node:crypto';
@@ -16,11 +16,12 @@ import type { AuthorityRole } from './authority-contract.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
-  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]} };
+  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]};coordination?:{planId:string;task:string;capability:string;fromRun:string;fromMessage:string} };
 const uuid = /^[a-f0-9-]{36}$/, digest = /^[a-f0-9]{64}$/;
 export function parseQueueRepairPlan(bytes: Buffer): QueueRepairPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance','coordination'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if(p.coordination!==undefined&&(!p.coordination||Object.keys(p.coordination).sort().join()!=='capability,fromMessage,fromRun,planId,task'||!digest.test(p.coordination.planId)||!digest.test(p.coordination.fromRun)||['task','capability','fromMessage'].some(k=>typeof p.coordination[k]!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(p.coordination[k]))))throw new Error('invalid_queue_repair_coordination');
   if(p.governance!==undefined&&(!p.governance||Object.keys(p.governance).sort().join()!=='authorityIntent,resourceRequests'||typeof p.governance.authorityIntent!=='string'||!p.governance.authorityIntent.trim()||p.governance.authorityIntent.length>128||!Array.isArray(p.governance.resourceRequests)||p.governance.resourceRequests.length>32||new Set(p.governance.resourceRequests).size!==p.governance.resourceRequests.length||p.governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!digest.test(r))))throw new Error('invalid_queue_repair_governance');
   for (const path of [p.store, p.request, p.config]) if (typeof path !== 'string' || resolve(path) !== path) throw new Error('queue_repair_path_not_canonical');
   return p;
@@ -108,8 +109,14 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
         const result = await runRepair(prepared.plan,prepared.operation,reconcileEnded,effect=>{records.check(p.operation,bound,effect,observations);},refresh);
         const resultBytes = Buffer.from(JSON.stringify(result)), proof = await repairEvidence(prepared.operation,p.operation,bound,resultBytes);
         const receipt = records.complete(p.operation,bound,resultBytes,Buffer.from(JSON.stringify(proof)));
+        let output:Row|null=null;if(p.coordination&&['completed','completed_recovered_candidate'].includes(result.status)){
+          const workspace=join(request.executionRoot,'workspace'),source=await tree(workspace,true);
+          if(treeHash(source)!==result.treeSha256||await git(workspace,['rev-parse','HEAD'])!==result.after.H)throw new Error('coordination_repair_output_source_changed');
+          const material=Object.fromEntries(request.materialPaths.map(path=>{if(!source[path])throw new Error('coordination_repair_output_material_missing');return [path,source[path]];})),diff=await git(workspace,['diff','--no-ext-diff','--no-textconv',result.before.H,result.after.H,'--',...request.materialPaths]);
+          output=q.coordination().recordRepairOutput(p.operation,Buffer.from(canonical({result,material,diff})));
+        }
         const resources:Row[]=[];if(p.governance){role=q.authority().reservedAction(p.governance.authorityIntent).role;for(const id of p.governance.resourceRequests){try{let state=q.resources().status(id);if(state.pendingResultAttempt&&!['consumed','released'].includes(state.state))state=await resourceAction(p.store,id,'lookup',role);resources.push(await resourceAction(p.store,id,'record-result',role));}catch(e){resources.push({id,status:'result_pending_or_unknown',error:e instanceof Error?e.message:'resource_record_unavailable',newExecutionAllowed:false});}}}
-        return {operation:p.operation,status:'repair_result_recorded',repairStatus:result.status,after:result.after,counters:receipt.counters,duplicate:receipt.duplicate,resources,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
+        return {operation:p.operation,status:'repair_result_recorded',repairStatus:result.status,after:result.after,counters:receipt.counters,duplicate:receipt.duplicate,resources,coordinationOutput:output,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
       } catch (e) {
         records.controller(p.operation,bound,'unknown',{reason:e instanceof Error?e.message:'repair_unavailable'}); throw e;
       }

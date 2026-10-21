@@ -7,6 +7,7 @@ import { coordinationPartId,coordinationPlanId,parseCoordinationPlan,type Coordi
 import { messagePlanId,parseMessagePlan } from './message-contract.js';
 import { parseCoordinationExecution,coordinationExecutionIdentity,coordinationTaskBody,coordinationMessageId } from './coordination-execution-contract.js';
 import { join } from 'node:path';
+import { projectModelTestResult } from './project-repair.js';
 
 type Row=Record<string,any>;
 /** Coordination facts use the original queue. Feedback can satisfy a technical
@@ -123,6 +124,7 @@ export class CoordinationRecords {
     const selected=bound.mapping.filter((m:Row)=>messageId?m.messageId===messageId:participant?f.plan.tasks.find(t=>t.id===m.task)?.actor===participant:true);if(!selected.length)throw new Error('coordination_message_not_planned');
     const dispatch=f.events.find(e=>e.kind==='coordination_dispatch_selected'&&e.data.run===run)?.data;if(dispatch&&this.selected(f,dispatch.task,dispatch.purpose)?.run!==run)throw new Error('coordination_old_dispatch_selection_superseded');
     for(const m of selected){const {task,binding}=this.currentTask(f,m.task),state=this.stageState(f,m.task,'investigate'),blocked=state.blockers.filter(b=>!b.startsWith('capability_not_consumed:'));if(blocked.length)throw new Error(blocked[0]);
+      for(const row of this.db.prepare("SELECT id,object FROM events WHERE kind='coordination_repair_bound'").all() as Row[]){const assignment=this.events(row.object.slice(13)).find(e=>e.id===row.id)!.data;if(assignment.actor===task.actor&&canonical(assignment.scope)===canonical(f.registration.scope)&&!this.repairEnded(assignment.operation))throw new Error('coordination_actor_repair_active_or_unknown');}
       // This readonly message may perform the consumption itself. Its input
       // must already contain the exact available upstream output; later
       // implementation still requires a complete acknowledged reply.
@@ -146,17 +148,63 @@ export class CoordinationRecords {
     const {source,input}=this.verifiedReply(run,messageId),bytes=source.materials['coordination-context.json'];if(!bytes||hash(bytes)!==bound.contextSha256||!input.replyReferences.includes(bound.contextSha256))throw new Error('coordination_exact_context_consumption_required');const context=JSON.parse(bytes.toString()),recorded=[];
     for(const d of f.plan.dependencies.filter(d=>d.task===taskId&&d.stage===stage)){
       this.currentTask(f,d.producer);const output=f.events.findLast(e=>e.kind==='coordination_output'&&e.data.task===d.producer&&e.data.capability===d.capability)?.data,consumed=context.outputs.find((o:Row)=>o.task===d.producer&&o.capability===d.capability);
-      if(!output||!consumed||output.sha256!==consumed.sha256||hash(consumed.text)!==output.sha256)throw new Error('coordination_exact_producer_output_not_consumed');this.bytes(output.sha256);this.verifiedReply(output.run,output.messageId);
+      if(!output||!consumed||output.sha256!==consumed.sha256||hash(consumed.text)!==output.sha256)throw new Error('coordination_exact_producer_output_not_consumed');this.verifyOutput(output);
       const entry={task:taskId,stage,producer:d.producer,capability:d.capability,outputSha256:output.sha256,run,messageId,contextSha256:bound.contextSha256};if(!f.events.some(e=>e.kind==='coordination_consumed'&&canonical(e.data)===canonical(entry)))this.event(id,'consumed',entry);recorded.push(entry);
     }
     return {recorded,newPermissionGranted:false};
   });}
-  /** The old repair CLI is also an entry point. Until a real operation/workspace
-   * handoff is bound, readonly feedback cannot silently authorize that route. */
-  repairGate(operation:string){return this.transaction(()=>{
-    const op=this.db.prepare('SELECT item FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');
-    const history=this.db.prepare("SELECT object FROM events WHERE kind='coordination_registered'").all() as Row[];
-    for(const {object} of history){const f=this.fixed(object.slice(13));if(f.plan.tasks.some(t=>t.item===op.item))throw new Error('coordination_explicit_write_handoff_required');}
+  /** Same-transaction check at repair reservation and every subsequent effect.
+   * This accepts only a fresh program-managed workspace after a completed
+   * owned readonly task. It does not take over an external writer or App. */
+  repairGate(operation:string,proposed?:{plan:Buffer;request:Buffer;config:Buffer},reserve=true){return this.transaction(()=>{
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');
+    const repair=JSON.parse(op.result)?.repair,raw=proposed?.plan??(repair?this.bytes(repair.planSha256):null),p=raw?JSON.parse(raw.toString()):null;
+    const history=(this.db.prepare("SELECT object FROM events WHERE kind='coordination_registered'").all() as Row[]).map(x=>this.fixed(x.object.slice(13))).filter(f=>f.plan.tasks.some(t=>t.item===op.item));
+    if(!p?.coordination){if(history.length)throw new Error('coordination_explicit_write_handoff_required');return;}
+    const ref=p.coordination,f=this.fixed(ref.planId),{task,binding}=this.currentTask(f,ref.task),requestBytes=proposed?.request??this.bytes(repair.requestSha256),configBytes=proposed?.config??this.bytes(repair.configSha256),request=JSON.parse(requestBytes.toString()),config=JSON.parse(configBytes.toString());
+    if(history.some(h=>h.plan.name!==f.plan.name))throw new Error('coordination_item_has_multiple_arrangements');
+    const output=task.outputs.find(o=>o.id===ref.capability),actor=f.plan.actors.find(a=>a.id===task.actor);
+    if(task.item!==op.item||binding.packet!==op.packet||actor?.tool!=='codex'||output?.kind!=='repair_candidate'||output.stage!=='implement'||!task.workspace||task.workspace!==join(request.executionRoot,'workspace')||!task.publishBranch||request.authorization?.allowRepair!==true)throw new Error('coordination_exact_repair_task_workspace_required');
+    const paths=[...task.independentPaths,...f.plan.shared.filter(s=>s.tasks.includes(task.id)).flatMap(s=>s.paths)];if(!Array.isArray(request.allowedPaths)||!request.allowedPaths.length||request.allowedPaths.some((path:string)=>!paths.includes(path)))throw new Error('coordination_repair_path_not_assigned');
+    const stage=this.stageState(f,task.id,'implement');if(stage.blockers.length)throw new Error(stage.blockers[0]);
+    const bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===ref.fromRun)?.data;
+    if(!bound?.mapping.some((m:Row)=>m.task===task.id&&m.messageId===ref.fromMessage))throw new Error('coordination_repair_original_task_reply_required');
+    const original=this.verifiedReply(ref.fromRun,ref.fromMessage);
+    if(original.runtime.participant!==task.actor||!original.runtime.ended||original.source.state.plan.executionKind!==(config.executionKind??'native_capture'))throw new Error('coordination_repair_original_task_not_ended');
+    // A finished report does not erase a separate active or unknown run using
+    // the same responsible actor. These are original managed runtime records.
+    for(const row of this.db.prepare("SELECT object,data FROM events WHERE kind='coordination_messages_bound'").all() as Row[]){
+      const other=this.fixed(row.object.slice(13)),link=JSON.parse(row.data).value;if(canonical(other.registration.scope)!==canonical(f.registration.scope)||!link.mapping.some((m:Row)=>other.plan.tasks.find(t=>t.id===m.task)?.actor===task.actor))continue;
+      let state:Row;try{state=this.message(link.run).state;}catch(e){if(e instanceof Error&&e.message==='original_message_run_required')continue;throw e;}
+      const runtime=state.runtimes.find((r:Row)=>r.participant===task.actor);if(runtime?.started&&(!runtime.ended||runtime.captureVerification?.proof.successfulCapture!==true&&runtime.ended.proof.knownUnstarted!==true||state.messages.some((m:Row)=>m.to===task.actor&&['Unknown','Delivered'].includes(m.state))))throw new Error('coordination_actor_active_or_unknown');
+    }
+    const entry={task:task.id,capability:ref.capability,operation,item:op.item,packet:op.packet,actor:task.actor,workspace:task.workspace,publishBranch:task.publishBranch,repository:binding.candidate.repository,scope:f.registration.scope,planSha256:hash(raw!),requestSha256:hash(requestBytes),configSha256:hash(configBytes),fromRun:ref.fromRun,fromMessage:ref.fromMessage,priorSessionId:original.message.reply.sessionId,priorTurnId:original.message.reply.turnId,newExecutionContext:true,nativeSessionResumed:false,startMode:'new_managed_workspace'};
+    for(const row of this.db.prepare("SELECT id,object FROM events WHERE kind='coordination_repair_bound'").all() as Row[]){
+      const x=this.events(row.object.slice(13)).find(e=>e.id===row.id)!.data;
+      if(x.operation===operation){if(canonical(x)!==canonical(entry)&&!(repair?.phase==='closed_unstarted'&&p.replacesClosedBinding===repair.bindingHash&&x.workspace!==entry.workspace))throw new Error('coordination_original_repair_binding_changed');continue;}
+      const samePath=(a:string,b:string)=>process.platform==='darwin'?a.toLowerCase()===b.toLowerCase():a===b;
+      if(samePath(x.workspace,entry.workspace)||x.repository===entry.repository&&x.publishBranch===entry.publishBranch||canonical(x.scope)===canonical(entry.scope)&&x.actor===entry.actor&&!this.repairEnded(x.operation))throw new Error('coordination_write_responsibility_held');
+    }
+    if(reserve&&!f.events.some(e=>e.kind==='coordination_repair_bound'&&e.data.operation===operation))this.event(f.id,'repair_bound',entry);
+    return entry;
+  });}
+  private repairEnded(operation:string){const row=this.db.prepare('SELECT status,result FROM operations WHERE id=?').get(operation) as Row,repair=row&&JSON.parse(row.result)?.repair;return row?.status==='complete'&&repair?.controllerReturned===true&&['returned','closed_unstarted'].includes(repair.phase);}
+  private repairResultView(result:Row){return {status:result.status,before:result.before,after:result.after,sourceCandidate:result.sourceCandidate,treeSha256:result.treeSha256,executionKind:result.executionKind,demonstrationFixture:result.demonstrationFixture,actualRepairPerformed:result.actualRepairPerformed,tests:projectModelTestResult(result.data.tests),testCandidateBinding:result.data.testCandidateBinding,review:result.data.review};}
+  private verifyOutput(output:Row){
+    const value=JSON.parse(this.bytes(output.sha256).toString());
+    if(output.kind==='message_report'){this.verifiedReply(output.run,output.messageId);return value;}
+    if(output.kind!=='repair_candidate')throw new Error('coordination_output_consumer_not_implemented');
+    const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(output.operation) as Row,repair=op&&JSON.parse(op.result).repair;
+    if(!repair||repair.phase!=='returned'||repair.resultSha256!==value.resultSha256||repair.evidenceSha256!==value.evidenceSha256||canonical(this.repairResultView(JSON.parse(this.bytes(repair.resultSha256).toString())))!==canonical(value.artifact.result))throw new Error('coordination_repair_output_original_changed');this.bytes(repair.evidenceSha256);return value;
+  }
+  recordRepairOutput(operation:string,artifact:Buffer){return this.transaction(()=>{
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,repair=op&&JSON.parse(op.result).repair;if(!repair||repair.phase!=='returned'||op.status!=='complete')throw new Error('coordination_completed_repair_required');
+    const plan=JSON.parse(this.bytes(repair.planSha256).toString()),ref=plan.coordination;if(!ref)throw new Error('coordination_original_repair_binding_required');const f=this.fixed(ref.planId),bound=f.events.find(e=>e.kind==='coordination_repair_bound'&&e.data.operation===operation)?.data,result=JSON.parse(this.bytes(repair.resultSha256).toString()),value=JSON.parse(artifact.toString());
+    if(!bound||bound.planSha256!==repair.planSha256||bound.requestSha256!==repair.requestSha256||bound.configSha256!==repair.configSha256||artifact.length>1024*1024||!['completed','completed_recovered_candidate'].includes(result.status)||result.actualRepairPerformed!==true||result.data?.tests?.passed!==true||result.data?.review?.verdict!=='PASS'||result.data.review.candidateH!==result.after.H||canonical(value.result)!==canonical(result)||!value.material||typeof value.diff!=='string')throw new Error('coordination_verified_new_repair_candidate_required');
+    // Full test logs stay in the original private result. Consumers get the
+    // selected source/diff, complete independent report and host test facts.
+    const output={schemaVersion:1,kind:'repair_candidate',task:ref.task,capability:ref.capability,binding:f.registration.bindings[ref.task],operation,workspace:bound.workspace,publishBranch:bound.publishBranch,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256,artifact:{...value,result:this.repairResultView(result)}},sha256=this.blob(Buffer.from(canonical(output))),entry={task:ref.task,capability:ref.capability,stage:'implement',kind:'repair_candidate',sha256,operation,afterH:result.after.H},old=f.events.find(e=>e.kind==='coordination_output'&&e.data.task===ref.task&&e.data.capability===ref.capability);
+    if(old){if(canonical(old.data)!==canonical(entry))throw new Error('coordination_original_capability_is_fixed');return {...entry,duplicate:true};}this.verifyOutput(entry);this.event(f.id,'output',entry);return {...entry,duplicate:false};
   });}
   private statusValue(id:string){const f=this.fixed(id),current=this.latest(f.plan.name)?.id===id;return {id,plan:f.plan,scope:f.registration.scope,current,parts:f.plan.shared.map(part=>({id:part.id,hash:f.registration.parts[part.id],feedback:part.feedbackFrom.map(task=>({task,reply:this.feedbackFor(f,part.id,task)}))})),tasks:f.plan.tasks.map(task=>({id:task.id,dispatch:task.dispatch,actor:task.actor,originActor:task.originActor,stages:task.stages.map(stage=>{try{return this.stageState(f,task.id,stage);}catch(e){return {stage,phasePrerequisitesMet:false,executionAuthorized:false,blockers:[e instanceof Error?e.message:'coordination_state_unknown']};}})})),writingPermissionGranted:false};}
   status(id:string){return this.transaction(()=>this.statusValue(id));}

@@ -14,8 +14,10 @@ async function fixedFile(path:string,bytes:Buffer){try{await writeFile(path,byte
 
 /** A finite readonly task entry. Stages and write ownership remain enforced
  * separately; completing these conversations is not completing implementation. */
-export async function runCoordination(store:string,planPath:string,requestPath:string,prepareOnly=false){
-  const raw=await regular(planPath,256*1024),plan=parseCoordinationPlan(raw),id=coordinationPlanId(plan),requestBytes=await regular(requestPath,256*1024),request=parseCoordinationExecution(requestBytes,plan),q=await QueueStore.open(store),root=join(store,'coordination-'+id);let lock:DatabaseSync|undefined;
+export async function runCoordination(store:string,planPath:string,requestPath:string,prepareOnly=false,expected?:{plan:string;request:string}){
+  const raw=await regular(planPath,256*1024),plan=parseCoordinationPlan(raw),id=coordinationPlanId(plan),requestBytes=await regular(requestPath,256*1024),request=parseCoordinationExecution(requestBytes,plan);
+  if(expected&&(id!==expected.plan||hash(requestBytes)!==expected.request))throw new Error('coordination_selected_input_changed');
+  const q=await QueueStore.open(store),root=join(store,'coordination-'+id);let lock:DatabaseSync|undefined;
   try{
     await directory(root);const lockPath=join(root,'controller.sqlite');try{await writeFile(lockPath,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}await regular(lockPath,4*1024*1024);lock=new DatabaseSync(lockPath);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{lock.close();lock=undefined;throw new Error('coordination_controller_active');}
     const records=q.coordination();records.register(raw);const execution=records.execution(id,requestBytes),prepared:Record<string,any>={},results:Record<string,any>={},errors:Record<string,string>={};let newModelRequests=0;

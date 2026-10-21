@@ -18,6 +18,10 @@ import { fixture as ledgerFixture } from '../resources/provider-fixture.js';
 import { authorizeRepairFixture } from './repair-authority-fixture.js';
 import { resourceAction } from '../../src/resource-claims.js';
 import { reconcileProjectTests } from '../../src/project-repair.js';
+import { messageFixture } from '../w6/message-fixture.js';
+import { runCoordination } from '../../src/coordination.js';
+import { coordinationPlanId } from '../../src/coordination-contract.js';
+import { runCoordinatedRepair } from '../../src/coordination-repair.js';
 const dockerPath=process.env.TONGXU_TEST_DOCKER_CONFIG;
 if(!dockerPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG required');
 const docker=JSON.parse(await readFile(dockerPath,'utf8'));
@@ -63,6 +67,40 @@ test('an existing repair entry cannot bypass a newly registered coordination han
   await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);assert.equal(JSON.stringify(f.q.receiverState(f.operation).receiver.judgment),judgment);
   const c=await f.packet({pr:3,H:f.H}),next={...plan,previous:hash((await import('../../src/comparison.js')).canonical(plan)),revision:'r2',actors:[...plan.actors,{id:'C',tool:'codex'}],tasks:[task('C',c.item),task('B',other.item)]};f.q.coordination().register(Buffer.from(JSON.stringify(next)));
   await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);
+});
+async function coordinatedRepair(t:test.TestContext,start=true){
+  const f=await setupRepair(t),messages=await messageFixture(t),other=await f.packet({pr:2,H:f.H});
+  let script=await readFile(messages.codex,'utf8');script=script.replace("report:'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId","report:JSON.stringify((()=>{const c=JSON.parse(x.material.find(m=>m.name==='coordination-context.json').text),task=x.body.split('\\n')[0].slice(18);return {kind:'tongxu-coordination-feedback',task,revision:c.revision,parts:[],report:'Explicit fixture consumed '+c.outputs.map(o=>o.sha256).join(',')};})())");await writeFile(messages.codex,script);
+  const plan={schemaVersion:1,kind:'tongxu-task-coordination',name:'coordinated-repair-fixture',revision:'r1',previous:null,source:'Explicit test: new managed workspace after original readonly task, no external writer takeover',authorityIntent:null,mode:'stage_serial',actors:[{id:'A',tool:'codex'},{id:'B',tool:'codex'}],tasks:[{id:'A',item:f.plan.item,actor:'A',originActor:'A',dispatch:'owner_backlog',stages:['investigate','implement'],independentPaths:f.request.allowedPaths,workspace:join(f.request.executionRoot,'workspace'),publishBranch:'fixture-repair-A',outputs:[{id:'fixed-label',stage:'implement',kind:'repair_candidate'}]},{id:'B',item:other.item,actor:'B',originActor:'B',dispatch:'owner_backlog',stages:['investigate'],independentPaths:[],workspace:null,publishBranch:null,outputs:[]}],shared:[],dependencies:[{task:'B',stage:'investigate',producer:'A',capability:'fixed-label'}]};
+  const config={schemaVersion:1,kind:'tongxu-coordination-readonly-execution',source:'Explicit fixture processes; no real models',executionKind:'fixture',actors:['A','B'].map(id=>({id,tool:'codex',executable:messages.codex,executableSha256:hash(script),disabledMcpServers:[],allowedInstructionSources:[]})),taskBodies:{A:'Review the scoped label contract before a new managed repair workspace is prepared.',B:'Read the actual repaired candidate, code diff, tests and independent report from A.'},authorityIntents:{A:null,B:null},billing:messages.plan.billing,timeoutMs:1000,refreshUnsent:false};
+  const planPath=join(f.root,'coordination.json'),configPath=join(f.root,'coordination-execution.json');await writeFile(planPath,JSON.stringify(plan));await writeFile(configPath,JSON.stringify(config));
+  const first=await runCoordination(f.store,planPath,configPath,!start);assert.equal(first.newModelRequests,start?1:0);if(start)assert.equal(first.results['A:investigate'].completed,true,JSON.stringify(first.errors));assert.equal(first.prepared['B:investigate'],undefined);
+  const from=first.prepared['A:investigate'],p={...f.p,coordination:{planId:first.coordination,task:'A',capability:'fixed-label',fromRun:from.run,fromMessage:from.messageId}};await writeFile(f.planPath,JSON.stringify(p));
+  return {...f,messages,coordPlan:plan,coordPlanPath:planPath,coordConfigPath:configPath,coordId:first.coordination,coordinatedPlan:p};
+}
+test('coordinated task hands one managed repair to the correct operation and a later task actually consumes its new candidate',async t=>{
+  const f=await coordinatedRepair(t),result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(result.coordinationOutput.kind,'repair_candidate');assert.equal(result.coordinationOutput.afterH,result.after.H);assert.equal(result.counters.actualFileWrites,1);
+  const context=f.q.coordination().context(f.coordId),artifact=JSON.parse(context.value.outputs[0].text);assert.match(artifact.artifact.material['src/normalize.mjs'].text,/Untitled/);assert.match(artifact.artifact.diff,/Untitled/);assert.equal(artifact.artifact.result.review.candidateH,result.after.H);assert.equal(artifact.artifact.result.tests.passed,true);assert.equal('stdout' in artifact.artifact.result.tests.tools[0],false);
+  const next=await runCoordination(f.store,f.coordPlanPath,f.coordConfigPath);assert.equal(next.newModelRequests,1);assert.equal(next.readonlyTasksCompleted,true,JSON.stringify(next.errors));assert.equal(next.state.tasks[1]!.stages[0]!.phasePrerequisitesMet,true);assert.ok(next.results['B:investigate'].messages[0].reply.report.includes(result.coordinationOutput.sha256));
+  const trace=await readFile(f.model.trace),messages=await readFile(f.messages.trace);const repeat=await runQueueRepair(f.planPath);assert.equal(repeat.coordinationOutput.duplicate,true);assert.equal((await runCoordination(f.store,f.coordPlanPath,f.coordConfigPath)).newModelRequests,0);assert.deepEqual(await readFile(f.model.trace),trace);assert.deepEqual(await readFile(f.messages.trace),messages);
+});
+test('one coordinated repair entry runs investigation, bounded implementation and exact downstream consumption without report copying',async t=>{
+  const f=await coordinatedRepair(t,false);await writeFile(f.planPath,JSON.stringify(f.p));
+  const result=await runCoordinatedRepair(f.store,f.coordPlanPath,f.coordConfigPath,f.planPath);assert.equal(result.completed,true,JSON.stringify(result));assert.equal(result.repair?.counters.actualFileWrites,1);assert.equal(result.readonlyModelRequests,2);assert.equal(result.manualReportCopyRequired,false);
+  const trace=await readFile(f.model.trace),messages=await readFile(f.messages.trace),again=await runCoordinatedRepair(f.store,f.coordPlanPath,f.coordConfigPath,f.planPath);assert.equal(again.completed,true);assert.equal(again.readonlyModelRequests,0);assert.deepEqual(await readFile(f.model.trace),trace);assert.deepEqual(await readFile(f.messages.trace),messages);
+});
+test('an active or unknown coordinated repair keeps its actor occupied after the readonly context ended',async t=>{
+  const f=await coordinatedRepair(t),running=runQueueRepair(f.planPath).then(value=>({value,error:null as Error|null}),error=>({value:null,error:error as Error})),deadline=Date.now()+5000;
+  while(f.q.status().operations.find((o:any)=>o.id===f.operation)?.status!=='repairing'&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));assert.equal(f.q.status().operations.find((o:any)=>o.id===f.operation)?.status,'repairing');
+  f.q.control('scope','implementation','stopped','explicit fixture stop before the managed implementation continues');await running;
+  const next={...f.coordPlan,previous:f.coordId,revision:'r2',mode:'parallel',dependencies:[],tasks:f.coordPlan.tasks.map((t,i)=>i?{...t,actor:'A',originActor:'A'}:t)},config=JSON.parse(await readFile(f.coordConfigPath,'utf8'));config.actors=config.actors.filter((a:any)=>a.id==='A');await writeFile(f.coordPlanPath,JSON.stringify(next));await writeFile(f.coordConfigPath,JSON.stringify(config));const trace=await readFile(f.messages.trace),result=await runCoordination(f.store,f.coordPlanPath,f.coordConfigPath);
+  assert.equal(result.newModelRequests,0);assert.match(JSON.stringify(result.results),/actor_repair_active_or_unknown/);assert.deepEqual(await readFile(f.messages.trace),trace);
+});
+test('a coordinated repair cannot substitute its task, workspace or allowed paths, or use an obsolete arrangement',async t=>{
+  const f=await coordinatedRepair(t),trace=await readFile(f.model.trace),base=f.coordinatedPlan;
+  await writeFile(f.planPath,JSON.stringify({...base,coordination:{...base.coordination,task:'B'}}));await assert.rejects(runQueueRepair(f.planPath),/exact_repair_task_workspace/);
+  for(const change of [{executionRoot:join(f.root,'different-workspace')},{allowedPaths:['test/normalize.test.mjs']}]){const request={...f.request,...change};await writeFile(f.requestPath,JSON.stringify(request));await writeFile(f.planPath,JSON.stringify({...base,requestSha256:hash(await readFile(f.requestPath))}));await assert.rejects(runQueueRepair(f.planPath),/exact_repair_task_workspace|repair_path_not_assigned/);}
+  await writeFile(f.requestPath,JSON.stringify(f.request));await writeFile(f.planPath,JSON.stringify(base));const next={...f.coordPlan,revision:'r2',previous:f.coordId};f.q.coordination().register(Buffer.from(JSON.stringify(next)));assert.notEqual(coordinationPlanId(next as any),f.coordId);await assert.rejects(runQueueRepair(f.planPath),/current_stage_binding/);assert.deepEqual(await readFile(f.model.trace),trace);assert.equal(f.q.status().claims.length,0);
 });
 test('governed repair requires the exact current action and held original resource, then reports its real terminal result without a second claim',async t=>{
   const f=await setupRepair(t),ledger=await ledgerFixture(t),authority=await authorizeRepairFixture(f,ledger.profile),before=await readFile(f.model.trace);

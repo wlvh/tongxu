@@ -256,10 +256,10 @@ PRAGMA user_version=4;`);
     const coordination=this.coordinationRecords(fn=>fn());
     return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id),(operation,proposed,observations)=>{
       this.repairAuthorization(operation,proposed,observations);
-      coordination.repairGate(operation);
+      coordination.repairGate(operation,proposed);
     });
   }
-  repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation);return {operation,preparationChecked:true,modelExecutionAllowed:false};});}
+  repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation,proposed,false);return {operation,preparationChecked:true,modelExecutionAllowed:false};});}
   private repairAuthorization(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:import('./authority-source.js').OwnerObservation[],requireHeld=true){
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const stage=parse(op,'result')?.repair;
     const p=JSON.parse((proposed?.plan??this.blob(stage?.planSha256)).toString()),request=JSON.parse((proposed?.request??this.blob(stage?.requestSha256)).toString()),config=JSON.parse((proposed?.config??this.blob(stage?.configSha256)).toString()),governance=p.governance;
