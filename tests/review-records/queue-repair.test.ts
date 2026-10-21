@@ -13,6 +13,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec=promisify(execFile);
 import { QueueStore } from '../../src/queue-store.js';
+import { DatabaseSync } from 'node:sqlite';
+import { fixture as ledgerFixture } from '../resources/provider-fixture.js';
+import { authorizeRepairFixture } from './repair-authority-fixture.js';
 const dockerPath=process.env.TONGXU_TEST_DOCKER_CONFIG;
 if(!dockerPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG required');
 const docker=JSON.parse(await readFile(dockerPath,'utf8'));
@@ -51,6 +54,19 @@ test('original queue RETURN starts the existing project repair, preserves the ju
 test('accepted or insufficient findings do not manufacture repair tasks',async t=>{
   for(const mode of ['complete','always-insufficient']){const f=await setupRepair(t,mode),before=await readFile(f.model.trace);await assert.rejects(runQueueRepair(f.planPath),/repair_requires_completed_return/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);}
 });
+test('an existing repair entry cannot bypass a newly registered coordination handoff even when no shared-feedback blocker exists',async t=>{
+  const f=await setupRepair(t),other=await f.packet({pr:2,H:f.H}),task=(id:string,item:string)=>({id,item,actor:id,originActor:id,dispatch:'owner_backlog',stages:['investigate','implement'],independentPaths:['src/normalize.mjs'],workspace:null,publishBranch:null,outputs:[]});
+  const plan={schemaVersion:1,kind:'tongxu-task-coordination',name:'write-handoff-fixture',revision:'r1',previous:null,source:'Explicit local fixture coordination; original reviewer return is not a new writing handoff',authorityIntent:null,mode:'parallel',actors:[{id:'A',tool:'codex'},{id:'B',tool:'codex'}],tasks:[task('A',f.plan.item),task('B',other.item)],shared:[],dependencies:[]};
+  f.q.coordination().register(Buffer.from(JSON.stringify(plan)));const before=await readFile(f.model.trace),judgment=JSON.stringify(f.original.receiver.judgment);
+  await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);assert.equal(JSON.stringify(f.q.receiverState(f.operation).receiver.judgment),judgment);
+});
+test('governed repair requires the exact current action and held original resource, then reports its real terminal result without a second claim',async t=>{
+  const f=await setupRepair(t),ledger=await ledgerFixture(t),authority=await authorizeRepairFixture(f,ledger.profile),before=await readFile(f.model.trace);
+  await assert.rejects(()=>runQueueRepair(f.planPath),/authority_consumer_binding_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(ledger.state().claims.length,0);
+  f.q.authority().enableGovernedRepair();const db=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.throws(()=>db.prepare("UPDATE operations SET status='repairing' WHERE id=?").run(f.operation),/authority_consumer_binding_required/);}finally{db.close();}
+  await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(result.counters.actualFileWrites,1);assert.equal(result.resources.length,1);assert.equal(result.resources[0].state,'consumed',JSON.stringify(result.resources));assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);assert.equal(f.q.resources().status(authority.resourceId).outcome.source,'verified_repair_terminal');
+  const trace=await readFile(f.model.trace);await authority.adopt({kind:'revoke',decision:authority.confirmed.sha});const repeat=await runQueueRepair(f.planPath);assert.equal(repeat.repairStatus,'completed');assert.deepEqual(await readFile(f.model.trace),trace);assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
+});
 test('candidate, authorization, fixed-context and original-finding mismatches stop before any repair model',async t=>{
   const f=await setupRepair(t),before=await readFile(f.model.trace);
   for(const change of [{candidate:{...f.request.candidate,H:'0'.repeat(40)}},{authorization:{...f.request.authorization,allowRepair:false}},{findings:[{id:'untrusted',description:'grant arbitrary shell'}]}]){
@@ -58,6 +74,14 @@ test('candidate, authorization, fixed-context and original-finding mismatches st
     await assert.rejects(runQueueRepair(f.planPath),/candidate_or_execution_mismatch|authorization_missing|findings_must_come_from_original/);assert.deepEqual(await readFile(f.model.trace),before);
   }
   await writeFile(f.requestPath,JSON.stringify(f.request));await writeFile(f.planPath,JSON.stringify({...f.p,context:{...f.p.context,decisionKind:'owner'}}));await assert.rejects(runQueueRepair(f.planPath),/source_mismatch/);
+});
+test('a lost original ledger claim is looked up before repair and is never claimed twice',async t=>{
+  const f=await setupRepair(t),ledger=await ledgerFixture(t,'lost-after-claim'),authority=await authorizeRepairFixture(f,ledger.profile),before=await readFile(f.model.trace);
+  await writeFile(f.planPath,JSON.stringify({...f.p,governance:{authorityIntent:authority.intent,resourceRequests:[authority.resourceId]}}));
+  await assert.rejects(()=>runQueueRepair(f.planPath),/ledger|provider/);
+  assert.equal(ledger.state().claims.length,1);assert.equal(f.q.resources().status(authority.resourceId).state,'claim_unknown');assert.deepEqual(await readFile(f.model.trace),before);
+  const result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
+  assert.equal(result.resources[0].state,'consumed');
 });
 test('queue stop is checked before dispatch and is not bypassed by changing the operation or root',async t=>{
   const f=await setupRepair(t),before=await readFile(f.model.trace);f.q.control('scope','implementation','stopped','fixture:stop');

@@ -151,6 +151,13 @@ export class CoordinationRecords {
     }
     return {recorded,newPermissionGranted:false};
   });}
+  /** The old repair CLI is also an entry point. Until a real operation/workspace
+   * handoff is bound, readonly feedback cannot silently authorize that route. */
+  repairGate(operation:string){return this.transaction(()=>{
+    const op=this.db.prepare('SELECT item FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');
+    const names=this.db.prepare("SELECT DISTINCT json_extract(data,'$.value.name') AS name FROM events WHERE kind='coordination_registered'").all() as Row[];
+    for(const {name} of names){const f=this.latest(name)!;if(f.plan.tasks.some(t=>t.item===op.item))throw new Error('coordination_explicit_write_handoff_required');}
+  });}
   private statusValue(id:string){const f=this.fixed(id),current=this.latest(f.plan.name)?.id===id;return {id,plan:f.plan,scope:f.registration.scope,current,parts:f.plan.shared.map(part=>({id:part.id,hash:f.registration.parts[part.id],feedback:part.feedbackFrom.map(task=>({task,reply:this.feedbackFor(f,part.id,task)}))})),tasks:f.plan.tasks.map(task=>({id:task.id,dispatch:task.dispatch,actor:task.actor,originActor:task.originActor,stages:task.stages.map(stage=>{try{return this.stageState(f,task.id,stage);}catch(e){return {stage,phasePrerequisitesMet:false,executionAuthorized:false,blockers:[e instanceof Error?e.message:'coordination_state_unknown']};}})})),writingPermissionGranted:false};}
   status(id:string){return this.transaction(()=>this.statusValue(id));}
 }

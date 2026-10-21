@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
+import type { OwnerObservation } from './authority-source.js';
 
 type Row = Record<string, any>;
 const digest = /^[a-f0-9]{64}$/;
@@ -22,7 +23,7 @@ BEGIN SELECT RAISE(ABORT,'repair_record_is_bound'); END`;
 export class ReviewRecords {
   constructor(private db: DatabaseSync, private transaction: <T>(f: () => T) => T,
     private source: (id: string, requireCurrent: boolean) => Row,
-    private publication: (id: string) => Row) {}
+    private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void) {}
   private event(kind: string, object: string, data: unknown) { this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind, object, JSON.stringify(data), now()); }
   private events(object: string, kind?: string): Row[] { return (this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all(object) as Row[]).filter(e => !kind || e.kind === kind).map(e => ({ ...e, data: JSON.parse(e.data) })); }
   private blob(bytes: Buffer) { const sha256 = hash(bytes); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, bytes); this.bytes(sha256); return sha256; }
@@ -51,7 +52,7 @@ export class ReviewRecords {
     return { op, result, repair: r, plan: this.bytes(r.planSha256), request: this.bytes(r.requestSha256), config: this.bytes(r.configSha256) };
   }
   state(id: string) { return this.transaction(() => { this.requireMode(true); const x = this.fixed(id); if (x.repair.resultSha256) this.bytes(x.repair.resultSha256); return { ...x, events: this.events(id).filter(e => e.kind.startsWith('repair_')) }; }); }
-  reserve(id: string, plan: Buffer, request: Buffer, config: Buffer) {
+  reserve(id: string, plan: Buffer, request: Buffer, config: Buffer,observations:OwnerObservation[]=[]) {
     return this.transaction(() => {
       this.requireMode(); const { op, result } = this.operation(id);
       if (result.repair) {
@@ -61,6 +62,7 @@ export class ReviewRecords {
         if(x.repair.phase!=='closed_unstarted'||replacement.replacesClosedBinding!==x.repair.bindingHash||nextRequest.executionRoot===x.repair.executionRoot)throw new Error('queue_repair_fixed_input_changed');
       }
       const s = this.source(id, true);
+      this.repairGate?.(id,{plan,request,config},observations);
       if(s.receiver.subject)throw new Error('composition_requires_member_scoped_repair_and_reverification');
       if (op.status !== 'complete' || s.receiver.judgment.verdict !== 'RETURN_FOR_WORK' || !s.receiver.controllerReturned) throw new Error('repair_requires_completed_return');
       const p = JSON.parse(plan.toString()), r = JSON.parse(request.toString()), c = JSON.parse(config.toString());
@@ -72,7 +74,7 @@ export class ReviewRecords {
       const seats = Number((this.db.prepare("SELECT value FROM meta WHERE key='seats'").get() as Row).value);
       if ((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n >= seats) throw new Error('reception_seats_full');
       const bindingHash = hash(canonical({ operation: id, packet: op.packet, originalBinding: s.receiver.bindingHash, plan: hash(plan), request: hash(request), config: hash(config) }));
-      const repair = { bindingHash, ...(result.repair?{previousBindingHash:result.repair.bindingHash}:{}), phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.receiver.judgmentId, sourceBindingHash: s.receiver.bindingHash, scope: s.context.scope.id, registeredAt: now() };
+      const repair = { bindingHash, ...(result.repair?{previousBindingHash:result.repair.bindingHash}:{}),...(p.governance?{authorityIntent:p.governance.authorityIntent,resourceRequests:p.governance.resourceRequests}:{}), phase: 'reserved', planSha256: this.blob(plan), requestSha256: this.blob(request), configSha256: this.blob(config), executionRoot: r.executionRoot, controllerPid: process.pid, controllerReturned: false, sourceJudgmentId: s.receiver.judgmentId, sourceBindingHash: s.receiver.bindingHash, scope: s.context.scope.id, registeredAt: now() };
       const generation = (this.db.prepare('SELECT COALESCE(MAX(generation),0) AS n FROM operations WHERE target=?').get(op.target) as Row).n + 1;
       this.db.prepare("UPDATE operations SET status='repairing',generation=?,finished_at=NULL,result=? WHERE id=?").run(generation, JSON.stringify({ ...result, repair }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
@@ -80,9 +82,10 @@ export class ReviewRecords {
       return { ...this.fixed(id), duplicate: false };
     });
   }
-  check(id: string, bindingHash: string, effect?: () => void) {
+  check(id: string, bindingHash: string, effect?: () => void,observations:OwnerObservation[]=[]) {
     return this.transaction(() => {
       this.requireMode(); const x = this.fixed(id); this.source(id, true);
+      this.repairGate?.(id,undefined,observations);
       const c = this.db.prepare('SELECT * FROM claims WHERE operation=?').get(id) as Row;
       if (x.op.status !== 'repairing' || x.repair.phase === 'returned' || x.repair.bindingHash !== bindingHash || !c || c.generation !== x.op.generation || c.target !== x.op.target) throw new Error('queue_repair_claim_changed');
       const context = JSON.parse(this.db.prepare('SELECT context FROM items WHERE id=?').get(x.op.item)!.context as string);

@@ -15,7 +15,7 @@ export type NativeOptions = {
   role: 'verifier_fact' | 'reviewer' | 'secretary'; system: string; inputManifestSha256: string;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   allowedInstructionSources: Array<{ path: string; sha256: string }>;
-  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; beforeTurn?: () => Promise<void>; gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string }): Promise<unknown> };
+  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string }): Promise<unknown> };
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
@@ -170,6 +170,7 @@ export class BoundedCodexSession {
     this.binding.promptSha256 = hash(JSON.stringify({ system: this.o.system, inputs: this.inputs }));
     save(join(this.o.directory, `turn-${index}-intent.json`), { subjectCandidate: candidate, inputSha256: hash(input), status: 'send_registered' });
     if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
+    this.o.beforeSendSync?.();
     this.pendingTurn = this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: schema });
     let response;
     try { response = await this.pendingTurn; } finally { this.pendingTurn = null; }

@@ -8,14 +8,20 @@ import { runRepair } from './repair.js';
 import { regular, exists, processState } from './repair-workspace.js';
 import { hash } from './snapshot.js';
 import { canonical } from './comparison.js';
+import { randomUUID } from 'node:crypto';
+import { privateDirectory } from './snapshot.js';
+import { readOwnerSource,type OwnerObservation } from './authority-source.js';
+import { resourceAction } from './resource-claims.js';
+import type { AuthorityRole } from './authority-contract.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
-  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string };
+  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]} };
 const uuid = /^[a-f0-9-]{36}$/, digest = /^[a-f0-9]{64}$/;
 export function parseQueueRepairPlan(bytes: Buffer): QueueRepairPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>k!=='replacesClosedBinding').sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if(p.governance!==undefined&&(!p.governance||Object.keys(p.governance).sort().join()!=='authorityIntent,resourceRequests'||typeof p.governance.authorityIntent!=='string'||!p.governance.authorityIntent.trim()||p.governance.authorityIntent.length>128||!Array.isArray(p.governance.resourceRequests)||p.governance.resourceRequests.length>32||new Set(p.governance.resourceRequests).size!==p.governance.resourceRequests.length||p.governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!digest.test(r))))throw new Error('invalid_queue_repair_governance');
   for (const path of [p.store, p.request, p.config]) if (typeof path !== 'string' || resolve(path) !== path) throw new Error('queue_repair_path_not_canonical');
   return p;
 }
@@ -71,21 +77,39 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
         priorReview:{operation:p.operation,packet:evidence.packet,judgmentId:r.judgmentId,bindingHash:r.bindingHash,inputSha256:r.inputSha256,report:r.judgment.report,findings:r.judgment.findings,context:evidence.context},
         queueOperation:{store:p.store,operation:p.operation}
       };
-      const effectiveBytes = Buffer.from(JSON.stringify(effective)), registered = records.reserve(p.operation,planBytes,effectiveBytes,configBytes), bound = registered.repair.bindingHash;
+      const effectiveBytes = Buffer.from(JSON.stringify(effective));let observations:OwnerObservation[]=[],role:AuthorityRole='implementer',prior:Row|null=null;
+      try{prior=records.state(p.operation).repair;}catch(e){if(!(e instanceof Error)||e.message!=='queue_repair_not_registered')throw e;}
+      const terminalRead=prior?.planSha256===hash(planBytes)&&['returned','closed_unstarted'].includes(prior.phase);
+      const refresh=async()=>{
+        if(!p.governance)return;
+        const authority=q.authority(),intent=authority.reservedAction(p.governance.authorityIntent),profile=authority.configuration().profile;role=intent.role;
+        if(!['implementer','background'].includes(role))throw new Error('queue_repair_authority_role_mismatch');
+        const root=join(p.store,'repair-authority-'+p.operation+'-'+randomUUID());await privateDirectory(root,true);const results=await Promise.allSettled(authority.sourceRequests(intent.authorization).map((source,index)=>readOwnerSource(profile,source.proposalSha256,source.commentId,join(root,'source-'+index))));
+        observations=results.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);const failure=results.find(result=>result.status==='rejected');if(failure?.status==='rejected')throw failure.reason;
+        for(const id of p.governance.resourceRequests)await resourceAction(p.store,id,'lookup',role);
+      };
+      if(!terminalRead&&p.governance){
+        q.authority().enableGovernedRepair();
+        await refresh();q.repairResourceAdmission(p.operation,{plan:planBytes,request:effectiveBytes,config:configBytes},observations);
+        for(const id of p.governance.resourceRequests){const state=q.resources().status(id);if(state.state==='prepared_not_sent')await resourceAction(p.store,id,'claim',role);else if(state.state!=='held')throw new Error('queue_repair_original_resource_unresolved');}
+        await refresh();
+      }
+      const registered = records.reserve(p.operation,planBytes,effectiveBytes,configBytes,observations), bound = registered.repair.bindingHash;
       if(registered.repair.phase==='closed_unstarted')return {operation:p.operation,status:'closed_unstarted',duplicate:true,modelExecutionStarted:false,productionActionAllowed:false};
       if (registered.duplicate && registered.repair.phase !== 'returned' && !registered.repair.controllerReturned && processState(registered.repair.controllerPid) !== 'ended') throw new Error('original_queue_repair_controller_active_or_unknown');
       if (registered.duplicate && registered.repair.phase !== 'returned' && !reconcileEnded) throw new Error('explicit_queue_repair_reconciliation_required');
       const requestPath = join(p.store,`repair-${p.operation}-${bound}-request.json`), configPath = join(p.store,`repair-${p.operation}-${bound}-config.json`);
       await putFixed(requestPath,effectiveBytes); await putFixed(configPath,configBytes);
       try {
-        if (registered.repair.phase !== 'returned') records.check(p.operation,bound);
+        if (registered.repair.phase !== 'returned') records.check(p.operation,bound,undefined,observations);
         const prepared = await prepareProjectRepair(configPath,requestPath,request.executionRoot);
         if (registered.repair.phase !== 'returned') records.controller(p.operation,bound,'prepared',{plan:prepared.plan});
         if (registered.repair.phase !== 'returned') records.controller(p.operation,bound,'dispatched',{operation:prepared.operation,reconcileEnded});
-        const result = await runRepair(prepared.plan,prepared.operation,reconcileEnded,effect=>{records.check(p.operation,bound,effect);});
+        const result = await runRepair(prepared.plan,prepared.operation,reconcileEnded,effect=>{records.check(p.operation,bound,effect,observations);},refresh);
         const resultBytes = Buffer.from(JSON.stringify(result)), proof = await repairEvidence(prepared.operation,p.operation,bound,resultBytes);
         const receipt = records.complete(p.operation,bound,resultBytes,Buffer.from(JSON.stringify(proof)));
-        return {operation:p.operation,status:'repair_result_recorded',repairStatus:result.status,after:result.after,counters:receipt.counters,duplicate:receipt.duplicate,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
+        const resources:Row[]=[];if(p.governance){role=q.authority().reservedAction(p.governance.authorityIntent).role;for(const id of p.governance.resourceRequests){try{let state=q.resources().status(id);if(state.pendingResultAttempt&&!['consumed','released'].includes(state.state))state=await resourceAction(p.store,id,'lookup',role);resources.push(await resourceAction(p.store,id,'record-result',role));}catch(e){resources.push({id,status:'result_pending_or_unknown',error:e instanceof Error?e.message:'resource_record_unavailable',newExecutionAllowed:false});}}}
+        return {operation:p.operation,status:'repair_result_recorded',repairStatus:result.status,after:result.after,counters:receipt.counters,duplicate:receipt.duplicate,resources,manualReportCopyRequired:false,manualRepairRequired:false,productionActionAllowed:false};
       } catch (e) {
         records.controller(p.operation,bound,'unknown',{reason:e instanceof Error?e.message:'repair_unavailable'}); throw e;
       }

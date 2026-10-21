@@ -90,10 +90,10 @@ export async function recoverStage(directory: string, kind: 'codex' | 'claude') 
     if (JSON.stringify(binding) !== JSON.stringify(receipt.binding)) throw new Error('stage_binding_changed');
     return readCodexExecution(directory);
   }
-  if (hash(await readFile(join(directory, 'stdin.ndjson'))) !== receipt.inputSha256) throw new Error('stage_input_integrity_failed');
+  if (hash(await readFile(join(directory, 'stdin.ndjson'))) !== (receipt.wireInputSha256??receipt.inputSha256)) throw new Error('stage_input_integrity_failed');
   const recovered = await readClaudeExecution(directory);
   if (recovered.sessionId !== receipt.sessionId || recovered.finalText !== receipt.finalText) throw new Error('stage_raw_result_not_final');
-  if (recovered.inputSha256 !== receipt.inputSha256 || recovered.systemPromptSha256 !== receipt.systemPromptSha256) throw new Error('stage_input_integrity_failed');
+  if (recovered.inputSha256 !== receipt.inputSha256 || recovered.systemPromptSha256 !== receipt.systemPromptSha256||recovered.protocol!==(receipt.protocol??'claude-text/2.1.233')||recovered.wireInputSha256!==(receipt.wireInputSha256??receipt.inputSha256)) throw new Error('stage_input_integrity_failed');
   return recovered;
 }
 

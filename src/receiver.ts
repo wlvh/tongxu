@@ -8,7 +8,7 @@ import { QueueStore } from './queue-store.js';
 import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt } from './role-prompts.js';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
-import { runClaude, readClaudeExecution, claudeArgs } from './live-claude.js';
+import { runClaude, readClaudeExecution, claudeExecutionArgs } from './live-claude.js';
 
 const exec = promisify(execFile), digest = /^[a-f0-9]{64}$/, uuid = /^[a-f0-9-]{36}$/;
 export type ReceiverPlan = {
@@ -94,7 +94,7 @@ async function consume(q: QueueStore, operation: string) {
   const state = q.receiverState(operation), r = state.receiver, stage = join(r.directory, 'claude');
   if(state.promptAssembly){const assembly=JSON.parse(state.promptAssembly.toString());inspectRolePrompt(assembly,'receiver');if(assembly.system!==state.system.toString()||JSON.parse(state.input.toString()).binding.promptAssemblySha256!==hash(state.promptAssembly))throw new Error('receiver_prompt_assembly_capture_mismatch');}
   const receipt = await readClaudeExecution(stage), launch = JSON.parse((await file(join(stage, 'launch.json'))).toString()), p = parseReceiverPlan(state.plan);
-  if (receipt.inputSha256 !== r.inputSha256 || receipt.systemPromptSha256 !== r.systemSha256 || launch.command !== p.claudeExecutable || launch.cwd !== stage || canonical(launch.args) !== canonical(claudeArgs(state.system.toString()))) throw new Error('receiver_original_input_or_tool_policy_changed');
+  if (receipt.inputSha256 !== r.inputSha256 || receipt.systemPromptSha256 !== r.systemSha256 || launch.command !== p.claudeExecutable || launch.cwd !== stage || canonical(launch.args) !== canonical(claudeExecutionArgs(state.system.toString(),receipt.protocol,receipt.sessionId))) throw new Error('receiver_original_input_or_tool_policy_changed');
   const originals = await collectOriginals(stage);
   // The native verifier has already established a complete original execution.
   // Classification records that fact; it does not alter or approve its output.

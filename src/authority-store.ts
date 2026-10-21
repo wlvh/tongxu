@@ -7,6 +7,9 @@ import { requireOwnerObservation, type OwnerObservation } from './authority-sour
 
 type Row=Record<string,any>;
 const profileKey='owner_authority_profile';
+const repairConsumerKey='owner_governed_repair_v1';
+const admittedRepair=`EXISTS(SELECT 1 FROM events a WHERE a.kind='authority_repair_admitted' AND a.object=NEW.id AND json_extract(a.data,'$.packet')=NEW.packet AND json_extract(a.data,'$.planSha256')=json_extract(NEW.result,'$.repair.planSha256') AND json_extract(a.data,'$.requestSha256')=json_extract(NEW.result,'$.repair.requestSha256') AND json_extract(a.data,'$.configSha256')=json_extract(NEW.result,'$.repair.configSha256') AND json_extract(a.data,'$.authorityIntent')=json_extract(NEW.result,'$.repair.authorityIntent'))`;
+const governedRepairGuard=`CREATE TRIGGER authority_legacy_native_guard BEFORE UPDATE ON operations WHEN EXISTS(SELECT 1 FROM meta WHERE key='${profileKey}') AND ((NEW.status='receiving' AND (OLD.status!='receiving' OR json_extract(NEW.result,'$.receiver.phase')='dispatch_registered' AND json_extract(OLD.result,'$.receiver.phase') IS NOT 'dispatch_registered')) OR NEW.status='repairing' AND OLD.status!='repairing' AND NOT ${admittedRepair}) BEGIN SELECT RAISE(ABORT,'authority_consumer_binding_required'); END`;
 const ownerStopPredicate=`EXISTS(SELECT 1 FROM events a WHERE a.kind='authority_control_applied' AND a.object=NEW.scope AND json_extract(a.data,'$.control')=NEW.kind AND json_extract(a.data,'$.state')='stopped' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.kind='authority_control_applied' AND b.object=a.object AND json_extract(b.data,'$.control')=NEW.kind AND b.id>a.id))`;
 const guards=[
   ...['INSERT','UPDATE'].map(verb=>({name:'authority_control_'+verb.toLowerCase(),sql:`CREATE TRIGGER authority_control_${verb.toLowerCase()} BEFORE ${verb} ON controls WHEN NEW.stopped=0 AND ${ownerStopPredicate} BEGIN SELECT RAISE(ABORT,'verified_owner_stop_requires_verified_resume'); END`})),
@@ -27,7 +30,7 @@ export class AuthorityRecords {
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row;const b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('authority_original_changed');return b;}
-  private mode(){if(![12,13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===g.sql))throw new Error('owner_authority_not_enabled');}
+  private mode(){const repair=this.db.prepare('SELECT value FROM meta WHERE key=?').get(repairConsumerKey) as Row|undefined;if(repair&&repair.value!==hash(governedRepairGuard))throw new Error('owner_repair_consumer_contract_changed');if(![12,13,14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version)||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===(repair&&g.name==='authority_legacy_native_guard'?governedRepairGuard:g.sql)))throw new Error('owner_authority_not_enabled');}
   private profile(){this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!isAuthorityDigest(ref))throw new Error('owner_authority_profile_missing');const p=parseAuthorityProfile(this.bytes(ref));if(hash(canonical(p))!==ref)throw new Error('authority_profile_changed');return {profile:p,profileSha256:ref};}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseAuthorityProfile(raw),encoded=Buffer.from(canonical(p)),profileSha256=hash(encoded),version=(this.db.prepare('PRAGMA user_version').get() as Row).user_version;
@@ -45,6 +48,12 @@ export class AuthorityRecords {
     return {configured:true,duplicate:false,profileSha256,ownerAdoptionVerified:false,externalActionSent:false};
   });}
   configuration(){return this.transaction(()=>this.profile());}
+  enableGovernedRepair(){return this.transaction(()=>{
+    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(repairConsumerKey))return {enabled:true,duplicate:true,executionGranted:false};
+    if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
+    const previous=guards.find(g=>g.name==='authority_legacy_native_guard')!.sql;
+    this.db.exec('DROP TRIGGER authority_legacy_native_guard;'+governedRepairGuard+';');this.db.prepare('INSERT INTO meta VALUES(?,?)').run(repairConsumerKey,hash(governedRepairGuard));this.event('authority_repair_consumer_enabled','authority-profile',{contract:'governed-repair-v1',previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(governedRepairGuard)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
+  });}
   prepare(requestId:string,raw:Buffer){return this.transaction(()=>{
     const {profile,profileSha256}=this.profile();
     if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(requestId)||raw.length>128*1024)throw new Error('owner_proposal_request_invalid');

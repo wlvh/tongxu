@@ -185,9 +185,10 @@ export class RepairTools {
   private serial = 0;
   private handoffSerial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>, private externalGate?: (effect?: () => void) => void) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
+    await this.refreshExternal?.();
     this.externalGate?.();
     if (this.phase === 'closed' || await exists(join(this.operation, 'revoked.json'))) throw new Error('repair_revoked_or_closed');
     if (JSON.stringify(JSON.parse((await regular(join(this.workspace, '.git', 'tongxu-writer.json'))).toString())) !== JSON.stringify(this.lease)) throw new Error('writer_lease_changed');

@@ -187,9 +187,10 @@ PRAGMA user_version=4;`);
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});
     return new CoordinationRecords(this.db,transaction,id=>this.authorityItem(id),run=>({state:messages.status(run),materials:messages.frozen(run).materials,submitted:participant=>messages.submitted(run,participant)}),this.directory);
   }
-  resources(): ResourceRecords {
+  resources(): ResourceRecords {return this.resourceRecords(fn=>this.transaction(fn));}
+  private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
-    return new ResourceRecords(this.db,fn=>this.transaction(fn),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt));
+    return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt));
   }
   merges(): MergeRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
@@ -251,7 +252,33 @@ PRAGMA user_version=4;`);
     const i=this.item(id),op=this.db.prepare('SELECT result FROM operations WHERE packet=?').get(i.current_packet) as Row|undefined;
     if(!op||!parse(op,'result')?.receiver)this.requireUnprofiledConsumer();
   }
-  reviewRecords(): ReviewRecords { return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id)); }
+  reviewRecords(): ReviewRecords {
+    const coordination=this.coordinationRecords(fn=>fn());
+    return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id),(operation,proposed,observations)=>{
+      this.repairAuthorization(operation,proposed,observations);
+      coordination.repairGate(operation);
+    });
+  }
+  repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation);return {operation,preparationChecked:true,modelExecutionAllowed:false};});}
+  private repairAuthorization(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:import('./authority-source.js').OwnerObservation[],requireHeld=true){
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const stage=parse(op,'result')?.repair;
+    const p=JSON.parse((proposed?.plan??this.blob(stage?.planSha256)).toString()),request=JSON.parse((proposed?.request??this.blob(stage?.requestSha256)).toString()),config=JSON.parse((proposed?.config??this.blob(stage?.configSha256)).toString()),governance=p.governance;
+    const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
+    if(!configured){if(governance!==undefined)throw new Error('queue_repair_authority_profile_missing');return;}
+    if(!governance||Object.keys(governance).sort().join()!=='authorityIntent,resourceRequests'||typeof governance.authorityIntent!=='string'||!Array.isArray(governance.resourceRequests)||governance.resourceRequests.length>32||new Set(governance.resourceRequests).size!==governance.resourceRequests.length||governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!/^[a-f0-9]{64}$/.test(r)))throw new Error('queue_repair_authority_consumer_binding_required');
+    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=authority.refreshReservedAction(governance.authorityIntent,observations);
+    if(!['implementer','background'].includes(action.role)||action.request.action!=='implement'||action.request.item!==op.item||action.binding?.packet!==op.packet||!Array.isArray(request.allowedPaths)||request.allowedPaths.some((path:unknown)=>typeof path!=='string'||!action.request.paths.includes(path))||(action.executionKind==='fixture')!==(config.executionKind==='fixture'))throw new Error('queue_repair_exact_authority_mismatch');
+    const resources=this.resourceRecords(fn=>fn()),held=governance.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,operation,governance.authorityIntent):resources.status(id));
+    if(held.some((r:Row)=>r.request.operation!==operation||r.request.authorityIntent!==governance.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('queue_repair_original_resource_operation_mismatch');
+    if(new Set(held.map((r:Row)=>r.request.resourceRef)).size!==held.length||canonical(held.map((r:Row)=>r.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('queue_repair_resource_claim_set_mismatch');
+    if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!held.length)throw new Error('queue_repair_configured_resource_claim_required');
+    if(requireHeld&&proposed){
+      // This stamp is emitted only after the exact current source and original
+      // resource claims pass in this same transaction. The database guard
+      // still rejects an older/unbound consumer's transition to repairing.
+      this.event('authority_repair_admitted',operation,{packet:op.packet,planSha256:hash(proposed.plan),requestSha256:hash(proposed.request),configSha256:hash(proposed.config),authorityIntent:governance.authorityIntent,actionSha256:action.requestSha256,resourceRequests:governance.resourceRequests,checkedAt:action.checkedAt});
+    }
+  }
   private reviewSource(id: string, requireCurrent: boolean): Row {
     const { op, result, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet);
     const evidence = this.packetEvidence(packet);
