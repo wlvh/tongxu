@@ -31,7 +31,7 @@ function operation(o: Row, publications: Row[]) {
     publication: publications.find(p => p.operation === o.id) ?? null, productionActionAllowed: false };
 }
 export async function observeTask(store: string, itemId: string, candidate: Candidate) {
-  const status = await QueueStore.observe(store), item = status.items.find((i: Row) => i.id === itemId);
+  const status = await QueueStore.observe(store,[],[],[itemId]), item = status.items.find((i: Row) => i.id === itemId);
   const c = item?.candidate;
   if (!c || c.repository !== candidate.repository || c.pr !== candidate.pr || c.H !== candidate.H || c.B !== candidate.B || c.targetRef !== candidate.target) throw new Error('secretary_task_candidate_mismatch');
   const operations = status.operations.filter((o: Row) => o.item === itemId);
@@ -40,7 +40,7 @@ export async function observeTask(store: string, itemId: string, candidate: Cand
     evidenceComplete: item.summary.evidenceComplete, dependencyGapCount: item.dependencyGaps.length, contextSha256: hash(canonical(item.context)),
     controls: status.controls.filter((c: Row) => c.scope === item.context.scope.id).map((c: Row) => ({ kind: c.kind, stopped: !!c.stopped, revision: c.revision, sourceSha256: hash(c.source), effectiveAt: c.effective_at })),
     claims: status.claims.filter((claim: Row) => claim.target === targetKey(c)).map((claim: Row) => ({ operation: claim.operation, generation: claim.generation, selectedTask: operations.some((o: Row) => o.id === claim.operation) })),
-    operations: operations.map((o: Row) => operation(o, status.publications)), eventRevision: status.events.at(-1)?.id ?? 0,
+    operations: operations.map((o: Row) => operation(o, status.publications)), collaboration:status.collaboration[itemId], eventRevision: status.events.at(-1)?.id ?? 0,
     localLedgerOnly: true, externalStateRechecked: false, productionActionAllowed: false };
 }
 export class SecretaryTools {

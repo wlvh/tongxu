@@ -34,7 +34,7 @@ const safeError = (e: unknown) => e instanceof Error && /^[a-z0-9_]+$/.test(e.me
 type StoreSnapshot = { value: Row; observedAt: string } | { error: string; observedAt: string };
 async function stores(p: WorkbenchPlan) {
   return new Map<string, StoreSnapshot>(await Promise.all([...new Set(p.sources.map(s => s.store))].map(async store => {
-    try { return [store, { value: await QueueStore.observe(store, p.sources.filter(s => s.store === store).map(s => s.item)), observedAt: new Date().toISOString() }] as const; }
+    try { const selected=p.sources.filter(s=>s.store===store).map(s=>s.item);return [store, { value: await QueueStore.observe(store, selected, [], selected), observedAt: new Date().toISOString() }] as const; }
     catch (e) { return [store, { error: safeError(e), observedAt: new Date().toISOString() }] as const; }
   })));
 }
@@ -74,7 +74,7 @@ export async function workbenchState(p: WorkbenchPlan) {
       sourceObservedAt: item.latestSourceObservation, executionObservedAt: item.latestObservation,
       scope: item.context.scope, arrangement: item.context.arrangement, dependencyGaps: item.dependencyGaps,
       controls: q.controls.filter((c: Row) => c.scope === item.context.scope.id).map((c: Row) => ({ kind: c.kind, stopped: !!c.stopped, revision: c.revision, effectiveAt: c.effective_at })),
-      operations, eventRevision: q.events.at(-1)?.id ?? 0, productionActionAllowed: false });
+      operations, collaboration:q.collaboration[s.item], eventRevision: q.events.at(-1)?.id ?? 0, productionActionAllowed: false });
     for (const e of q.events.filter((e: Row) => ops.some((o: Row) => o.id === e.object) && ['receiver_reserved', 'receiver_dispatch_registered', 'receiver_judgment_recorded', 'receiver_closed_unresolved','receiver_invalid_result_recorded','receiver_correction_registered'].includes(e.kind))) events.push({ id: s.id + ':' + e.id, source: s.id, title: s.title, kind: e.kind, observedAt: e.observed_at });
   }
   for (const [store, snapshot] of snapshots) {
@@ -117,6 +117,8 @@ export async function startWorkbench(planPath: string) {
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
       if (url.pathname === '/api/state') { json(res, 200, await workbenchState(p)); return; }
+      const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
+      if(message){const source=p.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (match) { json(res, 200, await workbenchReport(p, match[1]!, match[2]!)); return; }
       json(res, 404, { error: 'route_not_found' });

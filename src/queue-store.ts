@@ -17,6 +17,7 @@ import { SessionRecords } from './session-store.js';
 import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
 import { MessageResourceRecords } from './message-resource-store.js';
+import { CollaborationView } from './collaboration-view.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
@@ -99,9 +100,16 @@ export class QueueStore {
   static async open(directory: string): Promise<QueueStore> {
     return this.connect(directory, false);
   }
-  static async observe(directory: string, receiverMetadataFor: readonly string[] = [], invalidOutputFor: readonly string[] = []): Promise<Row> {
+  static async observe(directory: string, receiverMetadataFor: readonly string[] = [], invalidOutputFor: readonly string[] = [], collaborationFor: readonly string[] = []): Promise<Row> {
     const q = await this.connect(directory, true);
-    try { return q.status(receiverMetadataFor,invalidOutputFor); } finally { q.close(); }
+    try { return q.status(receiverMetadataFor,invalidOutputFor,collaborationFor); } finally { q.close(); }
+  }
+  static async observeMessageReport(directory:string,item:string,run:string,message:string){
+    const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.collaborationView().messageReport(item,run,message);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  private collaborationView(){
+    const noAction=()=>{throw new Error('readonly_view_cannot_authorize');},m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),noAction),r=this.resourceRecords(fn=>fn()),c=this.coordinationRecords(fn=>fn()),mr=this.messageResourceRecords(fn=>fn()),repair=new ReviewRecords(this.db,fn=>fn(),noAction,noAction);
+    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
   }
   private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
@@ -938,14 +946,15 @@ PRAGMA user_version=4;`);
       return { ...base, state: 'recorded', version: init.claude_code_version, model: init.model, session: init.session_id, evidenceSha256: initRef.sha256 };
     } catch { return { ...base, state: 'unavailable', reason: 'original_metadata_unreadable_or_invalid' }; }
   }
-  status(receiverMetadataFor: readonly string[] = [], invalidOutputFor: readonly string[] = []): Row {
+  status(receiverMetadataFor: readonly string[] = [], invalidOutputFor: readonly string[] = [], collaborationFor: readonly string[] = []): Row {
     this.db.exec('BEGIN');
     try {
       const publications = (this.db.prepare("SELECT DISTINCT object FROM events WHERE kind='publication_prepared' ORDER BY object").all() as Row[]).map(e => { const p = this.publicationHistory(e.object.slice(12)); return { operation: p.operation, publicationId: p.prepared.publicationId, comment: p.stages.comment.lastState ?? 'pending', status: p.stages.status.lastState ?? 'pending', githubState: p.document.status.state, judgment: p.document.judgment, materialDigest: p.document.materialDigest, commentReference: p.stages.comment.verified?.remote ?? null, recordedAt: p.stages.status.verified?.at ?? p.prepared.at, historicalReceiverResultUnmodified: true }; });
       const result = { schemaVersion: (this.db.prepare('PRAGMA user_version').get() as Row).user_version, receiverEnabled: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes((this.db.prepare('PRAGMA user_version').get() as Row).user_version), mode: 'shadow', repository: (this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value, productionActionAllowed: false, publisher: 'explicit_result_publication', publications, independentReceiver: 'explicit_cli_requires_preflight', items: (this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).map(i => this.itemStatus(i)), controls: this.db.prepare('SELECT * FROM controls ORDER BY scope,kind').all(), claims: this.db.prepare('SELECT * FROM claims').all(), operations: (this.db.prepare('SELECT * FROM operations ORDER BY started_at,id').all() as Row[]).map(o => ({ ...o, result: this.currentReceiverResult(o, parse(o, 'result') ?? null), recovery: o.status === 'merging' ? 'merge_unknown_reconcile_original_operation' : o.status === 'repairing' ? 'repair_unknown_reconcile_original_operation' : o.status === 'receiving' ? 'receiver_unknown_reconcile_original_operation' : o.status === 'running' ? 'result_unknown_evaluate_original_operation' : null })), events: this.db.prepare('SELECT * FROM events ORDER BY id').all() };
       for (const operation of result.operations as Row[]) if (receiverMetadataFor.includes(operation.item)) Object.assign(operation, { nativeExecution: this.receiverMetadata(operation.result?.receiver) });
       for (const operation of result.operations as Row[]) if (invalidOutputFor.includes(operation.id) && operation.result?.receiver?.invalidResult) operation.invalidOutput = this.blob(operation.result.receiver.invalidResult.finalTextSha256).toString();
-      this.db.exec('COMMIT'); return result;
+      const collaboration=Object.fromEntries(collaborationFor.map(id=>[id,this.collaborationView().state(id)]));
+      this.db.exec('COMMIT'); return {...result,...(collaborationFor.length?{collaboration}:{})};
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
 }

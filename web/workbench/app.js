@@ -14,6 +14,12 @@ function statusOf(task) {
   if (!task.available) return ['来源无法读取', 'problem'];
   if (task.observationConflict) return ['材料观察有冲突', 'wait'];
   if (task.compositionCurrent === false) return ['组合成员状态待核实', 'wait'];
+  if((task.collaboration?.messages||[]).some(r=>!r.available))return ['协作原件待核','wait'];
+  const runs=(task.collaboration?.messages||[]).filter(r=>r.available&&r.current);
+  if(runs.some(r=>r.messages.some(m=>m.sendRegistered&&m.state!=='Reply')))return ['协作已投入，结果待核','wait'];
+  if(runs.some(r=>r.messages.some(m=>m.state!=='Reply')))return ['协作仍有待发送消息','wait'];
+  if(runs.some(r=>r.resourcesSettled===false))return ['报告已返回，结算待核','wait'];
+  if(runs.length)return ['协作报告已返回',''];
   const o = task.operations.filter(o => o.currentPacket).at(-1);
   if (!o) return ['尚未派发接收', 'neutral'];
   if (o.stage === 'returned') return [verdicts[o.judgment?.verdict] || '未知判断', o.judgment?.verdict === 'ACCEPT_WITHIN_SCOPE' ? '' : 'wait'];
@@ -30,11 +36,13 @@ function metric(number, label, note) { return append(el('div', null, 'metric'), 
 function openTask(id) { selected = id; view = 'tasks'; render(); $('content').focus({ preventScroll: true }); }
 function card(t) {
   const [label, kind] = statusOf(t), n = el('button', null, 'task-card'); n.type = 'button'; n.dataset.task = t.id; n.dataset.stage = label; n.onclick = () => openTask(t.id);
-  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? '登记 H ' + t.candidate.H.slice(0, 8) + ' · ' + t.operations.filter(o => o.judgment).length + ' 份有效判断 · ' + t.operations.filter(o => o.invalidOutput).length + ' 份无效输出' : t.error), el('span', '↗', 'arrow'))); return n;
+  const replies=(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages).filter(m=>m.state==='Reply').length;
+  append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : 'PR #' + t.candidate.pr : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? 'H ' + t.candidate.H.slice(0, 8) + ' · 接收判断 ' + t.operations.filter(o => o.judgment).length + ' · 协作回复 '+replies : t.error), el('span', '↗', 'arrow'))); return n;
 }
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
-  const n = el('div'); append(n, intro(state.title, state.goal, '真实队列 · 只读'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length, '当前材料已有报告', '技术接收不代表产品或合并批准'), metric(waiting.length, '待核 / 未完成接收', '发送与结果返回分别记录')), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
+  const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.length-replies;
+  const n = el('div'); append(n, intro(state.title, state.goal, '真实队列 · 只读'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+'，不代表批准'), metric(waiting.length+pending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
   const cards = el('section', null, 'task-grid'); state.tasks.forEach(t => cards.append(card(t))); n.append(cards);
   append(n, append(el('section', null, 'note-card'), el('h3', '结论与限制，一起保留'), el('p', '每份报告对应原候选与原操作。旧判断、首次失败、等待和恢复不会因为后来通过而消失。发布记录中的 pending 也不自动表示仍有模型在运行。')));
   const recent = state.events.slice(-4).reverse(); if (recent.length) append(n, append(el('div', null, 'section-title'), el('h2', '最近协作'), el('span', '来自原队列事件')), timeline(recent));
@@ -50,6 +58,29 @@ function publicationText(p) {
   const phase = value => ({ verified: '已读回', problem: '待核 / 异常', pending: '尚无读回证明' }[value] || '未知');
   return '发布记录：评论 ' + phase(p.comment) + ' · 状态 ' + phase(p.status) + (p.status === 'verified' ? ' · 原读回值 ' + p.recordedGithubState + '（' + date(p.recordedAt) + '，本次未刷新远端）' : ' · 拟发布值 ' + p.plannedGithubState + '（不代表已发送）') + (p.materialDigest === 'historical_derived_digest_mismatch' ? ' · 保留历史摘要差异' : '');
 }
+function collaborationView(t) {
+  const n=el('section',null,'collaboration'),c=t.collaboration;if(!c)return n;
+  const total=c.coordination.length+c.messages.length+c.repairs.length;if(!total)return n;
+  append(n,append(el('div',null,'section-title'),el('h3','任务协作与实际执行'),el('span','同一队列的原始记录')));
+  c.coordination.slice().reverse().forEach(a=>{const box=el('div',null,'execution-card');if(!a.available){append(box,pill('安排原件待核','wait'),el('p',a.error,'small'));n.append(box);return;}
+    append(box,append(el('div',null,'label-line'),el('strong','安排 '+a.revision),pill(a.current?'当前安排':'历史安排',a.current?'':'neutral')));
+    a.tasks.forEach(task=>{append(box,el('p','任务 '+task.id+' · 执行角色 '+task.actor,'small'),el('p',task.dispatch==='owner_backlog'?'已按角色顺序安排；尚无联络外部原负责人的证明。':'使用独立受管上下文处理，不代表接管外部原会话。','small'));
+      task.stages.forEach(s=>append(box,el('p',({investigate:'调查',implement:'实施',test:'测试',receive:'接收',merge:'合入'}[s.stage]||s.stage)+'：'+(a.current&&s.phasePrerequisitesMet?'已满足登记的技术前置':'等待前置或属于历史安排')+(s.blockers.length?' · '+s.blockers.join('；'):''),'small')));});
+    a.shared.forEach(s=>append(box,el('p','共享部分 '+s.id+'：'+s.agreed+'/'+s.requiredFeedback+' 项反馈适用'+(s.conflict?' · 有分歧':'')+(s.unknown?' · 有缺失或待核反馈':''),'small')));n.append(box);
+  });
+  c.repairs.forEach(r=>{const box=el('div',null,'execution-card');if(!r.available){append(box,pill('修复原件待核','wait'),el('p',r.error,'small'));n.append(box);return;}
+    append(box,append(el('div',null,'label-line'),el('strong','受管修复'),pill(r.phase==='returned'?'结果已返回':'原运行待核',r.phase==='returned'?'':'wait')),el('p','操作 '+r.operation.slice(0,8)+(r.currentPacket?' · 当前材料':' · 历史材料'),'small'));
+    if(r.result){const x=r.result;append(box,el('p',(x.demonstrationFixture?'明确测试场景 · ':'')+(x.actualRepairPerformed?'已发生代码修改':'未登记实际修改'),'small'),el('p',(x.beforeH||'未知').slice(0,12)+' → '+(x.afterH||'未知').slice(0,12),'mono'),el('p','实际测试：'+(x.testsPassed?'通过':'未通过或未知')+' · 独立审核：'+(x.reviewVerdict||'未取得'),'small'));}
+    if(r.resources.length)append(box,el('p','原资源结果：'+(r.resources.every(x=>x.settled)?'结算凭据匹配':'仍有未结算或未知结果'),'small'));n.append(box);
+  });
+  c.messages.slice().reverse().forEach(run=>{const box=el('div',null,'execution-card');if(!run.available){append(box,pill('消息原件待核','wait'),el('p',run.error,'small'));n.append(box);return;}
+    append(box,append(el('div',null,'label-line'),el('strong','消息运行 '+run.run.slice(0,8)),pill(run.executionKind==='fixture'?'测试夹具':'真实模型记录','neutral'),pill(run.current?'当前材料':'历史材料',run.current?'':'neutral')));
+    if(run.resourcesSettled!==null)append(box,el('p','原资源结算：'+(run.resourcesSettled?'本次结果凭据匹配':'未完成，保留原认领'),'small'));
+    run.participants.forEach(p=>append(box,el('p',p.tool+' · '+p.id+' · '+(p.started?(p.ended?(p.completeCapture?'完整捕获已核':'执行结束，捕获待核'):'执行中或结束状态未知'):'尚未启动')+(p.sessionId?' · 会话 '+p.sessionId:''),'small wrap')));
+    run.messages.forEach(m=>{const row=el('div',null,'report-row'),left=el('div'),label={Held:'待发送',Unknown:'发送或结果未知',Delivered:'已送达，等待完整回复',Refused:'明确拒绝',Reply:'完整回复已登记'}[m.state]||'状态待核';append(left,el('strong',m.id+' → '+m.to),el('p',label+' · '+(m.consumptionConfirmed?'已确认消费指定材料':'消费尚未确认'),'small'));row.append(left);if(m.replyRecorded){const b=el('button','阅读完整消息','outline');b.type='button';b.onclick=()=>openMessageReport(t,run,m);row.append(b);}box.append(row);});
+    if(run.continuation)append(box,el('p','另有新上下文接续记录；不能据此认定原会话已恢复。','small'));n.append(box);
+  });return n;
+}
 function taskView() {
   if (!selected || !state.tasks.some(t => t.id === selected)) selected = state.tasks[0].id;
   const n = el('div'); n.append(intro('任务与完整报告', '查看准确候选、接收状态及报告原文。来源不可用时会明确显示缺口。'));
@@ -61,8 +92,9 @@ function taskView() {
   if (t.composition) append(panel, el('p', subjectText(t.composition.subject)), el('p', '判断对应整个固定组合；锚点 PR 用于定位，不表示任何成员单独放行。受测最终树：' + (t.composition.subject.testedTree || '未取得'), 'small'));
   const facts = el('dl', null, 'facts'); fact(facts, '登记候选 H', t.candidate.H, true); fact(facts, '固定基线 B', t.candidate.B, true); fact(facts, '真实目标', t.candidate.targetRef); fact(facts, '来源观察', date(t.sourceObservedAt)); fact(facts, '本次查看', date(t.observedAt)); fact(facts, '登记范围', t.scope.id + ' / ' + t.scope.version); panel.append(facts);
   if (/^[\w.-]+\/[\w.-]+$/.test(t.candidate.repository) && Number.isSafeInteger(t.candidate.pr)) { const a = el('a', '查看原 PR ↗'); a.href = 'https://github.com/' + t.candidate.repository + '/pull/' + t.candidate.pr; a.target = '_blank'; a.rel = 'noreferrer noopener'; panel.append(a); }
-  panel.append(append(el('div', null, 'section-title'), el('h3', '原操作与报告'), el('span', t.operations.length + ' 条记录')));
-  if (!t.operations.length) panel.append(el('p', '尚无接收操作记录。', 'empty'));
+  panel.append(collaborationView(t));
+  panel.append(append(el('div', null, 'section-title'), el('h3', '正式接收操作与报告'), el('span', t.operations.length + ' 条记录')));
+  if (!t.operations.length) panel.append(el('p', '尚无正式接收操作记录。协作回复不自动成为接收判断。', 'small'));
   [...t.operations].reverse().forEach(o => {
     const stage = stages[o.stage] || ['阶段待核', 'wait'], text = o.judgment ? verdicts[o.judgment.verdict] || o.judgment.verdict : stage[0], row = el('div', null, 'report-row'), left = el('div');
     append(left, append(el('div', null, 'label-line'), el('strong', text), pill(o.currentPacket ? stage[0] : '历史材料', o.currentPacket ? stage[1] : 'neutral')), el('p', date(o.finishedAt || o.startedAt) + ' · 操作 ' + o.id.slice(0, 8) + ' · 材料包 ' + o.packet));
@@ -95,9 +127,13 @@ async function refresh() {
   finally { $('refresh').disabled = false; }
 }
 async function openReport(t, o) {
-  const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-dialog').showModal();
+  const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; $('report-dialog').showModal();
   try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (r.subject ? subjectText(r.subject) + ' · 非逐成员放行 · ' : '') + (verdicts[r.verdict] || r.verdict) + (r.judgmentId ? ' · 判断 ' + r.judgmentId : ' · 原操作 ' + r.operation) + ' · 原文 SHA256 ' + r.reportSha256 + ' · ' + executionText(r.nativeExecution); $('report-body').textContent = r.report; }
   catch (e) { if (nonce === reportNonce) $('report-body').textContent = '原报告无法读取：' + e.message; }
+}
+async function openMessageReport(t,run,m){
+  const nonce=++reportNonce;$('report-title').textContent=t.title+' · 完整消息';$('report-meta').textContent='读取原消息…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+' · 会话 '+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });
 $('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++; });
