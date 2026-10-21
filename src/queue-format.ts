@@ -1,10 +1,11 @@
 import type {DatabaseSync} from 'node:sqlite';
 import {integrationFormatKey,integrationFormatContract,integrationFormatGuards} from './integration-format.js';
-import {memberRepairFormatKey,memberRepairFormatContract,memberRepairGuards} from './integration-member-format.js';
+import {memberRepairFormatKey,memberRepairFormatContract,memberRepairGuards,memberEffectGuards} from './integration-member-format.js';
 
 type Row=Record<string,any>;
 const key='delivery_assessment_format';
 const contract='complete-assessment-evidence-v1';
+const recompositionKey='member_recomposition_format',recompositionContract='exact-repaired-member-lineage-v1';
 export const assessmentGuards=[
   {name:'delivery_assessment_run_unique',sql:`CREATE UNIQUE INDEX delivery_assessment_run_unique ON events(json_extract(data,'$.value.run')) WHERE kind='delivery_assessment_prepared'`},
   {name:'delivery_assessment_message_guard',sql:`CREATE TRIGGER delivery_assessment_message_guard BEFORE INSERT ON events
@@ -23,28 +24,32 @@ export function queueFeatureVersion(db:DatabaseSync):number{
   const version=queueFormatVersion(db),hasMeta=db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta'").get(),saved=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row|undefined)?.value:undefined;
   const integration=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(integrationFormatKey) as Row|undefined)?.value:undefined;
   const memberRepair=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(memberRepairFormatKey) as Row|undefined)?.value:undefined;
-  if(version!==19&&memberRepair!==undefined)throw new Error('integration_member_repair_format_downgraded');
-  if(version===19){if(memberRepair!==memberRepairFormatContract)throw new Error('integration_member_repair_format_changed');memberRepairGuards(db);}
-  if(![18,19].includes(version)&&integration!==undefined)throw new Error('integration_format_downgraded');
-  if([18,19].includes(version)){if(integration!==integrationFormatContract)throw new Error('integration_format_changed');integrationFormatGuards(db);}
-  if(![17,18,19].includes(version)){if(saved!==undefined)throw new Error('delivery_assessment_format_downgraded');return version;}
+  const recomposition=hasMeta?(db.prepare('SELECT value FROM meta WHERE key=?').get(recompositionKey) as Row|undefined)?.value:undefined;
+  if(version!==20&&recomposition!==undefined)throw new Error('member_recomposition_format_downgraded');
+  if(version===20){if(recomposition!==recompositionContract)throw new Error('member_recomposition_format_changed');memberEffectGuards(db);}
+  if(![19,20].includes(version)&&memberRepair!==undefined)throw new Error('integration_member_repair_format_downgraded');
+  if([19,20].includes(version)){if(memberRepair!==memberRepairFormatContract)throw new Error('integration_member_repair_format_changed');memberRepairGuards(db);}
+  if(![18,19,20].includes(version)&&integration!==undefined)throw new Error('integration_format_downgraded');
+  if([18,19,20].includes(version)){if(integration!==integrationFormatContract)throw new Error('integration_format_changed');integrationFormatGuards(db);}
+  if(![17,18,19,20].includes(version)){if(saved!==undefined)throw new Error('delivery_assessment_format_downgraded');return version;}
   let value:Row;try{value=JSON.parse(saved);}catch{throw new Error('delivery_assessment_format_missing');}
   if(!value||value.contract!==contract||!feature(value.featureVersion)||Object.keys(value).sort().join(',')!=='contract,featureVersion')throw new Error('delivery_assessment_format_changed');
   guards(db);return value.featureVersion;
 }
-export function requireAssessmentFormat(db:DatabaseSync){if(![17,18,19].includes(queueFormatVersion(db)))throw new Error('delivery_assessment_prepare_format_upgrade_required');queueFeatureVersion(db);}
+export function requireAssessmentFormat(db:DatabaseSync){if(![17,18,19,20].includes(queueFormatVersion(db)))throw new Error('delivery_assessment_prepare_format_upgrade_required');queueFeatureVersion(db);}
 export function enableAssessmentFormat(db:DatabaseSync){
-  const version=queueFeatureVersion(db);if([17,18,19].includes(queueFormatVersion(db)))return false;if(!feature(version))throw new Error('unsupported_queue_schema_or_mode');
+  const version=queueFeatureVersion(db);if([17,18,19,20].includes(queueFormatVersion(db)))return false;if(!feature(version))throw new Error('unsupported_queue_schema_or_mode');
   guards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(key,JSON.stringify({contract,featureVersion:version}));db.exec('PRAGMA user_version=17');return true;
 }
 /** Called inside the original feature's transaction, after its own guards. */
 export function setQueueFeatureVersion(db:DatabaseSync,version:number){
   const old=queueFeatureVersion(db);if(!feature(version)||version<old)throw new Error('queue_feature_version_cannot_regress');
-  if([17,18,19].includes(queueFormatVersion(db)))db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify({contract,featureVersion:version}),key);
+  if([17,18,19,20].includes(queueFormatVersion(db)))db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify({contract,featureVersion:version}),key);
   else db.exec('PRAGMA user_version='+version);
 }
 export function enableIntegrationFormat(db:DatabaseSync){
-  queueFeatureVersion(db);if([18,19].includes(queueFormatVersion(db)))return false;
+  queueFeatureVersion(db);if([18,19,20].includes(queueFormatVersion(db)))return false;
   enableAssessmentFormat(db);integrationFormatGuards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(integrationFormatKey,integrationFormatContract);db.exec('PRAGMA user_version=18');return true;
 }
-export function enableMemberRepairFormat(db:DatabaseSync){queueFeatureVersion(db);if(queueFormatVersion(db)===19)return false;if(db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get()||db.prepare('SELECT 1 FROM claims').get())throw new Error('member_repair_format_waits_for_idle_queue');enableIntegrationFormat(db);memberRepairGuards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(memberRepairFormatKey,memberRepairFormatContract);db.exec('PRAGMA user_version=19');return true;}
+export function enableMemberRepairFormat(db:DatabaseSync){queueFeatureVersion(db);if([19,20].includes(queueFormatVersion(db)))return false;if(db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get()||db.prepare('SELECT 1 FROM claims').get())throw new Error('member_repair_format_waits_for_idle_queue');enableIntegrationFormat(db);memberRepairGuards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(memberRepairFormatKey,memberRepairFormatContract);db.exec('PRAGMA user_version=19');return true;}
+export function enableMemberRecompositionFormat(db:DatabaseSync){queueFeatureVersion(db);if(queueFormatVersion(db)===20)return false;if(db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get()||db.prepare('SELECT 1 FROM claims').get())throw new Error('member_recomposition_format_waits_for_idle_queue');if(db.prepare("SELECT 1 FROM events a WHERE a.kind='publication_intent' AND NOT EXISTS(SELECT 1 FROM events b WHERE b.object=a.object AND b.id>a.id AND b.kind='publication_verified' AND json_extract(a.data,'$.stage')=json_extract(b.data,'$.stage'))").get())throw new Error('member_workflow_waits_for_original_publication');enableMemberRepairFormat(db);memberEffectGuards(db,true);db.prepare('INSERT INTO meta VALUES(?,?)').run(recompositionKey,recompositionContract);db.exec('PRAGMA user_version=20');return true;}

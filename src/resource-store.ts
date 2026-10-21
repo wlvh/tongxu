@@ -15,7 +15,7 @@ export type ResourceOutcome={state:'completed'|'failed'|'cancelled';source:strin
 export class ResourceRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,
     private authority:(id:string,fresh:OwnerObservation[]|null)=>Row,
-    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome,private newClaimGate?:(action:Row)=>void){}
+    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome,private newClaimGate?:(action:Row,request:ResourceRequest,dispatch:boolean)=>void){}
   private event(kind:string,object:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind,object,JSON.stringify(data),now());}
   private events(key:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'resource_%' ORDER BY id").all('resource:'+key) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
@@ -56,7 +56,7 @@ export class ResourceRecords {
     const p=this.profile(request.ledgerId);parseResourceRequest(request,p);const id=resourceRequestHash(request);
     if(request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');
     if(this.events(id).some(e=>e.kind==='resource_request_prepared'))return {...this.statusOf(id),duplicate:true};
-    const action=this.authority(request.authorityIntent,observations);this.matchAction(request,action);this.newClaimGate?.(action);
+    const action=this.authority(request.authorityIntent,observations);this.matchAction(request,action);this.newClaimGate?.(action,request,false);
     const intentBindings=(this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared' AND json_extract(data,'$.authorityIntent')=?").all(request.authorityIntent) as Row[]).map(e=>JSON.parse(e.data));
     if(intentBindings.some(e=>e.operation!==request.operation||e.packet!==action.binding?.packet||e.actionSha256!==request.actionSha256))throw new Error('authority_intent_already_bound_to_original_operation');
     const slot=hash(canonical([request.operation,request.ledgerId,request.resourceRef]));
@@ -101,7 +101,7 @@ export class ResourceRecords {
     if(capabilities.reply.result.claim!==true)throw new Error('original_ledger_claim_permission_unavailable');
     if(state.state!=='prepared_not_sent'&&!(state.state==='refused'&&retryRefused))throw new Error('resource_original_request_requires_lookup_not_resend');
     if(state.claimAttempts>=3)throw new Error('resource_refused_retry_bound');
-    const action=this.authority(f.request.authorityIntent,observations);this.matchAction(f.request,action);this.newClaimGate?.(action);
+    const action=this.authority(f.request.authorityIntent,observations);this.matchAction(f.request,action);this.newClaimGate?.(action,f.request,true);
     const slot=hash(canonical([f.request.operation,f.request.ledgerId,f.request.resourceRef]));for(const row of this.db.prepare("SELECT data FROM events WHERE kind='resource_request_prepared'").all() as Row[]){const prior=JSON.parse(row.data);if(prior.slot===slot&&prior.requestSha256!==id&&!['prepared_not_sent','refused','consumed','released'].includes(this.statusOf(prior.requestSha256).state))throw new Error('resource_previous_action_claim_unresolved');}
     this.blob(capabilities.raw);this.event('resource_claim_dispatched','resource:'+id,{requestSha256:id,originalOperation:f.request.operation,directory,attempt:state.claimAttempts+1,capabilitiesSha256:hash(capabilities.raw),registeredAt:now(),controllerPid:process.pid});
     return this.statusOf(id);
