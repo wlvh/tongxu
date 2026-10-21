@@ -1,4 +1,4 @@
-import {installW2ExecutionGuards,admitW2Capture} from './w2-execution-store.js';
+import {installW2ExecutionGuards,admitW2Capture,hasW2CaptureAdmission} from './w2-execution-store.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {installTestAuthorityGuard,requireTestAuthorityConsumer} from './test-authority.js';
 import {canonical} from './comparison.js';
@@ -28,6 +28,7 @@ BEGIN
 END`;
 export class DeliveryValidationRecords{
   constructor(private db:DatabaseSync,private transaction:<T>(fn:()=>T)=>T,private batches:DeliveryRecords,private member:(id:string)=>Row,private authority:(id:string,observations:OwnerObservation[]|null)=>Row){}
+  protect(){return this.transaction(()=>installW2ExecutionGuards(this.db));}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row|undefined,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('delivery_validation_original_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private events(id:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'delivery_validation_%' ORDER BY id").all('delivery-validation:'+id) as Row[]).map(e=>{const ref=JSON.parse(e.data),value=JSON.parse(this.bytes(ref.sha256).toString());if(canonical(value)!==canonical(ref.value))throw new Error('delivery_validation_index_changed');return {...e,data:value};});}
@@ -59,7 +60,7 @@ export class DeliveryValidationRecords{
     for(const old of this.registered())if(old.plan.id!==p.id&&old.record.batchId===batchId){
       // A result index alone does not prove the old run ended. Recheck its
       // original result and terminal capture before authorizing any new work.
-      const state=this.stateOf(old.plan.id);if(!['recorded','closed_unstarted'].includes(state.phase))throw new Error('delivery_validation_previous_run_unresolved');
+      const state=this.stateOf(old.plan.id);if(!['recorded','closed_unstarted'].includes(state.phase))throw new Error('delivery_validation_previous_run_unresolved');if(state.phase==='recorded'&&!state.captureValidationCurrent)throw new Error('delivery_validation_previous_capture_unverified');
     }
   }
   private gate(p:DeliveryValidationPlan,observations:OwnerObservation[]|null){
@@ -72,7 +73,7 @@ export class DeliveryValidationRecords{
     this.predecessors(p,batch.id);return {batch,item};
   }
   originalPlan(id:string){return this.transaction(()=>this.original(id).plan);}
-  register(raw:Buffer,testPlan:Buffer,snapshots:Buffer[],observations:OwnerObservation[]){return this.transaction(()=>{
+  register(raw:Buffer,testPlan:Buffer,snapshots:Buffer[],observations:OwnerObservation[]){this.protect();return this.transaction(()=>{
     const p=parseDeliveryValidation(raw),sha=deliveryValidationSha(p);if(this.events(p.id).length){const old=this.original(p.id);if(old.record.planSha256!==sha)throw new Error('delivery_validation_id_changed');return {...this.stateOf(p.id),duplicate:true};}
     const {batch,item}=this.gate(p,observations),plan=parsePlan(JSON.parse(testPlan.toString()));if(!plan.executor||hash(testPlan)!==p.testPlan.sha256)throw new Error('delivery_validation_isolated_plan_required');
     const expected=item.composition?.subject?.members.map((m:Row)=>m.manifestHash)??[item.manifestSha256];
@@ -92,7 +93,7 @@ export class DeliveryValidationRecords{
   startEffect(id:string,observations:OwnerObservation[],effect:()=>void){return this.transaction(()=>{const p=this.original(id).plan,events=this.events(id);if(!events.some(e=>e.kind==='delivery_validation_started'))throw new Error('delivery_validation_original_run_missing');if(events.some(e=>e.kind==='delivery_validation_result'))throw new Error('delivery_validation_already_ended');this.guards();this.bindAuthority(p,false);this.gate(p,observations);effect();});}
   check(id:string,observations:OwnerObservation[]){return this.transaction(()=>{const p=this.original(id).plan,value=this.gate(p,observations);this.guards();this.bindAuthority(p,true);return value;});}
   problem(id:string,reason:string){return this.transaction(()=>{this.original(id);if(!/^[a-z0-9_]{1,160}$/.test(reason))throw new Error('delivery_validation_problem_invalid');this.event(id,'problem',{reason,observedAt:now(),automaticResend:false});});}
-  complete(id:string,capture:DeliveryValidationCapture){return this.transaction(()=>{
+  complete(id:string,capture:DeliveryValidationCapture){this.protect();return this.transaction(()=>{
     const {packet,binding}=requireDeliveryValidationCapture(capture);
     const x=this.original(id),events=this.events(id),started=events.find(e=>e.kind==='delivery_validation_started'),reportBytes=packet.blobs.get(packet.reportHash);if(!started||!reportBytes)throw new Error('delivery_validation_original_run_missing');
     if(capture.executionRegistrySha256!==w2ExecutionRegistrySha(this.executionsOf(id))||binding.id!==id||binding.planSha256!==x.record.planSha256||binding.run!==started.data.run||binding.testPlanSha256!==x.record.testPlanSha256)throw new Error('delivery_validation_capture_binding_mismatch');
@@ -102,16 +103,16 @@ export class DeliveryValidationRecords{
     const gaps=packet.summary.gaps.filter(g=>!(g==='sample_failure_or_incomplete_comparison'&&report.comparisonComplete===true)),captureComplete=!gaps.length&&report.executionComplete===true&&report.comparisonComplete===true;
     const final=report.stages.at(-1),scenarios=x.plan.scenarios.map(s=>{const tool=final?.tools.find((t:Row)=>t.id===s.tool),rows=s.samples.map(id=>tool?.sampleSet?.samples.find((r:Row)=>r.id===id)),complete=captureComplete&&tool?.sampleSet?.complete&&rows.every((r:Row)=>!!r);return {scenario:s.scenario,tool:s.tool,samples:rows.filter((r:Row)=>!!r),passed:complete?rows.every((r:Row)=>r.status==='ok'):null};});
     const value={...(capture.executionRegistrySha256?{executionRegistrySha256:capture.executionRegistrySha256}:{}),run:report.id,reportSha256:packet.reportHash,contextSha256:packet.contextHash,manifestSha256:packet.manifestHash,originals:[...packet.blobs.keys()].sort(),testedHead:final?.head??null,testedTree:final?.tree??null,scenarios,executionComplete:report.executionComplete===true,terminalExecutionProven:true,captureComplete,gaps,scenarioAssertionsPassed:scenarios.every(s=>s.passed===true),demonstrationFixture:x.plan.demonstrationFixture,userOutcomeAccepted:false,finishedAt:report.finishedAt};
-    const old=events.find(e=>e.kind==='delivery_validation_result');if(old){if(canonical(old.data)!==canonical(value))throw new Error('delivery_validation_result_changed');return {...old.data,duplicate:true};}for(const [sha,b] of packet.blobs){if(hash(b)!==sha)throw new Error('delivery_validation_original_changed');this.blob(b);}admitW2Capture(this.db,'delivery-validation:'+id,packet.reportHash,capture.executionRegistrySha256);this.event(id,'result',value);return {...value,duplicate:false};
+    const old=events.find(e=>e.kind==='delivery_validation_result');if(old){if(canonical(old.data)!==canonical(value))throw new Error('delivery_validation_result_changed');admitW2Capture(this.db,'delivery-validation:'+id,packet.reportHash,capture.executionRegistrySha256,hash(canonical(value)),false);return {...old.data,duplicate:true};}for(const [sha,b] of packet.blobs){if(hash(b)!==sha)throw new Error('delivery_validation_original_changed');this.blob(b);}admitW2Capture(this.db,'delivery-validation:'+id,packet.reportHash,capture.executionRegistrySha256,hash(canonical(value)));this.event(id,'result',value);return {...value,duplicate:false};
   });}
-  private stateOf(id:string){const x=this.original(id),events=this.events(id),started=events.find(e=>e.kind==='delivery_validation_started'),closed=events.find(e=>e.kind==='delivery_validation_closed_unstarted'),result=events.find(e=>e.kind==='delivery_validation_result')?.data;if(result)for(const sha of result.originals)this.bytes(sha);if(result&&started?.data.executionRegistryVersion===1&&result.executionRegistrySha256!==w2ExecutionRegistrySha(this.executionsOf(id)))throw new Error('delivery_validation_execution_registry_changed');if(closed)this.bytes(closed.data.evidenceSha256);return {id,planSha256:x.record.planSha256,batchSha256:x.plan.batchSha256,member:x.plan.member,phase:result?'recorded':started?'started_or_unknown':closed?'closed_unstarted':'registered_not_started',run:started?.data.run??null,result:result??null,automaticResend:false,userOutcomeAccepted:false};}
+  private stateOf(id:string){const x=this.original(id),events=this.events(id),started=events.find(e=>e.kind==='delivery_validation_started'),closed=events.find(e=>e.kind==='delivery_validation_closed_unstarted'),result=events.find(e=>e.kind==='delivery_validation_result')?.data;if(result)for(const sha of result.originals)this.bytes(sha);if(result&&started?.data.executionRegistryVersion===1&&result.executionRegistrySha256!==w2ExecutionRegistrySha(this.executionsOf(id)))throw new Error('delivery_validation_execution_registry_changed');if(closed)this.bytes(closed.data.evidenceSha256);return {id,captureValidationCurrent:Boolean(result&&hasW2CaptureAdmission(this.db,'delivery-validation:'+id,hash(canonical(result)))),planSha256:x.record.planSha256,batchSha256:x.plan.batchSha256,member:x.plan.member,phase:result?'recorded':started?'started_or_unknown':closed?'closed_unstarted':'registered_not_started',run:started?.data.run??null,result:result??null,automaticResend:false,userOutcomeAccepted:false};}
   state(id:string){return this.transaction(()=>this.stateOf(id));}
-  assessmentMaterial(id:string){return this.transaction(()=>{const state=this.stateOf(id),original=this.original(id);if(state.phase!=='recorded'||!state.result?.terminalExecutionProven)throw new Error('delivery_assessment_validation_not_terminal');
+  assessmentMaterial(id:string){return this.transaction(()=>{const state=this.stateOf(id),original=this.original(id);if(state.phase!=='recorded'||!state.result?.terminalExecutionProven||!state.captureValidationCurrent)throw new Error('delivery_assessment_validation_not_terminal');
     const originals=state.result.originals.map((sha256:string)=>{const bytes=this.bytes(sha256);let encoding='utf8',content:string;try{content=new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{encoding='base64';content=bytes.toString('base64');}return {sha256,bytes:bytes.length,encoding,content};});
     return {validationId:id,plan:original.plan,state,originals};
   });}
   forBatch(sha:string){return this.transaction(()=>{
     const rows=this.db.prepare("SELECT object FROM events WHERE kind='delivery_validation_registered' AND json_extract(data,'$.value.batchSha256')=? ORDER BY id").all(sha) as Row[];
-    return rows.map(row=>this.original(row.object.slice('delivery-validation:'.length))).map(x=>{if(x.plan.batchSha256!==sha)throw new Error('delivery_validation_index_changed');const state=this.stateOf(x.plan.id),r=state.result;return {id:state.id,planSha256:state.planSha256,batchSha256:sha,member:state.member,phase:state.phase,run:state.run,demonstrationFixture:x.plan.demonstrationFixture,reportSha256:r?.reportSha256??null,terminalExecutionProven:r?.terminalExecutionProven??false,captureComplete:r?.captureComplete??false,scenarios:x.plan.scenarios.map(s=>({id:s.scenario,tool:s.tool,requestedSamples:s.samples,passed:r?.scenarios.find((x:Row)=>x.scenario===s.scenario)?.passed??null}))};});
+    return rows.map(row=>this.original(row.object.slice('delivery-validation:'.length))).map(x=>{if(x.plan.batchSha256!==sha)throw new Error('delivery_validation_index_changed');const state=this.stateOf(x.plan.id),r=state.result;return {id:state.id,planSha256:state.planSha256,batchSha256:sha,member:state.member,phase:state.phase,run:state.run,demonstrationFixture:x.plan.demonstrationFixture,reportSha256:r?.reportSha256??null,terminalExecutionProven:Boolean(state.captureValidationCurrent&&r?.terminalExecutionProven),captureComplete:Boolean(state.captureValidationCurrent&&r?.captureComplete),scenarios:x.plan.scenarios.map(s=>({id:s.scenario,tool:s.tool,requestedSamples:s.samples,passed:state.captureValidationCurrent?r?.scenarios.find((x:Row)=>x.scenario===s.scenario)?.passed??null:null}))};});
   });}
 }

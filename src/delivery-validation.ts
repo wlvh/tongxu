@@ -21,13 +21,14 @@ export async function runDeliveryValidation(store:string,planPath:string,action:
   const raw=await regular(planPath,64*1024),p=parseDeliveryValidation(raw),planSha256=deliveryValidationSha(p),q=await QueueStore.open(store),directory=join(store,'delivery-validation-'+planSha256);
   let lock:DatabaseSync|undefined,observations:OwnerObservation[]=[],registered=false;
   try{
+    q.deliveryValidations().protect();
     if(!await exists(directory))await privateDirectory(directory,true);else await privateDirectory(directory,false);
     await fixedFile(join(directory,'plan.json'),raw);const path=join(directory,'controller.sqlite');try{await writeFile(path,'',{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}await regular(path);lock=new DatabaseSync(path);try{lock.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');}catch{throw new Error('delivery_validation_controller_active');}
     const records=q.deliveryValidations();let prior:ReturnType<typeof records.state>|undefined;
     const snapshotPaths=managedDeliverySnapshots(directory,p),freezeSources=async()=>{for(const [i,snapshot] of records.snapshotContents(p.id).entries()){const root=snapshotPaths[i]!;if(!await exists(root))await privateDirectory(root,true);else await privateDirectory(root,false);for(const name of ['raw','git']){const child=join(root,name);if(!await exists(child))await privateDirectory(child,true);else await privateDirectory(child,false);}await fixedFile(join(root,'manifest.json'),snapshot.manifest);for(const a of snapshot.artifacts){const folder=dirname(join(root,a.path));if(!await exists(folder))await privateDirectory(folder,true);else await privateDirectory(folder,false);await fixedFile(join(root,a.path),a.bytes);}}};
     try{prior=records.state(p.id);registered=true;}catch(e){if(code(e)!=='delivery_validation_not_registered')throw e;}
     if(prior&&prior.planSha256!==planSha256)throw new Error('delivery_validation_id_changed');
-    if(prior?.phase==='recorded'||prior?.phase==='closed_unstarted')return {...prior,duplicate:true,newModelInputs:0,newVerificationRuns:0};
+    if(prior?.phase==='closed_unstarted')return {...prior,duplicate:true,newModelInputs:0,newVerificationRuns:0};
     const refresh=async()=>{observations=[];if(p.authorityIntent){const a=q.authority(),reserved=a.reservedAction(p.authorityIntent),{profile}=a.configuration(),root=join(directory,'owner-source-'+randomUUID());await mkdir(root,{mode:0o700});for(const [i,ref] of a.sourceRequests(reserved.authorization).entries())observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,String(i))));}};
     if(prior&&!prior.run){
       if(await exists(join(directory,'verification'))||await exists(join(directory,'producer.json')))throw new Error('delivery_validation_original_start_unknown');
