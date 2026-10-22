@@ -206,7 +206,7 @@ function ownerOverview(){
   for(const o of owners){if(!o.available){grid.append(append(el('div',null,'note-card'),el('h3',state.tasks.find(t=>t.id===o.source)?.title||o.source),el('p','本人记录当前不可读：'+readableReason(o.reason)),open('查看目标来源','goals')));continue;}
     // Equal labels from different local sources do not imply equal decisions.
     // Only identical adopted content and observed controls share one card.
-    const identity=JSON.stringify([o.repository,o.issue,o.scopeId,o.currentAdoption,o.currentScope,o.controls]);let g=groups.get(identity);if(!g){g={entry:o,sources:[],requests:new Map(),oldTaskScope:false};groups.set(identity,g);}g.sources.push(state.tasks.find(t=>t.id===o.source)?.title||o.source);for(const r of o.requests)g.requests.set(r.proposalSha256,r);if(o.currentScope&&o.taskScope.version!==o.currentScope.scopeVersion)g.oldTaskScope=true;
+    const identity=JSON.stringify([o.recordSourceId||o.source,o.repository,o.issue,o.scopeId,o.currentAdoption,o.currentScope,o.controls,o.requests]);let g=groups.get(identity);if(!g){g={entry:o,sources:[],requests:new Map(),oldTaskScope:false};groups.set(identity,g);}g.sources.push(state.tasks.find(t=>t.id===o.source)?.title||o.source);for(const r of o.requests)g.requests.set(r.proposalSha256,r);if(o.currentScope&&o.taskScope.version!==o.currentScope.scopeVersion)g.oldTaskScope=true;
   }
   for(const g of groups.values()){const o=g.entry,scope=o.currentScope,card=append(el('div',null,'note-card'),el('h3',scope?'已记录的目标 · '+scope.scopeVersion:'目标尚未采用'),el('p',g.sources.join('、'),'small'));
     if(o.executionKind==='fixture')card.append(pill('隔离示例来源','neutral'));

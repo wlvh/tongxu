@@ -15,7 +15,7 @@ const controlRequestId=(item:string,proposal:OwnerProposal,revision:number)=>'wo
 export class OwnerControls{
   constructor(private selected:string[],private sources:Source[]){}
   private source(id:string){const s=this.sources.find(x=>x.id===id);if(!s||!this.selected.includes(id))throw new Error('owner_control_task_not_selected');return s;}
-  async state(){return Promise.all(this.selected.map(async id=>{const source=this.source(id);try{return {source:id,available:true,...await QueueStore.observeOwnerTask(source.store,source.item)};}catch(e){return {source:id,available:false,reason:reason(e),permissionsGranted:false};}}));}
+  async state(){return Promise.all(this.selected.map(async id=>{const source=this.source(id),recordSourceId=hash(canonical(['owner-record-source',source.store]));try{return {source:id,recordSourceId,available:true,...await QueueStore.observeOwnerTask(source.store,source.item)};}catch(e){return {source:id,recordSourceId,available:false,reason:reason(e),permissionsGranted:false};}}));}
   async prepare(id:string,body:any){
     const s=this.source(id),current=await QueueStore.observeOwnerTask(s.store,s.item);let proposal:OwnerProposal;
     if(body?.kind==='goal'&&exactKeys(body,['kind','scopeVersion','body','previousAdoption'])){

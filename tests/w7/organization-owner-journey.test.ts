@@ -48,6 +48,14 @@ test('an early B inquiry waits for A; a later original-owner followup consumes A
  f.q.taskInbox().enqueue(Buffer.from(canonical({...f.bRequest,id:'b-followup'})));const b=await workTaskOwner(f.store,f.b,1);assert.equal(b.runs[0]!.completed,true);assert.equal(b.runs[0]!.coordination?.recorded,true);assert.equal(f.q.coordination().stage(id,'B','implement').phasePrerequisitesMet,true);
  f.q.taskInbox().enqueue(Buffer.from(canonical({...f.aRequest,id:'a-followup'})));const a=await workTaskOwner(f.store,f.task,1);assert.equal(a.runs[0]!.coordination?.recorded,true);assert.deepEqual(f.q.status().events.filter((e:any)=>e.object==='coordination:'+id&&e.kind==='coordination_output'),original);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,4);
 });
+test('OJ-F01: original worker repairs the gap after a completed reply and before coordination recording, without another input',async t=>{
+ const f=await fixture(t),registered=await f.post('organization/team/apply',{choice:'serial',expectedPrevious:null}),id=registered.value.planId;
+ f.q.taskInbox().enqueue(Buffer.from(canonical(f.aRequest)));const prepared=await prepareTaskOwner(f.store,f.task,f.aRequest.id),result=await runMessages(f.store,prepared.plan,false,prepared.run);assert.equal(result.completed,true);
+ assert.equal(f.q.taskInbox().status(f.task)[0]!.phase,'returned');assert.ok(!f.q.status().events.some((e:any)=>e.kind==='coordination_output'&&e.object==='coordination:'+id));const trace=await readFile(f.trace);
+ const recovered=await workTaskOwner(f.store,f.task);assert.equal(recovered.runs.length,0);assert.equal(recovered.newModelRequests,0);assert.equal(recovered.coordinationRecovery?.[0]?.recorded,true);assert.ok(f.q.status().events.some((e:any)=>e.kind==='coordination_output'&&e.object==='coordination:'+id));assert.deepEqual(await readFile(f.trace),trace);
+ const saved=f.q.status();assert.equal((await workTaskOwner(f.store,f.task)).newModelRequests,0);assert.deepEqual(f.q.status(),saved);assert.deepEqual(await readFile(f.trace),trace);
+ const b=await f.contact('b');assert.equal(b.phase,'returned');assert.equal(f.q.coordination().stage(id,'B','implement').phasePrerequisitesMet,true);
+});
 test('an incomplete original response stays unresolved and never supplies coordination feedback or an output',async t=>{
  const f=await fixture(t,'partial-answer'),registered=await f.post('organization/team/apply',{choice:'serial',expectedPrevious:null}),id=registered.value.planId,a=await f.contact('a');assert.equal(a.phase,'unresolved');
  const before=await readFile(f.trace);await f.contact('a');assert.deepEqual(await readFile(f.trace),before);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);
@@ -60,5 +68,6 @@ test('changing the human-readable report into a permission claim does not satisf
  const source=await readFile(f.codex,'utf8'),changed=source.replace("kind:'tongxu-coordination-feedback'","kind:'arbitrary-authority-claim'");await writeFile(f.codex,changed);
  const request={...f.aRequest,id:'invalid-feedback',participant:{...f.aRequest.participant,executableSha256:hash(changed)}};f.q.taskInbox().enqueue(Buffer.from(canonical(request)));const selected=await prepareTaskOwner(f.store,f.task,request.id),response=await runMessages(f.store,selected.plan,false,selected.run);assert.equal(response.completed,true);
  const feedback=await reconcileTaskCoordination(f.store,f.task,request.id);assert.equal(feedback?.recorded,false);assert.equal('reason' in feedback!&&feedback.reason,'coordination_feedback_shape_invalid');
+  const trace=await readFile(f.trace),recovery=await workTaskOwner(f.store,f.task);assert.equal(recovery.newModelRequests,0);assert.equal(recovery.coordinationRecovery?.[0]?.recorded,false);assert.equal(recovery.coordinationRecovery?.[0]?.reason,'coordination_feedback_shape_invalid');assert.deepEqual(await readFile(f.trace),trace);
  assert.ok(!f.q.status().events.some((e:any)=>e.object==='coordination:'+id&&['coordination_feedback','coordination_output'].includes(e.kind)));assert.equal(f.q.coordination().stage(id,'B','implement').phasePrerequisitesMet,false);
 });

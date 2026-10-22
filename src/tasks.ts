@@ -31,15 +31,25 @@ export async function cancelUnsentTaskOwner(store:string,task:string,id:string,s
  * requests arriving during a preceding turn. Every send uses the original
  * message, authority and resource consumers. There is no detached worker. */
 export async function workTaskOwner(store:string,task:string,limit=4,currentBilling?:MessagePlan['billing']){
-  if(!Number.isInteger(limit)||limit<1||limit>8)throw new Error('task_worker_limit');const runs=[];
+  if(!Number.isInteger(limit)||limit<1||limit>8)throw new Error('task_worker_limit');const runs=[],coordinationRecovery:Array<{request:string;run:string|null}&NonNullable<Awaited<ReturnType<typeof reconcileTaskCoordination>>>>=[],checked=new Set<string>();
+  const recovery=()=>coordinationRecovery.length?{coordinationRecovery}:{};
   for(let n=0;n<limit;n++){
-    const q=await QueueStore.open(store);let next;try{next=q.taskInbox().status(task).find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));}finally{q.close();}
-    if(!next)return {task,runs,pending:[],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
-    if(next.phase==='waiting')return {task,runs,pending:[next],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
+    const q=await QueueStore.open(store);let rows;try{rows=q.taskInbox().status(task);}finally{q.close();}
+    // A crash can occur after the complete native reply and before its local
+    // coordination result is recorded. Read that exact original before
+    // skipping returned inbox entries; this never calls the model again.
+    for(const original of rows.filter(r=>r.phase==='returned'&&r.coordination&&!checked.has(r.id))){
+      checked.add(original.id);const result=await reconcileTaskCoordination(store,task,original.id);
+      if(result)coordinationRecovery.push({request:original.id,run:original.run,...result});
+    }
+    const next=rows.find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));
+    if(!next)return {task,runs,pending:[],...recovery(),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
+    if(next.phase==='waiting')return {task,runs,pending:[next],...recovery(),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling),coordination=result.completed?await reconcileTaskCoordination(store,task,next.id):null;runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true),...(coordination?{coordination}:{})});
+    if(coordination)checked.add(next.id);
     if(!result.completed||!result.resourcesSettled)break;
   }
-  const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase)),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
+  const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase)),...recovery(),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
 }
 
 /** Fixed A -> B -> A contact, with sender identities filled only from actual
