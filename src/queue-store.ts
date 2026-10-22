@@ -2,6 +2,8 @@ import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication
 import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey} from './publication-guards.js';
 import {requirePublicationProcessEnded} from './publication-process.js';
 import {requirePublicationDispatchCapture,type PublicationDispatchCapture} from './publication-dispatch-capture.js';
+import {PublicationReturns} from './publication-return-store.js';
+import {requirePublicationProcessEnded} from './publication-process.js';
 import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
 import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
 import {installMemberRefutationOriginalsGuard} from './member-refutation-format.js';
@@ -262,7 +264,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget;
       if(state.plan.resourceBudget)try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());resourcesSettled=b.phase==='returned'&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{}
       return {state:{...state,resourcesSettled},inputs:state.plan.participants.flatMap(p=>m.submitted(run,p.id))};
-    },task=>this.taskLinkRecords(fn=>fn()).material(task),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task));
+    },(task,link)=>this.taskLinkRecords(fn=>fn()).material(task,link),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task),(task,ref)=>this.publicationReturnRecords(fn=>fn()).material(task,ref));
   }
 
   async refreshMessageTaskSources(run:string){
@@ -706,6 +708,25 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   publicationOriginalDispatches(id:string){return this.transaction(()=>{
     const state=this.publicationHistory(id);return ['comment','status'].flatMap(stage=>{const intent=state.stages[stage].intent;if(!intent)return [];const prepared=state.events.find((e:Row)=>e.kind==='dispatch_prepared'&&e.stage===stage&&e.directory===intent.directory);if(!prepared)throw new Error('publication_original_dispatch_required');return [{prepared,request:this.blob(prepared.blobs.request.sha256),registered:state.stages[stage].started}];});
   });}
+  /** Includes valid earlier unprofiled requests, using their immutable intent
+   * and original request bytes. It never invents a governed dispatch event. */
+  publicationReturnDispatches(id:string){return this.transaction(()=>this.publicationReturnOriginals(id));}
+  private publicationReturnOriginals(id:string){
+    const state=this.publicationHistory(id);if(!state.prepared)throw new Error('publication_return_original_publication_required');
+    return ['comment','status'].map(stage=>{const s=state.stages[stage];if(!s.intent||!s.started||s.lastState!=='verified')throw new Error('publication_return_complete_publication_required');
+      const endpoint=`repos/${state.document.candidate.repository}/${stage==='comment'?`issues/${state.document.candidate.pr}/comments`:`statuses/${state.document.candidate.H}`}`;
+      const prepared=state.events.find((e:Row)=>e.kind==='dispatch_prepared'&&e.stage===stage&&e.directory===s.intent.directory)??{...s.intent,endpoint,legacyOriginalIntent:true};
+      return {prepared,request:this.blob(s.intent.blobs.request.sha256),registered:s.started};});
+  }
+  publicationReturns(){return this.publicationReturnRecords(fn=>this.transaction(fn));}
+  private publicationReturnRecords(transaction:<T>(f:()=>T)=>T){return new PublicationReturns(this.db,transaction,(operation,current)=>{
+    const source=this.reviewSource(operation,current),{op,receiver:r}=this.receiverOperation(operation),state=this.publicationHistory(operation);
+    if(op.status!=='complete'||r?.phase!=='returned'||!r.controllerReturned||r.executionKind!=='native_capture'||r.judgment.verdict!=='RETURN_FOR_WORK'||!state.prepared||state.prepared.bindingHash!==r.bindingHash||state.document.judgment!=='RETURN_FOR_WORK'||state.document.inputSha256!==r.inputSha256)throw new Error('publication_return_complete_original_required');
+    for(const original of this.publicationReturnOriginals(operation))requirePublicationProcessEnded(original.registered.pid,original.registered.identity);
+    const completed=r.blobs['completed.json'];if(!completed)throw new Error('publication_return_final_original_required');const receipt=JSON.parse(this.blob(completed.sha256).toString());
+    if(typeof receipt.finalText!=='string'||receipt.inputSha256!==r.inputSha256)throw new Error('publication_return_final_original_changed');
+    return {operation,item:op.item,packet:op.packet,candidate:source.candidate,context:source.context,judgment:r.judgment,fullFinal:receipt.finalText,fullFinalSha256:hash(receipt.finalText),inputSha256:r.inputSha256,bindingHash:r.bindingHash,publication:{id:state.document.publicationId,planSha256:state.prepared.planSha256,documentSha256:state.prepared.documentSha256,comment:state.stages.comment.verified.remote,status:state.stages.status.verified.remote,governance:state.plan.governance?'recorded_governed_plan':'historical_unprofiled',remoteSource:'original_verified_readback',liveRemoteAtRoleSend:false}};
+  },id=>this.publicationReturnOriginals(id),(task,link)=>this.taskLinkRecords(fn=>fn()).material(task,link));}
   publicationRecordResult(id:string,values:PublicationDispatchCapture[]){return this.transaction(()=>{
     const state=this.publicationHistory(id),binding=this.publicationBinding(id);if(!binding||state.pendingDispatches.length||values.length!==2||!['comment','status'].every(stage=>state.stages[stage].lastState==='verified'))throw new Error('publication_verified_original_result_required');
     const captured=values.map(requirePublicationDispatchCapture);if(new Set(captured.map(c=>c.directory)).size!==2)throw new Error('publication_original_dispatch_duplicate');

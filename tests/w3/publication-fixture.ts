@@ -5,8 +5,8 @@ import {setup} from './receiver-fixture.js';
 import {runReception} from '../../src/receiver.js';
 import {hash} from '../../src/snapshot.js';
 
-export async function publicationFixture(t: test.TestContext, mode = 'normal') {
-  const f = await setup(t);
+export async function publicationFixture(t: test.TestContext, mode = 'normal',receiverMode='complete') {
+  const f = await setup(t,receiverMode);
   // Native-shaped local fixture plus a fake gh process. No supplier or GitHub
   // request is possible; this declaration is not reported as a real capture.
   const secret = 'PRIVATE_REPORT_SENTINEL @someone /Users/private/token=fixture ```';
