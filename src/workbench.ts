@@ -10,6 +10,7 @@ import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
 import {DeliveryControls,type DeliverySelection} from './delivery-controls.js';
 import {OwnerControls} from './owner-controls.js';
+import {ScopeFollowupControls} from './scope-followup-controls.js';
 import {OrganizationControls} from './organization-controls.js';
 import {OverallControls,validateOverallSelections,type OverallSelection} from './overall-controls.js';
 import type {WorkbenchRuntimeIdentity} from './workbench-launch.js';
@@ -119,6 +120,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
   const deliveryControls=p.deliveries?new DeliveryControls(p.deliveries,p.sources,p.kind==='tongxu-controlled-workbench'):null;
   const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
+  const scopeFollowups=p.ownerControls?new ScopeFollowupControls(p.ownerControls,p.sources):null;
   const organization=p.organization?await OrganizationControls.load(p.organization.path,p.organization.sha256,p.sources):null;
   const overall=p.overallReviews?await OverallControls.load(p.overallReviews,p.sources):null;
   const assets = new Map<string, { type: string; bytes: Buffer }>();
@@ -144,14 +146,16 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
         const delivery=/^\/api\/delivery\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
         const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
+        const followup=/^\/api\/scope-followup\/([a-z0-9-]{1,64})\/(prepare|observe|owner-prepare|owner-apply|start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const arrangement=/^\/api\/organization\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/apply$/.exec(url.pathname);
         const retrospective=/^\/api\/overall-review\/([a-z0-9-]{1,64})\/(prepare|run|reconcile|close-unstarted)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&delivery||ownerControls&&owner||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&delivery||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
-        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
+        if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await scopeFollowups!.prepare(source,body));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body));return;}
         if(retrospective){if(!exactKeys(body,[]))throw new Error('overall_no_runtime_arguments');json(res,202,overall!.begin(retrospective[1]!,retrospective[2]! as any));return;}
         if(arrangement){json(res,200,await organization!.apply(arrangement[1]!,body));return;}
         if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls!.setScope(scope[1]!,scope[2]!,body.revision));return;}
@@ -162,8 +166,9 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
       const overallReport=/^\/api\/overall-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);if(overallReport){if(!overall)throw new Error('report_not_found');json(res,200,await overall.report(overallReport[1]!));return;}
+      const scopeReport=/^\/api\/scope-followup-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})$/.exec(url.pathname);if(scopeReport){if(!scopeFollowups)throw new Error('report_not_found');json(res,200,await scopeFollowups.report(scopeReport[1]!,scopeReport[2]!));return;}
       const assessment=/^\/api\/delivery-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);
       if(assessment){if(!deliveryControls)throw new Error('report_not_found');json(res,200,await deliveryControls.report(assessment[1]!,assessment[2]!));return;}
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
@@ -176,5 +181,5 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
-  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await overall?.drain();await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await scopeFollowups?.drain();await overall?.drain();await closed;} };
 }

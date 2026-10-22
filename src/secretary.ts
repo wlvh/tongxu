@@ -21,6 +21,7 @@ export type SecretaryPlan = {
   deliveryOutcomes?:true;
   deliveryReports?:true;
   workbench?:SecretaryWorkbenchRef;
+  scopeFollowupReports?:true;
   codexExecutable: string; codexSha256: string; prompts: FileRef[]; question: string;
   scopeSource: string; arrangementSource: string; disabledMcpServers: string[]; allowedInstructionSources: FileRef[];
   billing: { mode: 'existing_subscription_only'; evidence: string; evidenceSha256: string; observedAt: string; ordinaryUsageRequired: true };
@@ -33,6 +34,7 @@ function parse(bytes: Buffer): SecretaryPlan {
   if(p.kind==='tongxu-task-secretary'?!exactKeys(p.taskControls,['path','sha256','source'])||typeof p.taskControls.path!=='string'||!isAbsolute(p.taskControls.path)||resolve(p.taskControls.path)!==p.taskControls.path||!digest.test(p.taskControls.sha256)||typeof p.taskControls.source!=='string'||!/^[a-z0-9-]{1,64}$/.test(p.taskControls.source):Object.hasOwn(p,'taskControls'))throw new Error('secretary_task_controls_invalid');
   if(Object.hasOwn(p,'deliveryOutcomes')&&p.deliveryOutcomes!==true||Object.hasOwn(p,'deliveryReports')&&(p.deliveryReports!==true||p.deliveryOutcomes!==true))throw new Error('secretary_delivery_capability_invalid');
   if(Object.hasOwn(p,'workbench'))validateSecretaryWorkbench(p.workbench);
+  if(Object.hasOwn(p,'scopeFollowupReports')&&(p.scopeFollowupReports!==true||!p.workbench))throw new Error('secretary_scope_followup_capability_invalid');
   if (Object.keys(c).some(k => !['repository', 'pr', 'H', 'B', 'target', 'kind',...(c.kind==='development-task'?['taskId','sourceSha256']:[])].includes(k)) || c.kind !== undefined && !['github-pr','development-task'].includes(c.kind)) throw new Error('invalid_secretary_candidate');
   for (const text of [p.scopeSource, p.arrangementSource]) if (typeof text !== 'string' || !text.trim() || text.length > 2048) throw new Error('secretary_scope_missing');
   for (const ref of [...p.prompts, ...p.allowedInstructionSources]) if (!ref || !digest.test(ref.sha256) || typeof ref.path !== 'string') throw new Error('secretary_prompt_binding_missing');
@@ -40,7 +42,7 @@ function parse(bytes: Buffer): SecretaryPlan {
   if (p.billing?.mode !== 'existing_subscription_only' || p.billing.ordinaryUsageRequired !== true || !digest.test(p.billing.evidenceSha256) || !Number.isFinite(Date.parse(p.billing.observedAt))) throw new Error('secretary_billing_boundary_missing');
   return p;
 }
-const specs=(p:SecretaryPlan)=>selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench);
+const specs=(p:SecretaryPlan)=>selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true);
 const loadControls=async(p:SecretaryPlan)=>{if(!p.taskControls)return undefined;const controls=await TaskControls.load(p.taskControls.path,p.taskControls.sha256,[{id:p.taskControls.source,store:p.store,item:p.item}]);if(controls.manifest().contacts.some(c=>c.executionKind!==p.executionKind))throw new Error('secretary_contact_execution_kind_mismatch');return controls;};
 async function inputs(p: SecretaryPlan) {
   const prompts: string[] = [];
@@ -104,7 +106,7 @@ export async function runSecretary(planPath: string, output: string) {
       catch (e) { save(join(output, 'recovery.json'), { status: 'original_result_unknown_or_invalid', reason: e instanceof Error ? e.message : 'unknown', automaticResend: false }); throw e; }
     }
     const fresh = await inputs(p); if (canonical(fresh) !== canonical(frozen)) throw new Error('secretary_prepared_inputs_changed');
-    const controls=await loadControls(p),workbench=p.workbench?await SecretaryWorkbench.load(p.workbench,p.store,p.item):undefined,gate = new SecretaryTools(p.store, p.item, p.candidate, output,controls,p.deliveryOutcomes===true,p.deliveryReports===true,workbench);
+    const controls=await loadControls(p),workbench=p.workbench?await SecretaryWorkbench.load(p.workbench,p.store,p.item):undefined,gate = new SecretaryTools(p.store, p.item, p.candidate, output,controls,p.deliveryOutcomes===true,p.deliveryReports===true,workbench,p.scopeFollowupReports===true);
     const beforeTurn = async () => {
       await gate.check();
       if (Date.now() - Date.parse(p.billing.observedAt) > 24 * 60 * 60 * 1000 || Date.parse(p.billing.observedAt) > Date.now() + 60000) throw new Error('secretary_billing_boundary_stale');
@@ -112,7 +114,7 @@ export async function runSecretary(planPath: string, output: string) {
     };
     await beforeTurn(); let session: BoundedCodexSession | undefined;
     try {
-      session = await BoundedCodexSession.start({ executable: p.codexExecutable, directory: native, operation: output, candidate: p.candidate, role: 'secretary', system: frozen.system, inputManifestSha256: inputSha256, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource, disabledMcpServers: p.disabledMcpServers, allowedInstructionSources: p.allowedInstructionSources, timeoutMs: p.timeoutMs, executionKind: p.executionKind,secretaryContacts:!!p.taskControls,secretaryDeliveries:p.deliveryOutcomes===true,secretaryDeliveryReports:p.deliveryReports===true,secretaryWorkbench:!!p.workbench, beforeTurn, gate });
+      session = await BoundedCodexSession.start({ executable: p.codexExecutable, directory: native, operation: output, candidate: p.candidate, role: 'secretary', system: frozen.system, inputManifestSha256: inputSha256, scopeSource: p.scopeSource, arrangementSource: p.arrangementSource, disabledMcpServers: p.disabledMcpServers, allowedInstructionSources: p.allowedInstructionSources, timeoutMs: p.timeoutMs, executionKind: p.executionKind,secretaryContacts:!!p.taskControls,secretaryDeliveries:p.deliveryOutcomes===true,secretaryDeliveryReports:p.deliveryReports===true,secretaryWorkbench:!!p.workbench,secretaryScopeFollowupReports:p.scopeFollowupReports===true, beforeTurn, gate });
       await session.turn(questionInput(p), p.candidate, secretarySchema);
       await session.close();
       const r = await final(output, p, inputSha256, frozen, false); save(join(output, 'result.json'), r); return r;

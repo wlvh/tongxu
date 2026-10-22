@@ -20,7 +20,7 @@ export async function verifySecretaryCapture(directory: string, p: SecretaryPlan
     request('initialize', { clientInfo: { name: p.taskControls?'tongxu-task-secretary':'tongxu-readonly-secretary', version: '0.1.0' }, capabilities: { experimentalApi: true } }),
     { method: 'initialized', params: {} },
     request('account/read', { refreshToken: false }), request('config/read', { includeLayers: false, cwd }), request('account/rateLimits/read', {}),
-    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: p.taskControls?coordinatingSecretaryDeveloperInstructions:secretaryDeveloperInstructions, dynamicTools: selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench), environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
+    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: p.taskControls?coordinatingSecretaryDeveloperInstructions:secretaryDeveloperInstructions, dynamicTools: selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true), environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
     request('account/rateLimits/read', {}), request('turn/start', { threadId: binding.threadId, input: [{ type: 'text', text: question }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: secretarySchema })
   ];
   const replies = new Map<number, any>(), expectedToolReplies: any[] = [];

@@ -46,6 +46,7 @@ import { MessageResourceRecords } from './message-resource-store.js';
 import { TaskCandidateLinks } from './task-link-store.js';
 import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-link-source.js';
 import { TaskInbox } from './task-inbox.js';
+import {TaskScopeFollowups} from './task-scope-followup-store.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
 import { observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
@@ -155,6 +156,7 @@ export class QueueStore {
   static async observeOwnerTask(directory:string,item:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const selected=q.authorityItem(item),a=new AuthorityRecords(q.db,fn=>fn(),id=>q.authorityItem(id));return {...a.forScope(selected.context.scope.id,{item,target:selected.candidate.targetRef}),taskCurrent:selected.current,taskScope:selected.context.scope,target:selected.candidate.targetRef};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  static async observeScopeFollowups(directory:string,item:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const records=q.taskScopeFollowupRecords(fn=>fn());return {original:records.view(item),followups:records.status(item)};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   static async observeDeliveries(directory:string,batches:readonly string[]){
     if(!batches.length||batches.length>8||new Set(batches).size!==batches.length)throw new Error('delivery_selection_invalid');
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return batches.map(sha=>q.deliveryRecords(fn=>fn()).state(sha));}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
@@ -276,7 +278,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
   async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.transaction(()=>{this.taskRecords().observe(p,source.observation);this.taskLinkRecords(fn=>fn()).observe(source);});return source;}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
-  private taskInboxRecords(transaction:<T>(f:()=>T)=>T){
+  scopeFollowups():TaskScopeFollowups{return this.taskScopeFollowupRecords(fn=>this.transaction(fn));}
+  private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));}
+  private taskInboxRecords(transaction:<T>(f:()=>T)=>T):TaskInbox{
     const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});
     return new TaskInbox(this.db,transaction,this.directory,this.taskRecords(),run=>{
       const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget,resourcePhase:string|null=null;
@@ -286,7 +290,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       context:(task,actor,tool)=>this.coordinationRecords(fn=>fn()).ownerContext(task,actor,tool),
       bind:(id,plan,sha,mapping)=>this.coordinationRecords(fn=>fn()).bindMessages(id,plan,sha,mapping),
       feedback:(id,task,run,message)=>this.coordinationRecords(fn=>fn()).ownerFeedback(id,task,run,message)
-    });
+    },task=>this.taskScopeFollowupRecords(fn=>fn()).context(task));
   }
 
   async refreshMessageTaskSources(run:string){
