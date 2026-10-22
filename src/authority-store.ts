@@ -6,6 +6,7 @@ import { now } from './contract.js';
 import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 import {installRecompositionTestGuards} from './recomposition-test-guards.js';
+import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards} from './publication-guards.js';
 
 type Row=Record<string,any>;
 const profileKey='owner_authority_profile';
@@ -25,7 +26,7 @@ const guards=[
   // Explicit integration boundary: old native consumers cannot silently bypass
   // the new owner source. Their original result reconciliation remains readable.
   {name:'authority_legacy_native_guard',sql:`CREATE TRIGGER authority_legacy_native_guard BEFORE UPDATE ON operations WHEN EXISTS(SELECT 1 FROM meta WHERE key='${profileKey}') AND ((NEW.status='receiving' AND (OLD.status!='receiving' OR json_extract(NEW.result,'$.receiver.phase')='dispatch_registered' AND json_extract(OLD.result,'$.receiver.phase') IS NOT 'dispatch_registered')) OR NEW.status='repairing' AND OLD.status!='repairing') BEGIN SELECT RAISE(ABORT,'authority_consumer_binding_required'); END`},
-  {name:'authority_legacy_effect_guard',sql:`CREATE TRIGGER authority_legacy_effect_guard BEFORE INSERT ON events WHEN EXISTS(SELECT 1 FROM meta WHERE key='${profileKey}') AND (NEW.kind='overall_review_dispatched' OR NEW.kind IN ('publication_intent','publication_started')) BEGIN SELECT RAISE(ABORT,'authority_consumer_binding_required'); END`},
+  {name:'authority_legacy_effect_guard',sql:legacyPublicationEffectGuard},
 ];
 
 /** Fixed owner decisions in the existing queue events/blobs. This is neither
@@ -38,7 +39,7 @@ export class AuthorityRecords {
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
   private bytes(h:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row;const b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==h)throw new Error('authority_original_changed');return b;}
-  private mode(){const repair=this.db.prepare('SELECT value FROM meta WHERE key=?').get(repairConsumerKey) as Row|undefined,receiver=this.db.prepare('SELECT value FROM meta WHERE key=?').get(receiverConsumerKey) as Row|undefined;if(repair&&repair.value!==hash(governedRepairGuard))throw new Error('owner_repair_consumer_contract_changed');if(receiver&&receiver.value!==hash(admittedReceiver))throw new Error('owner_receiver_consumer_contract_changed');if(receiver&&(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='authority_receiver_resource_guard'").get() as Row|undefined)?.sql!==receiverResourceGuard)throw new Error('owner_receiver_resource_guard_changed');if(![12,13,14,15,16].includes(queueFeatureVersion(this.db))||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===(g.name==='authority_legacy_native_guard'?(receiver?governedReceiverGuard(Boolean(repair)):repair?governedRepairGuard:g.sql):g.sql)))throw new Error('owner_authority_not_enabled');}
+  private mode(){const publication=Boolean(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey));if(publication&&!publicationGuardsCurrent(this.db))throw new Error('owner_publication_consumer_contract_changed');const repair=this.db.prepare('SELECT value FROM meta WHERE key=?').get(repairConsumerKey) as Row|undefined,receiver=this.db.prepare('SELECT value FROM meta WHERE key=?').get(receiverConsumerKey) as Row|undefined;if(repair&&repair.value!==hash(governedRepairGuard))throw new Error('owner_repair_consumer_contract_changed');if(receiver&&receiver.value!==hash(admittedReceiver))throw new Error('owner_receiver_consumer_contract_changed');if(receiver&&(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='authority_receiver_resource_guard'").get() as Row|undefined)?.sql!==receiverResourceGuard)throw new Error('owner_receiver_resource_guard_changed');if(![12,13,14,15,16].includes(queueFeatureVersion(this.db))||!guards.every(g=>(this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===(g.name==='authority_legacy_native_guard'?(receiver?governedReceiverGuard(Boolean(repair)):repair?governedRepairGuard:g.sql):g.name==='authority_legacy_effect_guard'&&publication?governedPublicationEffectGuard:g.sql)))throw new Error('owner_authority_not_enabled');}
   private profile(){this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!isAuthorityDigest(ref))throw new Error('owner_authority_profile_missing');const p=parseAuthorityProfile(this.bytes(ref));if(hash(canonical(p))!==ref)throw new Error('authority_profile_changed');return {profile:p,profileSha256:ref};}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseAuthorityProfile(raw),encoded=Buffer.from(canonical(p)),profileSha256=hash(encoded),version=queueFeatureVersion(this.db);
@@ -67,6 +68,14 @@ export class AuthorityRecords {
     if(this.db.prepare('SELECT 1 FROM claims').get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
     const previous=(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='authority_legacy_native_guard'").get() as Row).sql,next=governedReceiverGuard(Boolean(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(repairConsumerKey)));
     this.db.exec('DROP TRIGGER authority_legacy_native_guard;'+next+';'+receiverResourceGuard+';');this.db.prepare('INSERT INTO meta VALUES(?,?)').run(receiverConsumerKey,hash(admittedReceiver));this.event('authority_receiver_consumer_enabled','authority-profile',{contract:'governed-receiver-v1',previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(next)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
+  });}
+  enableGovernedPublication(){return this.transaction(()=>{
+    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey))return {enabled:true,duplicate:true,executionGranted:false};
+    if(this.db.prepare('SELECT 1 FROM claims').get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
+    const previous=(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='authority_legacy_effect_guard'").get() as Row).sql;
+    if(previous!==legacyPublicationEffectGuard)throw new Error('publication_legacy_guard_changed');
+    this.db.exec('DROP TRIGGER authority_legacy_effect_guard;'+governedPublicationEffectGuard+';');installPublicationGuards(this.db);this.db.prepare('INSERT INTO meta VALUES(?,?)').run(publicationConsumerKey,hash(governedPublicationEffectGuard));
+    this.event('authority_publication_consumer_enabled','authority-profile',{contract:'governed-publication-v1',previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(governedPublicationEffectGuard)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
   });}
   prepare(requestId:string,raw:Buffer){return this.transaction(()=>{
     const {profile,profileSha256}=this.profile();
@@ -182,6 +191,7 @@ export class AuthorityRecords {
   reserveAction(requestId:string,request:ActionRequest,role:AuthorityRole,authorization:string,observations:OwnerObservation[]){return this.transaction(()=>{
     this.profile();if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(requestId))throw new Error('authority_action_request_id_invalid');parseActionRequest(request);
     if(request.action==='test'&&request.payloadSha256)installRecompositionTestGuards(this.db);
+    if(request.action==='publish')installPublicationGuards(this.db);
     const object='authority-intent:'+requestId,old=this.events(object,'authority_action_reserved')[0];
     if(old){if(old.data.requestSha256!==actionHash(request)||old.data.role!==role||old.data.authorization!==authorization)throw new Error('authority_action_request_id_changed');return {...old.data,duplicate:true,next:'read_original_execution_before_any_dispatch',externalActionSent:false};}
     const checked=this.check(request,role,authorization,observations);

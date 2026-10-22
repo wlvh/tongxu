@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { join, isAbsolute, resolve } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { QueueStore } from './queue-store.js';
 import { reconcileReception } from './receiver.js';
@@ -7,16 +7,10 @@ import { canonical } from './comparison.js';
 import { hash, privateDirectory } from './snapshot.js';
 import { PublicationHttp, ordinaryFile } from './publication-http.js';
 
-const digest = /^[a-f0-9]{64}$/, uuid = /^[a-f0-9-]{36}$/;
-type Plan = { schemaVersion: 1; kind: 'tongxu-reception-publication'; store: string; operation: string; channel: 'commit-status'; ghExecutable: string; ghSha256: string; repositoryId: number; actor: { id: number; login: string }; source: string };
+import {parsePublicationPlan as plan,publicationAuthorityPayloadSha,type PublicationPlan as Plan} from './publication-contract.js';
+import {publicationGovernance} from './publication-governance.js';
 type Row = Record<string, any>;
-function plan(bytes: Buffer): Plan {
-  const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-reception-publication' || p.channel !== 'commit-status' || !uuid.test(p.operation) || !digest.test(p.ghSha256) || !Number.isSafeInteger(p.repositoryId) || p.repositoryId < 1 || !Number.isSafeInteger(p.actor?.id) || p.actor.id < 1 || !/^[A-Za-z0-9-]{1,39}$/.test(p.actor.login) || typeof p.source !== 'string' || !p.source.trim() || p.source.length > 2048 || p.source.includes('\0') || Object.keys(p).some(k => !['schemaVersion', 'kind', 'store', 'operation', 'channel', 'ghExecutable', 'ghSha256', 'repositoryId', 'actor', 'source'].includes(k))) throw new Error('invalid_publication_plan');
-  for (const v of [p.store, p.ghExecutable]) if (typeof v !== 'string' || !isAbsolute(v) || resolve(v) !== v) throw new Error('invalid_publication_path');
-  return p;
-}
-function publicDocument(p: Plan, state: Row): Row {
+export function publicDocument(p: Plan, state: Row): Row {
   const r = state.receiver, input = JSON.parse(state.input.toString()), j = r.judgment, c = state.result.candidate;
   const candidate = { repository: c.repository, pr: c.pr, H: c.H, B: c.B, targetRef: c.targetRef };
   if (r.phase !== 'returned' || r.executionKind !== 'native_capture' || state.result.independentReception !== 'judgment_recorded' || input.binding.operation !== p.operation || input.binding.role !== 'receiver') throw new Error('publication_requires_complete_native_judgment');
@@ -100,7 +94,7 @@ async function originalEnded(stage: Row) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('publication_original_process_unknown');
   try { process.kill(pid, 0); throw new Error('publication_original_process_active'); } catch (e: any) { if (e.code !== 'ESRCH') throw e; }
 }
-async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, name: 'comment' | 'status', allowWrite: boolean, retrySource?: string): Promise<boolean> {
+async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, name: 'comment' | 'status', allowWrite: boolean, retrySource?: string,governance?:ReturnType<typeof publicationGovernance>): Promise<boolean> {
   let state = q.publicationState(p.operation), stage = state.stages[name], comment = state.stages.comment.verified?.remote;
   if (name === 'status' && state.stages.comment.lastState !== 'verified') return false;
   if (stage.intent) await originalEnded(stage);
@@ -115,10 +109,13 @@ async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, 
   if (stage.intent && (!retrySource || !stage.response?.rejected || stage.lastState === 'verified')) { q.publicationEvent(p.operation, 'problem', name, { reason: stage.response?.rejected ? 'remote_rejected' : 'remote_result_unknown' }); return false; }
   if (!allowWrite) return false;
   const observed = await current(http, p, d);
+  await governance?.beforeWrite();
   const payload = name === 'comment' ? { body: d.commentBody } : statusPayload(d, comment);
+  const endpoint=`${repoPath(d)}/${name === 'comment' ? `issues/${d.candidate.pr}/comments` : `statuses/${d.candidate.H}`}`;
   let reply;
   try {
-    reply = await http.request('POST', `${repoPath(d)}/${name === 'comment' ? `issues/${d.candidate.pr}/comments` : `statuses/${d.candidate.H}`}`, payload, {
+    reply = await http.request('POST', endpoint, payload, {
+      ...(p.governance?{dispatch:(directory:string,effect:()=>void)=>{q.publicationDispatchPrepared(p.operation,name,{directory,endpoint,requestSha256:hash(canonical(payload)),controllerPid:process.pid,remotePreflight:observed},{request:Buffer.from(JSON.stringify(payload)),preflight:Buffer.from(JSON.stringify(observed))},stage.intent?retrySource:undefined);q.publicationEffect(p.operation,name,directory,governance!.observations,effect);}}:{}),
       intent: directory => q.publicationEvent(p.operation, 'intent', name, { directory, requestSha256: hash(canonical(payload)), controllerPid: process.pid, remotePreflight: observed }, { request: Buffer.from(JSON.stringify(payload)), preflight: Buffer.from(JSON.stringify(observed)) }, stage.intent ? retrySource : undefined),
       started: pid => q.publicationEvent(p.operation, 'started', name, { pid })
     });
@@ -137,21 +134,23 @@ async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, 
 export async function publication(planPath: string, action: 'prepare' | 'publish' | 'reconcile' | 'retry-rejected', retrySource?: string) {
   const bytes = await ordinaryFile(planPath, 1024 * 1024), p = plan(bytes), q = await QueueStore.open(p.store);
   try {
+    if(p.governance)q.authority().enableGovernedPublication();
     await reconcileReception(p.store, p.operation);
     const original = q.receiverState(p.operation), d = publicDocument(p, original), directory = original.receiver.directory;
     return await lock(directory, async () => {
-      const state = q.preparePublication(p.operation, bytes, Buffer.from(JSON.stringify(d)), action === 'prepare');
+      let state = q.preparePublication(p.operation, bytes, Buffer.from(JSON.stringify(d)), action === 'prepare');
+      const governance=publicationGovernance(q,p);await governance.recover();state=q.publicationState(p.operation);
       const preview = join(directory, `publication-preview-${d.publicationId}.json`);
       try { await writeFile(preview, JSON.stringify(d, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); } catch (e: any) { if (e.code !== 'EEXIST') throw e; if (canonical(JSON.parse((await ordinaryFile(preview, 1024 * 1024)).toString())) !== canonical(d)) throw new Error('publication_preview_changed'); }
-      if (action === 'prepare') return { operation: p.operation, publicationId: d.publicationId, status: 'prepared_not_sent', preview, channel: p.channel, githubState: d.status.state, judgment: d.judgment, productionActionAllowed: false };
+      if (action === 'prepare') return { operation: p.operation, publicationId: d.publicationId, status: state.events.some((e:Row)=>['intent','recovered_intent'].includes(e.kind))?'prepared_original_dispatch_exists':'prepared_not_sent', newRequestsSent:0, documentSha256:state.prepared.documentSha256, publicationPayloadSha256:publicationAuthorityPayloadSha(p,state.prepared.documentSha256), preview, channel: p.channel, githubState: d.status.state, judgment: d.judgment, productionActionAllowed: false };
       if (action === 'retry-rejected' && (!retrySource?.trim() || retrySource.length > 2048 || !Object.values(state.stages).some((s: any) => s.response?.rejected && s.lastState !== 'verified'))) throw new Error('publication_explicit_rejected_retry_required');
       const http = new PublicationHttp(directory, p.ghExecutable, p.ghSha256, d.candidate.repository, d.candidate.pr, d.candidate.H, d.candidate.targetRef);
-      const detail = await stageWork(q, http, p, d, 'comment', action !== 'reconcile', action === 'retry-rejected' ? retrySource : undefined);
-      const status = detail && await stageWork(q, http, p, d, 'status', action !== 'reconcile', action === 'retry-rejected' ? retrySource : undefined);
+      const detail = await stageWork(q, http, p, d, 'comment', action !== 'reconcile', action === 'retry-rejected' ? retrySource : undefined,governance);
+      const status = detail && await stageWork(q, http, p, d, 'status', action !== 'reconcile', action === 'retry-rejected' ? retrySource : undefined,governance);
       let remoteCurrent = false, remoteCheckError: string | null = null;
       try { await current(http, p, d); remoteCurrent = true; } catch (e) { remoteCheckError = e instanceof Error ? e.message : 'current_remote_unknown'; }
-      const final = q.publicationState(p.operation);
-      return { operation: p.operation, publicationId: d.publicationId, status: detail && status ? 'published_verified' : 'publication_pending_or_unknown', channel: p.channel, githubState: d.status.state, judgment: d.judgment, materialDigest: d.materialDigest, comment: final.stages.comment.verified?.remote ?? null, commitStatus: final.stages.status.verified?.remote ?? null, stages: final.stages, localMaterialCurrent: q.receiverState(p.operation).result.receiver.currentMaterialMatches, remoteCurrent, remoteCheckError, privateReportPublished: false, modelTasksStarted: 0, productionActionAllowed: false };
+      const resources=await governance.settle(),final = q.publicationState(p.operation);
+      return { operation: p.operation, publicationId: d.publicationId, resources, resourcesSettled:p.governance?p.governance.resourceRequests.every(id=>q.resources().settledOutcome(id)):null, status: detail && status ? 'published_verified' : 'publication_pending_or_unknown', channel: p.channel, githubState: d.status.state, judgment: d.judgment, materialDigest: d.materialDigest, comment: final.stages.comment.verified?.remote ?? null, commitStatus: final.stages.status.verified?.remote ?? null, stages: final.stages, localMaterialCurrent: q.receiverState(p.operation).result.receiver.currentMaterialMatches, remoteCurrent, remoteCheckError, privateReportPublished: false, modelTasksStarted: 0, productionActionAllowed: false };
     });
   } finally { q.close(); }
 }

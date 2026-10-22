@@ -1,3 +1,6 @@
+import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication-contract.js';
+import {publicationGuardsCurrent} from './publication-guards.js';
+import {requirePublicationDispatchCapture,type PublicationDispatchCapture} from './publication-dispatch-capture.js';
 import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
 import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
 import {installMemberRefutationOriginalsGuard} from './member-refutation-format.js';
@@ -107,6 +110,8 @@ PRAGMA user_version=3;
 `;
 
 export class QueueStore {
+  private publicationEffectCapabilities=new Map<string,{operation:string;stage:string}>();
+  private activePublicationEffect:{operation:string;stage:string;directory:string;binding:Row}|null=null;
   private constructor(readonly directory: string, private db: DatabaseSync) {}
   static async create(directory: string, repository: string, seats = 2): Promise<QueueStore> {
     if (!repoPattern.test(repository) || !Number.isInteger(seats) || seats < 1 || seats > 8) throw new Error('invalid_queue_scope');
@@ -464,7 +469,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         if(action.request.action==='implement')this.memberRepairResourceGate(action,request);
         const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
         const test=action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
-        if(queueFormatVersion(this.db)>=20||receiver||test){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{})});}
+        const publication=action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
+        if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
     });
   }
@@ -496,6 +502,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate')return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
+    if(kind==='publish')return this.publicationResourceOutcome(operation,action,claimedAt);
     if(kind==='test'&&action.request.payloadSha256)return this.recompositionTestRecords(fn=>fn()).outcome(operation,action,claimedAt);
     if(kind==='merge'){
       const original=this.mergesResourceOutcome(operation,action,claimedAt);
@@ -623,6 +630,89 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
   private event(kind: string, object: string, data: unknown): void { this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind, object, JSON.stringify(data), now()); }
+  private publicationBinding(id:string):Row|null{
+    const row=this.db.prepare("SELECT data FROM events WHERE kind='authority_publication_bound' AND object=?").get('publication:'+id) as Row|undefined;if(!row)return null;
+    const b=JSON.parse(row.data),{bindingSha256,...value}=b;if(hash(canonical(value))!==bindingSha256||!this.blob(bindingSha256).equals(Buffer.from(canonical(value))))throw new Error('publication_authority_binding_changed');return b;
+  }
+  private publicationCurrent(id:string){
+    const state=this.publicationHistory(id),{op,receiver}=this.receiverOperation(id),item=this.item(op.item),packet=this.packet(op.packet),context=this.packetEvidence(packet).context;
+    if(!state.prepared||op.status!=='complete'||receiver?.phase!=='returned'||receiver.executionKind!=='native_capture'||receiver.bindingHash!==state.prepared.bindingHash||item.current_packet!==op.packet||item.observation_conflict||!this.receiverCandidateCurrent(item)||!this.memberReceptionCurrent(item.id)||!this.integrationApplicability(op,receiver)||!this.effectiveSummary(item,packet).evidenceComplete)throw new Error('publication_source_no_longer_current');
+    if(this.prerequisites(item).length)throw new Error('publication_prerequisites_unmet');
+    if((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row|undefined)?.stopped)throw new Error('new_investment_stopped');
+    if(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target))throw new Error('target_occupied_or_unknown');return {state,op,receiver};
+  }
+  private publicationAuthorization(id:string,observations:OwnerObservation[],held:boolean){
+    if(!publicationGuardsCurrent(this.db))throw new Error('governed_publication_not_enabled');
+    const {state,op,receiver}=this.publicationCurrent(id),p=parsePublicationPlan(this.blob(state.prepared.planSha256)),g=p.governance;
+    if(p.operation!==id||p.store!==this.directory||!g)throw new Error('publication_authority_binding_required');
+    const a=new AuthorityRecords(this.db,fn=>fn(),item=>this.authorityItem(item)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    if(action.role!=='background'||action.request.action!=='publish'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.request.payloadSha256!==publicationAuthorityPayloadSha(p,state.prepared.documentSha256)||action.request.paths.length||action.executionKind!=='github'||a.configuration().profile.executorId!==p.actor.id)throw new Error('publication_exact_authority_required');
+    const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map(r=>held?resources.requireHeldForExecution(r,id,g.authorityIntent):resources.status(r));
+    if(claims.some(r=>r.request.operation!==id||r.request.authorityIntent!==g.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!=='background'))throw new Error('publication_original_resource_mismatch');
+    if(new Set(claims.map(r=>r.request.resourceRef)).size!==claims.length||canonical(claims.map(r=>r.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('publication_resource_set_mismatch');
+    if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!claims.length)throw new Error('publication_configured_resource_required');
+    const value={operation:id,item:op.item,packet:op.packet,planSha256:state.prepared.planSha256,documentSha256:state.prepared.documentSha256,receiverBindingHash:receiver.bindingHash,authorityIntent:g.authorityIntent,actionSha256:action.requestSha256,resourceRequests:g.resourceRequests},b={...value,bindingSha256:hash(canonical(value))},old=this.publicationBinding(id);
+    if(old&&canonical(old)!==canonical(b))throw new Error('publication_authority_binding_changed');return {state,action,binding:b};
+  }
+  publicationResourceAdmission(id:string,observations:OwnerObservation[]){return this.transaction(()=>{
+    const {binding}=this.publicationAuthorization(id,observations,false);if(!this.publicationBinding(id)){const bytes=Buffer.from(canonical((({bindingSha256,...rest})=>rest)(binding)));this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(binding.bindingSha256,bytes);this.event('authority_publication_bound','publication:'+id,binding);}return binding;
+  });}
+  private publicationResourceClaimGate(action:Row,request:ResourceRequest){
+    const b=this.publicationBinding(request.operation);if(!b||b.authorityIntent!==action.requestId||b.actionSha256!==action.requestSha256||!b.resourceRequests.includes(resourceRequestHash(request)))throw new Error('publication_resource_binding_required');
+    const {state}=this.publicationCurrent(request.operation);if(state.events.some((e:Row)=>['intent','recovered_intent','dispatch_prepared'].includes(e.kind)))throw new Error('publication_resource_original_execution_required');return b;
+  }
+  publicationDispatchPrepared(id:string,stage:'comment'|'status',data:Row,originals:Record<string,Buffer>,retrySource?:string){const result=this.transaction(()=>{
+    const state=this.publicationHistory(id),b=this.publicationBinding(id),{receiver}=this.receiverOperation(id);
+    if(!state.prepared||!b||!receiver||state.pendingDispatches.length||state.events.some((e:Row)=>e.directory===data.directory))throw new Error('publication_original_dispatch_unresolved');
+    const basename=typeof data.directory==='string'?data.directory.split('/').at(-1):'';if(!basename||!/^http-[a-f0-9-]{36}$/.test(basename)||join(receiver.directory,basename)!==data.directory)throw new Error('publication_original_directory_required');
+    const prior=state.stages[stage];if(stage==='status'&&state.stages.comment.lastState!=='verified')throw new Error('publication_detail_not_verified');
+    if(prior.intent&&(!retrySource?.trim()||retrySource.length>2048||!prior.response?.rejected||prior.lastState==='verified'||prior.attempts>=3))throw new Error('publication_request_already_registered');
+    const payload=stage==='comment'?{body:state.document.commentBody}:{...state.document.status,target_url:state.stages.comment.verified.remote.url};
+    const endpoint=`repos/${state.document.candidate.repository}/${stage==='comment'?`issues/${state.document.candidate.pr}/comments`:`statuses/${state.document.candidate.H}`}`;
+    if(data.endpoint!==endpoint||data.requestSha256!==hash(canonical(payload))||!originals.request||!originals.request.equals(Buffer.from(JSON.stringify(payload))))throw new Error('publication_dispatch_payload_changed');
+    const blobs:Row={};for(const [name,bytes] of Object.entries(originals)){const sha256=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256,bytes);this.blob(sha256);blobs[name]={sha256,bytes:bytes.length};}
+    this.event('publication_dispatch_prepared','publication:'+id,{...data,stage,planSha256:b.planSha256,documentSha256:b.documentSha256,publicationBindingSha256:b.bindingSha256,...(retrySource?{retrySource}:{}),blobs});return this.publicationHistory(id);
+  });this.publicationEffectCapabilities.set(data.directory,{operation:id,stage});return result;}
+  publicationEffect<T>(id:string,stage:'comment'|'status',directory:string,observations:OwnerObservation[],effect:()=>T):T{
+    const capability=this.publicationEffectCapabilities.get(directory);if(!capability||capability.operation!==id||capability.stage!==stage)throw new Error('publication_live_preparation_required');this.publicationEffectCapabilities.delete(directory);let invoked=false;
+    try{return this.transaction(()=>{
+      if(this.activePublicationEffect)throw new Error('publication_effect_already_active');const {state,binding}=this.publicationAuthorization(id,observations,true),prepared=state.pendingDispatches.find((x:Row)=>x.stage===stage&&x.directory===directory);
+      if(!prepared||prepared.publicationBindingSha256!==binding.bindingSha256||state.pendingDispatches.length!==1)throw new Error('publication_original_dispatch_required');
+      this.activePublicationEffect={operation:id,stage,directory,binding};try{invoked=true;const value=effect();if(value&&typeof (value as any).then==='function')throw new Error('publication_effect_must_be_synchronous');return value;}finally{this.activePublicationEffect=null;}
+    });}catch(error){
+      // Only this live controller can prove it never invoked the effect. A
+      // saved error file (or a missing process record) cannot establish that.
+      if(!invoked)try{this.transaction(()=>{const s=this.publicationHistory(id),p=s.pendingDispatches.find((p:Row)=>p.directory===directory&&p.stage===stage);if(!p)throw new Error('publication_original_dispatch_required');this.event('publication_dispatch_unstarted','publication:'+id,{directory,stage,preparedSha256:hash(canonical(p)),proof:'trusted_live_effect_not_invoked',reason:error instanceof Error?error.message:'publication_effect_rejected'});});}catch{}
+      throw error;
+    }
+  }
+  publicationRecoverDispatch(id:string,value:PublicationDispatchCapture){return this.transaction(()=>{
+    const c=requirePublicationDispatchCapture(value),state=this.publicationHistory(id),prepared=state.pendingDispatches.find((x:Row)=>x.directory===c.directory);
+    if(!prepared||hash(canonical(prepared))!==c.preparedSha256||prepared.planSha256!==state.prepared.planSha256||prepared.documentSha256!==state.prepared.documentSha256)throw new Error('publication_original_dispatch_binding_changed');
+    const originals:Row={};for(const [name,bytes] of c.originals){const sha256=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256,bytes);this.blob(sha256);originals['capture:'+name]={sha256,bytes:bytes.length};}
+    this.event('publication_recovered_intent','publication:'+id,{...prepared,blobs:{...prepared.blobs,...originals},directory:c.directory,stage:prepared.stage,observedPid:c.observedPid,recoveredFromOriginalCapture:true,inputMayHaveBeenSubmitted:true,captureSha256:c.digest});return this.publicationHistory(id);
+  });}
+  publicationDispatchMaterial(id:string){return this.transaction(()=>{const s=this.publicationHistory(id);return s.pendingDispatches.map((p:Row)=>({prepared:p,request:this.blob(p.blobs.request.sha256)}));});}
+  publicationOriginalDispatches(id:string){return this.transaction(()=>{
+    const state=this.publicationHistory(id);return ['comment','status'].flatMap(stage=>{const intent=state.stages[stage].intent;if(!intent)return [];const prepared=state.events.find((e:Row)=>e.kind==='dispatch_prepared'&&e.stage===stage&&e.directory===intent.directory);if(!prepared)throw new Error('publication_original_dispatch_required');return [{prepared,request:this.blob(prepared.blobs.request.sha256)}];});
+  });}
+  publicationRecordResult(id:string,values:PublicationDispatchCapture[]){return this.transaction(()=>{
+    const state=this.publicationHistory(id),binding=this.publicationBinding(id);if(!binding||state.pendingDispatches.length||values.length!==2||!['comment','status'].every(stage=>state.stages[stage].lastState==='verified'))throw new Error('publication_verified_original_result_required');
+    const captured=values.map(requirePublicationDispatchCapture);if(new Set(captured.map(c=>c.directory)).size!==2)throw new Error('publication_original_dispatch_duplicate');
+    const stages=['comment','status'].map(stage=>{const original=state.stages[stage],prepared=state.events.find((e:Row)=>e.kind==='dispatch_prepared'&&e.directory===original.intent.directory),c=captured.find(c=>c.directory===original.intent.directory);
+      if(!prepared||!c||c.phase!=='ended_possible'||c.preparedSha256!==hash(canonical(prepared))||prepared.publicationBindingSha256!==binding.bindingSha256||original.started?.pid!==c.observedPid)throw new Error('publication_original_result_capture_changed');
+      const originals:Row={};for(const [name,bytes] of c.originals){const sha256=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256,bytes);this.blob(sha256);originals[name]={sha256,bytes:bytes.length};}
+      return {stage,directory:c.directory,preparedAt:prepared.at,requestSha256:prepared.requestSha256,remote:original.verified.remote,captureSha256:c.digest,originals};});
+    const result={operation:id,publicationId:state.document.publicationId,publicationBindingSha256:binding.bindingSha256,planSha256:binding.planSha256,documentSha256:binding.documentSha256,authorityIntent:binding.authorityIntent,actionSha256:binding.actionSha256,judgment:state.document.judgment,stages,source:'verified_publication_original_capture',businessAcceptance:false},bytes=Buffer.from(canonical(result)),resultSha256=hash(bytes),old=state.events.find((e:Row)=>e.kind==='result_recorded');
+    if(old){if(old.resultSha256!==resultSha256||!this.blob(resultSha256).equals(bytes))throw new Error('publication_original_result_changed');return {resultSha256,duplicate:true};}
+    this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(resultSha256,bytes);this.event('publication_result_recorded','publication:'+id,{resultSha256,publicationBindingSha256:binding.bindingSha256});return {resultSha256,duplicate:false};
+  });}
+  private publicationResourceOutcome(operation:string,action:Row,claimedAt:string):ResourceOutcome{
+    const state=this.publicationHistory(operation),binding=this.publicationBinding(operation),record=state.events.find((e:Row)=>e.kind==='result_recorded');
+    if(!binding||!record||binding.authorityIntent!==action.requestId||binding.actionSha256!==action.requestSha256||record.publicationBindingSha256!==binding.bindingSha256)throw new Error('publication_verified_original_result_required');
+    const proof=this.blob(record.resultSha256),value=JSON.parse(proof.toString());if(value.publicationBindingSha256!==binding.bindingSha256||value.stages.length!==2||value.stages.some((s:Row)=>!Number.isFinite(Date.parse(s.preparedAt))||Date.parse(s.preparedAt)<Date.parse(claimedAt)))throw new Error('publication_original_result_binding_changed');for(const stage of value.stages)for(const ref of Object.values(stage.originals) as Row[])this.blob(ref.sha256);
+    return {state:'completed',source:value.source,executionKind:'external',proof};
+  }
   private publicationHistory(id: string): Row {
     const events = (this.db.prepare("SELECT kind,data,observed_at FROM events WHERE object=? AND kind LIKE 'publication_%' ORDER BY id").all(`publication:${id}`) as Row[]).map(e => ({ ...parse(e, 'data'), kind: e.kind.slice(12), at: e.observed_at }));
     const preparedIndex = events.findLastIndex(e => e.kind === 'prepared'), prepared = events[preparedIndex];
@@ -632,13 +722,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     for (const name of ['comment', 'status']) {
       const stage: Row = { attempts: 0 };
       for (const event of events.slice(preparedIndex + 1).filter(e => e.stage === name)) {
-        if (event.kind === 'intent') { Object.keys(stage).filter(k => k !== 'attempts').forEach(k => delete stage[k]); stage.attempts++; }
-        stage[event.kind] = event;
+        if (['intent','recovered_intent'].includes(event.kind)) { Object.keys(stage).filter(k => k !== 'attempts').forEach(k => delete stage[k]); stage.attempts++; }
+        stage[event.kind==='recovered_intent'?'intent':event.kind] = event;if(event.kind==='recovered_intent'&&event.observedPid)stage.started={pid:event.observedPid,recoveredFrom:'original_process_record'};
         if (['verified', 'problem'].includes(event.kind)) stage.lastState = event.kind;
       }
       stages[name] = stage;
     }
-    return { operation: id, prepared, plan: JSON.parse(this.blob(prepared.planSha256).toString()), document: JSON.parse(this.blob(prepared.documentSha256).toString()), stages, events };
+    const pendingDispatches=events.filter(e=>e.kind==='dispatch_prepared'&&!events.some(x=>x.directory===e.directory&&['intent','recovered_intent','dispatch_unstarted'].includes(x.kind)));
+    return { operation: id, prepared, plan: JSON.parse(this.blob(prepared.planSha256).toString()), document: JSON.parse(this.blob(prepared.documentSha256).toString()), stages, events, pendingDispatches };
   }
   publicationState(id: string): Row { return this.transaction(() => this.publicationHistory(id)); }
   preparePublication(id: string, plan: Buffer, document: Buffer, allowUnsentRevision = false): Row {
@@ -646,7 +737,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const { op, receiver } = this.receiverOperation(id), existing = this.publicationHistory(id);
       if (existing.prepared) {
         if (existing.prepared.planSha256 === hash(plan) && existing.prepared.documentSha256 === hash(document)) return existing;
-        if (!allowUnsentRevision || existing.events.some((e: Row) => e.kind === 'intent')) throw new Error('publication_plan_or_result_changed');
+        if (!allowUnsentRevision || existing.events.some((e: Row) => ['intent','recovered_intent','dispatch_prepared'].includes(e.kind)) || this.publicationBinding(id)) throw new Error('publication_plan_or_result_changed');
       }
       if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.executionKind !== 'native_capture') throw new Error('publication_requires_complete_native_judgment');
       const body = JSON.parse(document.toString());
@@ -657,10 +748,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     });
   }
   publicationEvent(id: string, kind: 'intent' | 'started' | 'response' | 'problem' | 'verified', stage: 'comment' | 'status', data: Row, originals: Record<string, Buffer> = {}, retrySource?: string): Row {
-    return this.transaction(() => {
+    if(!['intent','started','response','problem','verified'].includes(kind)||!['comment','status'].includes(stage))throw new Error('publication_event_kind_invalid');
+    const action=() => {
       const state = this.publicationHistory(id), prior = state.stages[stage];
       if (!state.prepared) throw new Error('publication_not_prepared');
+      const governed=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
+      if(governed&&['intent','started'].includes(kind)&&(!this.activePublicationEffect||this.activePublicationEffect.operation!==id||this.activePublicationEffect.stage!==stage))throw new Error('publication_actual_effect_required');
       if (kind === 'intent') {
+        if(governed){const prepared=state.pendingDispatches.find((p:Row)=>p.directory===this.activePublicationEffect!.directory);if(!prepared||data.directory!==prepared.directory||data.requestSha256!==prepared.requestSha256||canonical(data.remotePreflight)!==canonical(prepared.remotePreflight)||!originals.request||hash(originals.request)!==prepared.blobs.request.sha256)throw new Error('publication_original_dispatch_changed');}
         const { op, receiver } = this.receiverOperation(id), item = this.item(op.item), packet = this.packet(op.packet), context = this.packetEvidence(packet).context;
         if (op.status !== 'complete' || receiver?.phase !== 'returned' || receiver.bindingHash !== state.prepared.bindingHash || item.current_packet !== op.packet || item.observation_conflict || !this.receiverCandidateCurrent(item) || !this.memberReceptionCurrent(item.id) || !this.integrationApplicability(op,receiver) || !this.effectiveSummary(item, packet).evidenceComplete) throw new Error('publication_source_no_longer_current');
         if (this.prerequisites(item).length) throw new Error('publication_prerequisites_unmet');
@@ -675,10 +770,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if (kind === 'response' && prior.response) throw new Error('publication_response_already_recorded');
       const blobs: Row = {};
       for (const [name, b] of Object.entries(originals)) { const sha256 = hash(b); this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256, b); this.blob(sha256); blobs[name] = { sha256, bytes: b.length }; }
-      if(kind==='intent'&&queueFormatVersion(this.db)>=20){queueFeatureVersion(this.db);this.event('member_publication_admitted','publication:'+id,{stage,planSha256:state.prepared.planSha256,documentSha256:state.prepared.documentSha256});}
+      if(kind==='intent'&&(queueFormatVersion(this.db)>=20||governed)){queueFeatureVersion(this.db);this.event('member_publication_admitted','publication:'+id,{stage,planSha256:state.prepared.planSha256,documentSha256:state.prepared.documentSha256,...(governed?{publicationBindingSha256:this.activePublicationEffect!.binding.bindingSha256}:{})});}
+      if(kind==='started'&&governed)this.event('authority_publication_start_admitted','publication:'+id,{stage,publicationBindingSha256:this.activePublicationEffect!.binding.bindingSha256});
       this.event(`publication_${kind}`, `publication:${id}`, { ...data, stage, ...(retrySource ? { retrySource } : {}), blobs });
       return this.publicationHistory(id);
-    });
+    };return this.activePublicationEffect?action():this.transaction(action);
   }
   private blob(h: string): Buffer {
     const row = this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(h) as Row | undefined;
