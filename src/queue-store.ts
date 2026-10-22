@@ -179,7 +179,9 @@ export class QueueStore {
     if(prior&&prior.members.some(m=>!allowed.includes(m.item)))throw new Error('delivery_preparation_previous_not_selected');
     const batch={schemaVersion:1,kind:'tongxu-delivery-batch',id:prior?.id??'workbench-'+hash(canonical([anchor,p.requestId])).slice(0,48),revision:(prior?.revision??0)+1,previous:p.previous,repository:c.candidate.repository,issue:p.issue,title:p.title,source:'workbench-fixed-material:'+hash(canonical(p)),target:c.candidate.targetRef,scope:{id:c.context.scope.id,version:c.context.scope.version,adoption:p.adoption},goals:owner.currentScope.body.goals,nonGoals:owner.currentScope.body.nonGoals,members:p.members,scenarios:p.scenarios,related:prior?.related??[]};
     const history=records.forSelectedItems(allowed);if(history.length>=64&&!history.some(b=>b.batchSha256===hash(canonical(batch))))throw new Error('delivery_preparation_history_limit');
-    for(const member of p.members){const current=history.filter(b=>b.currentVersion&&b.members.some((m:Row)=>m.item===member.item));if(new Set(current.map(b=>b.id)).size>=8&&!current.some(b=>b.id===batch.id))throw new Error('delivery_preparation_batch_limit');}
+    // Reader capacity belongs to the original member, including shared batches
+    // hidden by the current page selection. Changing selection cannot free it.
+    for(const member of p.members){const current=records.forItem(member.item);if(current.length>=8&&!current.some(b=>b.id===batch.id))throw new Error('delivery_preparation_batch_limit');}
     return {...records.register(Buffer.from(canonical(batch))),modelStarted:false,newModelRequests:0,newVerificationRuns:0,permissionGranted:false};
   });}
   static async observeDeliveryValidation(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryValidationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
