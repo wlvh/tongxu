@@ -12,6 +12,8 @@
 
 `node dist/src/publication-return-cli.js prepare --plan /绝对路径/return.json` 固定原回执、登记通知和完整上下文。`deliver --plan 同一路径` 由程序调用原只读消息执行器，保存准确输入、会话、完整回复与资源结果；用户无需复制报告。该入口消费已核发布结果，不会自动新增发布或合并请求。
 
+等待期间原用量观察过期时，使用 `deliver --plan /原路径/return.json --billing /新观察/current-billing.json`。新观察沿原MessagePlan billing契约，包含原证据路径、SHA256、实际观察时间和 `usageCreditsEnabled:false`；原执行器仍核证据原字节、30分钟有效期及既有订阅路线。它不会改原计划、通知ID、接收角色或原run，也不改变授权或放宽费用边界。已经发送的原运行仍先回读，不因新观察再发一次。
+
 计划类型为 `tongxu-publication-return`，schemaVersion 为1。字段为 `store`、原接收 `operation`、原 `task`、准确 `taskLink`、固定通知 `id`、`source`、只读 `question`、独立 `authorityIntent`、可选 `resourceBudget`、原有 `billing` 和 `timeoutMs`。计划不接受 recipient／participant／执行文件；这些从该任务第一份责任记录取得。`prepare` 的原消息计划摘要供原 coordinate 许可绑定，不借用 publish 许可。没有原负责人时直接报告缺项。
 
 原任务上下文增加 `publicationReturn`：包含不可变回执、完整最终原文、结构化判断、准确公开回读对象和任务关联。它明确是正式结果来源，`sender` 仍为空；没有伪造另外一个模型会话。完整材料沿原 `consumeMaterial` 契约要求回复声明消费，部分回答或漏消费不会成为完成。公开投影继续不含私人全文，原报告只进入同一授权范围内的私有角色输入。
@@ -25,3 +27,5 @@
 输入登记与送达分别报告：`inputRegistered` 仅表示原发送意图已经保存；`deliveryObserved` 取自真实协议回执，没有回执时 `inputSubmitted` 为 null（未登记则 false），不把已登记冒充已送达。最终捕获是否完整另有 `runtimeCaptureComplete`。
 
 采用准确父修补cfd后，build08与当前完整9条返回通知场景通过／0skip，包括明确协议拒绝有登记但没有送达回执，以及改通知ID不重复投递。此前原任务接入／候选关联35条回归通过／0skip，原范围保留；新的原资源出口在父分支28条与本分支准确coordinate场景中另行验证。采用前源码bundle保留。自动接入父修补曾保留两个同名import，build07失败且未运行测试；删除重复import后重新构建和验证，原日志保留。
+
+独立9af审核实际9条场景、并发CLI同通知与损坏回执恢复两条探针通过，但另确认RETURN-F1/P1：当原费用观察超过有效期，API支持新观察而CLI没有入口，导致同通知无法正常接续。9af保持REWORK，原件保留。修补只把已有currentBilling能力接到CLI；新增实际CLI回归检查旧观察0输入、额外用量true拒绝、准确新观察沿原run完成一次、两份原计划字节未改和重复0新输入。

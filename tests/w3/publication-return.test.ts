@@ -6,6 +6,7 @@ import {publicationFixture} from './publication-fixture.js';
 import {messageFixture} from '../w6/message-fixture.js';
 import {publication} from '../../src/publisher.js';
 import {publicationReturn} from '../../src/publication-return.js';
+import {publicationReturnMain} from '../../src/publication-return-cli.js';
 import {parsePublicationReturnPlan} from '../../src/publication-return-contract.js';
 import {parseDevelopmentTask} from '../../src/task-contract.js';
 import {observeTaskWorkspace} from '../../src/task-source.js';
@@ -74,4 +75,11 @@ test('formal publication is evidence only; the contact uses its own exact coordi
   const owner=await messageAuthority({...f.m,q:f.q,store:f.store,item:f.task,root:f.root,plan,write:async()=>writeFile(prepared.plan!,raw(plan))},true);f.q.resources().configure(raw(profile));const result=await publicationReturn(f.returnPath,'deliver');assert.equal(result.completed,true);assert.equal(result.resourcesSettled,true);assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
   await owner.adopt({kind:'revoke',decision:owner.confirmed.sha});const again=await publicationReturn(f.returnPath,'deliver');assert.equal(again.newModelRequests,0);assert.equal(again.fullReply,result.fullReply);assert.equal(ledger.state().claims.length,1);assert.equal(ledger.state().settlements.length,1);
   const selected=f.q.taskInbox().prepare(f.task,'formal-return'),ref=JSON.parse(selected.context.toString()).publicationReturn.reference;assert.throws(()=>parseTaskOwnerRequest(raw({...f.request,id:'wrong-sender',from:{task:'a'.repeat(64),run:'b'.repeat(64),messageId:'invented'},publicationReturn:ref})),/task_request_invalid/);
+});
+
+test('fresh billing observation continues the original expired RETURN through the CLI without replacing its plan or run',async t=>{
+  const f=await fixture(t),fresh={...f.returnPlan.billing};f.returnPlan.billing={...fresh,observedAt:new Date(Date.now()-3600000).toISOString()};await f.write();const original=await readFile(f.returnPath),prepared=await publicationReturnMain(['prepare','--plan',f.returnPath]);assert.ok('run'in prepared);const selected=f.q.taskInbox().prepare(f.task,'formal-return'),planBytes=await readFile(join(selected.directory,'plan.json')),held=await publicationReturnMain(['deliver','--plan',f.returnPath]);assert.equal(held.newModelRequests,0);assert.equal(held.completed,false);assert.equal((await f.m.calls()).filter((x:any)=>x.kind==='input').length,1);
+  const billingPath=join(f.root,'explicit-current-billing.json');await writeFile(billingPath,raw({...fresh,usageCreditsEnabled:true}));await assert.rejects(publicationReturnMain(['deliver','--plan',f.returnPath,'--billing',billingPath]),/message_billing_boundary_required/);assert.equal((await f.m.calls()).filter((x:any)=>x.kind==='input').length,1);
+  await writeFile(billingPath,raw(fresh));const done=await publicationReturnMain(['deliver','--plan',f.returnPath,'--billing',billingPath]);assert.equal(done.completed,true);assert.equal(done.newModelRequests,1);assert.equal(done.run,prepared.run);assert.ok((await readFile(f.returnPath)).equals(original));assert.ok((await readFile(join(selected.directory,'plan.json'))).equals(planBytes));const repeated=await publicationReturnMain(['deliver','--plan',f.returnPath]);assert.equal(repeated.newModelRequests,0);assert.equal(repeated.fullReply,done.fullReply);assert.equal((await f.remote()).posts.length,2);
+  await writeFile(join(f.root,'billing-continuation-verification.json'),JSON.stringify({prepared,held,done,repeated,originalRequestSha256:hash(original),originalMessagePlanSha256:hash(planBytes),newOfficialInputs:0},null,2));
 });
