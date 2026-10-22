@@ -4,7 +4,8 @@ import {writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {setup} from '../w3/receiver-fixture.js';
 import {startWorkbench,parseWorkbenchPlan} from '../../src/workbench.js';
-import {ownerDecisionText} from '../../src/authority-contract.js';
+import {ownerDecisionText,type AuthorityProfile} from '../../src/authority-contract.js';
+import {fixtureOwnerObservation} from '../../src/authority-source.js';
 import {hash} from '../../src/snapshot.js';
 
 test('workbench goal and delegation forms reuse exact Owner records; drafts, observed decisions and real permission stay distinct',async t=>{
@@ -28,6 +29,12 @@ test('workbench goal and delegation forms reuse exact Owner records; drafts, obs
  assert.equal((await post({...request,scopeVersion:'stale-draft'})).status,503);
  const delegate={kind:'delegate',adoption:sha,roles:['implementer'],actions:['test'],paths:['sample.js'],resourceRefs:[],expiresAt:new Date(Date.now()+3600000).toISOString()},d=await post(delegate);assert.equal(d.status,200,JSON.stringify(d));assert.equal(f.q.authority().status().intents.length,0);assert.equal((await state()).ownerControls[0].requests.length,2);
  assert.equal((await post({kind:'revoke',decision:d.value.proposalSha256})).status,503);assert.equal(await readFile(trace,'utf8'),reads);
+ const sibling=f.q.authority().prepare('unselected-branch-grant',Buffer.from(JSON.stringify({...delegate,targets:['unselected-target'],paths:['sibling-secret-path'],resourceRefs:['sibling-resource']}))),otherSha=sibling.proposalSha256;
+ assert.ok(!JSON.stringify(await state()).includes('sibling-secret-path'));assert.ok(!JSON.stringify(await state()).includes(otherSha));assert.equal((await post({proposalSha256:otherSha,sourceUrl},'apply')).status,503);assert.equal(await readFile(trace,'utf8'),reads);
+ const otherText=ownerDecisionText(otherSha),otherComment={...c,id:id+1,node_id:node+'b',body:otherText,html_url:sourceUrl.replace(String(id),String(id+1))},otherGraph=structuredClone(g);Object.assign(otherGraph.data.node,{id:node+'b',fullDatabaseId:String(id+1),body:otherText,url:otherComment.html_url});
+ f.q.authority().apply(otherSha,fixtureOwnerObservation(profile as AuthorityProfile,otherSha,id+1,Buffer.from(JSON.stringify(otherGraph)),Buffer.from(JSON.stringify(otherComment)),new Date().toISOString()));
+ assert.equal((await post({kind:'revoke',decision:otherSha})).status,503);assert.ok(!JSON.stringify(await state()).includes(otherSha));
+ const sharedControl=f.q.authority().prepare('shared-stop-request',Buffer.from(JSON.stringify({kind:'control',adoption:sha,control:'investment',state:'open'})));const shown=(await state()).ownerControls[0].requests.find((r:any)=>r.proposalSha256===sharedControl.proposalSha256);assert.equal(shown.appliesTo,'whole_scope');assert.deepEqual(shown.proposal,{kind:'control',adoption:sha,control:'investment',state:'open'});
  const cross=await fetch(url.origin+'/api/owner-control/selected/prepare',{method:'POST',headers:{...headers,Origin:'https://other.example'},body:JSON.stringify(request)});assert.equal(cross.status,403);
  assert.throws(()=>parseWorkbenchPlan(Buffer.from(JSON.stringify({...plan,kind:'tongxu-local-workbench'}))),/invalid_workbench_controls/);
  assert.throws(()=>parseWorkbenchPlan(Buffer.from(JSON.stringify({...plan,ownerControls:['other']}))),/invalid_workbench_owner_controls/);

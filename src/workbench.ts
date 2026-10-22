@@ -10,6 +10,7 @@ import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
 import {DeliveryControls,type DeliverySelection} from './delivery-controls.js';
 import {OwnerControls} from './owner-controls.js';
+import type {WorkbenchRuntimeIdentity} from './workbench-launch.js';
 
 type Row = Record<string, any>;
 export type WorkbenchPlan = {
@@ -106,8 +107,9 @@ async function workbenchReport(p: WorkbenchPlan, source: string, operation: stri
   if (!j) throw new Error('report_not_found');
   return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
 }
-export async function startWorkbench(planPath: string) {
-  const p = parseWorkbenchPlan(await regular(planPath)), token = randomBytes(32).toString('hex');
+export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity) {
+  const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
+  const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
   const deliveryControls=p.deliveries?new DeliveryControls(p.deliveries,p.sources,p.kind==='tongxu-controlled-workbench'):null;
   const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
@@ -146,7 +148,7 @@ export async function startWorkbench(planPath: string) {
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{})}); return; }
+      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{})}); return; }
       const assessment=/^\/api\/delivery-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);
       if(assessment){if(!deliveryControls)throw new Error('report_not_found');json(res,200,await deliveryControls.report(assessment[1]!,assessment[2]!));return;}
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);

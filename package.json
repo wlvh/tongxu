@@ -21,6 +21,7 @@
     "test:pair": "npm run build && node --test dist/tests/w6/*.test.js",
     "test:workbench": "npm run build && node --test dist/tests/w7/*.test.js",
     "workbench": "node dist/src/workbench-cli.js",
+    "workbench:launch": "node dist/src/workbench-launch.js",
     "test:project-repair": "npm run build && node --test dist/tests/project-repair/*.test.js",
     "test:review-records": "npm run build && node --test dist/tests/review-records/*.test.js",
     "test:composition": "npm run build && node --test dist/tests/composition/*.test.js",

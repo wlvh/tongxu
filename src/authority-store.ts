@@ -95,14 +95,18 @@ export class AuthorityRecords {
     parseOwnerProposal(p.proposal,profile,Date.parse(p.createdAt));return p;
   }
   proposal(sha:string){return this.transaction(()=>this.prepared(sha));}
-  forScope(scopeId:string){return this.transaction(()=>{
+  forScope(scopeId:string,selection:{item:string;target:string}){return this.transaction(()=>{
     const {profile}=this.profile(),current=this.currentScope(scopeId),requests=this.all('authority_proposal_prepared').flatMap(e=>{
       const p=this.prepared(e.data.proposalSha256),proposal=p.proposal;
-      const adoption='adoption' in proposal?this.prepared(proposal.adoption).proposal:proposal.kind==='revoke'?this.decision(proposal.decision).proposal:null;
-      const scope=proposal.kind==='adopt_scope'?proposal.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:adoption&&'adoption' in adoption?this.adoption(adoption.adoption,false).proposal.scopeId:null;
-      if(scope!==scopeId||proposal.kind==='delivery_outcome')return [];
+      if(!['adopt_scope','delegate','confirm_action','control','revoke'].includes(proposal.kind))return [];
+      const selected=proposal.kind==='revoke'?this.decision(proposal.decision).proposal:proposal;
+      if(proposal.kind==='revoke'&&!['delegate','confirm_action'].includes(selected.kind))return [];
+      if(selected.kind==='delegate'&&!selected.targets.every((target:string)=>target===selection.target)||selected.kind==='confirm_action'&&(selected.request.item!==selection.item||selected.request.target!==selection.target))return [];
+      const adoption='adoption' in selected?this.prepared(selected.adoption).proposal:null;
+      const scope=selected.kind==='adopt_scope'?selected.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:null;
+      if(scope!==scopeId)return [];
       const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
-      return [{proposalSha256:e.data.proposalSha256,proposal,createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
+      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo:selected.kind==='delegate'?'selected_target':selected.kind==='confirm_action'?'selected_task':'whole_scope',createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
     });
     return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
   });}
