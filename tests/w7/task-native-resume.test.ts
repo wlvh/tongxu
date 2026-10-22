@@ -15,6 +15,7 @@ import {messageAuthority} from '../w6/message-authority-fixture.js';
 import {readOwnerSource} from '../../src/authority-source.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {DatabaseSync} from 'node:sqlite';
+import {readOwnedCodexSession} from '../../src/repair-native.js';
 
 async function first(f:Awaited<ReturnType<typeof nativeResumeFixture>>,interrupted=false){const pending=f.controls.execute('contact'),s=await until(async()=> (await f.controls.state())[0] as any,s=>s.nativeControl?.currentTurnActive===true);await f.controls.controlNative('contact',{option:interrupted?'interrupt-current':'check-counterexample',threadId:s.nativeControl.threadId,sessionId:s.nativeControl.sessionId,turnId:s.nativeControl.turnId});const returned=await pending;if(interrupted)await f.controls.closeInterrupted('contact');return {...s,run:(returned.execution as any).run};}
 function followup(f:Awaited<ReturnType<typeof nativeResumeFixture>>,source:any,id='explicit-resume'):TaskOwnerRequest{return {...f.request,id,question:'沿准确的原会话核对已保留报告及固定代码反例。',nativeResume:f.q.messages().nativeResumeReference(source.run,f.request.participant.id,f.request.id),nativeControls:f.request.nativeControls!.map(c=>({...c,messageId:id}))};}
@@ -50,6 +51,27 @@ test('changed actual native history stays a zero-input failure and may retry onl
   const f=await nativeResumeFixture(t),original=await first(f),next=followup(f,original),history=await readFile(f.history),changed=JSON.parse(history.toString());changed[original.nativeControl.threadId].turns.push({id:'unobserved-external-turn',status:'completed'});await writeFile(f.history,canonical(changed));
   const firstAttempt=await execute(f,next),failed=await firstAttempt.pending;assert.equal(failed.completed,false);assert.ok(failed.problems.some((p:any)=>p.reason==='native_resume_history_changed_or_active'));assert.equal(failed.runtimes[0]!.ended.proof.knownUnstarted,true);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);
   await writeFile(f.history,history);let handle:MessageNativeHandle|null=null;const pending=runMessages(f.store,firstAttempt.selected.plan,false,firstAttempt.selected.run,undefined,(_p,h)=>{handle=h;}),s=await until(async()=>handle?.state(),s=>s?.currentTurnActive===true);assert.ok(s);assert.equal(s.sessionId,original.nativeControl.sessionId);await handle!.control('check-counterexample',{threadId:s.threadId,sessionId:s.sessionId,turnId:s.turnId});const result=await pending;assert.equal(result.completed,true,JSON.stringify(result.problems));assert.equal(result.runtimes[0]!.attempt,2);assert.equal((await f.calls()).filter(c=>c.kind==='start').length,1);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,2);
+});
+
+test('NR-F01: resume and read must agree on session, workspace and root identity before a new input',async t=>{
+  const f=await nativeResumeFixture(t),original=await first(f);
+  for(const [id,override] of Object.entries({session:{sessionId:'another-session'},workspace:{cwd:'/other-workspace'},fork:{forkedFromId:'another-thread'}})){
+    await writeFile(f.readOverride,canonical(override));const next=followup(f,original,'wrong-'+id),work=await execute(f,next),result=await work.pending;
+    assert.equal(result.completed,false);assert.ok(result.problems.some((p:any)=>p.reason==='native_resume_history_changed_or_active'));assert.equal(result.runtimes[0]!.ended.proof.knownUnstarted,true);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);
+    f.q.taskInbox().cancelUnsent(f.task,next.id,'explicit zero-input contradictory fixture request cancelled');
+  }
+});
+
+test('NR-F01: a hash-consistent fixture transcript with contradictory read identity is rejected during replay',async t=>{
+  const f=await nativeResumeFixture(t),original=await first(f),next=followup(f,original),work=await execute(f,next),s=await until(async()=>work.handle()?.state(),s=>s?.currentTurnActive===true);assert.ok(s);
+  await work.handle()!.control('check-counterexample',{threadId:s.threadId,sessionId:s.sessionId,turnId:s.turnId});const result=await work.pending;assert.equal(result.completed,true);
+  const directory=join(result.runtimes[0]!.started.directory,'native'),stdout=await readFile(join(directory,'stdout.ndjson')),history=await readFile(join(directory,'resume-history.json')),status=await readFile(join(directory,'capture-status.json')),requests=(await readFile(join(directory,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)),id=requests.find(x=>x.method==='thread/read').id;
+  // Alter only this synthetic fixture, including its declared checksums: file
+  // integrity alone must not conceal contradictory native identity.
+  const lines=stdout.toString().trim().split('\n').map(x=>JSON.parse(x)),changed=JSON.parse(history.toString());changed.thread.sessionId='contradictory-saved-session';lines.find(x=>x.id===id&&!x.method).result=changed;const altered=Buffer.from(lines.map(x=>JSON.stringify(x)).join('\n')+'\n'),capture=JSON.parse(status.toString());capture.files['stdout.ndjson']=hash(altered);
+  await writeFile(join(directory,'stdout.ndjson'),altered);await writeFile(join(directory,'resume-history.json'),canonical(changed));await writeFile(join(directory,'capture-status.json'),canonical(capture));
+  await assert.rejects(readOwnedCodexSession(directory),/native_original_resume_history_changed/);
+  await writeFile(join(directory,'stdout.ndjson'),stdout);await writeFile(join(directory,'resume-history.json'),history);await writeFile(join(directory,'capture-status.json'),status);assert.equal((await readOwnedCodexSession(directory)).binding.sessionId,original.nativeControl.sessionId);
 });
 
 test('the selected workbench contact resumes the original session; a second controller and old turn cannot send',async t=>{

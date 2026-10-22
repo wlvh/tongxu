@@ -13,6 +13,7 @@ import { repairToolSpecs, projectRepairToolSpecs, exists,regular } from './repai
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
 const exec = promisify(execFile);
+const sameOwnedThread=(t:any,b:ResultBinding)=>Boolean(t&&t.id===b.threadId&&t.sessionId===b.sessionId&&t.cwd===b.workspace&&t.cliVersion==='0.163.0-alpha.10.2'&&t.ephemeral===false&&t.parentThreadId==null&&t.forkedFromId==null);
 
 export type NativeOptions = {
   executable: string; directory: string; operation: string; candidate: Candidate;
@@ -212,7 +213,7 @@ export class BoundedCodexSession {
         // The real resume protocol does not repeat thread/started. Retain the
         // original stream; verify exact saved history rather than fabricate it.
         const current=await this.request('thread/read',{threadId:b.threadId,includeTurns:true});save(join(o.directory,'resume-history.json'),current);
-        if(current.thread?.id!==b.threadId||current.thread?.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
+        if(!sameOwnedThread(current.thread,b)||current.thread.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
       }
       this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, protocol: 'codex-app-server/0.163.0-alpha.10.2', sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
       save(join(o.directory, 'binding.json'), this.binding); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
@@ -325,7 +326,7 @@ export async function readOwnedCodexSession(directory:string,ancestors:string[]=
   if(start.method==='thread/resume'){
     const source=await read('resume-source.json');prior=await readOwnedCodexSession(source.directory,[...ancestors,directory]);
     if(prior.sourceSha256!==source.sourceSha256||canonical({...binding,turnIds:prior.binding.turnIds,promptSha256:prior.binding.promptSha256})!==canonical(prior.binding)||canonical(inputs.slice(0,prior.inputs.length))!==canonical(prior.inputs)||canonical(identity)!==canonical(prior.identity)||canonical(start.params)!==canonical({threadId:binding.threadId,cwd:binding.workspace,approvalPolicy:'never',sandbox:'read-only',excludeTurns:true,runtimeWorkspaceRoots:[binding.workspace]}))throw new Error('native_original_resume_chain_changed');
-    const history=await read('resume-history.json'),request=requests.find(m=>m.method==='thread/read');if(canonical(reply(request))!==canonical(history)||history.thread?.id!==binding.threadId||history.thread?.status?.type!=='idle'||canonical(history.thread.turns?.map((v:any)=>({id:v.id,status:v.status})))!==canonical(prior.parsed.turns.map(v=>({id:v.id,status:v.terminal}))))throw new Error('native_original_resume_history_changed');
+    const history=await read('resume-history.json'),request=requests.find(m=>m.method==='thread/read');if(canonical(reply(request))!==canonical(history)||!sameOwnedThread(history.thread,binding)||history.thread.status?.type!=='idle'||canonical(history.thread.turns?.map((v:any)=>({id:v.id,status:v.status})))!==canonical(prior.parsed.turns.map(v=>({id:v.id,status:v.terminal}))))throw new Error('native_original_resume_history_changed');
     start=prior.start;
   }else if(await exists(join(directory,'resume-source.json')))throw new Error('native_original_resume_source_unexpected');
   if(start.params.ephemeral!==false||start.params.cwd!==binding.workspace||start.params.approvalPolicy!=='never'||start.params.sandbox!=='read-only'||!Array.isArray(start.params.dynamicTools)||start.params.dynamicTools.length||start.params.environments?.length||start.params.selectedCapabilityRoots?.length)throw new Error('native_original_no_tool_profile_required');
