@@ -1,12 +1,21 @@
-import {readdir,realpath} from 'node:fs/promises';
+import {readdir,realpath,open} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {join,isAbsolute,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {regular} from './repair-workspace.js';
-import {hash} from './snapshot.js';
-import {canonical} from './comparison.js';
-import {exactKeys,isAuthorityDigest,safeRelativePath} from './authority-contract.js';
+// The trusted launch bootstrap uses only Node built-ins. Importing application
+// helpers here would execute their module bodies before checking their bytes.
+const hash=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
+const exactKeys=(v:any,keys:string[])=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join()===keys.slice().sort().join();
+const isAuthorityDigest=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+const safeRelativePath=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<512&&!/[\\\x00-\x1f]/.test(v)&&v.split('/').every(x=>x&&x!=='.'&&x!=='..');
+const canonical=(v:any):string=>JSON.stringify(v===null||typeof v!=='object'?v:Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])));
+async function regular(path:string,limit:number){
+  if(await realpath(path)!==path)throw new Error('workbench_runtime_link_not_supported');const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);
+  try{const before=await file.stat();if(!before.isFile()||before.nlink!==1||before.size>limit)throw new Error('workbench_runtime_file_invalid');const bytes=await file.readFile(),after=await file.stat();if(bytes.length!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs)throw new Error('workbench_runtime_file_changed_during_read');return bytes;}finally{await file.close();}
+}
 const exec=promisify(execFile);
 export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:Array<{path:string;sha256:string}>};
 export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;planSha256:string;runtimeFilesSha256:string;verifiedAt:string};
