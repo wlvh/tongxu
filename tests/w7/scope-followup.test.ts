@@ -40,7 +40,7 @@ test('changed workspace or missing current scope cannot be silently substituted 
  const prepared=await controls.prepare('task',{task:f.task,adoption:f.nextScope.sha,expectedPacket:observed.current.packet,expectedSourceSha256:observed.current.sourceSha256,goal:f.request.goal,acceptance:f.request.acceptance});assert.equal(prepared.newModelRequests,0);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);assert.equal(await readFile(join(f.definition.workspace,'sample.js'),'utf8'),'export const value = 99;\n');
 });
 test('the same HTTP workbench prepares new-scope work, reads its original Owner confirmation, starts A and reads the captured report',async t=>{
- const f=await fixture(t);await writeFile(f.planPath,canonical({...f.plan,ownerControls:['task']}));const app=await startWorkbench(f.planPath);t.after(()=>app.close());
+ const f=await fixture(t,true);await writeFile(f.planPath,canonical({...f.plan,ownerControls:['task']}));const app=await startWorkbench(f.planPath);t.after(()=>app.close());
  const u=new URL(app.url),headers={Authorization:'Bearer '+u.hash.slice(1),'Content-Type':'application/json',Origin:u.origin},state=async()=>await (await fetch(u.origin+'/api/state',{headers})).json() as any;
  const post=async(action:string,body:unknown,source='task',h=headers)=>{const r=await fetch(u.origin+'/api/scope-followup/'+source+'/'+action,{method:'POST',headers:h,body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};};
  const {schemaVersion,kind,...body}=f.request,before=await state();assert.equal(before.scopeFollowups[0].original.scope.version,'S1');assert.equal(before.ownerControls[0].currentScope.scopeVersion,'S2');
