@@ -71,6 +71,7 @@ export class TaskScopeFollowups{
   });}
   private descendants(task:string){const rows=this.events().filter(e=>e.kind==='task_scope_followup_prepared'),known=new Set([task]);for(let i=0;i<32;i++){const old=known.size;for(const e of rows)if(known.has(e.data.predecessor))known.add(e.object);if(known.size===old)return rows.filter(e=>e.object!==task&&known.has(e.object));}throw new Error('task_scope_family_limit');}
   contains(parent:string,task:string){return this.transaction(()=>{this.tasks.current(parent);return parent===task||this.descendants(parent).some(e=>e.object===task);});}
+  selectedTasks(parent:string){return this.transaction(()=>{this.tasks.current(parent);return [parent,...this.descendants(parent).map(e=>e.object as string)];});}
   view(task:string){return this.transaction(()=>this.viewValue(task));}
   private viewValue(task:string){const c=this.tasks.current(task);return {task,packet:c.packet,sourceSha256:c.fingerprint,title:c.definition.title,goal:c.definition.goal,acceptance:c.definition.acceptance,scope:c.context.scope,candidateH:c.manifest.candidate.H,sourceObservedAt:c.report.observedAt};}
   status(task:string){return this.transaction(()=>{this.tasks.current(task);return this.descendants(task).map(e=>({...e.data,recordedAt:e.observed_at,inbox:this.inbox.status(e.object),currentTask:this.tasks.status(e.object),view:this.viewValue(e.object)}));});}

@@ -8,7 +8,8 @@ import { hash } from './snapshot.js';
 import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
-import {DeliveryControls,type DeliverySelection} from './delivery-controls.js';
+import type {DeliverySelection} from './delivery-controls.js';
+import {DeliveryWorkspaceControls} from './delivery-workspace-controls.js';
 import {OwnerControls} from './owner-controls.js';
 import {ScopeFollowupControls} from './scope-followup-controls.js';
 import {OrganizationControls} from './organization-controls.js';
@@ -105,7 +106,7 @@ export async function workbenchState(p: WorkbenchPlan) {
       for (const ev of q.events.filter((ev: Row) => ev.object === e.object && ['pair_registered', 'pair_independent_inspection', 'pair_shared_waiting', 'pair_shared_consumed'].includes(ev.kind))) events.push({ id: a.id + ':' + ev.id, source: a.id, title: a.title + ' → ' + b.title, kind: ev.kind, observedAt: ev.observed_at });
     }
   }
-  return { schemaVersion: 1, title: p.title, goal: p.goal, mode: p.controls?'bounded_task_contacts':p.kind==='tongxu-controlled-workbench'?'bounded_delivery_outcomes':'read_only', tasks, events: events.sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.id.localeCompare(b.id)), ...(p.controls?{modelCallsStartedByThisRead:0}:{modelCallsStartedByWorkbench:0}),...(p.deliveries?{deliveries:await new DeliveryControls(p.deliveries,p.sources,p.kind==='tongxu-controlled-workbench').state()}:{}), crossStoreAtomic: false, remoteRechecked: false, productionActionAllowed: false };
+  return { schemaVersion: 1, title: p.title, goal: p.goal, mode: p.controls?'bounded_task_contacts':p.kind==='tongxu-controlled-workbench'?'bounded_delivery_outcomes':'read_only', tasks, events: events.sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.id.localeCompare(b.id)), ...(p.controls?{modelCallsStartedByThisRead:0}:{modelCallsStartedByWorkbench:0}),...(p.deliveries||p.ownerControls?{deliveries:await new DeliveryWorkspaceControls(p.deliveries??[],p.ownerControls??[],p.sources,p.kind==='tongxu-controlled-workbench').state(),deliveryPreparation:await new DeliveryWorkspaceControls(p.deliveries??[],p.ownerControls??[],p.sources,p.kind==='tongxu-controlled-workbench').preparation()}:{}), crossStoreAtomic: false, remoteRechecked: false, productionActionAllowed: false };
 }
 async function workbenchReport(p: WorkbenchPlan, source: string, operation: string) {
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
@@ -118,7 +119,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
-  const deliveryControls=p.deliveries?new DeliveryControls(p.deliveries,p.sources,p.kind==='tongxu-controlled-workbench'):null;
+  const deliveryControls=p.deliveries||p.ownerControls?new DeliveryWorkspaceControls(p.deliveries??[],p.ownerControls??[],p.sources,p.kind==='tongxu-controlled-workbench'):null;
   const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
   const scopeFollowups=p.ownerControls?new ScopeFollowupControls(p.ownerControls,p.sources):null;
   const organization=p.organization?await OrganizationControls.load(p.organization.path,p.organization.sha256,p.sources):null;
@@ -145,15 +146,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
         const delivery=/^\/api\/delivery\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
+        const batchPreparation=/^\/api\/delivery-preparation\/([a-z0-9-]{1,64})\/register$/.exec(url.pathname);
         const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
         const followup=/^\/api\/scope-followup\/([a-z0-9-]{1,64})\/(prepare|observe|owner-prepare|owner-apply|start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const arrangement=/^\/api\/organization\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/apply$/.exec(url.pathname);
         const retrospective=/^\/api\/overall-review\/([a-z0-9-]{1,64})\/(prepare|run|reconcile|close-unstarted)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&delivery||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
-        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
+        if(batchPreparation){json(res,200,await deliveryControls!.register(batchPreparation[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
         if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await scopeFollowups!.prepare(source,body));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body));return;}
         if(retrospective){if(!exactKeys(body,[]))throw new Error('overall_no_runtime_arguments');json(res,202,overall!.begin(retrospective[1]!,retrospective[2]! as any));return;}

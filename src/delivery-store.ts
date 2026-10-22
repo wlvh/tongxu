@@ -70,5 +70,10 @@ export class DeliveryRecords{
   }
   state(sha:string){return this.transaction(()=>this.stateOf(sha));}
   manifest(sha:string){return this.transaction(()=>this.original(sha).manifest);}
+  forSelectedItems(items:readonly string[]){return this.transaction(()=>{
+    const rows=this.db.prepare("SELECT data FROM events WHERE kind='delivery_batch_registered' ORDER BY id").all() as Row[];
+    const selected=rows.map(e=>JSON.parse(e.data).batchSha256).filter(sha=>{const p=this.original(sha).manifest;return p.members.every(m=>items.includes(m.item));});
+    if(selected.length>64)throw new Error('delivery_preparation_history_limit');return selected.map(sha=>this.stateOf(sha));
+  });}
   forItem(item:string){return this.transaction(()=>{const rows=this.db.prepare("SELECT data FROM events e WHERE kind='delivery_batch_registered' AND NOT EXISTS(SELECT 1 FROM events n WHERE n.kind=e.kind AND n.object=e.object AND n.id>e.id) ORDER BY id").all() as Row[],selected=rows.map(e=>JSON.parse(e.data).batchSha256).filter(sha=>this.original(sha).manifest.members.some(m=>m.item===item));if(selected.length>8)throw new Error('delivery_selection_limit');return selected.map(sha=>this.stateOf(sha));});}
 }
