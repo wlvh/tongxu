@@ -139,7 +139,7 @@ function judgmentFeedbackView(){
  }return page;
 }
 async function openJudgmentFeedback(task,judgment,feedback){
- const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+ const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看原判断与反馈记录';$('report-dialog').showModal();
  try{const response=await fetch('/api/judgment-feedback-report/'+task.id+'?judgment='+encodeURIComponent(judgment.judgmentId)+'&feedback='+encodeURIComponent(feedback.id),{headers:{Authorization:'Bearer '+key},cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);if(nonce!==reportNonce)return;$('report-meta').textContent='原判断 '+r.original.judgmentId+' · '+r.feedback.coverageWindow+' · 反馈原件已核摘要；不是新的正确性判断或权限';$('report-body').textContent=r.report;$('report-raw').textContent=JSON.stringify({original:r.original,feedback:r.feedback},null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='原反馈尚不可读';$('report-body').textContent=readableReason(e.message);}}
 }
 async function openOverallReport(entry){
@@ -461,7 +461,7 @@ async function openMessageReport(t,run,m){
   try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+(r.nativeSessionResumed?' · 准确续接原会话 ':' · 会话 ')+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });
-$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++; });
+$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
 $('refresh').onclick = refresh;
 document.querySelector('.skip').onclick = e => { e.preventDefault(); $('content').focus(); $('content').scrollIntoView(); };
 let initial = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'; try { initial = localStorage.getItem('tongxu-view-theme') || initial; } catch {}; document.documentElement.dataset.theme = initial === 'dark' ? 'dark' : 'light';
