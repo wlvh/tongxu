@@ -39,6 +39,7 @@ import { EventRecords } from './event-store.js';
 import { SessionRecords } from './session-store.js';
 import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
+import {parseCoordinationPlan,coordinationPlanId} from './coordination-contract.js';
 import { MessageResourceRecords } from './message-resource-store.js';
 import { TaskCandidateLinks } from './task-link-store.js';
 import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-link-source.js';
@@ -284,6 +285,10 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
 
   async refreshMessageTaskSources(run:string){
     const state=this.messages().status(run),ids=[...new Set<string>([...state.plan.participants.map(p=>p.item),...this.taskInboxRecords(fn=>fn()).sourceTasks(run)])];
+    return this.refreshSelectedTaskSources(ids);
+  }
+  async refreshSelectedTaskSources(ids:readonly string[]){
+    if(!ids.length||ids.length>8||new Set(ids).size!==ids.length)throw new Error('selected_task_source_set_invalid');
     const guards:Array<()=>void>=[];
     for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){
       const p=this.tasks().definition(id);
@@ -292,6 +297,32 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     }
     return ()=>{for(const check of guards)check();};
   }
+  static async observeOrganization(directory:string,name:string,items:readonly string[]){
+    const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');const current=q.coordinationRecords(fn=>fn()).current(name);
+      if(current&&current.plan.tasks.some(t=>!items.includes(t.item)))throw new Error('organization_previous_task_not_selected');
+      return {current,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),items:items.map(id=>q.authorityItem(id))};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  registerWorkbenchOrganization(raw:Buffer,items:readonly string[],delegation:{adoption:string;authorization:string}|null,observations:OwnerObservation[],checkSources:()=>void){return this.transaction(()=>{
+    const p=parseCoordinationPlan(raw),id=coordinationPlanId(p),records=this.coordinationRecords(fn=>fn());
+    if(new Set(items).size!==items.length||canonical([...items].sort())!==canonical(p.tasks.map(t=>t.item).sort()))throw new Error('organization_exact_selected_tasks_required');
+    // Reading an already registered choice never grants fresh authority or
+    // changes which revision is current, even after permission is revoked.
+    try{const old=records.status(id);return {state:old,duplicate:true,newModelRequests:0,writingPermissionGranted:false,externalStateRechecked:false};}catch(e){if((e as Error).message!=='coordination_plan_not_registered')throw e;}
+    const previous=records.current(p.name);if(previous&&previous.plan.tasks.some(t=>!items.includes(t.item)))throw new Error('organization_previous_task_not_selected');
+    checkSources();const bindings=p.tasks.map(t=>this.authorityItem(t.item)),first=bindings[0]!,configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
+    if(bindings.some(b=>!b.current||canonical(b.context.scope)!==canonical(first.context.scope)||b.candidate.repository!==first.candidate.repository))throw new Error('coordination_common_current_scope_required');
+    const intents:string[]=[];
+    if(configured){
+      if(!delegation||!p.authorityIntent)throw new Error('organization_existing_delegation_required');
+      const a=new AuthorityRecords(this.db,fn=>fn(),item=>this.authorityItem(item)),baseline=a.adoptionBaseline(delegation.adoption,observations),decision=a.inspectRecordedDecision(delegation.authorization);
+      if(decision.proposal.kind!=='delegate'||decision.proposal.adoption!==delegation.adoption)throw new Error('organization_existing_delegation_required');
+      for(const [index,b] of bindings.entries()){const c=b.candidate,intent=index===0?p.authorityIntent:'organization-'+hash(canonical([id,b.item])).slice(0,48),request={schemaVersion:1 as const,scopeId:b.context.scope.id,scopeVersion:b.context.scope.version,scopeBodySha256:baseline.scopeBodySha256,repository:c.repository,target:c.targetRef,action:'coordinate' as const,item:b.item,candidate:{H:c.H,B:c.B,subjectSha256:b.subjectSha256??null},paths:[],resourceRefs:[],payloadSha256:id};
+        a.reserveAction(intent,request,'coordinator',delegation.authorization,observations);a.refreshReservedAction(intent,observations);intents.push(intent);
+      }
+    }else if(delegation||p.authorityIntent!==null)throw new Error('organization_owner_source_profile_required');
+    const state=records.register(raw);return {state,duplicate:false,authority:configured?{kind:'existing_delegation',intents}:{kind:'operator_fixed_local_arrangement'},newModelRequests:0,writingPermissionGranted:false,ownerAdoptionCreated:false};
+  });}
   private authorityItem(id:string):Row {
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);
     return {item:id,packet:item.current_packet,fingerprint:packet.fingerprint,candidate:evidence.manifest.candidate,context:evidence.context,subjectSha256:summary.composition?.sha256??null,current:!item.observation_conflict&&this.receiverCandidateCurrent(item),prerequisites:this.prerequisites(item),evidenceComplete:summary.evidenceComplete};

@@ -7,6 +7,7 @@ const pendingControls=new Set();
 const pendingScopeControls=new Set();
 const pendingOutcomes=new Set(),outcomeDrafts=new Map(),outcomeComments=new Map();
 const ownerDrafts=new Map(),ownerSources=new Map(),pendingOwner=new Set();
+const pendingOrganization=new Set();
 const outcomeLabels={accepted:'接受成果',rejected:'退回处理',needs_evidence:'补充证据',stopped:'停止后续投入'};
 const taskControlPhases={not_registered:'尚未登记',queued:'已登记，待处理',prepared:'已准备，待发送',waiting:'等待前置',active_or_unknown:'正在执行或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'未发送请求已撤回',interrupted:'已观察到中断，原请求未完成',interrupted_closed:'中断结果已保留，原请求已结束'};
 const readableReason=value=>({local_scope_control_revision_changed:'控制状态已被其它入口更新，请核对刷新后的修订。',local_scope_control_scope_changed:'范围定义已改变，旧配置不能继续操作。',local_scope_control_adopted_version_changed:'本人已采用新的范围版本，旧范围记录不能继续操作。',verified_owner_stop_requires_verified_resume:'这是已验证的本人停止，必须按原来源恢复。',new_investment_stopped:'本范围已停止新增投入。',owner_action_stopped:'原本人控制已停止该动作。',task_controller_history_bound:'原诊断历史已达到上限，需保留历史后由负责人处理。',task_execution_incomplete:'原执行未取得完整结果，请核对原运行。',task_prepared_file_changed:'已准备的输入文件发生变化，原请求保留并等待核实。',task_or_candidate_packet_changed:'任务、候选或观察方式已更新，这条关联仅作历史保留。',task_link_staged_selected_changes:'选定文件的暂存内容已变化。',task_link_selected_mode_changed:'选定文件的所有者执行位已变化。',task_control_candidate_changed:'任务材料已变化，请核对后更新联系请求。',task_original_execution_active_or_unknown:'原执行已开始或尚未查清，不能当作未发送请求撤回。',task_original_resource_investment_must_be_resolved:'原资源投入仍须核实，不能直接撤回。',task_request_not_queued:'请求尚未登记，没有可撤回的待办。',task_request_cancelled:'该请求已撤回，原记录保留。',task_original_responsibility_pending:'原负责人还有未完成或未知的执行，后续请求等待。'}[value]||value);
@@ -70,6 +71,31 @@ function nativeControlPanel(c,investmentStopped){
 async function setScopeControl(c,value){if(pendingScopeControls.has(c.id))return;pendingScopeControls.add(c.id);render();try{const response=await fetch('/api/scope-control/'+encodeURIComponent(c.id)+'/'+value,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({revision:c.revision}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'范围控制未完成');await refresh();notice(result.duplicate?'已读回原控制回执；当前状态以下方最新记录为准。':'本机控制已登记并读回。已发操作、权限与资源记录继续保留。');}catch(e){await refresh();notice('控制未改变：'+readableReason(e.message));}finally{pendingScopeControls.delete(c.id);render();}}
 function scopeControlPanel(t){const entries=(state.scopeControls||[]).filter(c=>c.source===t.id);if(!entries.length)return null;const panel=el('section',null,'note-card');append(panel,el('h3','本范围的停止与恢复'),el('p','影响本范围的相关任务。恢复只解除本机停止，原授权、用量和资源仍逐项检查；不终止已经发出的执行。','small'));for(const c of entries){const row=el('div',null,'report-row'),left=el('div');append(left,el('strong',c.title),el('p',c.available?'范围 '+c.scopeId+' / '+c.scopeVersion+' · 修订 '+c.revision:'范围来源待核','small'));if(!c.available)left.append(el('p',readableReason(c.reason),'small'));else{append(left,el('p',c.verifiedOwnerStop?'原记录为已验证本人停止，需按原来源恢复。':c.recorded?(c.state==='stopped'?'本机已登记停止。':'本机已登记开放，原权限仍须成立。'):'尚未登记本机停止；不等于获得额外权限。','small'));const buttons=el('div',null,'actions'),stop=el('button','停止','outline'),resume=el('button','恢复','quiet');stop.type=resume.type='button';stop.disabled=c.state==='stopped'||pendingScopeControls.has(c.id);resume.disabled=c.state!=='stopped'||c.verifiedOwnerStop||pendingScopeControls.has(c.id);stop.onclick=()=>setScopeControl(c,'stopped');resume.onclick=()=>setScopeControl(c,'open');append(buttons,stop,resume);row.append(buttons);}row.prepend(left);panel.append(row);}return panel;}
 function intro(title, description, badge) { return append(el('section', null, 'intro'), append(el('div'), el('span', '同序 / 原始记录', 'eyebrow'), el('h1', title), el('p', description)), badge ? pill(badge, 'neutral') : null); }
+const organizationModes={parallel:'并行推进',stage_serial:'按阶段串行',unified_owner:'统一负责人'};
+const organizationStages={investigate:'调查',implement:'实施',receive:'接收',publish:'发布',enable:'启用'};
+async function applyOrganization(group,choice){
+  if(pendingOrganization.has(group.id))return;pendingOrganization.add(group.id);render();
+  try{const response=await fetch('/api/organization/'+encodeURIComponent(group.id)+'/apply',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({choice:choice.id,expectedPrevious:group.expectedPrevious}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'组织安排未登记');await refresh();notice(result.duplicate?'已读回原安排；没有重新登记，也没有启动任务。':'安排已登记到原任务记录。实际派发、写权交接和共享前置仍须满足，不会因登记而自动获得权限。');}
+  catch(e){await refresh();notice('组织安排未改变：'+readableReason(e.message));}finally{pendingOrganization.delete(group.id);render();}
+}
+function organizationView(){
+  const page=append(el('div'),intro('组织方式','为明确选择的任务安排并行、阶段串行或统一负责人。复用原协调记录，保留旧安排和原执行。'));
+  for(const g of state.organization||[]){const card=append(el('section',null,'note-card'),el('h2',g.title));page.append(card);
+    if(!g.available){card.append(el('p','原安排来源不可用：'+readableReason(g.reason),'small'));continue;}
+    append(card,el('p',g.current?'当前登记：'+organizationModes[g.current.mode]+' · '+g.current.revision:'尚未登记本组安排。','small'),el('p',g.ownerSourceConfigured?'登记时重新核对原范围委托；查看钥匙不能代签本人决定。':'本机固定安排。没有据此创建本人采用或新的写入权限。','small'));
+    if(g.ownerSourceConfigured&&!g.delegationConfigured)card.append(el('p','尚未配置本组已有委托的准确引用，相关登记保持不可用。','small'));
+    for(const c of g.choices){const box=append(el('div',null,'execution-card'),el('h3',c.title+' · '+organizationModes[c.mode]));card.append(box);
+      for(const task of c.tasks)append(box,el('p',task.title+'：'+(task.actor===task.originActor?'原负责人 '+task.actor+' 继续':'拟交给 '+task.actor+'；原执行结束与责任交接须另行核实'),'small'),el('p','阶段：'+task.stages.map(s=>organizationStages[s]||s).join(' → '),'small'));
+      const taskName=id=>c.tasks.find(t=>t.id===id)?.title||id;
+      for(const d of c.dependencies)box.append(el('p',taskName(d.task)+'的'+(organizationStages[d.stage]||d.stage)+'等待'+taskName(d.producer)+'的准确产物 '+d.capability,'small'));
+      for(const shared of c.shared){const details=append(el('details'),el('summary','共享部分 '+shared.id+' · '+shared.blockedStages.map(s=>organizationStages[s]||s).join(' / ')+' 前须核反馈'),el('p',shared.contract),el('p','范围：'+shared.paths.join('、'),'small'));box.append(details);}
+      const button=el('button',g.currentChoice===c.id?'已登记此安排':'登记此安排','outline');button.type='button';button.disabled=pendingOrganization.has(g.id)||g.ownerSourceConfigured&&!g.delegationConfigured||g.currentChoice===c.id;button.onclick=()=>applyOrganization(g,c);box.append(button);
+    }
+    for(const task of g.current?.stages||[]){const title=g.current.tasks.find(t=>t.id===task.id)?.title||task.id;for(const stage of task.stages)card.append(el('p',title+' · '+(organizationStages[stage.stage]||stage.stage)+'：'+(stage.phasePrerequisitesMet?'技术前置已满足；仍需实际执行许可':stage.blockers.map(readableReason).join('；')),'small'));}
+    card.append(el('p','新安排不会释放活跃或未知的原写者。实际写权、模型投入和成果接受继续使用各自的原记录。','small'));
+  }
+  return page;
+}
 async function ownerAction(entry,action,body){
   if(pendingOwner.has(entry.source))return;pendingOwner.add(entry.source);
   try{const response=await fetch('/api/owner-control/'+entry.source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'本人决定未完成');await refresh();notice(action==='prepare'?'请求已保存。核对完整内容后，仍需从原本人来源确认；没有自动授予权限。':r.duplicate?'已查回原决定，没有重复执行。':r.executionKind==='fixture'?'明确测试来源已记录，不能作为本人采用。':'原本人来源与准确请求已核对，决定已保存。');}
@@ -233,11 +259,12 @@ function timeline(events) {
 function render() {
   if (!state) return;
   $('runtime-version').hidden=!state.runtime;if(state.runtime)$('runtime-version').textContent='本次运行版本 '+state.runtime.sourceHead.slice(0,12)+' · 配置 '+state.runtime.planSha256.slice(0,12)+' · 已匹配固定源码、构建与配置记录';
-  $('access-mode').textContent=state.mode==='read_only'?'只读':state.ownerControls?.length?'目标、委托与既有控制':state.deliveries?.length?'有限操作与成果决定':state.scopeControls?.length?'有限联系与范围控制':'有限联系';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':state.ownerControls?.length?'表单准备原权限请求，核对本人原来源后才记录决定；查看钥匙不授予签署身份。':state.deliveries?.length?'可准备固定成果请求并核对本人来源；页面访问身份不等于本人签署。':state.scopeControls?.length?'仅操作已配置的本机范围与联系。没有本人签署、写代码或合并入口。':'可联系已配置的负责人、撤回尚未发送的请求。没有批准、写代码或合并入口。';
+  $('access-mode').textContent=state.mode==='read_only'?'只读':state.ownerControls?.length?'目标、委托与既有控制':state.organization?.length?'任务组织与既有控制':state.deliveries?.length?'有限操作与成果决定':state.scopeControls?.length?'有限联系与范围控制':'有限联系';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':state.ownerControls?.length?'表单准备原权限请求，核对本人原来源后才记录决定；查看钥匙不授予签署身份。':state.organization?.length?'仅登记明确任务的安排；原权限、写权交接和执行前置仍分别检查。':state.deliveries?.length?'可准备固定成果请求并核对本人来源；页面访问身份不等于本人签署。':state.scopeControls?.length?'仅操作已配置的本机范围与联系。没有本人签署、写代码或合并入口。':'可联系已配置的负责人、撤回尚未发送的请求。没有批准、写代码或合并入口。';
   document.querySelector('[data-view="deliveries"]').hidden=!state.deliveries?.length;
+  document.querySelector('[data-view="organization"]').hidden=!state.organization?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
+  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
