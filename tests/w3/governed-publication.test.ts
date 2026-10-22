@@ -8,6 +8,12 @@ import {governedPublicationFixture} from './governed-publication-fixture.js';
 import {publication} from '../../src/publisher.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {readOwnerSource} from '../../src/authority-source.js';
+import {spawn,execFileSync} from 'node:child_process';
+import {once} from 'node:events';
+import {setTimeout as delay} from 'node:timers/promises';
+import {readPublicationDispatchCapture} from '../../src/publication-dispatch-capture.js';
+import {publicationProcessIdentity,requirePublicationProcessEnded} from '../../src/publication-process.js';
+import {processState} from '../../src/repair-workspace.js';
 
 test('governed publication consumes its exact permission and original resource, then repeats without new POST or model',async t=>{
   const f=await governedPublicationFixture(t),before=await readFile(f.trace),prepared=await publication(f.pubPath,'prepare');assert.equal(prepared.status,'prepared_not_sent');assert.equal(prepared.publicationPayloadSha256,f.owner.request.payloadSha256);assert.equal((await f.remote()).posts.length,0);assert.equal(f.ledger.state().claims.length,0);
@@ -67,4 +73,40 @@ test('after-input transaction rollback retains the original request and recovers
 
 test('member format21 and publication guards share the original admission without blocking valid publication',async t=>{
   const f=await governedPublicationFixture(t,'normal','normal',true);assert.equal(f.q.status().schemaVersion,21);const result=await publication(f.pubPath,'publish');assert.equal(result.status,'published_verified');assert.equal(result.resourcesSettled,true);assert.equal((await f.remote()).posts.length,2);assert.equal(f.ledger.state().settlements.length,1);
+});
+
+test('a contradictory exit cannot settle a live original publication; confirmed original termination recovers once', {timeout:120000},async t=>{
+  const f=await governedPublicationFixture(t,'orphan-status'),trace=await readFile(f.trace);let pid:number|undefined,identity:ReturnType<typeof publicationProcessIdentity>=null;
+  try{
+    const child=spawn(process.execPath,[new URL('../../src/publisher-cli.js',import.meta.url).pathname,'publish','--plan',f.pubPath],{stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
+    const [code,signal]=await once(child,'close');assert.equal(signal,'SIGKILL');const orphan=JSON.parse(await readFile(join(f.root,'owned-orphan.json'),'utf8'));pid=orphan.pid;assert.equal(orphan.parent,child.pid);assert.equal(processState(pid),'alive');identity=publicationProcessIdentity(pid!);assert.ok(identity);
+    const original=f.q.publicationOriginalDispatches(f.p.operation).find((r:any)=>r.prepared.stage==='status')!;assert.equal(original.registered.pid,pid);assert.deepEqual(original.registered.identity,identity);const directory=original.prepared.directory;
+    const processFile=join(directory,'process.json'),processBytes=await readFile(processFile),observed=execFileSync('/bin/ps',['-p',String(pid),'-o','pid=,pgid=,command='],{encoding:'utf8'}).trim();assert.ok(observed.includes(f.p.ghExecutable));
+    await assert.rejects(publication(f.pubPath,'reconcile'),/publication_original_process_active/);
+    const contradictory={code:0,signal:null,failure:null,finishedAt:new Date().toISOString()};await writeFile(join(directory,'exit.json'),JSON.stringify(contradictory));
+    await assert.rejects(publication(f.pubPath,'reconcile'),/publication_original_process_active/);
+    await assert.rejects(readPublicationDispatchCapture(f.p,original.prepared,original.request,original.registered),/publication_original_process_active/);
+    await assert.rejects(readPublicationDispatchCapture(f.p,original.prepared,original.request),/publication_original_process_active/);
+    // A changed local identity cannot override the original queue binding.
+    await writeFile(processFile,JSON.stringify({pid,identity:{...identity,start:'fixture forged older start'}}));
+    await assert.rejects(readPublicationDispatchCapture(f.p,original.prepared,original.request,original.registered),/publication_original_process_changed/);
+    await assert.rejects(readPublicationDispatchCapture(f.p,original.prepared,original.request),/publication_original_process_active/);
+    await writeFile(processFile,processBytes);assert.equal(f.q.resources().status(f.resourceId).state,'held');assert.equal(f.ledger.state().settlements.length,0);assert.equal((await f.remote()).posts.length,2);assert.equal(processState(pid),'alive');
+    assert.deepEqual(publicationProcessIdentity(pid!),identity);process.kill(-pid!,'SIGKILL');for(let i=0;i<50&&processState(pid)!=='ended';i++)await delay(20);assert.equal(processState(pid),'ended');
+    const recovered=await publication(f.pubPath,'reconcile');assert.equal(recovered.status,'published_verified');assert.equal(recovered.resourcesSettled,true);assert.equal(f.ledger.state().settlements.length,1);assert.equal((await f.remote()).posts.length,2);assert.ok((await readFile(f.trace)).equals(trace));
+    await publication(f.pubPath,'reconcile');assert.equal(f.ledger.state().settlements.length,1);assert.equal((await f.remote()).posts.length,2);
+    await writeFile(join(f.root,'live-process-recovery-verification.json'),JSON.stringify({original:{pid,identity,observed},controller:{pid:child.pid,code,signal,stdout,stderr},contradictory,actualProcessEnded:processState(pid),recovered,posts:2,settlements:1,newModelInputs:0},null,2));
+  }finally{
+    if(pid&&processState(pid)==='alive'&&identity&&JSON.stringify(publicationProcessIdentity(pid))===JSON.stringify(identity)){const observed=execFileSync('/bin/ps',['-p',String(pid),'-o','pid=,pgid=,command='],{encoding:'utf8'}).trim();if(observed.split(/\s+/)[1]===String(pid)&&observed.includes(f.p.ghExecutable))process.kill(-pid,'SIGKILL');}
+  }
+});
+
+test('PID reuse comparison distinguishes a recorded old start; absent identity never guesses termination',async()=>{
+  const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}),closed=once(child,'close');
+  try{
+    const pid=child.pid!,identity=publicationProcessIdentity(pid);assert.ok(identity);assert.throws(()=>requirePublicationProcessEnded(pid,identity),/process_active/);assert.throws(()=>requirePublicationProcessEnded(pid),/process_active/);assert.throws(()=>requirePublicationProcessEnded(undefined),/process_unknown/);
+    // Explicit synthetic PID-reuse sample: no kernel PID recycling is claimed.
+    const previous={...identity,start:identity.method==='darwin-ps-lstart-v1'?'Mon Jan  1 00:00:00 2001':identity.start.split(':')[0]+':1'};requirePublicationProcessEnded(pid,previous);assert.equal(processState(pid),'alive');
+  }finally{child.kill();await closed;}
+  requirePublicationProcessEnded(child.pid);
 });

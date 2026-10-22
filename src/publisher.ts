@@ -9,6 +9,7 @@ import { PublicationHttp, ordinaryFile } from './publication-http.js';
 
 import {parsePublicationPlan as plan,publicationAuthorityPayloadSha,type PublicationPlan as Plan} from './publication-contract.js';
 import {publicationGovernance} from './publication-governance.js';
+import {requirePublicationExit,requirePublicationProcessEnded} from './publication-process.js';
 type Row = Record<string, any>;
 export function publicDocument(p: Plan, state: Row): Row {
   const r = state.receiver, input = JSON.parse(state.input.toString()), j = r.judgment, c = state.result.candidate;
@@ -87,12 +88,9 @@ async function originalEnded(stage: Row) {
   const directory = stage.intent.directory;
   try {
     const exit = JSON.parse((await ordinaryFile(join(directory, 'exit.json'), 4096)).toString());
-    if (!(exit.code === null || Number.isSafeInteger(exit.code) && exit.code >= 0) || !(exit.signal === null || typeof exit.signal === 'string' && exit.signal.length > 0) || typeof exit.finishedAt !== 'string') throw new Error('publication_exit_record_invalid');
-    if (exit.code !== null || exit.signal !== null) return;
+    requirePublicationExit(exit);
   } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
-  const pid = stage.started?.pid;
-  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('publication_original_process_unknown');
-  try { process.kill(pid, 0); throw new Error('publication_original_process_active'); } catch (e: any) { if (e.code !== 'ESRCH') throw e; }
+  requirePublicationProcessEnded(stage.started?.pid,stage.started?.identity);
 }
 async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, name: 'comment' | 'status', allowWrite: boolean, retrySource?: string,governance?:ReturnType<typeof publicationGovernance>): Promise<boolean> {
   let state = q.publicationState(p.operation), stage = state.stages[name], comment = state.stages.comment.verified?.remote;
@@ -117,7 +115,7 @@ async function stageWork(q: QueueStore, http: PublicationHttp, p: Plan, d: Row, 
     reply = await http.request('POST', endpoint, payload, {
       ...(p.governance?{dispatch:(directory:string,effect:()=>void)=>{q.publicationDispatchPrepared(p.operation,name,{directory,endpoint,requestSha256:hash(canonical(payload)),controllerPid:process.pid,remotePreflight:observed},{request:Buffer.from(JSON.stringify(payload)),preflight:Buffer.from(JSON.stringify(observed))},stage.intent?retrySource:undefined);q.publicationEffect(p.operation,name,directory,governance!.observations,effect);}}:{}),
       intent: directory => q.publicationEvent(p.operation, 'intent', name, { directory, requestSha256: hash(canonical(payload)), controllerPid: process.pid, remotePreflight: observed }, { request: Buffer.from(JSON.stringify(payload)), preflight: Buffer.from(JSON.stringify(observed)) }, stage.intent ? retrySource : undefined),
-      started: pid => q.publicationEvent(p.operation, 'started', name, { pid })
+      started: (pid,identity) => q.publicationEvent(p.operation, 'started', name, { pid,identity })
     });
   } catch (e) {
     state = q.publicationState(p.operation); if (state.stages[name].intent) q.publicationEvent(p.operation, 'problem', name, { reason: e instanceof Error ? e.message : 'publication_request_unknown' }); throw e;

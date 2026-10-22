@@ -30,7 +30,7 @@ export function publicationGovernance(q:QueueStore,p:PublicationPlan){
     async settle(){
       if(!p.governance)return [];
       const state=q.publicationState(p.operation);if(!['comment','status'].every(stage=>state.stages[stage].lastState==='verified'))return [];
-      const captures=[];for(const original of q.publicationOriginalDispatches(p.operation))captures.push(await readPublicationDispatchCapture(p,original.prepared,original.request));q.publicationRecordResult(p.operation,captures);
+      const captures=[];for(const original of q.publicationOriginalDispatches(p.operation))captures.push(await readPublicationDispatchCapture(p,original.prepared,original.request,original.registered));q.publicationRecordResult(p.operation,captures);
       const result=[];for(const id of p.governance.resourceRequests)try{const old=q.resources().status(id);if(old.pendingResultAttempt&&!['consumed','released'].includes(old.state))await resourceAction(q.directory,id,'lookup','background');result.push(await resourceAction(q.directory,id,'record-result','background'));}catch(e){result.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'publication_resource_result_unavailable'});}return result;
     }
   };

@@ -43,6 +43,7 @@ if(method==='GET'){
   if(comment)r.comments.push(value);else r.statuses.unshift(value);
   if(comment&&r.mode==='change-head-after-comment')r.H='a'.repeat(40);
   save();
+  if(!comment&&r.mode==='orphan-status'){fs.writeFileSync(${JSON.stringify(join(f.root,'owned-orphan.json'))},JSON.stringify({pid:process.pid,parent:process.ppid}));process.kill(process.ppid,'SIGKILL');setInterval(()=>{},1000);await new Promise(()=>{});}
   if(comment&&r.mode==='kill-parent-after-comment'){process.kill(process.ppid,'SIGKILL');process.exit(0);}
   else if(!comment&&r.mode==='lose-status-response')process.exit(1);
   else emit(201,value);

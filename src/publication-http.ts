@@ -6,9 +6,10 @@ import { randomUUID } from 'node:crypto';
 import { hash, privateDirectory } from './snapshot.js';
 import { parseGh } from './transport.js';
 import { save } from './live-process.js';
+import {publicationProcessIdentity,type PublicationProcessIdentity} from './publication-process.js';
 
 export type HttpReply = { status: number; value: any; directory: string; body: Buffer; headers:Record<string,string> };
-export type DispatchHooks = { intent(directory: string): void; started(pid: number): void; dispatch?(directory:string,effect:()=>void):void };
+export type DispatchHooks = { intent(directory: string): void; started(pid: number,identity:PublicationProcessIdentity|null): void; dispatch?(directory:string,effect:()=>void):void };
 export async function ordinaryFile(path: string, limit: number): Promise<Buffer> {
   if (!isAbsolute(path) || resolve(path) !== path || await realpath(path) !== path) throw new Error('publication_path_not_canonical');
   const s = await lstat(path); if (!s.isFile() || s.isSymbolicLink() || s.nlink !== 1 || s.size > limit) throw new Error('publication_file_invalid');
@@ -53,8 +54,9 @@ export class PublicationHttp {
         child.once('close',(code,signal)=>{clearTimeout(timer);save(join(dir,'exit.json'),{code,signal,failure,finishedAt:new Date().toISOString()});resolve();});
       });
       const timer=setTimeout(()=>{failure='publication_http_timeout';stop();},30000);
-      save(join(dir,'process.json'),{pid:child.pid??null});
-      if(child.pid)hooks?.started(child.pid);else failure='publication_gh_spawn_failed';
+      const identity=child.pid?publicationProcessIdentity(child.pid):null;
+      save(join(dir,'process.json'),{pid:child.pid??null,identity});
+      if(child.pid)hooks?.started(child.pid,identity);else failure='publication_gh_spawn_failed';
       if(!failure){
         save(join(dir,'submission-intent.json'),{bodySha256:hash(input),bytes:input.length,at:new Date().toISOString()});
         inputMayHaveBeenSubmitted=true;child.stdin.end(input);
