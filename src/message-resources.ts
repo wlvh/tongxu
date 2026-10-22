@@ -37,7 +37,15 @@ export async function settlePartialMessageResources(q:QueueStore,run:string,next
     results.push(await resourceAction(q.directory,id,'record-result',binding.role));if(!q.resources().settledOutcome(id))throw new Error('message_original_partial_resource_result_unresolved');
   }return results;
 }
+/** Called under the original message controller, after strict capture replay.
+ * Lost provider replies keep the original request for lookup on the next entry. */
+export async function cancelUnstartedMessageResources(q:QueueStore,run:string,p:MessagePlan){
+  if(!p.resourceBudget)throw new Error('message_fixed_resource_budget_required');
+  const b=q.messageResources().cancelUnstarted(run),results=[];
+  for(const id of b.resourceRequests){try{const old=await resourceAction(q.directory,id,'lookup',b.role);results.push(q.resources().settledOutcome(id)?old:await resourceAction(q.directory,id,'record-result',b.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
+  return results;
+}
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return true;
-  try{const b=q.messageResources().state(run);return ['returned','partial_returned','interrupted_returned'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
+  try{const b=q.messageResources().state(run);return ['returned','partial_returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
 }

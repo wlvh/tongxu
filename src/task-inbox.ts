@@ -67,8 +67,8 @@ export class TaskInbox {
     if(typeof source!=='string'||!source.trim()||source.length>2048)throw new Error('task_cancel_source_required');const f=this.entry(task,id),prior=f.events.find(e=>e.kind==='task_inbox_cancelled'&&e.data.id===id);if(expectedRequestSha256!==undefined&&f.queued.requestSha256!==expectedRequestSha256)throw new Error('task_control_original_request_changed');if(prior)return {...prior.data,duplicate:true};
     let proof:Row={selectionCreated:false};
     if(f.selected){
-      if(this.db.prepare("SELECT 1 FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+f.selected.run))throw new Error('task_original_resource_investment_must_be_resolved');
       let s:Row|null=null;try{s=this.messages(f.selected.run).state;}catch(e){if((e as Error).message!=='original_message_run_required')throw e;}
+      if(this.db.prepare("SELECT 1 FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+f.selected.run)&&(s?.resourcesSettled!==true||s.resourcePhase!=='cancelled_unstarted'))throw new Error('task_original_resource_investment_must_be_resolved');
       if(s&&(s.messages.some((m:Row)=>m.sent)||s.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true)))throw new Error('task_original_execution_active_or_unknown');
       proof={selectionCreated:true,run:f.selected.run,registered:!!s,knownUnstarted:s?.runtimes.map((r:Row)=>({participant:r.participant,attempt:r.attempt,ended:r.ended}))??[]};
     }

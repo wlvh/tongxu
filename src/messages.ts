@@ -11,7 +11,7 @@ import { parseMessagePlan,messagePlanId,checkMessageBilling,type MessagePlan } f
 import { assembleRolePrompt } from './role-prompts.js';
 import { messagePolicy,ReadonlyDialog,OwnedReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec,type MessageNativeHandle } from './message-runtime.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
-import {prepareMessageResources,refreshMessageResources,completeMessageResources,messageResourcesSettled} from './message-resources.js';
+import {prepareMessageResources,refreshMessageResources,completeMessageResources,cancelUnstartedMessageResources,messageResourcesSettled} from './message-resources.js';
 type Row=Record<string,any>;
 async function ensurePrivate(path:string){try{await privateDirectory(path,true);}catch(e:any){if(e.code!=='EEXIST')throw e;await privateDirectory(path,false);}}
 async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise<OwnerObservation[]>{
@@ -32,7 +32,7 @@ async function replay(q:QueueStore,run:string,directory:string){
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void){
+export async function runMessages(store:string,planPath:string,recoverOnly:boolean|'cancel-unstarted'=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void){
   const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
   // The caller may have selected a frozen operation before handing us a path.
   // Compare before opening the queue or creating/starting any runtime, and use
@@ -46,6 +46,10 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     const continuation=records.continuationParent(run);if(continuation&&p.nativeResume)throw new Error('native_resume_and_new_context_cannot_mix');const parent=continuation??p.nativeResume?.run;
     if(parent){const path=join(store,'messages-'+parent,'controller.sqlite');await regular(path,4*1024*1024);parentLock=new DatabaseSync(path);try{parentLock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{parentLock.close();parentLock=undefined;throw new Error('continuation_original_controller_active');}}
     const checkParent=async()=>{if(parent){const recovered=await replay(q,parent,join(store,'messages-'+parent));if(recovered.recoveryErrors.length)throw new Error('continuation_original_capture_unresolved');if(p.nativeResume){if(canonical(records.nativeResumeReference(parent,p.nativeResume.participant,p.nativeResume.messageId))!==canonical(p.nativeResume))throw new Error('native_resume_scope_or_capture_changed');}else records.continuationSource(parent);}};
+    if(recoverOnly==='cancel-unstarted'){
+      if(!previous)throw new Error('original_message_run_required');const recovered=await replay(q,run,directory);if(recovered.recoveryErrors.length)throw new Error('message_original_capture_unresolved');
+      const resources=await cancelUnstartedMessageResources(q,run,p);return {...recovered,resources,resourcesSettled:messageResourcesSettled(q,run,p),cancellationRequested:true};
+    }
     if(previous?.runtimes.some((r:Row)=>r.started)){
       const recovered=await replay(q,run,directory);
       // No recipient of a dispatched message may change. A bootstrap with

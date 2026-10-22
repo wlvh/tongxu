@@ -1,7 +1,7 @@
 import {QueueStore} from './queue-store.js';
 import {regular} from './repair-workspace.js';
 import {parseTaskOwnerRequest,type TaskOwnerRequest,type TaskControllerReturn} from './task-inbox.js';
-import {prepareTaskOwner} from './tasks.js';
+import {prepareTaskOwner,cancelUnsentTaskOwner} from './tasks.js';
 import {runMessages} from './messages.js';
 import {observeTaskWorkspace} from './task-source.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
@@ -83,7 +83,7 @@ export class TaskControls{
   }
   async execute(id:string,beforeRegistration?:()=>void){const {registration,work}=await this.start(id,beforeRegistration),execution=await work;return {registration,execution,state:await this.state(id)};}
   async report(id:string){const f=this.selected(id),state=await this.stateOf(f);if(!state.run)throw new Error('task_control_report_not_returned');return QueueStore.observeMessageReport(f.source.store,f.source.item,state.run,f.request.id);}
-  async cancel(id:string){const f=this.selected(id),q=await QueueStore.open(f.source.store);try{const result=q.taskInbox().cancelUnsent(f.source.item,f.request.id,'fixed-task-control:'+this.catalogSha256+':'+id,f.requestSha256);return {action:id,result,state:await this.state(id),cancelIsNotProcessTermination:true};}finally{q.close();}}
+  async cancel(id:string){const f=this.selected(id),result=await cancelUnsentTaskOwner(f.source.store,f.source.item,f.request.id,'fixed-task-control:'+this.catalogSha256+':'+id,f.requestSha256);return {action:id,result,state:await this.state(id),cancelIsNotProcessTermination:true};}
   async closeInterrupted(id:string){
     const f=this.selected(id);if(this.active.has(id)||this.native.has(id))throw new Error('task_native_control_original_controller_active');
     // Recover the same frozen run under its existing controller lock. This

@@ -17,6 +17,13 @@ async function exactFile(path:string,bytes:Buffer){try{await writeFile(path,byte
 export async function prepareTaskOwner(store:string,task:string,id:string){
   const q=await QueueStore.open(store);try{const selected=q.taskInbox().prepare(task,id);await mkdir(selected.directory,{recursive:true,mode:0o700});await exactFile(join(selected.directory,'context.json'),selected.context);const path=join(selected.directory,'plan.json');await exactFile(path,selected.plan);return {id,run:selected.run,plan:path,contextSha256:selected.contextSha256};}finally{q.close();}
 }
+/** Cancelling an exact zero-input request is cleanup, never new permission.
+ * Reuse the original controller/captures and the provider's original claim. */
+export async function cancelUnsentTaskOwner(store:string,task:string,id:string,source:string,expectedRequestSha256?:string){
+  let q=await QueueStore.open(store);try{return q.taskInbox().cancelUnsent(task,id,source,expectedRequestSha256);}catch(e){if((e as Error).message!=='task_original_resource_investment_must_be_resolved')throw e;}finally{q.close();}
+  const selected=await prepareTaskOwner(store,task,id),closed=await runMessages(store,selected.plan,'cancel-unstarted',selected.run);if(!closed.resourcesSettled)throw new Error('task_original_resource_investment_must_be_resolved');
+  q=await QueueStore.open(store);try{return q.taskInbox().cancelUnsent(task,id,source,expectedRequestSha256);}finally{q.close();}
+}
 /** One finite entry drains the responsibility's existing queue, including
  * requests arriving during a preceding turn. Every send uses the original
  * message, authority and resource consumers. There is no detached worker. */
