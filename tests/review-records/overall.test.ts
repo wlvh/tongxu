@@ -32,3 +32,11 @@ test('confirmed preflight rejection before native launch can be closed and expli
   const after=await readFile(f.m.trace);await overallReview(f.planPath,'reconcile');assert.deepEqual(await readFile(f.m.trace),after);
   await assert.rejects(overallReview(f.planPath,'close-unstarted','fixture:cannot close real submitted capture'),/overall_native_execution_started_or_unknown/);
 });
+
+test('a complete protocol capture cannot hide an active or unknown original process on recovery',async t=>{
+  const f=await ready(t),result=await overallReview(f.planPath,'run') as any,before=await readFile(f.m.trace),path=join(result.stage,'process.json'),original=await readFile(path);
+  // Explicit contradiction in this isolated fixture, not an actual process
+  // replacement: completion bytes alone must not waive the process check.
+  await writeFile(path,JSON.stringify({...JSON.parse(original.toString()),pid:process.pid}));await assert.rejects(overallReview(f.planPath,'reconcile'),/overall_native_process_active_or_unknown/);assert.deepEqual(await readFile(f.m.trace),before);
+  await writeFile(path,original);assert.equal((await overallReview(f.planPath,'reconcile') as any).duplicate,true);assert.deepEqual(await readFile(f.m.trace),before);
+});

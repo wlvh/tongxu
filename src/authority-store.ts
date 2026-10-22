@@ -6,7 +6,7 @@ import { now } from './contract.js';
 import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 import {installRecompositionTestGuards} from './recomposition-test-guards.js';
-import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards,overallConsumerKey,overallAdmission,expectedEffectGuard} from './publication-guards.js';
+import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards,overallConsumerKey,overallAdmission,expectedEffectGuard,installOverallResultGuard} from './publication-guards.js';
 
 type Row=Record<string,any>;
 const profileKey='owner_authority_profile';
@@ -78,11 +78,11 @@ export class AuthorityRecords {
     this.event('authority_publication_consumer_enabled','authority-profile',{contract:'governed-publication-v1',previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(next)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
   });}
   enableGovernedOverall(){return this.transaction(()=>{
-    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(overallConsumerKey))return {enabled:true,duplicate:true,executionGranted:false};
+    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(overallConsumerKey)){installOverallResultGuard(this.db);return {enabled:true,duplicate:true,executionGranted:false};}
     if(this.db.prepare('SELECT 1 FROM claims').get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
     if(this.all('overall_review_dispatched').some(e=>!this.events(e.object).some(x=>x.id>e.id&&['overall_review_result','overall_review_closed_unstarted'].includes(x.kind))))throw new Error('queue_has_active_or_unknown_overall_review');
     const previous=expectedEffectGuard(this.db),next=expectedEffectGuard(this.db,undefined,true);
-    this.db.exec('DROP TRIGGER authority_legacy_effect_guard;'+next+';');this.db.prepare('INSERT INTO meta VALUES(?,?)').run(overallConsumerKey,hash(overallAdmission));
+    this.db.exec('DROP TRIGGER authority_legacy_effect_guard;'+next+';');this.db.prepare('INSERT INTO meta VALUES(?,?)').run(overallConsumerKey,hash(overallAdmission));installOverallResultGuard(this.db);
     this.event('authority_overall_consumer_enabled','authority-profile',{previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(next)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
   });}
   prepare(requestId:string,raw:Buffer){return this.transaction(()=>{

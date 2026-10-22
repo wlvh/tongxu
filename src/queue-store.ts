@@ -1,5 +1,5 @@
 import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication-contract.js';
-import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey} from './publication-guards.js';
+import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey,overallConsumerKey,installOverallResultGuard} from './publication-guards.js';
 import {requirePublicationProcessEnded} from './publication-process.js';
 import {requirePublicationDispatchCapture,type PublicationDispatchCapture} from './publication-dispatch-capture.js';
 import {PublicationReturns} from './publication-return-store.js';
@@ -31,6 +31,7 @@ import type { Candidate } from './contract.js';
 import { canonical } from './comparison.js';
 import { ReviewRecords } from './review-record-store.js';
 import {parseOverallGovernance,overallAuthorityPayloadSha} from './overall-authority.js';
+import {processState} from './repair-workspace.js';
 import { AuthorityRecords } from './authority-store.js';
 import type {OwnerObservation} from './authority-source.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
@@ -560,7 +561,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   resources(): ResourceRecords {
     // Persist the old-consumer guard before any result validation can fail.
     // Read-only projections use resourceRecords directly and do not mutate.
-    this.transaction(()=>{if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey))installPublicationResultGuard(this.db);});
+    this.transaction(()=>{if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey))installPublicationResultGuard(this.db);if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(overallConsumerKey))installOverallResultGuard(this.db);});
     return this.resourceRecords(fn=>this.transaction(fn));
   }
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
@@ -575,7 +576,13 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
     },(request,record,dispatch)=>{
-      const action=a.reservedAction(request.authorityIntent);if(action.request.action!=='publish')return;
+      const action=a.reservedAction(request.authorityIntent);
+      if(record.source==='verified_overall_review_capture'){
+        const original=this.overallForAction(request.operation,action.request.payloadSha256,action.requestId);if(!original)throw new Error('overall_original_action_binding_required');const proof=this.overallResourceOutcome(original,action,'1970-01-01T00:00:00Z');
+        if(proof.state!==record.outcome.state||hash(proof.proof)!==record.outcome.evidenceSha256)throw new Error('overall_resource_original_outcome_changed');
+        if(dispatch)this.event('overall_resource_result_admitted','resource:'+resourceRequestHash(request),{originalOperation:request.operation,outcomeSha256:record.outcomeSha256});return;
+      }
+      if(action.request.action!=='publish')return;
       this.publicationOriginalProcessesEnded(request.operation);
       if(dispatch)this.event('publication_resource_result_admitted','resource:'+resourceRequestHash(request),{originalOperation:request.operation,outcomeSha256:record.outcomeSha256});
     });
@@ -608,7 +615,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate'){
-      const overall=this.overallForAction(operation,action.request.payloadSha256);
+      const overall=this.overallForAction(operation,action.request.payloadSha256,action.requestId);
       if(overall)return this.overallResourceOutcome(overall,action,claimedAt);
       return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
     }
@@ -707,12 +714,16 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map(id=>held?resources.requireHeldForExecution(id,operation,g.authorityIntent):resources.status(id));
     if(claims.some(c=>c.request.operation!==operation||c.request.authorityIntent!==g.authorityIntent||c.request.actionSha256!==action.requestSha256||c.request.role!=='coordinator')||new Set(claims.map(c=>c.request.resourceRef)).size!==claims.length||canonical(claims.map(c=>c.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('overall_exact_resource_set_required');
     if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!claims.length)throw new Error('overall_configured_resource_claim_required');
-    if(admit){const original=this.overallForAction(operation,action.request.payloadSha256);if(!original||canonical(original.plan)!==canonical(p))throw new Error('overall_exact_registered_plan_required');const object='overall:'+original.id,attempt=(this.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='overall_review_dispatched' AND object=?").get(object) as Row).n+1;this.event('authority_overall_admitted',object,{operation,id:original.id,inputSha256:original.inputSha256,attempt,authorityIntent:g.authorityIntent,resourceRequests:g.resourceRequests});}
+    const records=new ReviewRecords(this.db,fn=>fn(),(id,current)=>this.reviewSource(id,current),()=>{throw new Error('overall_publication_not_available');}),original=records.overallOriginal(raw);if(!original)throw new Error('overall_exact_registered_plan_required');
+    const binding={operation,id:original.id,planSha256:original.planSha256,authorityIntent:g.authorityIntent,payloadSha256:action.request.payloadSha256,resourceRequests:g.resourceRequests},prior=this.db.prepare("SELECT data FROM events WHERE kind='overall_review_action_bound' AND json_extract(data,'$.authorityIntent')=?").get(g.authorityIntent) as Row|undefined;
+    if(prior&&canonical(JSON.parse(prior.data))!==canonical(binding))throw new Error('overall_original_action_is_fixed');
+    if(!prior)this.event('overall_review_action_bound','overall:'+original.id,binding);
+    if(admit){const object='overall:'+original.id,attempt=(this.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='overall_review_dispatched' AND object=?").get(object) as Row).n+1;this.event('authority_overall_admitted',object,{operation,id:original.id,inputSha256:original.inputSha256,attempt,authorityIntent:g.authorityIntent,resourceRequests:g.resourceRequests});}
   }
-  private overallForAction(operation:string,payload:string){
-    const rows=this.db.prepare("SELECT data FROM events WHERE kind='overall_review_reserved' AND json_extract(data,'$.operation')=?").all(operation) as Row[];
-    const selected=rows.map(r=>JSON.parse(r.data)).map(r=>({...r,plan:JSON.parse(this.blob(r.planSha256).toString())})).filter(r=>r.plan.governance&&overallAuthorityPayloadSha(r.plan)===payload);
-    if(selected.length>1)throw new Error('overall_action_multiple_originals');return selected[0]??null;
+  private overallForAction(operation:string,payload:string,intent:string){
+    const rows=this.db.prepare("SELECT data FROM events WHERE kind='overall_review_action_bound' AND json_extract(data,'$.authorityIntent')=?").all(intent) as Row[];
+    if(rows.length>1)throw new Error('overall_action_multiple_originals');if(!rows.length)return null;const b=JSON.parse(rows[0]!.data),plan=JSON.parse(this.blob(b.planSha256).toString());
+    if(b.operation!==operation||b.payloadSha256!==payload||overallAuthorityPayloadSha(plan)!==payload||plan.governance?.authorityIntent!==intent||canonical(plan.governance.resourceRequests)!==canonical(b.resourceRequests))throw new Error('overall_original_action_binding_changed');return {...b,plan};
   }
   private overallResourceOutcome(original:Row,action:Row,claimedAt:string):ResourceOutcome{
     if(original.plan.governance.authorityIntent!==action.requestId)throw new Error('overall_resource_original_action_mismatch');
@@ -720,7 +731,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(!dispatch||Date.parse(dispatch.observed_at)<Date.parse(claimedAt))throw new Error('overall_resource_dispatch_not_observed');
     const closed=events.find(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id);
     let proof:Row,state:ResourceOutcome['state'];const source=this.reviewSource(original.operation,false);
-    if(returned){const blobs=returned.data.blobs;for(const name of ['result','stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json'])if(!blobs[name]||hash(this.blob(blobs[name].sha256))!==blobs[name].sha256)throw new Error('overall_resource_capture_missing');const result=JSON.parse(this.blob(blobs.result.sha256).toString());if(result.status!=='review_recorded'||result.id!==original.id||result.candidate.H!==source.candidate.H)throw new Error('overall_resource_result_mismatch');state='completed';proof={resultSha256:blobs.result.sha256,originals:blobs};}
+    if(returned){const blobs=returned.data.blobs;for(const name of ['result','stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json','process.json','launch.json'])if(!blobs[name]||hash(this.blob(blobs[name].sha256))!==blobs[name].sha256)throw new Error('overall_resource_capture_missing');const processRecord=JSON.parse(this.blob(blobs['process.json'].sha256).toString());if(!Number.isSafeInteger(processRecord.pid)||processRecord.pid<=0||processState(processRecord.pid)!=='ended')throw new Error('overall_native_process_active_or_unknown');const result=JSON.parse(this.blob(blobs.result.sha256).toString());if(result.status!=='review_recorded'||result.id!==original.id||result.candidate.H!==source.candidate.H)throw new Error('overall_resource_result_mismatch');state='completed';proof={resultSha256:blobs.result.sha256,originals:blobs};}
     else if(closed){this.blob(closed.data.proofSha256);state='cancelled';proof={confirmedUnstarted:true,proofSha256:closed.data.proofSha256};}
     else throw new Error('original_resource_execution_still_unknown');
     return {state,source:'verified_overall_review_capture',executionKind:source.receiver.executionKind==='fixture'?'fixture':'external',proof:Buffer.from(canonical({operation:original.operation,id:original.id,authorityIntent:action.requestId,state,...proof}))};

@@ -39,10 +39,17 @@ test('lost resource settlement reuses the complete original capture and provider
   const f=await governed(t,'lost-after-result'),result=await overallReview(f.planPath,'run') as any;assert.equal(result.status,'review_recorded');assert.equal(result.resources[0].settled,false);const before=await readFile(f.m.trace);assert.equal(f.ledger.state().settlements.length,1);
   const recovered=await overallReview(f.planPath,'reconcile') as any;assert.equal(recovered.resources[0].settled,true);assert.deepEqual(await readFile(f.m.trace),before);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
 });
+test('an invalid prepared resource set does not poison the corrected original authorization or claim',async t=>{
+  const f=await governed(t),governance=structuredClone(f.plan.governance!),before=await readFile(f.m.trace);f.plan.governance={...governance,resourceRequests:[]};await f.write();await assert.rejects(overallReview(f.planPath,'run'),/overall_exact_resource_set_required/);assert.deepEqual(await readFile(f.m.trace),before);assert.equal(f.ledger.state().claims.length,0);
+  f.plan.governance=governance;await f.write();const result=await overallReview(f.planPath,'run') as any;assert.equal(result.status,'review_recorded');assert.equal(result.resources[0].settled,true);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
+  const events=f.q.status().events;assert.equal(events.filter((e:any)=>e.kind==='overall_review_reserved').length,2);assert.equal(events.filter((e:any)=>e.kind==='overall_review_action_bound').length,1);assert.equal(events.filter((e:any)=>e.kind==='overall_review_dispatched').length,1);
+});
 test('new overall dispatch keeps the persistent old-consumer denial and composes with publication protections',async t=>{
   const f=await governed(t),db=new DatabaseSync(join(f.store,'queue.sqlite'));t.after(()=>db.close());f.a.enableGovernedOverall();f.a.enableGovernedPublication();f.a.configuration();
   const old=await overallReview(f.planPath,'prepare') as any,raw={operation:f.plan.operation,id:old.id,inputSha256:'a'.repeat(64),blobs:{},attempt:1};
   assert.throws(()=>db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('overall_review_dispatched','overall:'+old.id,canonical(raw),new Date().toISOString()),/authority_consumer_binding_required/);
   assert.equal((await overallReview(f.planPath,'run')).status,'review_recorded');
+  const outcome=f.q.resources().status(f.id).outcome!;
+  assert.throws(()=>db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('resource_result_dispatched','resource:'+f.id,canonical({outcomeSha256:outcome.outcomeSha256,originalOperation:f.plan.operation,directory:'/explicit-old-consumer-statement'}),new Date().toISOString()),/overall_original_terminal_check_required/);
   const g=await governed(t);g.a.enableGovernedPublication();g.a.enableGovernedOverall();g.a.configuration();assert.equal((await overallReview(g.planPath,'run')).status,'review_recorded');
 });

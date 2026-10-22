@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { hash } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt,type RolePrompt } from './role-prompts.js';
-import { regular,exists } from './repair-workspace.js';
+import { regular,exists,processState } from './repair-workspace.js';
 import { QueueStore } from './queue-store.js';
 import { reconcileReception } from './receiver.js';
 import { RepairSession,readRepairSession,reviewSchema } from './repair-native.js';
@@ -115,6 +115,8 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
       session=await RepairSession.start({executable:config.codexExecutable,directory:stage,operation:directory,candidate,role:'reviewer',system,inputManifestSha256:hash(input),scopeSource:config.scopeSource,disabledMcpServers:config.disabledMcpServers,allowedInstructionSources:config.allowedInstructionSources,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture',beforeTurn:async()=>{billing(config);await refreshResources();q.overallGate(p.operation,bytes,await authorization());}});
       await session.turn(input.toString(),candidate,reviewSchema);await session.close();session=undefined;
     }
+    const nativeProcess=JSON.parse((await regular(join(stage,'process.json'))).toString());
+    if(!Number.isSafeInteger(nativeProcess.pid)||nativeProcess.pid<=0||processState(nativeProcess.pid)!=='ended')throw new Error('overall_native_process_active_or_unknown');
     const native=await readRepairSession(stage);
     if(native.turns.length!==1||canonical(native.binding.candidate)!==canonical(candidate)||native.binding.inputManifestSha256!==hash(input)||native.binding.role!=='reviewer')throw new Error('overall_original_binding_changed');
     const submitted=JSON.parse((await regular(join(stage,'expected-requests.json'),4*1024*1024)).toString()).find((m:any)=>m.method==='thread/start');
@@ -122,7 +124,7 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
     const report=JSON.parse(native.turns[0]!.final!.text),result={id,status:'review_recorded',stage,candidate,report,baselineStatus:p.baselineAcceptance.kind,...(baselineSource?{baselineSource}:{}),gaps,noOverallDriftEstablished:false,conclusionScope:baselineSource?'technical_comparison_with_verified_baseline_source':'technical_comparison_only_pending_adoption_identity',executionKind:config.executionKind??'native_capture',productionActionAllowed:false};
     if(originalRecord?.originalResult){const old=originalRecord.originalResult;if(canonical(old.report)!==canonical(report)||canonical(old.candidate)!==canonical(candidate)||old.noOverallDriftEstablished!==false)throw new Error('overall_saved_result_mismatch');return {...old,duplicate:true,resources:await settleResources()};}
     const originals:Record<string,Buffer>={result:Buffer.from(JSON.stringify(result))};
-    for(const name of ['stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json'])originals[name]=await readFile(join(stage,name));
+    for(const name of ['stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json','process.json','launch.json'])originals[name]=await readFile(join(stage,name));
     const saved=records.overall(p.operation,bytes,input,'result',originals);return {...result,duplicate:saved.duplicate,resources:await settleResources()};
   }catch(e){try{records.overallProblem(bytes,e instanceof Error?e.message:'overall_execution_unresolved');}catch{}throw e;}
   finally{await session?.close();db.exec('ROLLBACK');db.close();q.close();}
