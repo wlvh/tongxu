@@ -6,6 +6,8 @@ import {BoundedCodexSession,readOwnedCodexSession,findingSchema,type NativeOptio
 import {disabledFeatures} from '../../src/live-codex.js';
 import type {NativeControlRequest,NativeControlPolicy} from '../../src/native-control-contract.js';
 import {parseCodexResult} from '../../src/codex-results.js';
+import {canonical} from '../../src/comparison.js';
+import {hash} from '../../src/snapshot.js';
 
 async function setup(t:test.TestContext,policy?:NativeControlPolicy,persistent=false){
   const root=await mkdtemp('/private/tmp/tongxu-owned-control-');t.after(async()=>{if(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE){await mkdir(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,{recursive:true});await cp(root,join(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,basename(root)),{recursive:true});}await rm(root,{recursive:true,force:true});});const executable=join(root,'codex-fixture.mjs'),operation=join(root,'operation');await mkdir(operation);
@@ -54,6 +56,19 @@ test('known pre-send refusal can retry without erasing it; interrupt ack is dist
 });
 test('existing runtimes do not gain control from metadata or an uninstalled owner gate',async t=>{
   const f=await setup(t),pending=f.session.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema);const rejection=assert.rejects(pending);const state=await f.active();await assert.rejects(f.session.control(f.request(state,'steer-denied','steer')),/owner_gate_required/);assert.equal((await f.frames()).filter((m:any)=>m.method==='turn/steer').length,0);await f.session.close();await rejection;
+});
+
+test('a retained send closure expires at the synchronous gate return, including a held refusal',async t=>{
+  let later:(()=>void)|undefined;const f=await setup(t,{beforeControl:async()=>{},beforeControlSendSync:(_r,send)=>{later=send;}}),pending=f.session.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema),ended=assert.rejects(pending),state=await f.active();
+  await assert.rejects(f.session.control(f.request(state,'held-closure','steer')),/send_not_authorized/);
+  assert.ok(later);assert.throws(()=>later!(),/send_gate_expired/);assert.equal((await f.frames()).filter((m:any)=>m.method==='turn/steer').length,0);
+  await f.session.close();await ended;
+});
+test('caller mutation during the asynchronous check cannot change the fixed request, wire or receipt digest',async t=>{
+  let release!:()=>void;const wait=new Promise<void>(r=>release=r),f=await setup(t,{beforeControl:async()=>wait,beforeControlSendSync:(_r,send)=>send()}),pending=f.session.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema),state=await f.active(),request=f.request(state,'fixed-request','steer'),original=structuredClone(request);
+  const control=f.session.control(request);request.input='A changed caller input that was not checked.';release();const receipt=await control,report=await pending;
+  assert.deepEqual(receipt.request,original);assert.equal(receipt.requestSha256,hash(canonical(original)));assert.equal(report.report,original.input);assert.equal((await f.frames()).find((m:any)=>m.method==='turn/steer').params.input[0].text,original.input);
+  await f.session.close();
 });
 
 test('persistent original resumes exact history; interruption survives restart and old-source replay is refused',async t=>{

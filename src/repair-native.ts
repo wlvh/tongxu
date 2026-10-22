@@ -104,11 +104,13 @@ export class BoundedCodexSession {
       if(request.action==='steer'){await this.o.gate?.check();const usage=await this.request('account/rateLimits/read',{});if(usage.ordinaryUsageAllowed!==true)throw new Error('ordinary_usage_unavailable');}
       await policy.beforeControl(request);check();
       save(join(this.o.directory,prefix+'-intent.json'),{request,requestSha256,operation:this.o.operation,status:'send_registered'});
-      policy.beforeControlSendSync(request,()=>{
+      let sendGateOpen=true;
+      try{policy.beforeControlSendSync(request,()=>{
+        if(!sendGateOpen)throw new Error('native_control_send_gate_expired');
         if(pending)throw new Error('native_control_already_sent');check();
         if(request.action==='steer'){const input=this.inputs[this.binding.turnIds.indexOf(request.turnId)];if(!input)throw new Error('native_control_original_input_missing');(input.steering??=[]).push({id:request.id,input:request.input,expectedTurnId:request.turnId});save(join(this.o.directory,'inputs.json'),this.inputs);this.binding.promptSha256=hash(JSON.stringify({system:this.o.system,inputs:this.inputs}));save(join(this.o.directory,'binding.json'),this.binding);}
         entry.phase='sent';pending=this.request(request.action==='steer'?'turn/steer':'turn/interrupt',request.action==='steer'?{threadId:request.threadId,expectedTurnId:request.turnId,input:[{type:'text',text:request.input!}]}:{threadId:request.threadId,turnId:request.turnId});
-      });
+      });}finally{sendGateOpen=false;}
       if(!pending)throw new Error('native_control_send_not_authorized');
       const result=await pending;
       if(request.action==='steer'?result?.turnId!==request.turnId:!result||typeof result!=='object'||Array.isArray(result)||Object.keys(result).length)throw new Error('native_control_reply_mismatch');
