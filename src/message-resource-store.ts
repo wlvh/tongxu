@@ -80,6 +80,9 @@ export class MessageResourceRecords {
     if(stage?.bindingSha256!==b.bindingSha256)throw new Error('message_resource_operation_changed');
     if(stage.phase==='cancelled_unstarted'){if(stage.proofSha256!==proofSha256)throw new Error('message_resource_result_changed');return {...this.stateValue(run),duplicate:true};}
     if(op.status!=='messaging'||stage.phase!=='resources_pending')throw new Error('message_resource_unstarted_operation_required');
+    // Refused, absent or unknown claims are not settled by this path. Leave
+    // their original operation retryable instead of committing a dead end.
+    for(const id of b.resourceRequests)this.resources().requireHeldForExecution(id,b.operation,b.authorityIntent);
     Object.assign(stage,{phase:'cancelled_unstarted',proofSha256:this.blob(Buffer.from(canonical(proof))),finishedAt:now(),originalRunCompleted:false});this.db.prepare("UPDATE operations SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),op.id);this.event('cancelled_unstarted',run,{operation:op.id,proofSha256,modelInputs:0,resourceRefunded:false});return {...this.stateValue(run),duplicate:false};
   });}
   outcome(operation:string,action:Row,claimedAt:string):ResourceOutcome {

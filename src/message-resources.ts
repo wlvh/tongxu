@@ -41,8 +41,9 @@ export async function settlePartialMessageResources(q:QueueStore,run:string,next
  * Lost provider replies keep the original request for lookup on the next entry. */
 export async function cancelUnstartedMessageResources(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)throw new Error('message_fixed_resource_budget_required');
+  const original=q.messageResources().state(run);for(const id of original.resourceRequests)await resourceAction(q.directory,id,'lookup',original.role);
   const b=q.messageResources().cancelUnstarted(run),results=[];
-  for(const id of b.resourceRequests){try{const old=await resourceAction(q.directory,id,'lookup',b.role);results.push(q.resources().settledOutcome(id)?old:await resourceAction(q.directory,id,'record-result',b.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
+  for(const id of b.resourceRequests){try{results.push(q.resources().settledOutcome(id)?q.resources().status(id):await resourceAction(q.directory,id,'record-result',b.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
   return results;
 }
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
