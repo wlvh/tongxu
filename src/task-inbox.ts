@@ -98,6 +98,13 @@ export class TaskInbox {
     const value=JSON.parse(rows[0]!.data).value,f=this.entry(rows[0]!.object,value.id),selected=this.selection(f.selected),association=JSON.parse(selected.context.toString()).candidateAssociation?.association;if(!association)return null;
     try{this.checkAssociation?.(rows[0]!.object,association.link);if(f.request.publicationReturn&&canonical(this.publicationMaterial(rows[0]!.object,f.request.publicationReturn))!==canonical(JSON.parse(selected.context.toString()).publicationReturn))throw new Error('task_publication_return_material_changed');return {link:association.link,current:true,reason:null};}catch(e){return {link:association.link,current:false,reason:e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'original_association_unavailable'};}
   }
+  messageClosedUnstarted(run:string){
+    const rows=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];if(!rows.length)return false;if(rows.length!==1)throw new Error('task_contact_binding_ambiguous');
+    const value=JSON.parse(rows[0]!.data).value,f=this.entry(rows[0]!.object,value.id),closed=f.events.find(e=>e.kind==='task_inbox_cancelled'&&e.data.id===f.request.id);if(!closed)return false;
+    const selected=this.selection(f.selected),s=this.messages(run).state,captures=s.runtimes.map((r:Row)=>({participant:r.participant,attempt:r.attempt,ended:r.ended}));
+    if(selected.run!==run||closed.data.proof?.run!==run||closed.data.proof.registered!==true||s.messages.some((m:Row)=>m.sent)||s.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true)||canonical(closed.data.proof.knownUnstarted)!==canonical(captures)||s.plan.resourceBudget&&(s.resourcePhase!=='cancelled_unstarted'||s.resourcesSettled!==true))throw new Error('task_cancelled_original_changed');
+    return true;
+  }
   gate(run:string){
     const state=this.messages(run).state,taskParticipants=state.plan.participants.filter((p:Row)=>state.registration.bindings[p.id].candidate.kind==='development-task');if(!taskParticipants.length)return;
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];

@@ -171,7 +171,7 @@ export class QueueStore {
   }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private collaborationView(){
     const noAction=()=>{throw new Error('readonly_view_cannot_authorize');},m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),noAction),r=this.resourceRecords(fn=>fn()),c=this.coordinationRecords(fn=>fn()),mr=this.messageResourceRecords(fn=>fn()),repair=new ReviewRecords(this.db,fn=>fn(),noAction,noAction);
-    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),messageClosedUnstarted:run=>this.deliveryAssessmentRecords(fn=>fn()).messageClosedUnstarted(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
+    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),messageClosedUnstarted:run=>this.deliveryAssessmentRecords(fn=>fn()).messageClosedUnstarted(run)||this.taskInboxRecords(fn=>fn()).messageClosedUnstarted(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
   }
   private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
