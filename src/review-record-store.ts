@@ -241,7 +241,8 @@ export class ReviewRecords {
   closeOverallUnstarted(id:string,plan:Buffer,source:string,proof:Buffer){
     return this.transaction(()=>{
       this.requireMode(true);const key=this.overallKey(plan),object=`overall:${key}`,events=this.events(object),dispatch=events.findLast(e=>e.kind==='overall_review_dispatched');
-      if(!dispatch||dispatch.data.operation!==id||!text(source)||JSON.parse(proof.toString()).nativeLaunchRegistered!==false)throw new Error('overall_unstarted_proof_missing');
+      const p=JSON.parse(proof.toString());
+      if(!dispatch||dispatch.data.operation!==id||!text(source)||!(p.nativeLaunchRegistered===false||p.nativeLaunchRegistered===true&&p.metadataOnly===true&&p.originalProcessEnded===true&&p.modelInputRegistered===false&&p.modelDispatched===false))throw new Error('overall_unstarted_proof_missing');
       if(events.some(e=>e.kind==='overall_review_result'))throw new Error('overall_already_completed');
       const old=events.find(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id);if(old)return {...old.data,duplicate:true};
       const entry={operation:id,id:key,dispatchEvent:dispatch.id,attempt:dispatch.data.attempt??1,source,proofSha256:this.blob(proof),modelDispatched:false,originalPreserved:true};

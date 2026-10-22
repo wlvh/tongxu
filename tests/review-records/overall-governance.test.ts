@@ -6,6 +6,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {overallFixture} from './overall-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {overallReview} from '../../src/overall-review.js';
+import {RepairSession} from '../../src/repair-native.js';
 import {overallAuthorityPayloadSha} from '../../src/overall-authority.js';
 import {fixtureOwnerObservation} from '../../src/authority-source.js';
 import {ownerDecisionText,scopeBodyHash,actionHash,type AuthorityProfile,type ActionRequest} from '../../src/authority-contract.js';
@@ -43,6 +44,14 @@ test('an invalid prepared resource set does not poison the corrected original au
   const f=await governed(t),governance=structuredClone(f.plan.governance!),before=await readFile(f.m.trace);f.plan.governance={...governance,resourceRequests:[]};await f.write();await assert.rejects(overallReview(f.planPath,'run'),/overall_exact_resource_set_required/);assert.deepEqual(await readFile(f.m.trace),before);assert.equal(f.ledger.state().claims.length,0);
   f.plan.governance=governance;await f.write();const result=await overallReview(f.planPath,'run') as any;assert.equal(result.status,'review_recorded');assert.equal(result.resources[0].settled,true);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
   const events=f.q.status().events;assert.equal(events.filter((e:any)=>e.kind==='overall_review_reserved').length,2);assert.equal(events.filter((e:any)=>e.kind==='overall_review_action_bound').length,1);assert.equal(events.filter((e:any)=>e.kind==='overall_review_dispatched').length,1);
+});
+test('confirmed ended metadata-only bootstrap can close while stopped and reuse its original held claim after resume',async t=>{
+  const f=await governed(t),start=RepairSession.start;
+  RepairSession.start=async options=>{const session=await start.call(RepairSession,options);if(options.executable===f.m.config.codexExecutable)f.q.control('scope','investment','stopped','Explicit stop after metadata, before any model input');return session;};
+  try{await assert.rejects(overallReview(f.planPath,'run'),/new_investment_stopped/);}finally{RepairSession.start=start;}
+  const original=f.q.reviewRecords().overallOriginal(Buffer.from(canonical(f.plan)))!,stage=join(f.store,'overall-'+original.id,'reviewer'),sent=(await readFile(join(stage,'stdin.ndjson'),'utf8')).trim().split('\n').map(s=>JSON.parse(s));assert.equal(sent.filter(m=>m.method==='turn/start').length,0);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,0);
+  const closed=await overallReview(f.planPath,'close-unstarted','Explicit metadata-only recovery');assert.equal(closed.modelDispatched,false);assert.equal(f.ledger.state().settlements.length,0);
+  f.q.control('scope','investment','open','Resume this exact original request');const result=await overallReview(f.planPath,'run') as any;assert.equal(result.status,'review_recorded');assert.equal(result.id,original.id);assert.equal(result.resources[0].id,f.id);assert.equal(result.resources[0].settled,true);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
 });
 test('new overall dispatch keeps the persistent old-consumer denial and composes with publication protections',async t=>{
   const f=await governed(t),db=new DatabaseSync(join(f.store,'queue.sqlite'));t.after(()=>db.close());f.a.enableGovernedOverall();f.a.enableGovernedPublication();f.a.configuration();
