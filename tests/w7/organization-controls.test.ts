@@ -48,6 +48,13 @@ test('new arrangements preserve an original active claim and do not grant the pr
   const result=await f.controls.apply('pair',{choice:'unified',expectedPrevious:null});assert.equal(result.writingPermissionGranted,false);assert.deepEqual(f.q.status().claims,before);const stage=f.q.coordination().stage(result.planId,'B','implement');assert.equal(stage.executionAuthorized,false);assert.equal((await f.calls()).length,0);
 });
 
+test('the same arrangement can explicitly bind a newer packet of the same task without discarding its old evidence',async t=>{
+  const f=await setup(t),first=await f.controls.apply('pair',{choice:'parallel',expectedPrevious:null}),changed=await f.packet();assert.equal(changed.item,f.item);
+  const before=await f.controls.state();assert.equal(before[0]!.available,true);assert.equal('currentChoice' in before[0]!&&before[0]!.currentChoice,null);assert.equal(f.q.coordination().status(first.planId).currentMaterials,false);
+  const claims=f.q.status().claims,second=await f.controls.apply('pair',{choice:'parallel',expectedPrevious:first.planId});assert.notEqual(second.planId,first.planId);assert.equal(second.duplicate,false);assert.equal(f.q.coordination().stage(second.planId,'A','investigate').phasePrerequisitesMet,true);assert.equal(f.q.coordination().status(first.planId).current,false);assert.deepEqual(f.q.status().claims,claims);assert.equal((await f.calls()).length,0);
+  const repeated=await f.controls.apply('pair',{choice:'parallel',expectedPrevious:second.planId});assert.equal(repeated.planId,second.planId);assert.equal(repeated.duplicate,true);
+});
+
 test('existing Owner delegation binds every selected task; revocation prevents a new revision but not an exact original read',async t=>{
   const f=await setup(t),authority=await messageAuthority(f);const target=f.q.status().items.find((i:any)=>i.id===f.item).candidate.targetRef;
   const delegate=await authority.adopt({kind:'delegate',adoption:authority.scope.sha,roles:['coordinator'],targets:[target],actions:['coordinate'],paths:[],resourceRefs:[],expiresAt:new Date(Date.now()+3600000).toISOString()});

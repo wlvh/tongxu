@@ -30,6 +30,7 @@ import type { Packet, QueueContext } from './queue-evidence.js';
 import type { Candidate } from './contract.js';
 import { canonical } from './comparison.js';
 import { ReviewRecords } from './review-record-store.js';
+import {parseOverallGovernance,overallAuthorityPayloadSha} from './overall-authority.js';
 import { AuthorityRecords } from './authority-store.js';
 import type {OwnerObservation} from './authority-source.js';
 import { ResourceRecords, type ResourceOutcome } from './resource-store.js';
@@ -301,6 +302,15 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');const current=q.coordinationRecords(fn=>fn()).current(name);
       if(current&&current.plan.tasks.some(t=>!items.includes(t.item)))throw new Error('organization_previous_task_not_selected');
       return {current,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),items:items.map(id=>q.authorityItem(id))};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  static async observeOverallReview(directory:string,item:string,raw:Buffer,full=false){
+    const p=JSON.parse(raw.toString()),q=await QueueStore.connect(directory,true);
+    try{q.db.exec('BEGIN');const op=q.receiverOperation(p.operation).op;if(op.item!==item||p.store!==directory)throw new Error('overall_task_not_selected');
+      const records=new ReviewRecords(q.db,fn=>fn(),(id,current)=>q.reviewSource(id,current),()=>{throw new Error('readonly_view_cannot_authorize');}),original=records.overallOriginal(raw),events=original?.events??[],dispatch=events.findLast((e:Row)=>e.kind==='overall_review_dispatched'),closed=dispatch&&events.some((e:Row)=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id),result=original?.originalResult;
+      let current=true;try{q.reviewSource(p.operation,true);}catch{current=false;}
+      const resources=(p.governance?.resourceRequests??[]).map((id:string)=>{try{const r=q.resourceRecords(fn=>fn()),s=r.status(id);return {id,state:s.state,settled:r.settledOutcome(id)};}catch{return {id,state:'unavailable',settled:false};}});
+      return {id:records.overallIdentity(raw),operation:p.operation,current,phase:result?'review_recorded':dispatch&&!closed?'submitted_or_unknown':closed?'confirmed_unstarted':original?'prepared_not_sent':'not_prepared',attempts:events.filter((e:Row)=>e.kind==='overall_review_dispatched').length,lastProblem:events.findLast((e:Row)=>e.kind==='overall_review_problem')?.data.reason??null,baselineStatus:p.baselineAcceptance?.kind??'unknown',candidate:result?.candidate??q.reviewSource(p.operation,false).candidate,resources,noOverallDriftEstablished:false,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),governanceConfigured:!!p.governance,...(result?{verdict:result.report?.verdict??null,reportSha256:hash(result.report.report),gaps:result.gaps,...(full?{report:result.report.report,findings:result.report.findings,executionKind:result.executionKind,baselineSource:result.baselineSource??null,conclusionScope:result.conclusionScope}:{} )}:{gaps:['overall_report_not_recorded']}),newModelRequests:0,productionActionAllowed:false};
     }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
   registerWorkbenchOrganization(raw:Buffer,items:readonly string[],delegation:{adoption:string;authorization:string}|null,observations:OwnerObservation[],checkSources:()=>void){return this.transaction(()=>{
@@ -597,7 +607,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,result=parse(op,'result');
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
-    if(kind==='coordinate')return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
+    if(kind==='coordinate'){
+      const overall=this.overallForAction(operation,action.request.payloadSha256);
+      if(overall)return this.overallResourceOutcome(overall,action,claimedAt);
+      return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
+    }
     if(kind==='publish')return this.publicationResourceOutcome(operation,action,claimedAt);
     if(kind==='test'&&action.request.payloadSha256)return this.recompositionTestRecords(fn=>fn()).outcome(operation,action,claimedAt);
     if(kind==='merge'){
@@ -678,7 +692,38 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.repairAuthorization(operation,proposed,observations);
       coordination.repairGate(operation,proposed,true,this.continuationCapture);
       this.memberRepairAdmission(operation,proposed);
-    },(operation,reference,current)=>this.memberRepairSource(operation,reference,current));
+    },(operation,reference,current)=>this.memberRepairSource(operation,reference,current),(operation,plan,observations)=>this.overallAuthorization(operation,plan,observations,true,true));
+  }
+  overallGate(operation:string,plan:Buffer,observations:OwnerObservation[],held=true){return this.transaction(()=>this.overallAuthorization(operation,plan,observations,held));}
+  private overallAuthorization(operation:string,raw:Buffer,observations:OwnerObservation[],held=true,admit=false){
+    const p=JSON.parse(raw.toString()),source=this.reviewSource(operation,true),op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;
+    if(p.operation!==operation||p.bindingHash!==source.receiver.bindingHash||p.judgmentId!==source.receiver.judgmentId||canonical(p.context)!==canonical(source.context))throw new Error('overall_source_binding_mismatch');
+    if(op.status!=='complete'||this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(op.target))throw new Error('original_task_execution_active_or_unknown');
+    if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(source.context.scope.id))throw new Error('new_investment_stopped');
+    const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
+    if(!configured){if(p.governance!==undefined)throw new Error('overall_authority_profile_missing');return;}
+    const g=parseOverallGovernance(p.governance),a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    if(action.role!=='coordinator'||action.request.action!=='coordinate'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.request.paths.length||action.request.payloadSha256!==overallAuthorityPayloadSha(p)||(action.executionKind==='fixture')!==(source.receiver.executionKind==='fixture'))throw new Error('overall_exact_authority_mismatch');
+    const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map(id=>held?resources.requireHeldForExecution(id,operation,g.authorityIntent):resources.status(id));
+    if(claims.some(c=>c.request.operation!==operation||c.request.authorityIntent!==g.authorityIntent||c.request.actionSha256!==action.requestSha256||c.request.role!=='coordinator')||new Set(claims.map(c=>c.request.resourceRef)).size!==claims.length||canonical(claims.map(c=>c.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('overall_exact_resource_set_required');
+    if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!claims.length)throw new Error('overall_configured_resource_claim_required');
+    if(admit){const original=this.overallForAction(operation,action.request.payloadSha256);if(!original||canonical(original.plan)!==canonical(p))throw new Error('overall_exact_registered_plan_required');const object='overall:'+original.id,attempt=(this.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='overall_review_dispatched' AND object=?").get(object) as Row).n+1;this.event('authority_overall_admitted',object,{operation,id:original.id,inputSha256:original.inputSha256,attempt,authorityIntent:g.authorityIntent,resourceRequests:g.resourceRequests});}
+  }
+  private overallForAction(operation:string,payload:string){
+    const rows=this.db.prepare("SELECT data FROM events WHERE kind='overall_review_reserved' AND json_extract(data,'$.operation')=?").all(operation) as Row[];
+    const selected=rows.map(r=>JSON.parse(r.data)).map(r=>({...r,plan:JSON.parse(this.blob(r.planSha256).toString())})).filter(r=>r.plan.governance&&overallAuthorityPayloadSha(r.plan)===payload);
+    if(selected.length>1)throw new Error('overall_action_multiple_originals');return selected[0]??null;
+  }
+  private overallResourceOutcome(original:Row,action:Row,claimedAt:string):ResourceOutcome{
+    if(original.plan.governance.authorityIntent!==action.requestId)throw new Error('overall_resource_original_action_mismatch');
+    const events:Row[]=(this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all('overall:'+original.id) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));const dispatch=events.findLast(e=>e.kind==='overall_review_dispatched'),returned=events.find(e=>e.kind==='overall_review_result');
+    if(!dispatch||Date.parse(dispatch.observed_at)<Date.parse(claimedAt))throw new Error('overall_resource_dispatch_not_observed');
+    const closed=events.find(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===dispatch.id);
+    let proof:Row,state:ResourceOutcome['state'];const source=this.reviewSource(original.operation,false);
+    if(returned){const blobs=returned.data.blobs;for(const name of ['result','stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json'])if(!blobs[name]||hash(this.blob(blobs[name].sha256))!==blobs[name].sha256)throw new Error('overall_resource_capture_missing');const result=JSON.parse(this.blob(blobs.result.sha256).toString());if(result.status!=='review_recorded'||result.id!==original.id||result.candidate.H!==source.candidate.H)throw new Error('overall_resource_result_mismatch');state='completed';proof={resultSha256:blobs.result.sha256,originals:blobs};}
+    else if(closed){this.blob(closed.data.proofSha256);state='cancelled';proof={confirmedUnstarted:true,proofSha256:closed.data.proofSha256};}
+    else throw new Error('original_resource_execution_still_unknown');
+    return {state,source:'verified_overall_review_capture',executionKind:source.receiver.executionKind==='fixture'?'fixture':'external',proof:Buffer.from(canonical({operation:original.operation,id:original.id,authorityIntent:action.requestId,state,...proof}))};
   }
   managedRepairOriginal(operation:string){return this.transaction(()=>{
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const repair=JSON.parse(op.result)?.repair;

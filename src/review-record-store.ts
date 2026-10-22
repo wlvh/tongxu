@@ -25,7 +25,8 @@ export class ReviewRecords {
   constructor(private db: DatabaseSync, private transaction: <T>(f: () => T) => T,
     private source: (id: string, requireCurrent: boolean) => Row,
     private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void,
-    private memberSource?:(operation:string,reference:unknown,current:boolean)=>Row) {}
+    private memberSource?:(operation:string,reference:unknown,current:boolean)=>Row,
+    private overallGate?:(operation:string,plan:Buffer,observations:OwnerObservation[])=>void) {}
   private repairSource(id:string,plan:Row,current:boolean):Row{
     if(plan.memberReturn!==undefined){if(!this.memberSource)throw new Error('member_repair_source_consumer_required');return this.memberSource(id,plan.memberReturn,current);}
     const s=this.source(id,current);return {...s,kind:'individual-return',reception:s.receiver};
@@ -200,7 +201,7 @@ export class ReviewRecords {
   }
   overallIdentity(plan:Buffer){return this.transaction(()=>{this.requireMode(true);return this.overallKey(plan);});}
   overallOriginal(plan:Buffer){return this.transaction(()=>{this.requireMode(true);const key=this.overallKey(plan),events=this.events(`overall:${key}`),registered=events.find(e=>e.kind==='overall_review_reserved');if(!registered)return null;const result=events.find(e=>e.kind==='overall_review_result');return {...registered.data,originalPlan:this.bytes(registered.data.planSha256),originalInput:this.bytes(registered.data.inputSha256),...(result?{originalResult:JSON.parse(this.bytes(result.data.blobs.result.sha256).toString())}:{}),events};});}
-  overall(id: string, plan: Buffer, input: Buffer, phase: 'reserve' | 'dispatch' | 'result', originals: Record<string,Buffer> = {}) {
+  overall(id: string, plan: Buffer, input: Buffer, phase: 'reserve' | 'dispatch' | 'result', originals: Record<string,Buffer> = {}, observations:OwnerObservation[]=[]) {
     return this.transaction(() => {
       this.requireMode(phase==='reserve'); const key=this.overallKey(plan), object=`overall:${key}`, events=this.events(object), registered=events.find(e=>e.kind==='overall_review_reserved');
       const source=this.source(id,phase==='dispatch'||!registered);
@@ -217,6 +218,7 @@ export class ReviewRecords {
       }
       if(!registered)throw new Error('overall_intent_required');
       if(phase==='dispatch') {
+        this.overallGate?.(id,plan,observations);
         const attempts=events.filter(e=>e.kind==='overall_review_dispatched'),latest=attempts.at(-1);
         if(latest&&!events.some(e=>e.kind==='overall_review_closed_unstarted'&&e.data.dispatchEvent===latest.id))throw new Error('overall_original_already_dispatched');
         if(attempts.length>=3)throw new Error('overall_unstarted_retry_limit');
@@ -231,6 +233,11 @@ export class ReviewRecords {
       this.event('overall_review_'+(phase==='dispatch'?'dispatched':'result'),object,entry);return {...entry,duplicate:false};
     });
   }
+  overallProblem(plan:Buffer,reason:string){return this.transaction(()=>{
+    const original=this.overallKey(plan),events=this.events('overall:'+original);if(!events.some(e=>e.kind==='overall_review_reserved'))throw new Error('overall_original_not_registered');
+    if(!/^[a-z0-9_]{1,160}$/.test(reason))reason='overall_execution_unresolved';
+    this.event('overall_review_problem','overall:'+original,{id:original,reason,automaticResend:false});return {id:original,reason};
+  });}
   closeOverallUnstarted(id:string,plan:Buffer,source:string,proof:Buffer){
     return this.transaction(()=>{
       this.requireMode(true);const key=this.overallKey(plan),object=`overall:${key}`,events=this.events(object),dispatch=events.findLast(e=>e.kind==='overall_review_dispatched');

@@ -10,7 +10,9 @@ import { QueueStore } from './queue-store.js';
 import { reconcileReception } from './receiver.js';
 import { RepairSession,readRepairSession,reviewSchema } from './repair-native.js';
 import type { RepairConfig } from './repair.js';
-import { readOwnerSource } from './authority-source.js';
+import { readOwnerSource,type OwnerObservation } from './authority-source.js';
+import {parseOverallGovernance,type OverallGovernance} from './overall-authority.js';
+import {resourceAction} from './resource-claims.js';
 
 type Material={name:string;path:string;sha256:string};
 export type OverallPlan={schemaVersion:1;kind:'tongxu-overall-review';store:string;operation:string;judgmentId:string;bindingHash:string;context:unknown;config:string;configSha256:string;
@@ -18,11 +20,13 @@ export type OverallPlan={schemaVersion:1;kind:'tongxu-overall-review';store:stri
   material:{acceptedBaseline:Material[];cumulativeChanges:Material[];currentBehavior:Material[];currentDocuments:Material[]};
   baselineAcceptance:{kind:'missing'|'supplied_unverified';source:string|null}|{kind:'verified_owner_source';decision:string};
   recoveryOf?:string;
+  governance?:OverallGovernance;
 };
 const digest=/^[a-f0-9]{64}$/;
 async function fixed(bytes:Buffer) {
   const p=JSON.parse(bytes.toString()) as OverallPlan;
-  if(Object.keys(p).some(k=>!['schemaVersion','kind','store','operation','judgmentId','bindingHash','context','config','configSha256','trigger','material','baselineAcceptance','recoveryOf'].includes(k))||p.recoveryOf!==undefined&&!digest.test(p.recoveryOf))throw new Error('overall_plan_unknown_field');
+  if(Object.keys(p).some(k=>!['schemaVersion','kind','store','operation','judgmentId','bindingHash','context','config','configSha256','trigger','material','baselineAcceptance','recoveryOf','governance'].includes(k))||p.recoveryOf!==undefined&&!digest.test(p.recoveryOf))throw new Error('overall_plan_unknown_field');
+  if(p.governance!==undefined)parseOverallGovernance(p.governance);
   if(p.schemaVersion!==1||p.kind!=='tongxu-overall-review'||!/^[a-f0-9-]{36}$/.test(p.operation)||!digest.test(p.bindingHash)||!digest.test(p.configSha256)||resolve(p.store)!==p.store||resolve(p.config)!==p.config||!['scope_change','cumulative_change','counterexample','owner_request'].includes(p.trigger?.kind)||!p.trigger.source?.trim()||!p.trigger.reason?.trim()||!['missing','supplied_unverified','verified_owner_source'].includes(p.baselineAcceptance?.kind))throw new Error('overall_plan_invalid');
   if(p.baselineAcceptance.kind==='verified_owner_source'&&(!digest.test(p.baselineAcceptance.decision)||Object.keys(p.baselineAcceptance).sort().join()!=='decision,kind'))throw new Error('overall_owner_baseline_reference_invalid');
   if(Object.keys(p.material??{}).sort().join()!=='acceptedBaseline,cumulativeChanges,currentBehavior,currentDocuments')throw new Error('overall_four_material_categories_required');
@@ -43,8 +47,9 @@ async function fixed(bytes:Buffer) {
 }
 function billing(config:RepairConfig){const age=Date.now()-Date.parse(config.billing.observedAt);if(!Number.isFinite(age)||age< -60000||age>86400000)throw new Error('overall_billing_evidence_stale');}
 async function put(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;if(hash(await regular(path))!==hash(bytes))throw new Error('overall_registered_input_changed');}}
-export async function overallReview(planPath:string, action:'prepare'|'run'|'reconcile'|'close-unstarted'='prepare', closeSource?:string) {
-  const bytes=await regular(planPath), {p,material,config,system:suppliedSystem}=await fixed(bytes);
+export async function overallReview(planPath:string, action:'prepare'|'run'|'reconcile'|'close-unstarted'='prepare', closeSource?:string,expectedPlanSha256?:string) {
+  const bytes=await regular(planPath);if(expectedPlanSha256!==undefined&&hash(bytes)!==expectedPlanSha256)throw new Error('overall_selected_plan_changed');
+  const {p,material,config,system:suppliedSystem}=await fixed(bytes);
   await reconcileReception(p.store,p.operation);
   const q=await QueueStore.open(p.store),records=q.reviewRecords(),id=records.overallIdentity(bytes),directory=join(p.store,'overall-'+id);
   const lockPath=join(p.store,'overall-controller-'+id+'.sqlite');
@@ -52,6 +57,9 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
   await regular(lockPath);const db=new DatabaseSync(lockPath);
   try{db.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');}catch{db.close();q.close();throw new Error('overall_controller_active');}
   let session:RepairSession|undefined;
+  async function authorization(){const values:OwnerObservation[]=[];if(p.governance){const a=q.authority(),profile=a.configuration().profile,original=a.reservedAction(p.governance.authorityIntent);for(const ref of a.sourceRequests(original.authorization))values.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(p.store,'overall-action-source-'+randomUUID())));}return values;}
+  async function refreshResources(){for(const id of p.governance?.resourceRequests??[])await resourceAction(p.store,id,'lookup','coordinator');}
+  async function settleResources(){const result=[];for(const id of p.governance?.resourceRequests??[])try{const old=q.resources().status(id);if(old.pendingResultAttempt&&!q.resources().settledOutcome(id))await resourceAction(p.store,id,'lookup','coordinator');const r=await resourceAction(p.store,id,'record-result','coordinator');result.push({id,state:r.state,settled:q.resources().settledOutcome(id)});}catch(e){result.push({id,state:'result_pending_or_unknown',settled:false,reason:e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'overall_resource_result_unavailable'});}return result;}
   try{
     const originalRecord=records.overallOriginal(bytes);let promptAssembly:RolePrompt|undefined,legacyPrompts=false,system=suppliedSystem;
     if(originalRecord){
@@ -97,12 +105,14 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
     if(!recorded){
       if(action==='reconcile')return {id,status:'not_sent',modelDispatched:false,gaps};
       if(legacyPrompts)throw new Error('legacy_prompt_capture_recovery_only');
-      billing(config);if(!await exists(directory))await mkdir(directory,{mode:0o700});
+      billing(config);if(p.governance)q.authority().enableGovernedOverall();q.overallGate(p.operation,bytes,await authorization(),false);
+      for(const id of p.governance?.resourceRequests??[]){let r=await resourceAction(p.store,id,'lookup','coordinator');if(r.state==='prepared_not_sent')r=await resourceAction(p.store,id,'claim','coordinator');if(r.state!=='held')throw new Error('overall_original_resource_unresolved');}
+      if(!await exists(directory))await mkdir(directory,{mode:0o700});
       await put(join(directory,'plan.json'),state.originalPlan);await put(join(directory,'input.txt'),input);
       // Registered BEFORE starting the native process. Any unknown launch is
       // reconciled at this exact stage, never reset by changing output roots.
-      records.overall(p.operation,bytes,input,'dispatch');
-      session=await RepairSession.start({executable:config.codexExecutable,directory:stage,operation:directory,candidate,role:'reviewer',system,inputManifestSha256:hash(input),scopeSource:config.scopeSource,disabledMcpServers:config.disabledMcpServers,allowedInstructionSources:config.allowedInstructionSources,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture',beforeTurn:async()=>{billing(config);const s=q.receiverState(p.operation);if(!s.result.receiver.currentMaterialMatches)throw new Error('overall_candidate_changed');if(q.status().controls.some((x:any)=>x.scope===(p.context as any).scope.id&&x.kind==='investment'&&x.stopped))throw new Error('new_investment_stopped');}});
+      records.overall(p.operation,bytes,input,'dispatch',{},await authorization());
+      session=await RepairSession.start({executable:config.codexExecutable,directory:stage,operation:directory,candidate,role:'reviewer',system,inputManifestSha256:hash(input),scopeSource:config.scopeSource,disabledMcpServers:config.disabledMcpServers,allowedInstructionSources:config.allowedInstructionSources,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture',beforeTurn:async()=>{billing(config);await refreshResources();q.overallGate(p.operation,bytes,await authorization());}});
       await session.turn(input.toString(),candidate,reviewSchema);await session.close();session=undefined;
     }
     const native=await readRepairSession(stage);
@@ -110,9 +120,10 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
     const submitted=JSON.parse((await regular(join(stage,'expected-requests.json'),4*1024*1024)).toString()).find((m:any)=>m.method==='thread/start');
     if(submitted?.params?.baseInstructions!==system)throw new Error('overall_original_system_changed');
     const report=JSON.parse(native.turns[0]!.final!.text),result={id,status:'review_recorded',stage,candidate,report,baselineStatus:p.baselineAcceptance.kind,...(baselineSource?{baselineSource}:{}),gaps,noOverallDriftEstablished:false,conclusionScope:baselineSource?'technical_comparison_with_verified_baseline_source':'technical_comparison_only_pending_adoption_identity',executionKind:config.executionKind??'native_capture',productionActionAllowed:false};
-    if(originalRecord?.originalResult){const old=originalRecord.originalResult;if(canonical(old.report)!==canonical(report)||canonical(old.candidate)!==canonical(candidate)||old.noOverallDriftEstablished!==false)throw new Error('overall_saved_result_mismatch');return {...old,duplicate:true};}
+    if(originalRecord?.originalResult){const old=originalRecord.originalResult;if(canonical(old.report)!==canonical(report)||canonical(old.candidate)!==canonical(candidate)||old.noOverallDriftEstablished!==false)throw new Error('overall_saved_result_mismatch');return {...old,duplicate:true,resources:await settleResources()};}
     const originals:Record<string,Buffer>={result:Buffer.from(JSON.stringify(result))};
     for(const name of ['stdout.ndjson','stdin.ndjson','completed.json','binding.json','executable.json','exit.json'])originals[name]=await readFile(join(stage,name));
-    const saved=records.overall(p.operation,bytes,input,'result',originals);return {...result,duplicate:saved.duplicate};
-  }finally{await session?.close();db.exec('ROLLBACK');db.close();q.close();}
+    const saved=records.overall(p.operation,bytes,input,'result',originals);return {...result,duplicate:saved.duplicate,resources:await settleResources()};
+  }catch(e){try{records.overallProblem(bytes,e instanceof Error?e.message:'overall_execution_unresolved');}catch{}throw e;}
+  finally{await session?.close();db.exec('ROLLBACK');db.close();q.close();}
 }

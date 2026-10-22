@@ -52,7 +52,7 @@ export class OrganizationControls{
   }
   async state(){return Promise.all(this.frozen.map(async f=>{
     const base={id:f.group.id,title:f.group.title,sources:f.group.sources,choices:f.choices.map(c=>({id:c.choice.id,title:c.choice.title,...planView(c.plan,f.sources)})),newModelRequests:0,writingPermissionGranted:false};
-    try{const s=await QueueStore.observeOrganization(f.sources[0]!.store,f.name,f.sources.map(s=>s.item));return {...base,available:true,expectedPrevious:s.current?.id??null,current:s.current?{id:s.current.id,...planView(s.current.plan,f.sources),current:s.current.current,stages:s.current.tasks}:null,currentChoice:f.choices.find(c=>s.current&&arrangement(c.plan)===arrangement(s.current.plan))?.choice.id??null,ownerSourceConfigured:s.ownerSourceConfigured,delegationConfigured:f.group.delegation!==null,authorityMustBeRechecked:true};}
+    try{const s=await QueueStore.observeOrganization(f.sources[0]!.store,f.name,f.sources.map(s=>s.item));return {...base,available:true,expectedPrevious:s.current?.id??null,current:s.current?{id:s.current.id,...planView(s.current.plan,f.sources),current:s.current.current,currentMaterials:s.current.currentMaterials,stages:s.current.tasks}:null,currentChoice:f.choices.find(c=>s.current?.currentMaterials&&arrangement(c.plan)===arrangement(s.current.plan))?.choice.id??null,ownerSourceConfigured:s.ownerSourceConfigured,delegationConfigured:f.group.delegation!==null,authorityMustBeRechecked:true};}
     catch(e){return {...base,available:false,reason:reason(e)};}
   }));}
   async apply(id:string,value:unknown){
@@ -64,7 +64,7 @@ export class OrganizationControls{
       try{const old=q.coordination().status(coordinationPlanId(plan));return {id,planId:old.id,duplicate:true,current:old.current,newModelRequests:0,writingPermissionGranted:false,externalStateRechecked:false};}catch(e){if((e as Error).message!=='coordination_plan_not_registered')throw e;}
       const current=q.coordination().current(f.name);
       if((current?.id??null)!==body.expectedPrevious)throw new Error('coordination_exact_previous_revision_required');
-      if(current&&arrangement(current.plan)===arrangement(plan))return {id,planId:current.id,duplicate:true,current:true,newModelRequests:0,writingPermissionGranted:false,externalStateRechecked:false};
+      if(current?.currentMaterials&&arrangement(current.plan)===arrangement(plan))return {id,planId:current.id,duplicate:true,current:true,newModelRequests:0,writingPermissionGranted:false,externalStateRechecked:false};
       const observations:OwnerObservation[]=[],d=f.group.delegation;
       if(d){const a=q.authority(),{profile}=a.configuration(),root=join(q.directory,'workbench-organization-sources');await mkdir(root,{recursive:true,mode:0o700});for(const ref of a.sourceRequests(d.authorization))observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,randomUUID())));}
       const check=await q.refreshSelectedTaskSources(f.sources.map(s=>s.item)),result=q.registerWorkbenchOrganization(raw,f.sources.map(s=>s.item),d,observations,check);

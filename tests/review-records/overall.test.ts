@@ -7,14 +7,7 @@ import { fixture } from '../w5/repair-fixture.js';
 import { runReception } from '../../src/receiver.js';
 import { overallReview } from '../../src/overall-review.js';
 import { hash } from '../../src/snapshot.js';
-async function ready(t:test.TestContext){
-  const f=await setup(t),m=await fixture(t),received=await runReception(f.path);f.q.enableSupplements();f.q.reviewRecords().enable();
-  const original=f.q.receiverState(received.operation),context=f.q.receiverEvidence(received.operation).context;
-  const path=join(f.root,'evidence.txt'),body='Explicit four-category comparison fixture. No adopted baseline or actual supplier execution.';await writeFile(path,body);
-  const material={name:'fixed fixture',path,sha256:hash(Buffer.from(body))};
-  const plan={schemaVersion:1,kind:'tongxu-overall-review',store:f.store,operation:received.operation,judgmentId:original.receiver.judgmentId,bindingHash:original.receiver.bindingHash,context,config:m.configPath,configSha256:hash(await readFile(m.configPath)),trigger:{kind:'owner_request',source:'fixture:request',reason:'bounded overall review'},material:{acceptedBaseline:[],cumulativeChanges:[material],currentBehavior:[material],currentDocuments:[material]},baselineAcceptance:{kind:'missing',source:null}};
-  const planPath=join(f.root,'overall-plan.json');await writeFile(planPath,JSON.stringify(plan));return {...f,m,plan,planPath,path};
-}
+import {overallFixture as ready} from './overall-fixture.js';
 test('on-demand reviewer receives four fixed material categories; missing adoption cannot become no drift, and repeat reads original capture',async t=>{
   const f=await ready(t),before=await readFile(f.m.trace),preview=await overallReview(f.planPath);assert.equal(preview.status,'prepared_not_sent');assert.deepEqual(await readFile(f.m.trace),before);
   const result=await overallReview(f.planPath,'run');assert.equal(result.status,'review_recorded');assert.equal(result.noOverallDriftEstablished,false);assert.deepEqual(result.gaps,['accepted_baseline_missing']);

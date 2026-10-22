@@ -8,6 +8,7 @@ const pendingScopeControls=new Set();
 const pendingOutcomes=new Set(),outcomeDrafts=new Map(),outcomeComments=new Map();
 const ownerDrafts=new Map(),ownerSources=new Map(),pendingOwner=new Set();
 const pendingOrganization=new Set();
+const pendingOverall=new Set();
 const outcomeLabels={accepted:'接受成果',rejected:'退回处理',needs_evidence:'补充证据',stopped:'停止后续投入'};
 const taskControlPhases={not_registered:'尚未登记',queued:'已登记，待处理',prepared:'已准备，待发送',waiting:'等待前置',active_or_unknown:'正在执行或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'未发送请求已撤回',interrupted:'已观察到中断，原请求未完成',interrupted_closed:'中断结果已保留，原请求已结束'};
 const readableReason=value=>({local_scope_control_revision_changed:'控制状态已被其它入口更新，请核对刷新后的修订。',local_scope_control_scope_changed:'范围定义已改变，旧配置不能继续操作。',local_scope_control_adopted_version_changed:'本人已采用新的范围版本，旧范围记录不能继续操作。',verified_owner_stop_requires_verified_resume:'这是已验证的本人停止，必须按原来源恢复。',new_investment_stopped:'本范围已停止新增投入。',owner_action_stopped:'原本人控制已停止该动作。',task_controller_history_bound:'原诊断历史已达到上限，需保留历史后由负责人处理。',task_execution_incomplete:'原执行未取得完整结果，请核对原运行。',task_prepared_file_changed:'已准备的输入文件发生变化，原请求保留并等待核实。',task_or_candidate_packet_changed:'任务、候选或观察方式已更新，这条关联仅作历史保留。',task_link_staged_selected_changes:'选定文件的暂存内容已变化。',task_link_selected_mode_changed:'选定文件的所有者执行位已变化。',task_control_candidate_changed:'任务材料已变化，请核对后更新联系请求。',task_original_execution_active_or_unknown:'原执行已开始或尚未查清，不能当作未发送请求撤回。',task_original_resource_investment_must_be_resolved:'原资源投入仍须核实，不能直接撤回。',task_request_not_queued:'请求尚未登记，没有可撤回的待办。',task_request_cancelled:'该请求已撤回，原记录保留。',task_original_responsibility_pending:'原负责人还有未完成或未知的执行，后续请求等待。'}[value]||value);
@@ -84,6 +85,7 @@ function organizationView(){
     if(!g.available){card.append(el('p','原安排来源不可用：'+readableReason(g.reason),'small'));continue;}
     append(card,el('p',g.current?'当前登记：'+organizationModes[g.current.mode]+' · '+g.current.revision:'尚未登记本组安排。','small'),el('p',g.ownerSourceConfigured?'登记时重新核对原范围委托；查看钥匙不能代签本人决定。':'本机固定安排。没有据此创建本人采用或新的写入权限。','small'));
     if(g.ownerSourceConfigured&&!g.delegationConfigured)card.append(el('p','尚未配置本组已有委托的准确引用，相关登记保持不可用。','small'));
+    if(g.current&&!g.current.currentMaterials)card.append(el('p','任务材料已更新，旧安排的绑定已失效。可重新选择相同安排，核对后登记新的准确修订；旧记录仍保留。','small'));
     for(const c of g.choices){const box=append(el('div',null,'execution-card'),el('h3',c.title+' · '+organizationModes[c.mode]));card.append(box);
       for(const task of c.tasks)append(box,el('p',task.title+'：'+(task.actor===task.originActor?'原负责人 '+task.actor+' 继续':'拟交给 '+task.actor+'；原执行结束与责任交接须另行核实'),'small'),el('p','阶段：'+task.stages.map(s=>organizationStages[s]||s).join(' → '),'small'));
       const taskName=id=>c.tasks.find(t=>t.id===id)?.title||id;
@@ -95,6 +97,31 @@ function organizationView(){
     card.append(el('p','新安排不会释放活跃或未知的原写者。实际写权、模型投入和成果接受继续使用各自的原记录。','small'));
   }
   return page;
+}
+const overallPhases={not_prepared:'尚未准备',prepared_not_sent:'材料已准备，尚未派发',submitted_or_unknown:'原发送已登记，执行或结果待核',confirmed_unstarted:'已核清未启动，保留原次记录',review_recorded:'完整复盘已保存'};
+const materialLabels={acceptedBaseline:'上一接受基线',cumulativeChanges:'累计变化',currentBehavior:'当前行为',currentDocuments:'当前文档'};
+async function overallAction(entry,action){
+  if(pendingOverall.has(entry.id))return;pendingOverall.add(entry.id);render();
+  try{const response=await fetch('/api/overall-review/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'复盘操作未完成');await refresh();notice(action==='run'?'已交给原复盘执行器。请看实际进度和完整结果；请求被接收还不代表模型完成。':action==='prepare'?'正在核对四类材料；准备操作不会派发模型。':action==='reconcile'?'正在查原运行和原结果，不重发未知输入。':'正在检查原启动记录；只会关闭已证实没有启动的那一次。');}
+  catch(e){notice('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
+}
+function retrospectiveView(){
+  const page=append(el('div'),intro('整体复盘','按需比较上一接受基线、累计变化、当前行为与文档，复用独立审核角色。查看和恢复原结果不新建模型任务。'));
+  for(const r of state.overallReviews||[]){const card=append(el('section',null,'note-card'),el('h2',r.title));page.append(card);if(!r.available){card.append(el('p','原复盘来源不可读：'+readableReason(r.reason),'small'));continue;}
+    append(card,pill(r.active?'本进程正在处理原操作':overallPhases[r.phase],r.phase==='review_recorded'?'':'wait'),el('p',r.trigger.reason),el('p','准确候选：'+r.candidate.H+' · '+(r.current?'当前材料仍适用':'历史材料，不能启动新复盘'),'mono'),el('p',r.baselineStatus==='verified_owner_source'?'接受基线有本人来源，仍须按原哈希核对；不等于技术通过。':r.baselineStatus==='missing'?'缺少上一接受基线；本次不能得出没有整体漂移的结论。':'基线材料已提供，但本人采用来源未核实。','small'));
+    for(const [kind,refs] of Object.entries(r.material)){const detail=append(el('details'),el('summary',materialLabels[kind]+' · '+refs.length+'份'));if(!refs.length)detail.append(el('p','本类别尚无材料。','small'));for(const ref of refs)append(detail,el('p',ref.name),el('p',ref.sha256,'mono'));card.append(detail);}
+    if(r.lastProblem||r.currentControllerProblem)card.append(el('p','最近未完成原因：'+readableReason(r.currentControllerProblem||r.lastProblem),'small'));
+    for(const resource of r.resources)card.append(el('p','原资源：'+resource.state+' · '+(resource.settled?'结果已回读':'原结果尚待核实；不推断退款'),'small'));
+    const actions=el('div',null,'actions'),busy=r.active||pendingOverall.has(r.id),needsAuthority=r.ownerSourceConfigured&&!r.governanceConfigured;
+    if(needsAuthority)card.append(el('p','此队列已启用本人来源，尚未绑定本次复盘的准确授权；准备与原结果读取可用，派发不可用。','small'));
+    for(const [action,label] of [['prepare','核对并准备材料'],['run','启动一次复盘'],['reconcile','查回原运行'],['close-unstarted','核清并关闭未启动记录']]){const button=el('button',label,'outline');button.type='button';button.disabled=busy||(action==='run'&&(!r.current||needsAuthority||!['not_prepared','prepared_not_sent','confirmed_unstarted'].includes(r.phase)))||(action==='prepare'&&r.phase!=='not_prepared')||(action==='reconcile'&&r.phase==='not_prepared')||(action==='close-unstarted'&&r.phase!=='submitted_or_unknown');button.onclick=()=>overallAction(r,action);actions.append(button);}
+    if(r.phase==='review_recorded'){const button=el('button','打开完整复盘报告','outline');button.type='button';button.onclick=()=>openOverallReport(r);actions.append(button);}
+    append(card,actions,el('p','简化反思、技术复盘与本人接受成果分别保留。模型结论不会自动改目标、授予权限或合并。','small'));
+  }return page;
+}
+async function openOverallReport(entry){
+  const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 完整复盘';$('report-meta').textContent='读取原报告…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  try{const r=await api('/api/overall-report/'+entry.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确测试输出':'原生执行捕获')+' · '+r.verdict+' · '+(r.current?'当前材料':'历史材料')+' · 原文 SHA256 '+r.reportSha256+' · 不代表本人接受成果';$('report-body').textContent=r.report;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原复盘无法读取：'+readableReason(e.message);}
 }
 async function ownerAction(entry,action,body){
   if(pendingOwner.has(entry.source))return;pendingOwner.add(entry.source);
@@ -172,7 +199,8 @@ function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
   const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current&&!(t.developmentTask?.inbox||[]).some(i=>i.run===r.run&&i.phase==='interrupted_closed')).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.filter(m=>m.state!=='Reply'&&!m.continuedIn).length;
   const inboxPending=valid.reduce((count,t)=>{const represented=new Set((t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages.map(m=>r.run+':'+m.id)));return count+(t.developmentTask?.inbox||[]).filter(r=>!['returned','cancelled','interrupted_closed'].includes(r.phase)&&!represented.has(r.run+':'+r.id)).length;},0);
-  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?'真实队列 · 只读':state.mode==='bounded_delivery_outcomes'?'真实队列 · 成果决定':state.ownerControls?.length?'原队列 · 目标与委托请求':'真实队列 · 有限联系'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+'，不代表批准'), metric(waiting.length+pending+inboxPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
+  const overall=state.overallReviews||[],overallReturned=overall.filter(r=>r.available&&r.current&&r.phase==='review_recorded').length,overallPending=overall.filter(r=>!r.available||r.active||r.phase!=='review_recorded'||r.resources.some(x=>!x.settled)).length;
+  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?'所选原队列 · 只读':'所选原队列 · 受控入口'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies+overallReturned, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+' · 复盘 '+overallReturned+'，不代表批准'), metric(waiting.length+pending+inboxPending+overallPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending+' · 复盘 '+overallPending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
   const cards = el('section', null, 'task-grid'); state.tasks.forEach(t => cards.append(card(t))); n.append(cards);
   append(n, append(el('section', null, 'note-card'), el('h3', '结论与限制，一起保留'), el('p', '每份报告对应原候选与原操作。旧判断、首次失败、等待和恢复不会因为后来通过而消失。发布记录中的 pending 也不自动表示仍有模型在运行。')));
   const recent = state.events.slice(-4).reverse(); if (recent.length) append(n, append(el('div', null, 'section-title'), el('h2', '最近协作'), el('span', '来自原队列事件')), timeline(recent));
@@ -259,12 +287,14 @@ function timeline(events) {
 function render() {
   if (!state) return;
   $('runtime-version').hidden=!state.runtime;if(state.runtime)$('runtime-version').textContent='本次运行版本 '+state.runtime.sourceHead.slice(0,12)+' · 配置 '+state.runtime.planSha256.slice(0,12)+' · 已匹配固定源码、构建与配置记录';
-  $('access-mode').textContent=state.mode==='read_only'?'只读':state.ownerControls?.length?'目标、委托与既有控制':state.organization?.length?'任务组织与既有控制':state.deliveries?.length?'有限操作与成果决定':state.scopeControls?.length?'有限联系与范围控制':'有限联系';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':state.ownerControls?.length?'表单准备原权限请求，核对本人原来源后才记录决定；查看钥匙不授予签署身份。':state.organization?.length?'仅登记明确任务的安排；原权限、写权交接和执行前置仍分别检查。':state.deliveries?.length?'可准备固定成果请求并核对本人来源；页面访问身份不等于本人签署。':state.scopeControls?.length?'仅操作已配置的本机范围与联系。没有本人签署、写代码或合并入口。':'可联系已配置的负责人、撤回尚未发送的请求。没有批准、写代码或合并入口。';
+  const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length?'成果决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null].filter(Boolean);
+  $('access-mode').textContent=state.mode==='read_only'?'只读':'受控入口';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':'已配置：'+abilities.join('、')+'。实际动作按原范围、权限与资源执行；页面钥匙不代替本人签署。';
   document.querySelector('[data-view="deliveries"]').hidden=!state.deliveries?.length;
   document.querySelector('[data-view="organization"]').hidden=!state.organization?.length;
+  document.querySelector('[data-view="retrospective"]').hidden=!state.overallReviews?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
+  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
@@ -274,7 +304,7 @@ async function refresh() {
     state = await api('/api/state'); const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = '本机读取 · ' + date(at);
     notice(state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
   } catch (e) { notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
-  finally { $('refresh').disabled = false;if((state?.taskControls||[]).some(c=>c.controllerActive))controlRefresh=setTimeout(refresh,2000); }
+  finally { $('refresh').disabled = false;if((state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active))controlRefresh=setTimeout(refresh,2000); }
 }
 async function openReport(t, o) {
   const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; $('report-dialog').showModal();
