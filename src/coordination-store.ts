@@ -63,6 +63,28 @@ export class CoordinationRecords {
     return {schemaVersion:1,kind:'tongxu-coordination-context',planId:f.id,name:f.plan.name,revision:f.plan.revision,scope:f.registration.scope,mode:f.plan.mode,tasks:f.plan.tasks,actors:f.plan.actors,bindings:f.registration.bindings,shared:f.plan.shared.map(p=>({...p,hash:f.registration.parts[p.id]})),dependencies:f.plan.dependencies,outputs,permissionsGranted:false,responseContract:{kind:'tongxu-coordination-feedback',task:'exact assigned task id',revision:f.plan.revision,parts:'each affected part: id, hash, position (agreed/conflict/unknown), report',report:'complete substantive report; feedback is not writing authority'}};
   }
   context(id:string){return this.transaction(()=>{const f=this.fixed(id),value=this.contextValue(f),bytes=Buffer.from(canonical(value));if(bytes.length>512*1024)throw new Error('coordination_complete_context_limit');const sha=this.blob(bytes);if(!f.events.some(e=>e.kind==='coordination_context_prepared'&&e.data.sha256===sha))this.event(id,'context_prepared',{sha256:sha});return {value,bytes,sha256:sha};});}
+  /** Attach the current arrangement to the original task inbox. An obsolete
+   * assignment, ambiguous group or different actor is never silently adopted. */
+  ownerContext(item:string,actor:string,tool:string){return this.transaction(()=>{
+    const rows=this.db.prepare("SELECT DISTINCT json_extract(data,'$.value.name') AS name FROM events WHERE kind='coordination_registered'").all() as Row[],current=[];
+    let historical=false;
+    for(const row of rows){const f=this.latest(row.name)!;if(this.ancestry(f).some(p=>p.plan.tasks.some(t=>t.item===item)))historical=true;const task=f.plan.tasks.find(t=>t.item===item);if(task)current.push({f,task});}
+    if(!current.length){if(historical)throw new Error('coordinated_task_removed_requires_explicit_followup');return null;}
+    if(current.length!==1)throw new Error('task_coordination_selection_ambiguous');const {f,task}=current[0]!;
+    if(task.actor!==actor||f.plan.actors.find(a=>a.id===actor)?.tool!==tool)throw new Error('task_coordination_original_actor_mismatch');
+    const context=this.context(f.id);return {planId:f.id,task:task.id,sha256:context.sha256,bytes:context.bytes};
+  });}
+  ownerFeedback(id:string,taskId:string,run:string,messageId:string){return this.transaction(()=>{
+    const f=this.fixed(id),{task}=this.currentTask(f,taskId),feedback=this.feedback(id,run,messageId);
+    if(feedback.task!==taskId)throw new Error('task_coordination_feedback_mismatch');
+    const outputs=task.outputs.filter(o=>o.stage==='investigate').map(o=>{
+      const original=f.events.find(e=>e.kind==='coordination_output'&&e.data.task===taskId&&e.data.capability===o.id)?.data;
+      if(original){this.verifyOutput(original);return {...original,reusedOriginal:true};}
+      return this.recordMessageOutput(id,taskId,o.id,run,messageId);
+    }),consumed=[],waiting=[];
+    for(const stage of task.stages){try{consumed.push(this.consumeMessageInputs(id,taskId,stage,run,messageId));}catch(e){if((e as Error).message!=='coordination_exact_producer_output_not_consumed')throw e;waiting.push(stage);}}
+    return {planId:id,task:taskId,feedback,outputs,consumed,waiting,writingPermissionGranted:false};
+  });}
   execution(id:string,request:Buffer){return this.transaction(()=>{
     const f=this.fixed(id),parsed=parseCoordinationExecution(request,f.plan),identity=coordinationExecutionIdentity(parsed),old=f.events.find(e=>e.kind==='coordination_execution_prepared')?.data;if(old&&old.identity!==identity)throw new Error('coordination_original_execution_is_fixed');const requestSha256=this.blob(Buffer.from(canonical(parsed)));
     if(!f.events.some(e=>e.kind==='coordination_execution_prepared'&&e.data.requestSha256===requestSha256))this.event(id,'execution_prepared',{identity,requestSha256});return {identity,requestSha256};

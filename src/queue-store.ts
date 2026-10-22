@@ -282,7 +282,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget,resourcePhase:string|null=null;
       if(state.plan.resourceBudget)try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());resourcePhase=b.phase;resourcesSettled=['returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{}
       return {state:{...state,resourcesSettled,resourcePhase},inputs:state.plan.participants.flatMap(p=>m.submitted(run,p.id))};
-    },(task,link)=>this.taskLinkRecords(fn=>fn()).material(task,link),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task),(task,ref)=>this.publicationReturnRecords(fn=>fn()).material(task,ref));
+    },(task,link)=>this.taskLinkRecords(fn=>fn()).material(task,link),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task),(task,ref)=>this.publicationReturnRecords(fn=>fn()).material(task,ref),{
+      context:(task,actor,tool)=>this.coordinationRecords(fn=>fn()).ownerContext(task,actor,tool),
+      bind:(id,plan,sha,mapping)=>this.coordinationRecords(fn=>fn()).bindMessages(id,plan,sha,mapping),
+      feedback:(id,task,run,message)=>this.coordinationRecords(fn=>fn()).ownerFeedback(id,task,run,message)
+    });
   }
 
   async refreshMessageTaskSources(run:string){

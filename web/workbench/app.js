@@ -199,12 +199,36 @@ function card(t) {
   const replies=(t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages).filter(m=>m.state==='Reply').length;
   append(n, append(el('div', null, 'card-top'), el('span', t.available ? t.composition ? '固定组合 · ' + t.composition.subject.members.length + ' 个成员' : taskSourceLabel(t) : '本地来源', 'pr'), pill(label, kind)), el('h3', t.title), el('p', t.available ? t.candidate.repository + ' · ' + t.candidate.targetRef : '当前来源不可用，未将空记录当作完成。', 'sub'), append(el('div', null, 'card-bottom'), el('span', t.available ? 'H ' + t.candidate.H.slice(0, 8) + ' · 接收判断 ' + t.operations.filter(o => o.judgment).length + ' · 协作回复 '+replies : t.error), el('span', '↗', 'arrow'))); return n;
 }
+function ownerOverview(){
+  const owners=state.ownerControls||[],deliveries=state.deliveries||[];if(!owners.length&&!deliveries.length)return null;
+  const section=el('section'),grid=el('div',null,'task-grid');append(section,append(el('div',null,'section-title'),el('h2','本批目标与成果'),el('span','采用、验证和控制分别记录')),grid);
+  const open=(label,next)=>{const button=el('button',label,'outline');button.type='button';button.onclick=()=>{view=next;render();$('content').focus({preventScroll:true});};return button;},groups=new Map();
+  for(const o of owners){if(!o.available){grid.append(append(el('div',null,'note-card'),el('h3',state.tasks.find(t=>t.id===o.source)?.title||o.source),el('p','本人记录当前不可读：'+readableReason(o.reason)),open('查看目标来源','goals')));continue;}
+    // Equal labels from different local sources do not imply equal decisions.
+    // Only identical adopted content and observed controls share one card.
+    const identity=JSON.stringify([o.repository,o.issue,o.scopeId,o.currentAdoption,o.currentScope,o.controls]);let g=groups.get(identity);if(!g){g={entry:o,sources:[],requests:new Map(),oldTaskScope:false};groups.set(identity,g);}g.sources.push(state.tasks.find(t=>t.id===o.source)?.title||o.source);for(const r of o.requests)g.requests.set(r.proposalSha256,r);if(o.currentScope&&o.taskScope.version!==o.currentScope.scopeVersion)g.oldTaskScope=true;
+  }
+  for(const g of groups.values()){const o=g.entry,scope=o.currentScope,card=append(el('div',null,'note-card'),el('h3',scope?'已记录的目标 · '+scope.scopeVersion:'目标尚未采用'),el('p',g.sources.join('、'),'small'));
+    if(o.executionKind==='fixture')card.append(pill('隔离示例来源','neutral'));
+    if(scope){const goals=el('ul');scope.body.goals.slice(0,3).forEach(text=>goals.append(el('li',text)));card.append(goals);if(scope.body.goals.length>3)card.append(el('p','另有 '+(scope.body.goals.length-3)+' 项，完整目标保留在原入口。','small'));if(scope.body.nonGoals.length)card.append(el('p','本批不做：'+scope.body.nonGoals.slice(0,2).join('；')+(scope.body.nonGoals.length>2?'（其余见完整边界）':''),'small'));}
+    if(g.oldTaskScope)card.append(el('p','部分所选任务仍绑定旧范围；新目标不自动改写其原执行，后续工作尚待准备。','small'));
+    const stopped=o.controls.filter(c=>c.state==='stopped').map(c=>({implementation:'新增实施',investment:'新增投入',merge:'新合入'}[c.control]));card.append(el('p',stopped.length?'当前停止：'+stopped.join('、'):'当前没有登记停止项；执行权限仍须单独核对。'));
+    const pending=[...g.requests.values()].filter(r=>!r.applied).length;if(pending)card.append(el('p','已保存 '+pending+' 份尚未采用的请求；草稿不代表本人决定。','small'));
+    append(card,append(el('div',null,'actions'),open('查看完整目标与边界','goals'),open('查看委托与控制','authority')));grid.append(card);
+  }
+  for(const d of deliveries){const b=d.batch,card=append(el('div',null,'note-card'),el('h3',b?.title||'成果来源待核'));
+    if(!d.available||!b)card.append(el('p','当前成果记录不可读：'+readableReason(d.reason||'source_unavailable')));
+    else{const last=b.outcomes.at(-1);card.append(el('p',b.userOutcomeAccepted?'当前成果已有本人接受记录':b.currentOutcome&&last?(last.executionKind==='fixture'?'示例来源 · ':'原本人记录 · ')+(outcomeLabels[last.proposal.outcome]||last.proposal.outcome):'当前批次尚无适用的本人决定'));
+      card.append(el('p',b.scenarioAssertionsPassed?'已记录场景检查通过；不代替成果接受或启用。':'场景仍有未通过或待核项，完整证据见原成果入口。','small'));if(!b.currentVersion||!b.currentMaterials)card.append(el('p','批次版本或材料已变化，原判断按历史保留。','small'));}
+    card.append(open('查看成果与完整证据','deliveries'));grid.append(card);
+  }return section;
+}
 function overview() {
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
   const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current&&!(t.developmentTask?.inbox||[]).some(i=>i.run===r.run&&i.phase==='interrupted_closed')).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.filter(m=>m.state!=='Reply'&&!m.continuedIn).length;
   const inboxPending=valid.reduce((count,t)=>{const represented=new Set((t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages.map(m=>r.run+':'+m.id)));return count+(t.developmentTask?.inbox||[]).filter(r=>!['returned','cancelled','interrupted_closed'].includes(r.phase)&&!represented.has(r.run+':'+r.id)).length;},0);
   const overall=state.overallReviews||[],overallReturned=overall.filter(r=>r.available&&r.current&&r.phase==='review_recorded').length,overallPending=overall.filter(r=>!r.available||r.active||r.phase!=='review_recorded'||r.resources.some(x=>!x.settled)).length;
-  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?'所选原队列 · 只读':'所选原队列 · 受控入口'), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies+overallReturned, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+' · 复盘 '+overallReturned+'，不代表批准'), metric(waiting.length+pending+inboxPending+overallPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending+' · 复盘 '+overallPending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
+  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?'所选原队列 · 只读':'所选原队列 · 受控入口'),ownerOverview(), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies+overallReturned, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+' · 复盘 '+overallReturned+'，不代表批准'), metric(waiting.length+pending+inboxPending+overallPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending+' · 复盘 '+overallPending)), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
   const cards = el('section', null, 'task-grid'); state.tasks.forEach(t => cards.append(card(t))); n.append(cards);
   append(n, append(el('section', null, 'note-card'), el('h3', '结论与限制，一起保留'), el('p', '每份报告对应原候选与原操作。旧判断、首次失败、等待和恢复不会因为后来通过而消失。发布记录中的 pending 也不自动表示仍有模型在运行。')));
   const recent = state.events.slice(-4).reverse(); if (recent.length) append(n, append(el('div', null, 'section-title'), el('h2', '最近协作'), el('span', '来自原队列事件')), timeline(recent));

@@ -15,7 +15,10 @@ import {canonical} from './comparison.js';
 export async function addDevelopmentTask(store:string,definitionPath:string){const p=parseDevelopmentTask(await regular(definitionPath,64*1024)),o=await observeTaskWorkspace(p),q=await QueueStore.open(store);try{return q.tasks().observe(p,o);}finally{q.close();}}
 async function exactFile(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(hash(await regular(path,512*1024))!==hash(bytes))throw new Error('task_prepared_file_changed');}}
 export async function prepareTaskOwner(store:string,task:string,id:string){
-  const q=await QueueStore.open(store);try{const selected=q.taskInbox().prepare(task,id);await mkdir(selected.directory,{recursive:true,mode:0o700});await exactFile(join(selected.directory,'context.json'),selected.context);const path=join(selected.directory,'plan.json');await exactFile(path,selected.plan);return {id,run:selected.run,plan:path,contextSha256:selected.contextSha256};}finally{q.close();}
+  const q=await QueueStore.open(store);try{const selected=q.taskInbox().prepare(task,id);await mkdir(selected.directory,{recursive:true,mode:0o700});await exactFile(join(selected.directory,'context.json'),selected.context);if(selected.coordinationContext)await exactFile(join(selected.directory,'coordination-context.json'),selected.coordinationContext);const path=join(selected.directory,'plan.json');await exactFile(path,selected.plan);return {id,run:selected.run,plan:path,contextSha256:selected.contextSha256};}finally{q.close();}
+}
+export async function reconcileTaskCoordination(store:string,task:string,id:string){
+  const q=await QueueStore.open(store);try{const result=q.taskInbox().reconcileCoordination(task,id);return result?{recorded:true,result}:null;}catch(e){return {recorded:false,reason:e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'task_coordination_feedback_invalid',originalReplyRetained:true};}finally{q.close();}
 }
 /** Cancelling an exact zero-input request is cleanup, never new permission.
  * Reuse the original controller/captures and the provider's original claim. */
@@ -33,7 +36,7 @@ export async function workTaskOwner(store:string,task:string,limit=4,currentBill
     const q=await QueueStore.open(store);let next;try{next=q.taskInbox().status(task).find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));}finally{q.close();}
     if(!next)return {task,runs,pending:[],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     if(next.phase==='waiting')return {task,runs,pending:[next],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
-    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling);runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true)});
+    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling),coordination=result.completed?await reconcileTaskCoordination(store,task,next.id):null;runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true),...(coordination?{coordination}:{})});
     if(!result.completed||!result.resourcesSettled)break;
   }
   const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase)),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
@@ -49,7 +52,7 @@ export async function runTaskContact(store:string,planPath:string,currentBilling
   const steps=[];let from:TaskOwnerRequest['from']=null;
   for(const template of requests){const request:TaskOwnerRequest={...template,from},q=await QueueStore.open(store);try{q.taskInbox().enqueue(Buffer.from(canonical(request)));}finally{q.close();}
     let selected;try{selected=await prepareTaskOwner(store,request.task,request.id);}catch(e){return {steps,completed:false,waiting:e instanceof Error?e.message:'task_contact_waiting',newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true};}
-    const result=await runMessages(store,selected.plan,false,selected.run,currentBilling);steps.push({task:request.task,id:request.id,run:selected.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true)});
+    const result=await runMessages(store,selected.plan,false,selected.run,currentBilling),coordination=result.completed?await reconcileTaskCoordination(store,request.task,request.id):null;steps.push({task:request.task,id:request.id,run:selected.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true),...(coordination?{coordination}:{})});
     if(!result.completed||!result.resourcesSettled)return {steps,completed:false,waiting:'original_task_result_or_resources_unresolved',newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true};
     from={task:request.task,run:selected.run,messageId:request.id};
   }
