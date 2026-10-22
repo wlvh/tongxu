@@ -36,7 +36,7 @@ export class SecretaryWorkbench{
     // This readonly object is not the page's running controller. Its empty
     // process-local active map cannot prove that an original review is idle.
     const reviews=(this.overall?await this.overall.state():[]).map(({active,currentControllerProblem,...original})=>original);
-    return {selection:this.manifest(),reviews,controllerActivity:'not_observed',permissionsGranted:false};
+    return {selection:{...this.manifest(),derivedReviewSelection:'only_exact_descendants_of_configured_plans'},reviews,controllerActivity:'not_observed',permissionsGranted:false};
   }
-  async report(id:string){if(!this.overall||!this.reviewIds.includes(id))throw new Error('secretary_overall_report_not_selected');return this.overall.report(id);}
+  async report(id:string){if(!this.overall)throw new Error('secretary_overall_report_not_selected');try{return await this.overall.report(id);}catch(e){if((e as Error).message==='overall_review_not_selected')throw new Error('secretary_overall_report_not_selected');throw e;}}
 }

@@ -128,7 +128,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
   const scopeFollowups=p.ownerControls?new ScopeFollowupControls(p.ownerControls,p.sources):null;
   const organization=p.organization?await OrganizationControls.load(p.organization.path,p.organization.sha256,p.sources):null;
-  const overall=p.overallReviews?await OverallControls.load(p.overallReviews,p.sources):null;
+  const overall=p.overallReviews?await OverallControls.load(p.overallReviews,p.sources,p.ownerControls??[]):null;
   const assets = new Map<string, { type: string; bytes: Buffer }>();
   for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   let host = '';
@@ -156,8 +156,9 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
         const followup=/^\/api\/scope-followup\/([a-z0-9-]{1,64})\/(prepare|observe|owner-prepare|owner-apply|start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const arrangement=/^\/api\/organization\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/apply$/.exec(url.pathname);
+        const overallBaseline=/^\/api\/overall-baseline\/([a-z0-9-]{1,64})\/prepare$/.exec(url.pathname);
         const retrospective=/^\/api\/overall-review\/([a-z0-9-]{1,64})\/(prepare|run|reconcile|close-unstarted)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||deliveryExecution&&deliveryWork||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||deliveryExecution&&deliveryWork||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&(retrospective||overallBaseline))){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation||deliveryWork?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
@@ -166,7 +167,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(batchPreparation){json(res,200,await deliveryControls!.register(batchPreparation[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
         if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await scopeFollowups!.prepare(source,body));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body));return;}
-        if(retrospective){if(!exactKeys(body,[]))throw new Error('overall_no_runtime_arguments');json(res,202,overall!.begin(retrospective[1]!,retrospective[2]! as any));return;}
+        if(overallBaseline){json(res,200,await overall!.prepareFromBaseline(overallBaseline[1]!,body));return;}
+        if(retrospective){json(res,202,await overall!.begin(retrospective[1]!,retrospective[2]! as any,body));return;}
         if(arrangement){json(res,200,await organization!.apply(arrangement[1]!,body));return;}
         if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls!.setScope(scope[1]!,scope[2]!,body.revision));return;}
         if(action![2]==='native'){json(res,200,await controls!.controlNative(action![1]!,body));return;}
@@ -186,6 +188,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(message){const source=p.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
       const feedback=/^\/api\/judgment-feedback-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);
       if(feedback){const source=p.sources.find(s=>s.id===feedback[1]),keys=[...url.searchParams.keys()].sort();if(!source||keys.join()!=='feedback,judgment'||!text(url.searchParams.get('judgment'),128)||!text(url.searchParams.get('feedback'),128))throw new Error('judgment_feedback_not_selected');json(res,200,await QueueStore.observeJudgmentFeedback(source.store,source.item,{judgment:url.searchParams.get('judgment')!,feedback:url.searchParams.get('feedback')!}));return;}
+      const baseline=/^\/api\/owner-baseline\/([a-z0-9-]{1,64})\/([a-f0-9]{64})$/.exec(url.pathname);if(baseline){if(!ownerControls)throw new Error('baseline_not_selected');json(res,200,await ownerControls.baseline(baseline[1]!,baseline[2]!));return;}
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (match) { json(res, 200, await workbenchReport(p, match[1]!, match[2]!)); return; }
       json(res, 404, { error: 'route_not_found' });

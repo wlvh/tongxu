@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
+import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, exactKeys, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 import {installRecompositionTestGuards} from './recomposition-test-guards.js';
 import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards,overallConsumerKey,overallAdmission,expectedEffectGuard,installOverallResultGuard} from './publication-guards.js';
@@ -103,10 +103,23 @@ export class AuthorityRecords {
     parseOwnerProposal(p.proposal,profile,Date.parse(p.createdAt));return p;
   }
   proposal(sha:string){return this.transaction(()=>this.prepared(sha));}
+  baselineProposal(adoption:string,contents:unknown){return this.transaction(()=>{
+    this.profile();this.adoption(adoption);
+    const roles=['goals','rules','capabilities'] as const,value=contents as Record<string,unknown>;
+    if(!exactKeys(value,[...roles])||roles.some(role=>typeof value[role]!=='string'||!(value[role] as string).trim()||(value[role] as string).length>6000||(value[role] as string).includes('\0')))throw new Error('baseline_contents_invalid');
+    const material={} as Extract<OwnerProposal,{kind:'accept_baseline'}>['material'];
+    for(const role of roles)material[role]={name:'baseline-'+role+'.txt',sha256:this.blob(Buffer.from(value[role] as string))};
+    return {kind:'accept_baseline' as const,adoption,material};
+  });}
+  baselineContents(sha:string){return this.transaction(()=>{
+    const prepared=this.prepared(sha),p=prepared.proposal;if(p.kind!=='accept_baseline')throw new Error('baseline_proposal_required');
+    const a=this.adoption(p.adoption,false),material=Object.entries(p.material).map(([role,ref])=>{const bytes=this.bytes(ref.sha256);if(bytes.length>256*1024)throw new Error('baseline_material_limit');return {role,...ref,bytes:bytes.length,text:new TextDecoder('utf8',{fatal:true}).decode(bytes)};});
+    return {proposalSha256:sha,adoption:p.adoption,scopeId:a.proposal.scopeId,scopeVersion:a.proposal.scopeVersion,material,contentsAreNotAcceptance:true,permissionsGranted:false};
+  });}
   forScope(scopeId:string,selection:{item:string;target:string}){return this.transaction(()=>{
     const {profile}=this.profile(),current=this.currentScope(scopeId),requests=this.all('authority_proposal_prepared').flatMap(e=>{
       const p=this.prepared(e.data.proposalSha256),proposal=p.proposal;
-      if(!['adopt_scope','delegate','confirm_action','control','revoke'].includes(proposal.kind))return [];
+      if(!['adopt_scope','accept_baseline','delegate','confirm_action','control','revoke'].includes(proposal.kind))return [];
       const selected=proposal.kind==='revoke'?this.decision(proposal.decision).proposal:proposal;
       if(proposal.kind==='revoke'&&!['delegate','confirm_action'].includes(selected.kind))return [];
       if(selected.kind==='delegate'&&!selected.targets.every((target:string)=>target===selection.target)||selected.kind==='confirm_action'&&(selected.request.item!==selection.item||selected.request.target!==selection.target))return [];

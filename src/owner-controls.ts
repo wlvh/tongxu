@@ -5,7 +5,7 @@ import {QueueStore} from './queue-store.js';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {exactKeys,isAuthorityDigest,type OwnerProposal} from './authority-contract.js';
-import {readOwnerSource} from './authority-source.js';
+import {readOwnerSource,type OwnerObservation} from './authority-source.js';
 
 type Source={id:string;store:string;item:string};
 const reason=(e:unknown)=>e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'owner_control_source_unavailable';
@@ -16,8 +16,12 @@ export class OwnerControls{
   constructor(private selected:string[],private sources:Source[]){}
   private source(id:string){const s=this.sources.find(x=>x.id===id);if(!s||!this.selected.includes(id))throw new Error('owner_control_task_not_selected');return s;}
   async state(){return Promise.all(this.selected.map(async id=>{const source=this.source(id),recordSourceId=hash(canonical(['owner-record-source',source.store]));try{return {source:id,recordSourceId,available:true,...await QueueStore.observeOwnerTask(source.store,source.item)};}catch(e){return {source:id,recordSourceId,available:false,reason:reason(e),permissionsGranted:false};}}));}
+  async baseline(id:string,sha:string){const s=this.source(id);if(!isAuthorityDigest(sha))throw new Error('baseline_not_selected');return QueueStore.observeOwnerBaseline(s.store,s.item,sha);}
   async prepare(id:string,body:any){
     const s=this.source(id),current=await QueueStore.observeOwnerTask(s.store,s.item);let proposal:OwnerProposal;
+    if(body?.kind==='baseline'&&exactKeys(body,['kind','adoption','contents'])){
+      if(!current.currentAdoption||body.adoption!==current.currentAdoption)throw new Error('current_adopted_scope_required');const q=await QueueStore.open(s.store);try{return q.withOwnerTask(s.item,current.scopeId,current.target,a=>{const latest=a.forScope(current.scopeId,{item:s.item,target:current.target});if(latest.currentAdoption!==body.adoption)throw new Error('current_adopted_scope_required');const p=a.baselineProposal(body.adoption,body.contents);return {...a.prepare('workbench-baseline-'+hash(canonical([s.item,p])).slice(0,48),Buffer.from(canonical(p))),baselineAccepted:false,modelStarted:false};});}finally{q.close();}
+    }
     if(body?.kind==='goal'&&exactKeys(body,['kind','scopeVersion','body','previousAdoption'])){
       if(body.previousAdoption!==current.currentAdoption)throw new Error('owner_scope_previous_version_changed');
       proposal={kind:'adopt_scope',scopeId:current.scopeId,scopeVersion:body.scopeVersion,body:body.body,previousAdoption:current.currentAdoption};
@@ -50,7 +54,9 @@ export class OwnerControls{
     const prefix=`https://github.com/${state.repository}/issues/${state.issue}#issuecomment-`;if(!body.sourceUrl.startsWith(prefix)||!/^[1-9]\d*$/.test(body.sourceUrl.slice(prefix.length)))throw new Error('owner_control_exact_source_url_required');const commentId=Number(body.sourceUrl.slice(prefix.length));if(!Number.isSafeInteger(commentId))throw new Error('owner_control_source_invalid');
     const q=await QueueStore.open(s.store);try{const a=q.authority(),{profile}=a.configuration();
       if(request.applied){const original=a.inspectRecordedDecision(body.proposalSha256);if(original.source.commentId!==commentId)throw new Error('owner_decision_source_is_fixed');return {duplicate:true,originalDecisionRecorded:true,externalStateRechecked:false};}
-      const root=join(s.store,'workbench-owner-sources');await mkdir(root,{recursive:true,mode:0o700});const observation=await readOwnerSource(profile,body.proposalSha256,commentId,join(root,randomUUID()));return q.withOwnerTask(s.item,state.scopeId,state.target,records=>{
+      const root=join(s.store,'workbench-owner-sources');await mkdir(root,{recursive:true,mode:0o700});const observation=await readOwnerSource(profile,body.proposalSha256,commentId,join(root,randomUUID())),dependencies:OwnerObservation[]=[];
+      if(request.proposal.kind==='accept_baseline')for(const ref of a.sourceRequests(request.proposal.adoption))dependencies.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,randomUUID())));
+      return q.withOwnerTask(s.item,state.scopeId,state.target,records=>{
         const latest=records.forScope(state.scopeId,{item:s.item,target:state.target});
         if(!latest.requests.some(r=>r.proposalSha256===body.proposalSha256))throw new Error('owner_control_proposal_outside_task');
         const prepared=records.proposal(body.proposalSha256),p=prepared.proposal;
@@ -58,7 +64,7 @@ export class OwnerControls{
           const revision=latest.controls.find(c=>c.control===p.control)!.revision;
           if(prepared.requestId!==controlRequestId(s.item,p,revision))throw new Error('owner_control_revision_changed');
         }
-        return records.apply(body.proposalSha256,observation);
+        const applied=records.apply(body.proposalSha256,observation);if(p.kind==='accept_baseline'){records.baselineContents(body.proposalSha256);records.acceptedBaseline(body.proposalSha256,Object.values(p.material),[observation,...dependencies]);}return applied;
       });
     }finally{q.close();}
   }

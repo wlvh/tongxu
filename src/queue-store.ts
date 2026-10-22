@@ -57,6 +57,7 @@ import {DeliveryAssessmentRecords} from './delivery-assessment-store.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
 import {DeliveryWorkbenchRecords} from './delivery-workbench-store.js';
+import {OverallWorkbenchRecords} from './overall-workbench-store.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
 import { composeSubject, currentMembers, type Composition } from './composition.js';
 
@@ -159,6 +160,9 @@ export class QueueStore {
   }
   static async observeOwnerTask(directory:string,item:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const selected=q.authorityItem(item),a=new AuthorityRecords(q.db,fn=>fn(),id=>q.authorityItem(id));return {...a.forScope(selected.context.scope.id,{item,target:selected.candidate.targetRef}),taskCurrent:selected.current,taskScope:selected.context.scope,target:selected.candidate.targetRef};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  static async observeOwnerBaseline(directory:string,item:string,sha:string){
+    const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const c=q.authorityItem(item),a=new AuthorityRecords(q.db,fn=>fn(),id=>q.authorityItem(id)),request=a.forScope(c.context.scope.id,{item,target:c.candidate.targetRef}).requests.find(r=>r.proposalSha256===sha&&r.proposal.kind==='accept_baseline');if(!request)throw new Error('baseline_not_selected');return {...a.baselineContents(sha),applied:request.applied,sourceUrl:request.sourceUrl,executionKind:a.configuration().profile.executionKind,sourceFreshness:'recorded_only_recheck_before_use'};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
   static async observeScopeFollowups(directory:string,item:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const records=q.taskScopeFollowupRecords(fn=>fn());return {original:records.view(item),followups:records.status(item)};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   static async observeDeliveries(directory:string,batches:readonly string[]){
@@ -584,6 +588,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   deliveryWorkbench(){return this.deliveryWorkbenchRecords(fn=>this.transaction(fn));}
   private deliveryWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new DeliveryWorkbenchRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),this.deliveryAssessmentRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),id=>this.authorityItem(id));}
   static async observeDeliveryWorkbench(directory:string,batch:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryWorkbenchRecords(fn=>fn()).forBatch(batch);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  overallWorkbench(){return this.overallWorkbenchRecords(fn=>this.transaction(fn));}
+  private overallWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new OverallWorkbenchRecords(this.db,transaction,this.directory,new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),this.resourceRecords(fn=>fn()),(id,current)=>this.reviewSource(id,current));}
+  static observeWorkbenchOverall(directory:string,item:string,templateSha256:string):Promise<ReturnType<OverallWorkbenchRecords['selected']>>;
+  static observeWorkbenchOverall(directory:string,item:string,templateSha256:string,id:string):Promise<ReturnType<OverallWorkbenchRecords['files']>>;
+  static async observeWorkbenchOverall(directory:string,item:string,templateSha256:string,id?:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');q.item(item);const r=q.overallWorkbenchRecords(fn=>fn());return id?r.files(item,id,templateSha256):r.selected(item,templateSha256);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private deliveryAssessmentRecords(transaction:<T>(fn:()=>T)=>T):DeliveryAssessmentRecords{return new DeliveryAssessmentRecords(this.db,transaction,this.directory,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),()=>this.messageRecords(fn=>fn()),(run,p)=>{if(!p.resourceBudget)return !this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}});}
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
