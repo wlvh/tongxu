@@ -17,6 +17,18 @@ const safePath=(p:string)=>p.length>0&&!p.startsWith('/')&&!/[\x00-\x1f]/.test(p
 const signature=(s:ManagedRepairSource)=>hash(canonical({operation:s.op.id,status:s.op.status,repair:s.repair,plan:hash(s.plan),request:hash(s.request),config:hash(s.config)}));
 const captureHash=(c:ManagedRepairCapture)=>hash(canonical({...c,workspace:c.workspace,originals:[...c.originals].map(([h,b])=>[h,hash(b)]).sort()}));
 
+/** Supplement an already verified readRepairSession. Identical cached RPC
+ * retransmissions are one tool execution; this checks their original helper
+ * association, not standalone native provenance or process termination. */
+export function verifyObservedHelperTransports(transports:Row[],events:Row[],pairs:Row[],parent:{pid:number;sha256:string;threadId:string;turnIds:string[]},helperPid:number){
+  const observed=transports.filter(t=>Array.isArray(t.observedHelperPids)&&t.observedHelperPids.includes(helperPid));
+  if(!observed.length)throw new Error('handoff_observed_helper_transport_missing');
+  for(const t of observed){
+    const calls=events.filter(e=>e.method==='item/tool/call'&&hash(JSON.stringify(e))===t.requestSha256),call=calls[0];
+    if(!call||t.transport!=='owned-app-server-dynamic-rpc'||t.helperObservation!=='observed_official_children'||t.appServerPid!==parent.pid||t.appServerExecutableSha256!==parent.sha256||t.threadId!==parent.threadId||!parent.turnIds.includes(t.turnId)||call.params.callId!==t.callId||call.params.threadId!==t.threadId||call.params.turnId!==t.turnId||events.some(e=>e.method==='item/tool/call'&&e.id===call.id&&canonical(e)!==canonical(call))||hash(JSON.stringify(dynamicToolStart(events,call)))!==t.startSha256||!pairs.some(pair=>canonical(pair.request)===canonical(call)&&pair.response.id===call.id&&pair.response.result))throw new Error('handoff_observed_helper_transport_changed');
+  }
+}
+
 /** Keep the original controller's existing mutex held through the consumer's
  * callback. A serialized snapshot is never a transferable write permission. */
 export async function withManagedRepairCapture<T>(ref:ManagedRepairReference,readSource:()=>ManagedRepairSource,consume:(capture:ManagedRepairCapture)=>Promise<T>):Promise<T>{
@@ -55,9 +67,7 @@ export async function withManagedRepairCapture<T>(ref:ManagedRepairReference,rea
         const read=async(name:string)=>JSON.parse((await keep(join(parent,name))).toString());
         const parentProcess=await read('process.json'),parentExit=await read('exit.json'),identity=await read('executable.json'),host=await read('tool-host.json'),receipt=await read('completed.json'),transportBytes=await keep(join(parent,'native-tool-transports.json')),transports=JSON.parse(transportBytes.toString()),pairs=await read('reconciled-tools.json'),raw=await keep(join(parent,'stdout.ndjson')),events=raw.toString().trim().split('\n').map(x=>JSON.parse(x));
         if(basename(directory)!=='tool-host-'+p.pid||launch.parentPid!==parentProcess.pid||processState(p.pid)!=='ended'||processState(parentProcess.pid)!=='ended'||parentExit.code!==0||parentExit.signal!==null||host.path!==launch.command||host.path!==join(resolve(dirname(identity.realpath),'../../..'),'bin','codex-code-mode-host')||host.arbitraryShellEnabled!==false||!sha.test(host.sha256)||!sha.test(host.packageManifestSha256)||receipt.rawSha256!==hash(raw)||receipt.toolTransportsSha256!==hash(transportBytes)||!Array.isArray(transports))throw new Error('handoff_observed_helper_end_unverified');
-        const observed=transports.filter((t:Row)=>Array.isArray(t.observedHelperPids)&&t.observedHelperPids.includes(p.pid));
-        if(!observed.length)throw new Error('handoff_observed_helper_transport_missing');
-        for(const t of observed){const calls=events.filter((e:Row)=>e.method==='item/tool/call'&&hash(JSON.stringify(e))===t.requestSha256),call=calls[0];if(calls.length!==1||t.transport!=='owned-app-server-dynamic-rpc'||t.helperObservation!=='observed_official_children'||t.appServerPid!==parentProcess.pid||t.appServerExecutableSha256!==identity.sha256||t.threadId!==parsed.binding.threadId||!parsed.binding.turnIds.includes(t.turnId)||call.params.callId!==t.callId||call.params.threadId!==t.threadId||call.params.turnId!==t.turnId||hash(JSON.stringify(dynamicToolStart(events,call)))!==t.startSha256||!pairs.some((pair:Row)=>canonical(pair.request)===canonical(call)&&pair.response.id===call.id&&pair.response.result))throw new Error('handoff_observed_helper_transport_changed');}
+        verifyObservedHelperTransports(transports,events,pairs,{pid:parentProcess.pid,sha256:identity.sha256,threadId:parsed.binding.threadId,turnIds:parsed.binding.turnIds},p.pid);
         processes.push({directory,pid:p.pid,ended:true,endEvidence:'verified_parent_and_observed_helper',childExitStatus:'not_observed',parentPid:parentProcess.pid});return;
       }
       const e=JSON.parse((await keep(join(directory,'exit.json'))).toString());if(processState(p.pid)!=='ended'||!(Number.isInteger(e.code)||typeof e.signal==='string'&&e.signal.length>0))throw new Error('handoff_registered_process_active_or_unknown');processes.push({directory,pid:p.pid,ended:true,endEvidence:'registered_exit'});
