@@ -149,6 +149,9 @@ export class QueueStore {
   static async observeMessageReport(directory:string,item:string,run:string,message:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.collaborationView().messageReport(item,run,message);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  static async observeOwnerTask(directory:string,item:string){
+    const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const selected=q.authorityItem(item),a=new AuthorityRecords(q.db,fn=>fn(),id=>q.authorityItem(id));return {...a.forScope(selected.context.scope.id),taskCurrent:selected.current,taskScope:selected.context.scope,target:selected.candidate.targetRef};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   static async observeDeliveries(directory:string,batches:readonly string[]){
     if(!batches.length||batches.length>8||new Set(batches).size!==batches.length)throw new Error('delivery_selection_invalid');
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return batches.map(sha=>q.deliveryRecords(fn=>fn()).state(sha));}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
@@ -288,6 +291,10 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {item:id,packet:item.current_packet,fingerprint:packet.fingerprint,candidate:evidence.manifest.candidate,context:evidence.context,subjectSha256:summary.composition?.sha256??null,current:!item.observation_conflict&&this.receiverCandidateCurrent(item),prerequisites:this.prerequisites(item),evidenceComplete:summary.evidenceComplete};
   }
   authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id),{check:p=>this.deliveryRecords(fn=>fn()).checkOutcome(p),record:sha=>this.deliveryRecords(fn=>fn()).recordOutcome(sha)}); }
+  withOwnerTask<T>(item:string,scopeId:string,target:string,action:(a:AuthorityRecords)=>T):T{return this.transaction(()=>{
+    const selected=this.authorityItem(item);if(selected.context.scope.id!==scopeId||selected.candidate.targetRef!==target)throw new Error('owner_control_task_changed');
+    return action(new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));
+  });}
   deliveries(){return this.deliveryRecords(fn=>this.transaction(fn));}
   private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude),members=>this.deliveryMemberReturns(members));}
   private deliveryMemberReturns(members:Row[]){

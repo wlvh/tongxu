@@ -9,6 +9,7 @@ import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
 import {DeliveryControls,type DeliverySelection} from './delivery-controls.js';
+import {OwnerControls} from './owner-controls.js';
 
 type Row = Record<string, any>;
 export type WorkbenchPlan = {
@@ -16,19 +17,21 @@ export type WorkbenchPlan = {
   sources: Array<{ id: string; title: string; store: string; item: string }>;
   controls?:{path:string;sha256:string};
   deliveries?:DeliverySelection[];
+  ownerControls?:string[];
 };
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && !!v.trim() && v.length <= max && !v.includes('\0');
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   const p = JSON.parse(bytes.toString());
   if (p.schemaVersion !== 1 || !['tongxu-local-workbench','tongxu-controlled-workbench'].includes(p.kind) || !text(p.title, 100) || !text(p.goal, 1000) || !Array.isArray(p.sources) || !p.sources.length || p.sources.length > 8) throw new Error('invalid_workbench_plan');
-  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length):Object.hasOwn(p,'controls'))throw new Error('invalid_workbench_controls');
+  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length&&!p.ownerControls?.length):Object.hasOwn(p,'controls')||Object.hasOwn(p,'ownerControls'))throw new Error('invalid_workbench_controls');
   const ids = new Set(), tasks = new Set();
   for (const s of p.sources) {
     if (!s || typeof s.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(s.id) || !text(s.title, 100) || !/^[a-f0-9]{64}$/.test(s.item) || typeof s.store !== 'string' || !isAbsolute(s.store) || resolve(s.store) !== s.store || ids.has(s.id) || tasks.has(s.store + ':' + s.item)) throw new Error('invalid_workbench_source');
     ids.add(s.id); tasks.add(s.store + ':' + s.item);
   }
   if(Object.hasOwn(p,'deliveries')){if(!Array.isArray(p.deliveries)||!p.deliveries.length||p.deliveries.length>8)throw new Error('invalid_workbench_deliveries');const entries=new Set(),batches=new Set();for(const d of p.deliveries){if(!exactKeys(d,['id','source','batchSha256'])||typeof d.id!=='string'||!/^[a-z0-9-]{1,64}$/.test(d.id)||entries.has(d.id)||!ids.has(d.source)||!isAuthorityDigest(d.batchSha256)||batches.has(d.source+':'+d.batchSha256))throw new Error('invalid_workbench_delivery');entries.add(d.id);batches.add(d.source+':'+d.batchSha256);}}
-  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}) };
+  if(Object.hasOwn(p,'ownerControls')&&(!Array.isArray(p.ownerControls)||!p.ownerControls.length||p.ownerControls.length>8||new Set(p.ownerControls).size!==p.ownerControls.length||p.ownerControls.some((id:unknown)=>!ids.has(id))))throw new Error('invalid_workbench_owner_controls');
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -107,6 +110,7 @@ export async function startWorkbench(planPath: string) {
   const p = parseWorkbenchPlan(await regular(planPath)), token = randomBytes(32).toString('hex');
   const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
   const deliveryControls=p.deliveries?new DeliveryControls(p.deliveries,p.sources,p.kind==='tongxu-controlled-workbench'):null;
+  const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
   const assets = new Map<string, { type: string; bytes: Buffer }>();
   for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   let host = '';
@@ -124,23 +128,25 @@ export async function startWorkbench(planPath: string) {
       const url = new URL(req.url ?? '/', 'http://' + host);
       if (url.search) { json(res, 400, { error: 'query_not_supported' }); return; }
       if(req.method!=='GET'){
-        if(!controls&&!deliveryControls?.writable){json(res,405,{error:'read_only_workbench'});return;}
+        if(!controls&&!deliveryControls?.writable&&!ownerControls){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
         const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel)$/.exec(url.pathname);
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
         const delivery=/^\/api\/delivery\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&delivery)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&delivery||ownerControls&&owner)){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
-        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
+        if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
         if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls!.setScope(scope[1]!,scope[2]!,body.revision));return;}
         if(!exactKeys(body,[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
         json(res,action![2]==='start'?202:200,action![2]==='start'?await controls!.begin(action![1]!):await controls!.cancel(action![1]!));return;
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {})}); return; }
+      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{})}); return; }
       const assessment=/^\/api\/delivery-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);
       if(assessment){if(!deliveryControls)throw new Error('report_not_found');json(res,200,await deliveryControls.report(assessment[1]!,assessment[2]!));return;}
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
@@ -153,5 +159,5 @@ export async function startWorkbench(planPath: string) {
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
-  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await closed;} };
 }

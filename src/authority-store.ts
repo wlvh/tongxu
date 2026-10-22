@@ -95,6 +95,17 @@ export class AuthorityRecords {
     parseOwnerProposal(p.proposal,profile,Date.parse(p.createdAt));return p;
   }
   proposal(sha:string){return this.transaction(()=>this.prepared(sha));}
+  forScope(scopeId:string){return this.transaction(()=>{
+    const {profile}=this.profile(),current=this.currentScope(scopeId),requests=this.all('authority_proposal_prepared').flatMap(e=>{
+      const p=this.prepared(e.data.proposalSha256),proposal=p.proposal;
+      const adoption='adoption' in proposal?this.prepared(proposal.adoption).proposal:proposal.kind==='revoke'?this.decision(proposal.decision).proposal:null;
+      const scope=proposal.kind==='adopt_scope'?proposal.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:adoption&&'adoption' in adoption?this.adoption(adoption.adoption,false).proposal.scopeId:null;
+      if(scope!==scopeId||proposal.kind==='delivery_outcome')return [];
+      const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
+      return [{proposalSha256:e.data.proposalSha256,proposal,createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
+    });
+    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
+  });}
   inspectRecordedDecision(sha:string){return this.transaction(()=>{
     const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
     const checked=inspectStoredOwnerSource(profile,sha,saved.commentId,this.bytes(originalEditorSha256),this.bytes(originalCommentSha256),saved.readAt);
