@@ -290,7 +290,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       context:(task,actor,tool)=>this.coordinationRecords(fn=>fn()).ownerContext(task,actor,tool),
       bind:(id,plan,sha,mapping)=>this.coordinationRecords(fn=>fn()).bindMessages(id,plan,sha,mapping),
       feedback:(id,task,run,message)=>this.coordinationRecords(fn=>fn()).ownerFeedback(id,task,run,message)
-    },task=>this.taskScopeFollowupRecords(fn=>fn()).context(task));
+    },task=>this.taskScopeFollowupRecords(fn=>fn()).context(task),task=>this.taskScopeFollowupRecords(fn=>fn()).assertFamilyIdle(task));
   }
 
   async refreshMessageTaskSources(run:string){

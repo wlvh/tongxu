@@ -22,7 +22,7 @@ export function parseTaskOwnerRequest(raw:Buffer):TaskOwnerRequest{
  * native context only after the preceding exact execution is proven ended.
  * Imported App sessions and caller-written actor names are not control rights. */
 export class TaskInbox {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private tasks:TaskRecords,private messages:(run:string)=>Row,private association?:(task:string,link?:string)=>Row|null,private checkAssociation?:(task:string,link:string)=>void,private associationHistory?:(task:string)=>Row[],private publicationSource?:(task:string,reference:PublicationReturnReference)=>Row,private coordination?:InboxCoordination,private scopeContinuation?:(task:string)=>Row|null){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private tasks:TaskRecords,private messages:(run:string)=>Row,private association?:(task:string,link?:string)=>Row|null,private checkAssociation?:(task:string,link:string)=>void,private associationHistory?:(task:string)=>Row[],private publicationSource?:(task:string,reference:PublicationReturnReference)=>Row,private coordination?:InboxCoordination,private scopeContinuation?:(task:string)=>Row|null,private scopeFamilyIdle?:(task:string)=>void){}
   private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('task_inbox_original_changed');return b;}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private event(task:string,kind:string,value:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('task_inbox_'+kind,task,canonical({value,sha256:this.blob(Buffer.from(canonical(value)))}),now());}
@@ -53,6 +53,7 @@ export class TaskInbox {
     const p=parseTaskOwnerRequest(raw),current=this.tasks.current(p.task),events=this.events(p.task),requestSha256=hash(canonical(p)),old=events.find(e=>e.kind==='task_inbox_queued'&&e.data.id===p.id)?.data;
     if(expected&&(current.packet!==expected.packet||current.fingerprint!==expected.sourceSha256))throw new Error('task_request_expected_source_changed');
     if(old){if(old.requestSha256!==requestSha256)throw new Error('task_request_id_is_fixed');return {...old,duplicate:true};}
+    this.scopeFamilyIdle?.(p.task);
     const owner=events.find(e=>e.kind==='task_inbox_queued')?.data;if(owner){const first=parseTaskOwnerRequest(this.bytes(owner.requestSha256));if(canonical(first.participant)!==canonical(p.participant)||first.executionKind!==p.executionKind)throw new Error('task_original_responsibility_is_fixed');}else if(p.publicationReturn)throw new Error('task_original_responsibility_required');
     if(p.nativeResume&&!events.some(e=>e.kind==='task_inbox_selected'&&e.data.run===p.nativeResume!.run&&e.data.id===p.nativeResume!.messageId))throw new Error('task_native_resume_original_request_required');
     if(p.publicationReturn){
@@ -90,6 +91,7 @@ export class TaskInbox {
   });}
   prepare(task:string,id:string){return this.transaction(()=>{
     const f=this.entry(task,id);if(f.selected)return this.selection(f.selected);
+    this.scopeFamilyIdle?.(task);
     this.available(task,id);const history=f.events.filter(e=>e.kind==='task_inbox_selected'&&!f.events.some(c=>c.kind==='task_inbox_cancelled'&&c.data.id===e.data.id)).map(e=>{const original=this.messages(e.data.run),s=original.state;return {originalRoleInputs:original.inputs,request:e.data.id,run:e.data.run,bindings:s.registration.bindings,reports:s.messages.map((m:Row)=>({id:m.id,recipient:m.sent.recipient,receipt:m.reply,...(m.interruption?{state:m.state,interruption:m.interruption}:{})})),...(f.events.some(c=>c.kind==='task_inbox_interrupted_closed'&&c.data.id===e.data.id)?{interruptedRequestClosed:true,originalRunCompleted:false}:{}),nativeSessionResumed:s.runtimes.some((r:Row)=>r.route?.nativeSessionResumed===true)};});
     const coordination=this.coordination?.context(task,f.request.participant.id,f.request.participant.tool)??null,link=coordination?{planId:coordination.planId,task:coordination.task,contextSha256:coordination.sha256}:null;
     const scopeContinuation=this.scopeContinuation?.(task)??null;
@@ -127,6 +129,7 @@ export class TaskInbox {
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
     if(links.length!==1||taskParticipants.length!==1||state.plan.participants.length!==1)throw new Error('task_registered_owner_dispatch_required');
     const task=links[0]!.object,selected=JSON.parse(links[0]!.data).value,f=this.available(task,selected.id),exact=this.selection(f.selected);
+    this.scopeFamilyIdle?.(task);
     const associated=JSON.parse(exact.context.toString()).candidateAssociation;if(associated)this.checkAssociation?.(task,associated.association.link);
     if(canonical(state.plan)!==canonical(parseMessagePlan(exact.plan))||taskParticipants[0].item!==task||state.registration.materials['task-owner-context.json']?.sha256!==selected.contextSha256)throw new Error('task_owner_dispatch_changed');
   }

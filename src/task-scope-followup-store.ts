@@ -30,6 +30,15 @@ export class TaskScopeFollowups{
   context(task:string){return this.transaction(()=>this.contextValue(task));}
   private contextValue(task:string){const rows=this.events().filter(e=>e.kind==='task_scope_followup_bound'&&e.object===task);if(!rows.length)return null;if(rows.length!==1)throw new Error('task_scope_context_ambiguous');return JSON.parse(this.bytes(rows[0]!.data.contextSha256).toString());}
   private family(task:string){const bound=this.events().filter(e=>e.kind==='task_scope_followup_bound'),root=bound.find(e=>e.object===task)?.data.rootTask??task;return {root,items:[root,...bound.filter(e=>e.data.rootTask===root).map(e=>e.object)]};}
+  /** Called inside the original inbox/message transaction, including runtime
+   * registration. Preparation is not a permanent execution claim: recheck every
+   * other linked task before accepting new work or starting/sending a runtime. */
+  assertFamilyIdle(task:string){return this.transaction(()=>{
+    for(const other of this.family(task).items){if(other===task)continue;
+      this.inbox.scopeContinuationSource(other);
+      if(this.db.prepare("SELECT 1 FROM operations WHERE item=? AND status!='complete'").get(other))throw new Error('task_scope_original_operation_not_ended');
+    }
+  });}
   preview(raw:Buffer){return this.transaction(()=>this.previewValue(raw));}
   private previewValue(raw:Buffer){
     const p=parseScopeFollowup(raw),current=this.tasks.current(p.task);

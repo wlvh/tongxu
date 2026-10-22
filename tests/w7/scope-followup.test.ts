@@ -31,6 +31,11 @@ test('queued original or prepared family work blocks another followup; stale sel
  const before=f.q.status();await assert.rejects(prepareScopeFollowup(f.store,raw),/original_work_not_ended/);assert.deepEqual(f.q.status(),before);
  f.q.taskInbox().cancelUnsent(f.task,'old-unsent','explicit fixture cancellation before scope continuation');
  const prepared=await prepareScopeFollowup(f.store,raw);await assert.rejects(prepareScopeFollowup(f.store,Buffer.from(canonical({...f.request,goal:'another pending followup'}))),/original_work_not_ended/);assert.equal(f.q.scopeFollowups().status(f.task).length,1);assert.equal(prepared.newModelRequests,0);
+ // The original queue is still callable after preparation. It must not admit
+ // competing work behind the new workbench's prepared task.
+ const fixed=f.q.status();assert.throws(()=>f.q.taskInbox().enqueue(Buffer.from(canonical({...f.previousRequest,id:'late-original-after-preparation'}))),/original_work_not_ended/);assert.deepEqual(f.q.status(),fixed);
+ const nextControl=await TaskControls.load(prepared.controls.path,prepared.controls.sha256,[prepared.source]);t.after(()=>nextControl.drain());await nextControl.cancel(prepared.contact.id);
+ const late=f.q.taskInbox().enqueue(Buffer.from(canonical({...f.previousRequest,id:'late-original-after-preparation'})));assert.equal(late.duplicate,false);f.q.taskInbox().cancelUnsent(f.task,'late-original-after-preparation','explicit fixture cleanup');
  await assert.rejects(prepareScopeFollowup(f.store,Buffer.from(canonical({...f.request,writingPermissionGranted:true}))),/followup_invalid/);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);
 });
 test('changed workspace or missing current scope cannot be silently substituted during preparation',async t=>{
