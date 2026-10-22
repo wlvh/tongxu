@@ -262,7 +262,7 @@ function taskView() {
 
     const inbox=el('section',null,'panel');inbox.append(el('h3','负责人待办'));
     if (!d.inbox.length) inbox.append(el('p','尚未安排负责人调查。','small'));
-    for (const r of d.inbox) inbox.append(append(el('div',null,'report-row'),append(el('div'),el('strong',r.id+' · '+(phases[r.phase]||r.phase)),el('p',r.actor+' / '+r.tool+' · '+(r.currentMaterial?'对应当前材料':'历史材料'),'small'),r.reason?el('p',r.reason,'small'):null,r.sessionId?el('p','实际会话 '+r.sessionId+' · 新上下文，未接管外部会话','small'):null)));
+    for (const r of d.inbox) inbox.append(append(el('div',null,'report-row'),append(el('div'),el('strong',r.id+' · '+(phases[r.phase]||r.phase)),el('p',r.actor+' / '+r.tool+' · '+(r.currentMaterial?'对应当前材料':'历史材料'),'small'),r.reason?el('p',r.reason,'small'):null,r.sessionId?el('p','实际会话 '+r.sessionId+' · '+(r.nativeSessionResumed?'准确续接原会话'+(r.resumedFrom?.messageId?' · 原请求 '+r.resumedFrom.messageId:''):'新上下文，未接管外部会话'),'small'):null)));
     panel.append(inbox);
   }
   append(panel,scopeControlPanel(t),contactControls(t),collaborationView(t));
