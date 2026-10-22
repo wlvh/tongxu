@@ -24,7 +24,9 @@ export type ResultBinding = {
 };
 export function validateBinding(x: any): ResultBinding {
   if (!object(x) || x.schemaVersion !== 1 || typeof x.protocol !== 'string' || !Object.hasOwn(protocols, x.protocol) || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'secretary', 'issue_owner', 'acceptance', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
-  if (['run', 'sessionId', 'threadId'].some(k => !text(x[k])) || !text(x.workspace, 4096) || !isAbsolute(x.workspace) || resolve(x.workspace) !== x.workspace || !text(x.scopeSource, 2048) || !text(x.arrangementSource, 2048) || !sha.test(x.inputManifestSha256) || !sha.test(x.promptSha256)) throw new Error('incomplete_result_binding');
+  // An owned run is also the original operation's absolute directory. Nested
+  // queue evidence can exceed an ID's length without changing its identity.
+  if (['sessionId', 'threadId'].some(k => !text(x[k])) || !text(x.run,4096) || x.run.length>256&&(!isAbsolute(x.run)||resolve(x.run)!==x.run) || !text(x.workspace, 4096) || !isAbsolute(x.workspace) || resolve(x.workspace) !== x.workspace || !text(x.scopeSource, 2048) || !text(x.arrangementSource, 2048) || !sha.test(x.inputManifestSha256) || !sha.test(x.promptSha256)) throw new Error('incomplete_result_binding');
   if (!Array.isArray(x.turnIds) || x.turnIds.length > 8 || x.turnIds.some((s: any) => !text(s)) || new Set(x.turnIds).size !== x.turnIds.length || (!x.turnIds.length && x.role !== 'protocol_probe')) throw new Error('invalid_expected_turns');
   const c = x.candidate;
   if (!object(c) || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !(c.kind === 'development-task' ? c.pr === null && sha.test(c.taskId) && sha.test(c.sourceSha256) : c.kind === 'local-git' ? c.pr === null && c.repository.startsWith('local/') : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr >= 1) || !commit.test(c.H) || !commit.test(c.B) || !text(c.target, 256)) throw new Error('invalid_result_candidate');

@@ -11,11 +11,14 @@ import { executable, LiveProcess, newStage, save, checkCapture } from './live-pr
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
 import { repairToolSpecs, projectRepairToolSpecs, exists,regular } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
+import {isMessageReplySchema} from './message-contract.js';
 const exec = promisify(execFile);
 
 export type NativeOptions = {
   executable: string; directory: string; operation: string; candidate: Candidate;
-  role: 'verifier_fact' | 'reviewer' | 'secretary'; system: string; inputManifestSha256: string;
+  role: 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
+  readonlyMessage?:true;
+  afterTurnStarted?:(turnId:string)=>void;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   persistent?: boolean;
   resumeFrom?: string;
@@ -53,6 +56,10 @@ export function assertToolTurnOpen(events: any[], request: any) {
   if (events.some(m => m.params?.threadId === p.threadId && (m.method === 'turn/completed' && m.params?.turn?.id === p.turnId || m.method === 'item/completed' && m.params?.turnId === p.turnId && m.params?.item?.id === p.callId))) throw new Error('native_tool_request_after_terminal');
 }
 function validateNativeReport(report: any, candidate: Candidate, schema: unknown) {
+  if(isMessageReplySchema(schema)){
+    if(!report||Object.keys(report).sort().join()!=='consumed,messageId,report'||report.messageId!==(schema as any).properties.messageId.enum[0]||typeof report.report!=='string'||!report.report.trim()||!Array.isArray(report.consumed)||report.consumed.length>32||report.consumed.some((x:unknown)=>typeof x!=='string'||!/^[a-f0-9]{64}$/.test(x)))throw new Error('invalid_native_message_receipt');
+    return;
+  }
   const secretary=isDeepStrictEqual(schema,secretarySchema),review=isDeepStrictEqual(schema,reviewSchema);
   if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
   if (secretary) {
@@ -80,6 +87,7 @@ export class BoundedCodexSession {
   private previous:Awaited<ReturnType<typeof readOwnedCodexSession>>|undefined;
   private constructor(readonly o: NativeOptions) {}
   static async start(o: NativeOptions) {
+    if(o.readonlyMessage!==undefined&&(o.readonlyMessage!==true||o.gate||!o.control||!o.persistent||!o.arrangementSource||!['reviewer','verifier_fact','issue_owner','acceptance'].includes(o.role))||['issue_owner','acceptance'].includes(o.role)&&!o.readonlyMessage)throw new Error('native_message_profile_required');
     if(o.persistent!==undefined&&(typeof o.persistent!=='boolean'||o.persistent&&(!o.control||o.gate)))throw new Error('native_persistence_requires_owned_no_tool_profile');
     if(o.resumeFrom!==undefined&&(!o.persistent||resolve(o.resumeFrom)!==o.resumeFrom))throw new Error('native_resume_requires_exact_owned_source');
     if(o.control&&(typeof o.control.beforeControl!=='function'||typeof o.control.beforeControlSendSync!=='function'))throw new Error('native_control_owner_gate_required');
@@ -88,6 +96,7 @@ export class BoundedCodexSession {
     const session = new BoundedCodexSession(o);try{await session.initialize();return session;}catch(e){await session.close();throw e;}
   }
   get sessionId() { return this.binding.sessionId; }
+  get executionBinding(){return structuredClone(this.binding);}
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
   controlState(){const ended=this.activeTurn&&this.rpc.events.some(m=>m.method==='turn/completed'&&m.params?.threadId===this.binding.threadId&&m.params?.turn?.id===this.activeTurn);return {operation:this.o.operation,directory:this.o.directory,role:this.o.role,threadId:this.binding?.threadId??null,sessionId:this.binding?.sessionId??null,turnId:ended?null:this.activeTurn,ownedRuntime:!this.closed&&!this.rpc?.exit,currentTurnActive:Boolean(this.activeTurn&&!ended&&!this.closed&&!this.rpc.failure),controlGateInstalled:Boolean(this.o.control),resumeVerified:false,pauseSupported:false,permissionGranted:false};}
   async control(value:NativeControlRequest):Promise<NativeControlReceipt>{
@@ -185,7 +194,7 @@ export class BoundedCodexSession {
       this.contract.push(response); save(join(o.directory, 'expected-requests.json'), this.contract); return result;
     });
     try {
-      await this.request('initialize', { clientInfo: { name: o.role === 'secretary' ? o.secretaryContacts?'tongxu-task-secretary':'tongxu-readonly-secretary' : 'tongxu-controlled-repair', version: '0.1.0' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: o.readonlyMessage?'tongxu-owned-readonly-message':o.role === 'secretary' ? o.secretaryContacts?'tongxu-task-secretary':'tongxu-readonly-secretary' : 'tongxu-controlled-repair', version: '0.1.0' }, capabilities: { experimentalApi: true } });
       const notification = { method: 'initialized', params: {} }; this.contract.push(notification); save(join(o.directory, 'expected-requests.json'), this.contract); this.rpc.send(notification);
       const account = await this.request('account/read', { refreshToken: false }); if (account.account?.type !== 'chatgpt') throw new Error('included_subscription_not_confirmed');
       const config = await this.request('config/read', { includeLayers: false, cwd }); checkConfig(config.config, !!o.gate); save(join(o.directory, 'effective-config.json'), config);
@@ -205,7 +214,7 @@ export class BoundedCodexSession {
         const current=await this.request('thread/read',{threadId:b.threadId,includeTurns:true});save(join(o.directory,'resume-history.json'),current);
         if(current.thread?.id!==b.threadId||current.thread?.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
       }
-      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, protocol: 'codex-app-server/0.163.0-alpha.10.2', sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary' ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
+      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, protocol: 'codex-app-server/0.163.0-alpha.10.2', sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
       save(join(o.directory, 'binding.json'), this.binding); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
     } catch (e) { await this.close(); throw e; }
   }
@@ -226,6 +235,7 @@ export class BoundedCodexSession {
     }finally{this.turnRunning=false;}
   }
   private async runTurn(input: string, candidate: Candidate, schema: unknown) {
+    if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
     if ((this.o.role === 'secretary') !== (schema === secretarySchema)) throw new Error('native_role_output_schema_mismatch');
     if (this.closed || this.boundaryFailure || this.binding.turnIds.length >= 8) throw new Error('native_turn_budget_or_closed');
     if(this.activeTurn||this.pendingTurn)throw new Error('native_turn_already_active');
@@ -246,6 +256,7 @@ export class BoundedCodexSession {
     this.activeTurn = response.turn?.id;
     if (!this.activeTurn || this.binding.turnIds.includes(this.activeTurn)) throw new Error('native_turn_identity_mismatch');
     this.binding.turnIds.push(this.activeTurn); save(join(this.o.directory, 'binding.json'), this.binding);
+    this.o.afterTurnStarted?.(this.activeTurn);
     const currentTurn = this.activeTurn;
     const hostUnavailable = (m: any) => !!this.o.gate && m.method === 'warning' && /Code Mode is unavailable/.test(m.params?.message ?? '');
     const terminal = await this.rpc.waitFor(m => m.params?.threadId === this.binding.threadId && ((m.method === 'turn/completed' && m.params?.turn?.id === currentTurn) || hostUnavailable(m) || (m.method === 'thread/status/changed' && m.params?.status?.activeFlags?.some((x: string) => x === 'waitingOnApproval' || x === 'waitingOnUserInput'))), this.o.timeoutMs);

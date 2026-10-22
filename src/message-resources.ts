@@ -19,8 +19,10 @@ export async function refreshMessageResources(q:QueueStore,run:string,p:MessageP
 /** Completion reporting is factual cleanup. It grants no new input and can
  * run after revocation; partial/unknown messages keep their original claim. */
 export async function completeMessageResources(q:QueueStore,run:string,p:MessagePlan,complete:boolean){
-  if(!p.resourceBudget||!complete)return [];
-  const binding=q.messageResources().complete(run),results=[];
+  if(!p.resourceBudget)return [];
+  const state=q.messages().status(run),interrupted=!complete&&state.messages.length===1&&state.messages[0]!.state==='Interrupted'&&state.runtimes.filter(r=>r.started).every(r=>r.captureVerification?.proof.successfulCapture===true);
+  if(!complete&&!interrupted)return [];
+  const binding=interrupted?q.messageResources().closeInterrupted(run):q.messageResources().complete(run),results=[];
   for(const id of binding.resourceRequests){try{const previous=q.resources().status(id);if(previous.pendingResultAttempt&&!['consumed','released'].includes(previous.state))await resourceAction(q.directory,id,'lookup',binding.role);results.push(await resourceAction(q.directory,id,'record-result',binding.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
   return results;
 }
@@ -37,5 +39,5 @@ export async function settlePartialMessageResources(q:QueueStore,run:string,next
 }
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return true;
-  try{const b=q.messageResources().state(run);return ['returned','partial_returned'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
+  try{const b=q.messageResources().state(run);return ['returned','partial_returned','interrupted_returned'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
 }

@@ -10,8 +10,8 @@ import {parseCodexResult} from '../../src/codex-results.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
 
-async function setup(t:test.TestContext,policy?:NativeControlPolicy,persistent=false){
-  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-owned-control-')));t.after(async()=>{if(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE){await mkdir(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,{recursive:true});await cp(root,join(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,basename(root)),{recursive:true});}await rm(root,{recursive:true,force:true});});const executable=join(root,'codex-fixture.mjs'),operation=join(root,'operation');await mkdir(operation);
+async function setup(t:test.TestContext,policy?:NativeControlPolicy,persistent=false,nestedOperation=false){
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-owned-control-')));t.after(async()=>{if(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE){await mkdir(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,{recursive:true});await cp(root,join(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,basename(root)),{recursive:true});}await rm(root,{recursive:true,force:true});});const executable=join(root,'codex-fixture.mjs'),operation=nestedOperation?join(root,'evidence-'+('a'.repeat(100)),'operation-'+('b'.repeat(100))):join(root,'operation');await mkdir(operation,{recursive:true});
   const script=`#!${process.execPath}
 import readline from 'node:readline';
 import {readFileSync,writeFileSync} from 'node:fs';
@@ -89,4 +89,10 @@ test('persistent original resumes exact history; interruption survives restart a
   const thirdTurn=third.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema);s=third.controlState();while(!s.currentTurnActive){await new Promise(r=>setTimeout(r,5));s=third.controlState();}
   await third.control(f.request(s,'final-steer','steer'));await thirdTurn;await third.close();const final=await readOwnedCodexSession(thirdPath);assert.deepEqual(final.parsed.turns.map(t=>t.terminal),['completed','interrupted','completed']);assert.equal(final.parsed.handoffReady,false);
   assert.equal((await readFile(join(thirdPath,'stdin.ndjson'),'utf8')).includes('thread/start'),false);await assert.rejects(readFile(join(thirdPath,'completed.json')),{code:'ENOENT'});
+});
+
+test('an actual nested owned operation keeps its exact absolute path beyond the short native ID length',async t=>{
+  const f=await setup(t,{beforeControl:async()=>{},beforeControlSendSync:(_r,send)=>send()},true,true);assert.ok(f.options.operation.length>256);
+  const result=f.session.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema),s=await f.active();await f.session.control(f.request(s,'long-path-steer','steer'));await result;await f.session.close();
+  const captured=await readOwnedCodexSession(f.options.directory);assert.equal(captured.binding.run,f.options.operation);assert.equal(captured.parsed.handoffReady,true);
 });

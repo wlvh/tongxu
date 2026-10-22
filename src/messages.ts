@@ -9,7 +9,7 @@ import { hash,privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { parseMessagePlan,messagePlanId,checkMessageBilling,type MessagePlan } from './message-contract.js';
 import { assembleRolePrompt } from './role-prompts.js';
-import { messagePolicy,ReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec } from './message-runtime.js';
+import { messagePolicy,ReadonlyDialog,OwnedReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec,type MessageNativeHandle } from './message-runtime.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import {prepareMessageResources,refreshMessageResources,completeMessageResources,messageResourcesSettled} from './message-resources.js';
 type Row=Record<string,any>;
@@ -21,17 +21,18 @@ async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise
 }
 async function billing(p:MessagePlan,current?:MessagePlan['billing']){const proof=current??p.billing;checkMessageBilling(proof);const b=await regular(proof.evidence,128*1024),age=Date.now()-Date.parse(proof.observedAt);if(hash(b)!==proof.evidenceSha256||age< -60000||age>1800000)throw new Error('message_current_billing_evidence_required');return proof;}
 function completed(state:Row){return state.messages.every((m:Row)=>m.state==='Reply'&&m.reply.reportedConsumption)&&state.runtimes.filter((r:Row)=>r.started).every((r:Row)=>r.captureVerification?.proof.successfulCapture===true);}
+function nativeSpec(p:MessagePlan,participant:string){const controls=p.nativeControls?.filter(c=>p.messages.find(m=>m.id===c.messageId)?.to===participant);return controls?.length?{nativeControls:controls}:{};}
 async function replay(q:QueueStore,run:string,directory:string){
   const r=q.messages(),s=r.status(run),frozen=r.frozen(run),errors:string[]=[];for(const runtime of s.runtimes){if(!runtime.started)continue;const p=runtime.started.directory;try{
-    const participant=s.plan.participants.find(a=>a.id===runtime.participant)!;const spec:RuntimeSpec={run,participant,executionKind:s.plan.executionKind,directory:p,assembly:JSON.parse(frozen.assemblies[participant.id]!.toString()),binding:s.registration.bindings[participant.id],timeoutMs:s.plan.timeoutMs};
+    const participant=s.plan.participants.find(a=>a.id===runtime.participant)!;const spec:RuntimeSpec={run,participant,executionKind:s.plan.executionKind,directory:p,assembly:JSON.parse(frozen.assemblies[participant.id]!.toString()),binding:s.registration.bindings[participant.id],timeoutMs:s.plan.timeoutMs,...nativeSpec(s.plan,participant.id)};
     // Ended capture checks do not interrogate today's executable or credentials.
     if(runtime.ended?.proof.knownUnstarted){r.record(run,runtime.participant,await inspectUnstartedDialog(spec));continue;}
-    const result=await inspectDialogCapture(spec,r.submitted(run,runtime.participant));for(const proof of result.proofs)r.record(run,runtime.participant,proof);r.record(run,runtime.participant,result.ended);if(result.error){errors.push(result.error);r.problem(run,null,result.error);}
+    const result=await inspectDialogCapture(spec,r.submitted(run,runtime.participant),r.nativeControlRequests(run,runtime.participant));for(const proof of result.proofs)r.record(run,runtime.participant,proof);r.record(run,runtime.participant,result.ended);if(result.error){errors.push(result.error);r.problem(run,null,result.error);}
   }catch(e){const reason=e instanceof Error?e.message:'message_original_unavailable';errors.push(reason);r.problem(run,null,reason);}}
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string,currentBilling?:MessagePlan['billing']){
+export async function runMessages(store:string,planPath:string,recoverOnly=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void){
   const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
   // The caller may have selected a frozen operation before handing us a path.
   // Compare before opening the queue or creating/starting any runtime, and use
@@ -57,28 +58,35 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     for(const m of p.material){const b=await regular(m.path,512*1024);if(hash(b)!==m.sha256)throw new Error('message_material_changed');new TextDecoder('utf8',{fatal:true}).decode(b);materials[m.name]=b;}
     for(const a of p.participants){const assembly=await assembleRolePrompt(a.role,messagePolicy);promptObjects[a.id]=assembly;assemblies[a.id]=Buffer.from(canonical(assembly));}
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
-    const runtimes=new Map<string,ReadonlyDialog>(),specs=new Map<string,RuntimeSpec>();let sent=0,activeMessage:string|null=null;
+    const runtimes=new Map<string,ReadonlyDialog|OwnedReadonlyDialog>(),specs=new Map<string,RuntimeSpec>(),turnObservations=new Map<string,OwnerObservation[]>();let sent=0,activeMessage:string|null=null;
     try{
       await q.refreshMessageTaskSources(run);records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
       for(const m of p.messages){activeMessage=m.id;await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
-          await refreshMessageResources(q,run,p);const state=records.startRuntime(run,m.to,await observations(q,p,directory)),spec:RuntimeSpec={run,participant,executionKind:p.executionKind,directory:state.runtimes.find(r=>r.participant===m.to)!.started.directory,assembly:promptObjects[m.to]!,binding:state.registration.bindings[m.to],timeoutMs:p.timeoutMs};specs.set(m.to,spec);
-          const runtime=await ReadonlyDialog.open(spec);runtimes.set(m.to,runtime);records.record(run,m.to,runtime.address());
+          await refreshMessageResources(q,run,p);const state=records.startRuntime(run,m.to,await observations(q,p,directory)),spec:RuntimeSpec={run,participant,executionKind:p.executionKind,directory:state.runtimes.find(r=>r.participant===m.to)!.started.directory,assembly:promptObjects[m.to]!,binding:state.registration.bindings[m.to],timeoutMs:p.timeoutMs,...nativeSpec(p,m.to)};specs.set(m.to,spec);
+          const controlObservations=new Map<string,OwnerObservation[]>(),runtime=spec.nativeControls?await OwnedReadonlyDialog.open(spec,{
+            beforeTurnSendSync:()=>{records.check(run,turnObservations.get(participant.id)??[],activeMessage??undefined);},
+            control:{beforeControl:async request=>{
+              if(request.action==='interrupt'){controlObservations.set(request.id,[]);return;}
+              await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);controlObservations.set(request.id,await observations(q,p,directory));
+            },beforeControlSendSync:(request,send)=>{const observed=controlObservations.get(request.id);if(!observed)throw new Error('message_native_control_observation_required');records.nativeControlIntent(run,participant.id,request,observed);records.nativeControlSend(run,participant.id,request,observed,send);}}
+          }):await ReadonlyDialog.open(spec);runtimes.set(m.to,runtime);records.record(run,m.to,runtime.address());
+          if(runtime instanceof OwnedReadonlyDialog){const handle=runtime.handle();onOwnedRuntime?.(participant.id,{...handle,control:async(option,expected)=>{const result=await handle.control(option,expected);records.record(run,participant.id,result);return result;}});}
         }
         const state=records.status(run),runtime=runtimes.get(m.to)!,upstream=m.replies.map(id=>{const result=state.messages.find((x:Row)=>x.id===id);if(result?.state!=='Reply'||!result.reply?.reportedConsumption)throw new Error('message_upstream_incomplete_or_not_consumed');return {messageId:id,to:state.runtimes.find((r:Row)=>r.participant===result.to)!.route,receipt:result.reply};});
         const sender=m.from===null?null:state.runtimes.find((r:Row)=>r.participant===m.from)?.route;if(m.from!==null&&!sender)throw new Error('message_sender_route_missing');
         const materialConsumption=(p.consumeMaterial??[]).map(name=>({name,sha256:hash(frozen.materials[name]!)})),references=[...upstream.map(x=>x.receipt.finalSha256),...materialConsumption.map(m=>m.sha256)];
         const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:references,...(materialConsumption.length?{materialConsumptionReferences:materialConsumption}:{}),responseContract:{messageId:m.id,consumed:references,report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
-        const final=await runtime.send(envelope,async()=>{await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.intent(run,m.id,Buffer.from(canonical(envelope)),await observations(q,p,directory));sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
+        const final=await runtime.send(envelope,async()=>{await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);const observed=await observations(q,p,directory);turnObservations.set(participant.id,observed);records.intent(run,m.id,Buffer.from(canonical(envelope)),observed);sent++;},proof=>records.record(run,m.to,proof));records.record(run,m.to,final);
         if(!final.data.reportedConsumption)throw new Error('message_reply_did_not_confirm_input_consumption');
       }
     }catch(e){records.problem(run,activeMessage,e instanceof Error?e.message:'message_delivery_unknown');}
     finally{
       // All children created by this entry are awaited, including ordinary
       // failures. An ended process does not erase an unknown message.
-      for(const [id,runtime] of runtimes){try{await runtime.close();const submitted=records.submitted(run,id);if(!submitted.length){records.record(run,id,await inspectUnstartedDialog(specs.get(id)!));continue;}const inspected=await inspectDialogCapture(specs.get(id)!,submitted);for(const proof of inspected.proofs)records.record(run,id,proof);records.record(run,id,inspected.ended);if(inspected.error)records.problem(run,null,inspected.error);}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_capture_unresolved');}}
+      for(const [id,runtime] of runtimes){onOwnedRuntime?.(id,null);try{await runtime.close();const submitted=records.submitted(run,id);if(!submitted.length){records.record(run,id,await inspectUnstartedDialog(specs.get(id)!));continue;}const inspected=await inspectDialogCapture(specs.get(id)!,submitted,records.nativeControlRequests(run,id));for(const proof of inspected.proofs)records.record(run,id,proof);records.record(run,id,inspected.ended);if(inspected.error)records.problem(run,null,inspected.error);}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_capture_unresolved');}}
       for(const [id,spec] of specs)if(!runtimes.has(id)){try{records.record(run,id,await inspectUnstartedDialog(spec));}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_bootstrap_unknown');}}
     }
     const result=records.status(run),resources=await completeMessageResources(q,run,p,completed(result));return {...result,completed:completed(result),newModelRequests:sent,directory,resources,resourcesSettled:messageResourcesSettled(q,run,p)};

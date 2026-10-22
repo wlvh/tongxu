@@ -23,13 +23,13 @@ export async function prepareTaskOwner(store:string,task:string,id:string){
 export async function workTaskOwner(store:string,task:string,limit=4,currentBilling?:MessagePlan['billing']){
   if(!Number.isInteger(limit)||limit<1||limit>8)throw new Error('task_worker_limit');const runs=[];
   for(let n=0;n<limit;n++){
-    const q=await QueueStore.open(store);let next;try{next=q.taskInbox().status(task).find(x=>!['returned','cancelled'].includes(x.phase));}finally{q.close();}
+    const q=await QueueStore.open(store);let next;try{next=q.taskInbox().status(task).find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));}finally{q.close();}
     if(!next)return {task,runs,pending:[],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     if(next.phase==='waiting')return {task,runs,pending:[next],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling);runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests});
     if(!result.completed||!result.resourcesSettled)break;
   }
-  const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled'].includes(x.phase)),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
+  const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase)),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
 }
 
 /** Fixed A -> B -> A contact, with sender identities filled only from actual

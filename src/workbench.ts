@@ -132,7 +132,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(req.method!=='GET'){
         if(!controls&&!deliveryControls?.writable&&!ownerControls){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
-        const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel)$/.exec(url.pathname);
+        const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
         const delivery=/^\/api\/delivery\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
         const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
@@ -143,7 +143,9 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
         if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls!.setScope(scope[1]!,scope[2]!,body.revision));return;}
+        if(action![2]==='native'){json(res,200,await controls!.controlNative(action![1]!,body));return;}
         if(!exactKeys(body,[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
+        if(action![2]==='close-interrupted'){json(res,200,await controls!.closeInterrupted(action![1]!));return;}
         json(res,action![2]==='start'?202:200,action![2]==='start'?await controls!.begin(action![1]!):await controls!.cancel(action![1]!));return;
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
