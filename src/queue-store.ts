@@ -154,6 +154,9 @@ export class QueueStore {
   static async observeMessageReport(directory:string,item:string,run:string,message:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.collaborationView().messageReport(item,run,message);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  static async observeJudgmentFeedback(directory:string,item:string,selected?:{judgment:string;feedback:string}){
+    const q=await this.connect(directory,true);try{q.db.exec('BEGIN');q.item(item);const records=new ReviewRecords(q.db,fn=>fn(),(id,current)=>q.reviewSource(id,current),()=>{throw new Error('readonly_view_cannot_authorize');});return records.judgmentFeedback(item,selected);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   static async observeOwnerTask(directory:string,item:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const selected=q.authorityItem(item),a=new AuthorityRecords(q.db,fn=>fn(),id=>q.authorityItem(id));return {...a.forScope(selected.context.scope.id,{item,target:selected.candidate.targetRef}),taskCurrent:selected.current,taskScope:selected.context.scope,target:selected.candidate.targetRef};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }

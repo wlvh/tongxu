@@ -92,7 +92,8 @@ export async function workbenchState(p: WorkbenchPlan) {
       publication: publication(q.publications.find((pub: Row) => pub.operation === o.id)),
       recovery: o.recovery, productionActionAllowed: false
     }));
-    tasks.push({ ...base, available: true, candidate: item.candidate, ...(item.developmentTask?{developmentTask:item.developmentTask}:{}), ...(item.summary.composition?{composition:item.summary.composition,compositionCurrent:item.compositionCurrent}:{}), currentPacket: item.currentPacket,
+    let judgmentFeedback:Row;try{judgmentFeedback={available:true,...await QueueStore.observeJudgmentFeedback(s.store,s.item)};}catch(e){judgmentFeedback={available:false,reason:safeError(e)};}
+    tasks.push({ ...base, available: true, judgmentFeedback,candidate: item.candidate, ...(item.developmentTask?{developmentTask:item.developmentTask}:{}), ...(item.summary.composition?{composition:item.summary.composition,compositionCurrent:item.compositionCurrent}:{}), currentPacket: item.currentPacket,
       observationConflict: item.observationConflict, evidenceComplete: item.summary.evidenceComplete,
       sourceObservedAt: item.latestSourceObservation, executionObservedAt: item.latestObservation,
       scope: item.context.scope, arrangement: item.context.arrangement, dependencyGaps: item.dependencyGaps,
@@ -143,7 +144,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     try {
       if (req.headers.host !== host || req.headers.origin && req.headers.origin !== 'http://' + host) { json(res, 403, { error: 'local_origin_required' }); return; }
       const url = new URL(req.url ?? '/', 'http://' + host);
-      if (url.search) { json(res, 400, { error: 'query_not_supported' }); return; }
+      if (url.search&&!/^\/api\/judgment-feedback-report\/[a-z0-9-]{1,64}$/.test(url.pathname)) { json(res, 400, { error: 'query_not_supported' }); return; }
       if(req.method!=='GET'){
         if(!controls&&!deliveryControls?.writable&&!ownerControls&&!organization&&!overall){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
@@ -183,6 +184,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(assessment){if(!deliveryControls)throw new Error('report_not_found');json(res,200,await deliveryControls.report(assessment[1]!,assessment[2]!));return;}
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
       if(message){const source=p.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
+      const feedback=/^\/api\/judgment-feedback-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);
+      if(feedback){const source=p.sources.find(s=>s.id===feedback[1]),keys=[...url.searchParams.keys()].sort();if(!source||keys.join()!=='feedback,judgment'||!text(url.searchParams.get('judgment'),128)||!text(url.searchParams.get('feedback'),128))throw new Error('judgment_feedback_not_selected');json(res,200,await QueueStore.observeJudgmentFeedback(source.store,source.item,{judgment:url.searchParams.get('judgment')!,feedback:url.searchParams.get('feedback')!}));return;}
       const match = /^\/api\/report\/([a-z0-9-]{1,64})\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (match) { json(res, 200, await workbenchReport(p, match[1]!, match[2]!)); return; }
       json(res, 404, { error: 'route_not_found' });

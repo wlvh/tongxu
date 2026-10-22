@@ -193,6 +193,22 @@ export class ReviewRecords {
       this.event('judgment_sample_selected', `sample:${id}`, entry); return {...entry,duplicate:false};
     });
   }
+  /** Projection of original records for one selected task. Feedback is an
+   * attributed observation, never a replacement verdict or a new permission. */
+  judgmentFeedback(item:string,selected?:{judgment:string;feedback:string}){return this.transaction(()=>{
+    this.requireMode(true);
+    const rows=this.db.prepare("SELECT e.* FROM events e JOIN operations o ON o.id=json_extract(e.data,'$.operation') WHERE e.kind='judgment_registered' AND o.item=? ORDER BY e.id").all(item) as Row[];
+    const registrations=rows.map(e=>{const r=JSON.parse(e.data),s=this.source(r.operation,false);if(e.object!=='judgment:'+r.judgmentId||r.judgmentId!==s.receiver.judgment.judgmentId||r.bindingHash!==s.receiver.bindingHash||canonical(r.candidate)!==canonical(s.candidate)||r.inputSha256!==s.receiver.inputSha256||r.systemSha256!==s.receiver.systemSha256||r.rawOutputSha256!==s.receiver.blobs['stdout.ndjson'].sha256)throw new Error('judgment_feedback_original_binding_changed');return {...r,recordedAt:e.observed_at};});
+    if(selected){
+      const original=registrations.find(r=>r.judgmentId===selected.judgment);if(!original)throw new Error('judgment_feedback_not_selected');const matches=this.events('judgment:'+selected.judgment,'judgment_feedback').filter(e=>e.data.id===selected.feedback);if(matches.length!==1)throw new Error('judgment_feedback_report_not_found');const {data,observed_at}=matches[0]!;
+      if(data.judgmentId!==original.judgmentId||canonical(data.originalCandidate)!==canonical(original.candidate))throw new Error('judgment_feedback_original_binding_changed');
+      for(const ref of Object.values(data.blobs) as Row[]){const bytes=this.bytes(ref.sha256);if(bytes.length!==ref.bytes)throw new Error('review_original_changed');}
+      return {original,feedback:data,recordedAt:observed_at,report:data.report,reportSha256:hash(data.report),evidenceIsNotVerifiedOutcome:true,permissionsChanged:false,newModelRequests:0};
+    }
+    const ids=new Set(registrations.map(r=>r.judgmentId)),judgments=registrations.map(r=>({...r,feedback:this.events('judgment:'+r.judgmentId,'judgment_feedback').map(e=>{const {report,blobs,...value}=e.data;if(value.judgmentId!==r.judgmentId||canonical(value.originalCandidate)!==canonical(r.candidate))throw new Error('judgment_feedback_original_binding_changed');return {...value,recordedAt:e.observed_at,reportSha256:hash(report),reportCharacters:report.length,originals:Object.entries(blobs).map(([name,ref])=>({name,...ref as Row})),fullReportAvailable:true};})}));
+    const samples=(this.db.prepare("SELECT data,observed_at FROM events WHERE kind='judgment_sample_selected' ORDER BY id").all() as Row[]).flatMap(e=>{const s=JSON.parse(e.data),visible=s.selections.filter((v:Row)=>ids.has(v.judgmentId));if(!visible.length)return [];const partial=visible.length!==s.selections.length;return [{id:partial?hash(e.data):s.id,recordedAt:e.observed_at,partialSelection:partial,...(!partial?{reason:s.reason,source:s.source}:{}),selections:visible,noAccuracyInference:true}];});
+    return {judgments,samples,rankingAvailable:false,accuracyFromSilence:false,permissionsChanged:false,newModelRequests:0};
+  });}
   private overallKey(plan:Buffer){
     const semantic=canonical(JSON.parse(plan.toString()));
     const existing=(this.db.prepare("SELECT data FROM events WHERE kind='overall_review_reserved' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data)).filter(e=>canonical(JSON.parse(this.bytes(e.planSha256).toString()))===semantic);

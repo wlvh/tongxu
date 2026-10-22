@@ -107,7 +107,8 @@ async function overallAction(entry,action){
   catch(e){notice('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
 }
 function retrospectiveView(){
-  const page=append(el('div'),intro('整体复盘','按需比较上一接受基线、累计变化、当前行为与文档，复用独立审核角色。查看和恢复原结果不新建模型任务。'));
+  const page=append(el('div'),intro('判断与整体复盘','查回原判断之后的观察、反证和负责人回应，保留各自的候选、版本与观察范围。没有后续记录，不表示判断正确。'),judgmentFeedbackView());
+  if(!state.overallReviews?.length)page.append(append(el('section',null,'note-card'),el('h2','按需整体复盘'),el('p','本入口尚未选择整体复盘材料；原判断与反馈仍可查看。缺接受基线时不能声称没有整体偏移。','small')));
   for(const r of state.overallReviews||[]){const card=append(el('section',null,'note-card'),el('h2',r.title));page.append(card);if(!r.available){card.append(el('p','原复盘来源不可读：'+readableReason(r.reason),'small'));continue;}
     append(card,pill(r.active?'本进程正在处理原操作':overallPhases[r.phase],r.phase==='review_recorded'?'':'wait'),el('p',r.trigger.reason),el('p','准确候选：'+r.candidate.H+' · '+(r.current?'当前材料仍适用':'历史材料，不能启动新复盘'),'mono'),el('p',r.baselineStatus==='verified_owner_source'?'接受基线有本人来源，仍须按原哈希核对；不等于技术通过。':r.baselineStatus==='missing'?'缺少上一接受基线；本次不能得出没有整体漂移的结论。':'基线材料已提供，但本人采用来源未核实。','small'));
     for(const [kind,refs] of Object.entries(r.material)){const detail=append(el('details'),el('summary',materialLabels[kind]+' · '+refs.length+'份'));if(!refs.length)detail.append(el('p','本类别尚无材料。','small'));for(const ref of refs)append(detail,el('p',ref.name),el('p',ref.sha256,'mono'));card.append(detail);}
@@ -120,6 +121,26 @@ function retrospectiveView(){
     if(r.phase==='review_recorded'){const button=el('button','打开完整复盘报告','outline');button.type='button';button.onclick=()=>openOverallReport(r);actions.append(button);}
     append(card,actions,el('p','简化反思、技术复盘与本人接受成果分别保留。模型结论不会自动改目标、授予权限或合并。','small'));
   }return page;
+}
+const feedbackKindLabels={observation:'后续观察',counterexample:'反证',new_requirement:'新需求',later_code:'后续代码',attribution_dispute:'归因争议',responsible_response:'负责人回应',assessment:'回应后的评价'};
+function judgmentFeedbackView(){
+ const page=el('section');
+ for(const task of state.tasks.filter(t=>t.available)){const card=append(el('section',null,'note-card'),el('h2',task.title)),view=task.judgmentFeedback;page.append(card);
+  if(!view?.available){card.append(el('p',view?.reason==='review_records_not_enabled'?'此原队列尚未启用判断反馈记录。原接收报告仍可查，不据此推断判断正确或错误。':'判断反馈来源待核：'+readableReason(view?.reason||'source_unavailable'),'small'));continue;}
+  if(!view.judgments.length)card.append(el('p','尚无登记的判断反馈对象。没有观察不等于正确，也不形成准确率。','small'));
+  for(const j of view.judgments){const box=append(el('section',null,'execution-card'),el('h3','原判断 '+j.judgmentId),el('p','原结论：'+(verdicts[j.verdict]||j.verdict)+' · '+(j.executionKind==='fixture'?'明确测试夹具':'原生执行记录'),'small')),facts=el('dl',null,'facts');
+   fact(facts,'原候选 H / B',j.candidate.H+' / '+j.candidate.B,true);fact(facts,'任务类 / 风险类',j.classification.taskClass+' / '+j.classification.riskClass);fact(facts,'原覆盖范围',j.classification.coverageWindow);fact(facts,'模型 / 工具版本',(j.model||'原记录未提供')+' / '+(j.toolVersion||'原记录未提供'));fact(facts,'提示原文摘要',j.systemSha256,true);fact(facts,'分类出处',j.classification.source);box.append(facts);
+   const severities=[...new Set(j.findings.map(f=>f.priority))].sort().map(p=>'P'+p+'：'+j.findings.filter(f=>f.priority===p).length);box.append(el('p',severities.length?'原发现严重性 · '+severities.join(' · '):'原判断没有登记发现；不能据此计算准确率。','small'));
+   if(!j.feedback.length)box.append(el('p','后续结果尚未观察。原结论保留，未推断正确或收益。','small'));
+   for(const f of j.feedback){const row=el('div',null,'report-row'),text=append(el('div'),el('strong',feedbackKindLabels[f.kind]||f.kind),el('p','观察范围：'+f.coverageWindow),el('p','观察候选 H / B：'+f.candidate.H+' / '+f.candidate.B,'mono'),el('p','出处：'+f.source+' · '+date(f.recordedAt),'small'));if(f.references.length)text.append(el('p','引用原反馈：'+f.references.join('、'),'small'));const button=el('button','阅读完整反馈','outline');button.type='button';button.onclick=()=>openJudgmentFeedback(task,j,f);append(row,text,button);box.append(row);}
+   box.append(el('p','观察、反证、新需求、后续代码和归因争议分别保留。反馈原文是证据，不改原结论，也不授予权限。','small'));card.append(box);
+  }
+  for(const sample of view.samples){const d=append(el('details'),el('summary','原选样 · '+date(sample.recordedAt)));if(sample.partialSelection)d.append(el('p','这组选样还包含本页未选任务，未显示其内容。所见部分不能当作完整样本或准确率。','small'));else append(d,el('p',sample.reason),el('p','选样出处：'+sample.source,'small'));for(const s of sample.selections)d.append(el('p',s.judgmentId+' · '+s.taskClass+' / '+s.riskClass+' · '+s.verdict,'small'));card.append(d);}
+ }return page;
+}
+async function openJudgmentFeedback(task,judgment,feedback){
+ const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+ try{const response=await fetch('/api/judgment-feedback-report/'+task.id+'?judgment='+encodeURIComponent(judgment.judgmentId)+'&feedback='+encodeURIComponent(feedback.id),{headers:{Authorization:'Bearer '+key},cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);if(nonce!==reportNonce)return;$('report-meta').textContent='原判断 '+r.original.judgmentId+' · '+r.feedback.coverageWindow+' · 反馈原件已核摘要；不是新的正确性判断或权限';$('report-body').textContent=r.report;$('report-raw').textContent=JSON.stringify({original:r.original,feedback:r.feedback},null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='原反馈尚不可读';$('report-body').textContent=readableReason(e.message);}}
 }
 async function openOverallReport(entry){
   const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 完整复盘';$('report-meta').textContent='读取原报告…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -415,7 +436,7 @@ function render() {
   $('access-mode').textContent=state.mode==='read_only'?'只读':'受控入口';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':'已配置：'+abilities.join('、')+'。实际动作按原范围、权限与资源执行；页面钥匙不代替本人签署。';
   document.querySelector('[data-view="deliveries"]').hidden=!state.deliveries?.length&&!state.deliveryPreparation?.length;
   document.querySelector('[data-view="organization"]').hidden=!state.organization?.length;
-  document.querySelector('[data-view="retrospective"]').hidden=!state.overallReviews?.length;
+  document.querySelector('[data-view="retrospective"]').hidden=!state.tasks.some(t=>t.available)&&!state.overallReviews?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
