@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,rm,cp} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,cp,realpath} from 'node:fs/promises';
 import {join,basename} from 'node:path';
+import {tmpdir} from 'node:os';
 import {BoundedCodexSession,readOwnedCodexSession,findingSchema,type NativeOptions} from '../../src/repair-native.js';
 import {disabledFeatures} from '../../src/live-codex.js';
 import type {NativeControlRequest,NativeControlPolicy} from '../../src/native-control-contract.js';
@@ -10,7 +11,7 @@ import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
 
 async function setup(t:test.TestContext,policy?:NativeControlPolicy,persistent=false){
-  const root=await mkdtemp('/private/tmp/tongxu-owned-control-');t.after(async()=>{if(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE){await mkdir(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,{recursive:true});await cp(root,join(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,basename(root)),{recursive:true});}await rm(root,{recursive:true,force:true});});const executable=join(root,'codex-fixture.mjs'),operation=join(root,'operation');await mkdir(operation);
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-owned-control-')));t.after(async()=>{if(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE){await mkdir(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,{recursive:true});await cp(root,join(process.env.TONGXU_NATIVE_CONTROL_TEST_EVIDENCE,basename(root)),{recursive:true});}await rm(root,{recursive:true,force:true});});const executable=join(root,'codex-fixture.mjs'),operation=join(root,'operation');await mkdir(operation);
   const script=`#!${process.execPath}
 import readline from 'node:readline';
 import {readFileSync,writeFileSync} from 'node:fs';

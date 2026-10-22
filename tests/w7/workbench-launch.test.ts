@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {execFileSync,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {prepareWorkbenchRuntime,inspectWorkbenchRuntime,launchWorkbench} from '../../src/workbench-launch.js';
 import {hash} from '../../src/snapshot.js';
 test('one fixed runtime detects stale source, build, configuration and file additions before importing any selected program',async t=>{
- const root=await mkdtemp('/private/tmp/tongxu-launch-manifest-');t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(source);for(const d of ['dist/src','src','web/workbench'])await mkdir(join(source,d),{recursive:true});
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-launch-manifest-')));t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(source);for(const d of ['dist/src','src','web/workbench'])await mkdir(join(source,d),{recursive:true});
  await writeFile(join(source,'src/selected.ts'),'// explicit fixture source\n');await writeFile(join(source,'dist/src/workbench.js'),'throw new Error("must_never_import_other_composition");\n');await writeFile(join(source,'package.json'),'{"type":"module"}\n');for(const name of ['index.html','app.js','app.css','favicon.svg'])await writeFile(join(source,'web/workbench',name),'explicit fixture '+name+'\n');
  const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args],{encoding:'utf8'}).trim();git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','bounded launcher fixture');
  const plan=join(root,'plan.json');await writeFile(plan,'{"kind":"explicit fixture, never launched"}\n');const manifest=await prepareWorkbenchRuntime(source,plan),raw=Buffer.from(JSON.stringify(manifest)),runtimePath=join(root,'runtime.json');await writeFile(runtimePath,raw);
@@ -21,7 +22,7 @@ test('one fixed runtime detects stale source, build, configuration and file addi
 });
 
 test('cold launcher checks a modified application helper before its module body can execute',async t=>{
- const root=await mkdtemp('/private/tmp/tongxu-launch-before-import-');t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(join(source,'dist'),{recursive:true});await mkdir(join(source,'src'));await mkdir(join(source,'web'));
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-launch-before-import-')));t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(join(source,'dist'),{recursive:true});await mkdir(join(source,'src'));await mkdir(join(source,'web'));
  await cp(fileURLToPath(new URL('../../src/',import.meta.url)),join(source,'dist/src'),{recursive:true});await cp(fileURLToPath(new URL('../../../web/workbench/',import.meta.url)),join(source,'web/workbench'),{recursive:true});await writeFile(join(source,'package.json'),'{"type":"module"}\n');await writeFile(join(source,'src/selected.ts'),'// Explicit launch-boundary fixture; no real model or application request.\n');
  const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args],{encoding:'utf8'});git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','explicit launch boundary');const plan=join(root,'plan.json');await writeFile(plan,'{}');const manifest=await prepareWorkbenchRuntime(source,plan),path=join(root,'runtime.json');await writeFile(path,JSON.stringify(manifest));
  const helper=join(source,'dist/src/snapshot.js'),marker=join(root,'unexpected-module-body');await writeFile(helper,(await readFile(helper,'utf8'))+'\n(await import("node:fs")).writeFileSync('+JSON.stringify(marker)+',"executed");\n');
