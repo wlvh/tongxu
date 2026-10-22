@@ -5,7 +5,7 @@ import {hash} from './snapshot.js';
 import type {ObservedCandidateRequest} from './observed-candidate-contract.js';
 import {repoPattern,shaPattern,validBranchRef} from './contract.js';
 
-export type ObservedCandidateBinding={repository:string;pr:number;H:string;B:string;T:string;targetRef:string;integration:string;integrationRequestSha256:string;item:string;packet:number;fingerprint:string;manifestSha256:string;reportSha256:string;contextSha256:string};
+export type ObservedCandidateBinding={repository:string;pr:number;H:string;B:string;T:string;targetRef:string;integration:string;integrationRequestSha256:string;item:string;packet:number;fingerprint:string;manifestSha256:string;reportSha256:string;contextSha256:string;observationVersion:number};
 type Original={name:string;sha256:string;bytes:number;encoding:'base64';text:string};
 export type ObservedCandidateCapture={schemaVersion:1;kind:'tongxu-remote-candidate-observation';requestSha256:string;binding:ObservedCandidateBinding;repositoryId:number;executable:{path:string;sha256:string};startedAt:string;observedAt:string;observations:Array<{endpoint:string;status:number;bodySha256:string;body:unknown;originals:Original[]}>;nonAtomicRemoteObservation:true;source:'configured-executable-get';remoteWritePerformed:false;modelInputs:0;testsStarted:0;permissionGranted:false};
 const issued=new WeakMap<object,string>();

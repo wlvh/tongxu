@@ -18,6 +18,6 @@ export async function runObservedCandidate(store:string,requestPath:string){
       const capture=await observeRemoteCandidate(p,binding,directory);await writeFile(join(directory,'capture.json'),canonical(capture),{flag:'wx',mode:0o600});
       const association=q.attachObservedCandidate(raw,capture),result={...association,directory,observedAt:capture.observedAt,remoteMatchedAtObservation:true,nonAtomicRemoteObservation:true,associationIsHistoricalEvidence:true,remoteWritePerformed:false,newModelInputs:0,testsStarted:0,independentReceptionGranted:false,permissionGranted:false};
       await writeFile(join(directory,'result.json'),canonical(result),{flag:'wx',mode:0o600});return result;
-    }catch(e){const reason=e instanceof Error?e.message:'candidate_observation_failed';await writeFile(join(directory,'failure.json'),canonical({reason,remoteWritePerformed:false,newModelInputs:0,testsStarted:0,automaticResend:false}),{flag:'wx',mode:0o600});try{q.observedCandidateProblem(raw,reason);}catch{/* The original source changed too; never replace its new state. */}throw e;}
+    }catch(e){const reason=e instanceof Error?e.message:'candidate_observation_failed';await writeFile(join(directory,'failure.json'),canonical({reason,binding,remoteWritePerformed:false,newModelInputs:0,testsStarted:0,automaticResend:false}),{flag:'wx',mode:0o600});try{q.observedCandidateProblem(raw,reason,binding);}catch{/* A newer observation or source now exists. Preserve this attempt locally without replacing that newer state. */}throw e;}
   }finally{q.close();}
 }
