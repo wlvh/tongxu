@@ -33,7 +33,8 @@ export function validateBinding(x: any): ResultBinding {
 
 type TurnState = { id: string; started: boolean; terminal: string | null; final: { id: string; text: string } | null; errors: any[]; rootTurnId?: string | null };
 export type ReconciledToolCall = { request: any; response: any };
-export function parseCodexResult(bytes: Buffer, binding: ResultBinding, reconciled: ReconciledToolCall[] = []) {
+export function parseCodexResult(bytes: Buffer, binding: ResultBinding, reconciled: ReconciledToolCall[] = [], sequence:{allowInterruptedPredecessors?:boolean}={}) {
+  if(Object.keys(sequence).some(k=>k!=='allowInterruptedPredecessors')||sequence.allowInterruptedPredecessors!==undefined&&typeof sequence.allowInterruptedPredecessors!=='boolean')throw new Error('invalid_result_sequence_policy');
   validateBinding(binding);
   if (new Set(reconciled.map(x => JSON.stringify(x.request?.id))).size !== reconciled.length || reconciled.some(x => x.request?.method !== 'item/tool/call' || x.response?.id !== x.request.id || typeof x.response?.result?.success !== 'boolean' || !Array.isArray(x.response.result.contentItems))) throw new Error('invalid_tool_reconciliation');
   const protocol = protocols[binding.protocol];
@@ -89,7 +90,10 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding, reconcil
       if (!object(p.turn) || p.turn.status !== 'inProgress' || !Array.isArray(p.turn.items)) { invalid('invalid_turn_start'); continue; }
       if (protocol.turnRootId && p.turn.rootTurnId != null && !text(p.turn.rootTurnId)) { invalid('invalid_turn_root_id'); continue; }
       if (starts.has(t.id)) { if (!isDeepStrictEqual(starts.get(t.id), p.turn)) invalid('conflicting_turn_start'); continue; }
-      if (turns.slice(0, turns.indexOf(t)).some(prior => prior.terminal !== 'completed') || t.terminal) invalid('turn_order_mismatch');
+      // An owning controller may explicitly continue after an observed
+      // interrupted terminal. This does not turn that partial answer into a
+      // successful result: the aggregate status/handoff remains interrupted.
+      if (turns.slice(0, turns.indexOf(t)).some(prior => prior.terminal !== 'completed'&&!(sequence.allowInterruptedPredecessors&&prior.terminal==='interrupted')) || t.terminal) invalid('turn_order_mismatch');
       starts.set(t.id, p.turn); t.started = true;
       if (protocol.turnRootId) t.rootTurnId = p.turn.rootTurnId ?? null;
     } else if (m.method === 'item/completed') {
