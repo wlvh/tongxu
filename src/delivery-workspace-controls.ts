@@ -28,6 +28,7 @@ export class DeliveryWorkspaceControls{
     const values=await QueueStore.observeDeliveryPreparation(store,roots.map(s=>s.item));return {...base,available:true,members:values.map(v=>{const s=this.sourceFor(store,roots,v);return {...v,source:s.id,title:s.title};})};
   }catch(e){return {...base,available:false,reason:reason(e)};}}));}
   private async selected(id:string){const c=await this.catalogue();if(!c.entries.some(e=>e.id===id))throw new Error('delivery_not_selected');return new DeliveryControls(c.entries,c.sources,this.writable);}
+  async context(id:string){const c=await this.catalogue(),entry=c.entries.find(e=>e.id===id),source=entry&&c.sources.find(s=>s.id===entry.source);if(!entry||!source)throw new Error('delivery_not_selected');const roots=this.groups().find(([store])=>store===source.store)?.[1]??[],values=roots.length?await QueueStore.observeDeliveryPreparation(source.store,roots.map(s=>s.item)):[],batch=(await QueueStore.observeDeliveries(source.store,[entry.batchSha256]))[0]!;return {entry,source,roots,batch,members:values.map(v=>({...v,source:this.sourceFor(source.store,roots,v).id,title:this.sourceFor(source.store,roots,v).title}))};}
   async prepare(id:string,body:any){return (await this.selected(id)).prepare(id,body);}
   async apply(id:string,body:any){return (await this.selected(id)).apply(id,body);}
   async report(id:string,assessment:string){return (await this.selected(id)).report(id,assessment);}

@@ -5,6 +5,7 @@ import {deliveryControlsFixture} from './delivery-controls-fixture.js';
 import {scopeFollowupFixture} from './scope-followup-fixture.js';
 import {DeliveryWorkspaceControls} from '../../src/delivery-workspace-controls.js';
 import {prepareScopeFollowup} from '../../src/task-scope-followup.js';
+import {QueueStore} from '../../src/queue-store.js';
 import {startWorkbench} from '../../src/workbench.js';
 import {canonical} from '../../src/comparison.js';
 const raw=(v:unknown)=>Buffer.from(canonical(v));
@@ -33,4 +34,10 @@ test('a full selected history refuses the next new batch in the original transac
  for(let i=1;i<=63;i++){lastBody={...body,title:'bounded revision '+i,previous:last?.batchSha256??null};last=await c.register('fixture',lastBody);}
  const state=await c.state();assert.equal(state.filter(x=>x.available).length,64);const before=f.q.status();await assert.rejects(c.register('fixture',{...body,title:'would hide all selected history',previous:last.batchSha256}),/history_limit/);assert.deepEqual(f.q.status(),before);
  assert.equal((await c.register('fixture',lastBody)).duplicate,true);const selected=(await c.state()).find((x:any)=>x.batch?.batchSha256===last.batchSha256) as any;assert.ok(selected?.available);assert.ok((await c.prepare(selected.id,{outcome:'needs_evidence',rationale:'原材料仍可继续核验',evidenceSha256:last.evidenceSha256,previousOutcome:null})).proposalSha256);assert.equal((await f.calls()).length,0);
+});
+test('new batches respect the existing task-outcomes reader capacity while explicit revisions remain usable',async t=>{
+ const f=await deliveryControlsFixture(t),c=new DeliveryWorkspaceControls([],['fixture'],f.workbenchPlan.sources,true),group=(await c.preparation())[0] as any;let last:any;
+ for(let i=1;i<=7;i++)last=await c.register('fixture',request(group.members[0],'logical-batch-'+i));
+ const before=f.q.status();await assert.rejects(c.register('fixture',request(group.members[0],'logical-batch-8')),/batch_limit/);assert.deepEqual(f.q.status(),before);assert.equal((await QueueStore.observeTaskDeliveries(f.store,f.item)).length,8);
+ const next=await c.register('fixture',{...request(group.members[0],'logical-batch-7'),title:'明确修订已有批次',previous:last.batchSha256});assert.equal(next.revision,2);assert.equal((await QueueStore.observeTaskDeliveries(f.store,f.item)).length,8);assert.equal((await f.calls()).length,0);
 });

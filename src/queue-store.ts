@@ -56,6 +56,7 @@ import {DeliveryValidationRecords} from './delivery-validation-store.js';
 import {DeliveryAssessmentRecords} from './delivery-assessment-store.js';
 import { inspectRolePrompt } from './role-prompts.js';
 import { currentEventSource,effectiveEventCandidate,storedEventMaterial } from './event-gates.js';
+import {DeliveryWorkbenchRecords} from './delivery-workbench-store.js';
 import { rankQueue,parseQueuePreference,type RankItem,type SelectionHistory } from './event-contract.js';
 import { composeSubject, currentMembers, type Composition } from './composition.js';
 
@@ -178,9 +179,11 @@ export class QueueStore {
     if(prior&&prior.members.some(m=>!allowed.includes(m.item)))throw new Error('delivery_preparation_previous_not_selected');
     const batch={schemaVersion:1,kind:'tongxu-delivery-batch',id:prior?.id??'workbench-'+hash(canonical([anchor,p.requestId])).slice(0,48),revision:(prior?.revision??0)+1,previous:p.previous,repository:c.candidate.repository,issue:p.issue,title:p.title,source:'workbench-fixed-material:'+hash(canonical(p)),target:c.candidate.targetRef,scope:{id:c.context.scope.id,version:c.context.scope.version,adoption:p.adoption},goals:owner.currentScope.body.goals,nonGoals:owner.currentScope.body.nonGoals,members:p.members,scenarios:p.scenarios,related:prior?.related??[]};
     const history=records.forSelectedItems(allowed);if(history.length>=64&&!history.some(b=>b.batchSha256===hash(canonical(batch))))throw new Error('delivery_preparation_history_limit');
+    for(const member of p.members){const current=history.filter(b=>b.currentVersion&&b.members.some((m:Row)=>m.item===member.item));if(new Set(current.map(b=>b.id)).size>=8&&!current.some(b=>b.id===batch.id))throw new Error('delivery_preparation_batch_limit');}
     return {...records.register(Buffer.from(canonical(batch))),modelStarted:false,newModelRequests:0,newVerificationRuns:0,permissionGranted:false};
   });}
   static async observeDeliveryValidation(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryValidationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeDeliveryValidationReport(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryValidationRecords(fn=>fn()).assessmentMaterial(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   static async observeDeliveryAssessment(directory:string,id:string,fullReport=false){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const a=q.deliveryAssessmentRecords(fn=>fn());return fullReport?a.report(id):a.state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   static async observeTaskDeliveryReport(directory:string,item:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');q.item(item);const report=q.deliveryAssessmentRecords(fn=>fn()).report(id),batch=q.deliveryRecords(fn=>fn()).manifest(report.batchSha256);if(!batch.members.some(m=>m.item===item))throw new Error('delivery_assessment_outside_task');return report;}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   static async observeTaskDeliveries(directory:string,item:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');q.item(item);return q.deliveryRecords(fn=>fn()).forItem(item);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
@@ -573,6 +576,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {operation,item:op.item,packet:op.packet,fingerprint:packet.fingerprint,current:op.status==='complete'&&item.current_packet===op.packet&&!item.observation_conflict&&this.receiverCandidateCurrent(item),context:e.context,composition,report:e.report,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,originals};
   }
   deliveryAssessments(){return this.deliveryAssessmentRecords(fn=>this.transaction(fn));}
+  deliveryWorkbench(){return this.deliveryWorkbenchRecords(fn=>this.transaction(fn));}
+  private deliveryWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new DeliveryWorkbenchRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),this.deliveryAssessmentRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),id=>this.authorityItem(id));}
+  static async observeDeliveryWorkbench(directory:string,batch:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryWorkbenchRecords(fn=>fn()).forBatch(batch);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private deliveryAssessmentRecords(transaction:<T>(fn:()=>T)=>T):DeliveryAssessmentRecords{return new DeliveryAssessmentRecords(this.db,transaction,this.directory,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),()=>this.messageRecords(fn=>fn()),(run,p)=>{if(!p.resourceBudget)return !this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}});}
   events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }

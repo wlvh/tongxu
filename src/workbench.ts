@@ -10,6 +10,7 @@ import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
 import type {DeliverySelection} from './delivery-controls.js';
 import {DeliveryWorkspaceControls} from './delivery-workspace-controls.js';
+import {DeliveryExecutionControls} from './delivery-execution-controls.js';
 import {OwnerControls} from './owner-controls.js';
 import {ScopeFollowupControls} from './scope-followup-controls.js';
 import {OrganizationControls} from './organization-controls.js';
@@ -22,6 +23,7 @@ export type WorkbenchPlan = {
   sources: Array<{ id: string; title: string; store: string; item: string }>;
   controls?:{path:string;sha256:string};
   deliveries?:DeliverySelection[];
+  deliveryExecutions?:{path:string;sha256:string};
   ownerControls?:string[];
   organization?:{path:string;sha256:string};
   overallReviews?:OverallSelection[];
@@ -30,7 +32,8 @@ const text = (v: unknown, max: number): v is string => typeof v === 'string' && 
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   const p = JSON.parse(bytes.toString());
   if (p.schemaVersion !== 1 || !['tongxu-local-workbench','tongxu-controlled-workbench'].includes(p.kind) || !text(p.title, 100) || !text(p.goal, 1000) || !Array.isArray(p.sources) || !p.sources.length || p.sources.length > 8) throw new Error('invalid_workbench_plan');
-  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length&&!p.ownerControls?.length&&!p.organization&&!p.overallReviews?.length):Object.hasOwn(p,'controls')||Object.hasOwn(p,'ownerControls')||Object.hasOwn(p,'organization')||Object.hasOwn(p,'overallReviews'))throw new Error('invalid_workbench_controls');
+  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length&&!p.ownerControls?.length&&!p.organization&&!p.overallReviews?.length):Object.hasOwn(p,'controls')||Object.hasOwn(p,'ownerControls')||Object.hasOwn(p,'organization')||Object.hasOwn(p,'overallReviews')||Object.hasOwn(p,'deliveryExecutions'))throw new Error('invalid_workbench_controls');
+  if(Object.hasOwn(p,'deliveryExecutions')&&(!p.ownerControls?.length||!exactKeys(p.deliveryExecutions,['path','sha256'])||!messagePath(p.deliveryExecutions.path)||!isAuthorityDigest(p.deliveryExecutions.sha256)))throw new Error('invalid_workbench_delivery_executions');
   if(Object.hasOwn(p,'organization')&&(!exactKeys(p.organization,['path','sha256'])||!messagePath(p.organization.path)||!isAuthorityDigest(p.organization.sha256)))throw new Error('invalid_workbench_organization');
   const ids = new Set(), tasks = new Set();
   for (const s of p.sources) {
@@ -40,7 +43,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'deliveries')){if(!Array.isArray(p.deliveries)||!p.deliveries.length||p.deliveries.length>8)throw new Error('invalid_workbench_deliveries');const entries=new Set(),batches=new Set();for(const d of p.deliveries){if(!exactKeys(d,['id','source','batchSha256'])||typeof d.id!=='string'||!/^[a-z0-9-]{1,64}$/.test(d.id)||entries.has(d.id)||!ids.has(d.source)||!isAuthorityDigest(d.batchSha256)||batches.has(d.source+':'+d.batchSha256))throw new Error('invalid_workbench_delivery');entries.add(d.id);batches.add(d.source+':'+d.batchSha256);}}
   if(Object.hasOwn(p,'ownerControls')&&(!Array.isArray(p.ownerControls)||!p.ownerControls.length||p.ownerControls.length>8||new Set(p.ownerControls).size!==p.ownerControls.length||p.ownerControls.some((id:unknown)=>!ids.has(id))))throw new Error('invalid_workbench_owner_controls');
   if(Object.hasOwn(p,'overallReviews'))validateOverallSelections(p.overallReviews,[...ids] as string[]);
-  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}) };
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -120,6 +123,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const controls=p.controls?await TaskControls.load(p.controls.path,p.controls.sha256,p.sources):null;
   const deliveryControls=p.deliveries||p.ownerControls?new DeliveryWorkspaceControls(p.deliveries??[],p.ownerControls??[],p.sources,p.kind==='tongxu-controlled-workbench'):null;
+  const deliveryExecution=p.deliveryExecutions?await DeliveryExecutionControls.load(deliveryControls!,p.deliveryExecutions.path,p.deliveryExecutions.sha256,p.ownerControls??[]):null;
   const ownerControls=p.ownerControls?new OwnerControls(p.ownerControls,p.sources):null;
   const scopeFollowups=p.ownerControls?new ScopeFollowupControls(p.ownerControls,p.sources):null;
   const organization=p.organization?await OrganizationControls.load(p.organization.path,p.organization.sha256,p.sources):null;
@@ -146,16 +150,18 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
         const delivery=/^\/api\/delivery\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
+        const deliveryWork=/^\/api\/delivery-work\/([a-z0-9-]{1,64})\/(prepare|owner-apply|run|reconcile|close-unstarted)$/.exec(url.pathname);
         const batchPreparation=/^\/api\/delivery-preparation\/([a-z0-9-]{1,64})\/register$/.exec(url.pathname);
         const owner=/^\/api\/owner-control\/([a-z0-9-]{1,64})\/(prepare|apply)$/.exec(url.pathname);
         const followup=/^\/api\/scope-followup\/([a-z0-9-]{1,64})\/(prepare|observe|owner-prepare|owner-apply|start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const arrangement=/^\/api\/organization\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/apply$/.exec(url.pathname);
         const retrospective=/^\/api\/overall-review\/([a-z0-9-]{1,64})\/(prepare|run|reconcile|close-unstarted)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||deliveryExecution&&deliveryWork||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&retrospective)){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
-        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation||deliveryWork?98304:delivery?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
+        if(deliveryWork){const id=deliveryWork[1]!,action=deliveryWork[2]!;if(action==='prepare')json(res,200,await deliveryExecution!.prepare(id,body));else if(action==='owner-apply')json(res,200,await deliveryExecution!.applyOwner(id,body));else json(res,202,await deliveryExecution!.begin(id,action as 'run'|'reconcile'|'close-unstarted',body));return;}
         if(batchPreparation){json(res,200,await deliveryControls!.register(batchPreparation[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
         if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await scopeFollowups!.prepare(source,body));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body));return;}
@@ -169,7 +175,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { json(res, 200, {...await workbenchState(p),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      if (url.pathname === '/api/state') { const snapshot=await workbenchState(p);json(res, 200, {...snapshot,...(deliveryExecution?{deliveryExecution:await Promise.all((snapshot.deliveries??[]).filter(d=>d.available).map(async d=>{try{return {...await deliveryExecution.state(d.id),available:true};}catch(e){return {batchId:d.id,available:false,reason:safeError(e)};}}))}:{}),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      const deliveryWorkReport=/^\/api\/delivery-work-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);if(deliveryWorkReport){if(!deliveryExecution)throw new Error('report_not_found');json(res,200,await deliveryExecution.report(deliveryWorkReport[1]!,deliveryWorkReport[2]!));return;}
       const overallReport=/^\/api\/overall-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);if(overallReport){if(!overall)throw new Error('report_not_found');json(res,200,await overall.report(overallReport[1]!));return;}
       const scopeReport=/^\/api\/scope-followup-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})$/.exec(url.pathname);if(scopeReport){if(!scopeFollowups)throw new Error('report_not_found');json(res,200,await scopeFollowups.report(scopeReport[1]!,scopeReport[2]!));return;}
       const assessment=/^\/api\/delivery-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);
@@ -184,5 +191,5 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   await new Promise<void>((ok, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); ok(); }); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
-  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await scopeFollowups?.drain();await overall?.drain();await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await controls?.drain();await scopeFollowups?.drain();await deliveryExecution?.drain();await overall?.drain();await closed;} };
 }

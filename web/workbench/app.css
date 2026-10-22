@@ -17,3 +17,5 @@
 .outcome-form .batch-scenario{display:grid;grid-template-columns:minmax(0,1fr)}.outcome-form .batch-scenario>label{display:grid;gap:6px}.outcome-form .batch-scenario>.batch-member-choice{display:flex;align-items:center}.batch-scenario textarea{min-height:100px}
 
 .delivery-card .panel-head>div{min-width:0}.delivery-card .eyebrow{overflow-wrap:anywhere}
+
+.delivery-card .outcome-form fieldset label{min-width:0;max-width:100%}.delivery-card .outcome-form fieldset label span{min-width:0;overflow-wrap:anywhere}.delivery-card .outcome-form .report-row{flex-wrap:wrap}.delivery-card .outcome-form .report-row>label{min-width:0;flex:1 1 180px}
