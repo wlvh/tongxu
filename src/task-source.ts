@@ -1,4 +1,5 @@
-import {execFile} from 'node:child_process';
+import {execFile,execFileSync} from 'node:child_process';
+import {lstatSync,readFileSync,realpathSync} from 'node:fs';
 import {promisify} from 'node:util';
 import {lstat,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -47,3 +48,16 @@ export function inspectTaskObservation(v:TaskObservation,p:DevelopmentTask){
   return v;
 }
 export function requireTaskObservation(v:TaskObservation,p:DevelopmentTask){if(issued.get(v)!==hash(canonical(v)))throw new Error('actual_task_workspace_observation_required');return inspectTaskObservation(v,p);}
+
+export function taskGitReadSync(p:DevelopmentTask,args:string[]){return new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(execFileSync('/usr/bin/git',['--literal-pathspecs','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','core.attributesFile=/dev/null','-C',p.workspace,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0'},timeout:3000,maxBuffer:2*1024*1024}));}
+/** Last synchronous read before input submission. It checks only the issued
+ * observation's declared paths and Git identity, never hooks or filters. A
+ * prior observation before a slow resource/Owner request is insufficient. */
+export function assertTaskObservationCurrentSync(p:DevelopmentTask,o:TaskObservation){
+  requireTaskObservation(o,p);
+  if(realpathSync(p.workspace)!==p.workspace||taskGitReadSync(p,['rev-parse','--verify','HEAD^{commit}']).trim()!==o.head||taskGitReadSync(p,['rev-parse','--abbrev-ref','HEAD']).trim()!==o.branch)throw new Error('message_task_source_changed_before_send');
+  for(const expected of o.files){let bytes:Buffer|null=null;try{let path=p.workspace;for(const part of expected.path.split('/')){path=join(path,part);if(lstatSync(path).isSymbolicLink())throw new Error('message_task_source_changed_before_send');}const st=lstatSync(path);if(!st.isFile()||st.nlink!==1||st.size>256*1024||realpathSync(path)!==path)throw new Error('message_task_source_changed_before_send');bytes=readFileSync(path);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+    if(bytes===null?!expected.missing:expected.missing||bytes.length!==expected.bytes||hash(bytes)!==expected.sha256)throw new Error('message_task_source_changed_before_send');
+  }
+  if(taskGitReadSync(p,['rev-parse','--verify','HEAD^{commit}']).trim()!==o.head)throw new Error('message_task_source_changed_before_send');
+}

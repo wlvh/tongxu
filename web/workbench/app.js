@@ -256,7 +256,7 @@ async function openReport(t, o) {
 }
 async function openMessageReport(t,run,m){
   const nonce=++reportNonce;$('report-title').textContent=t.title+' · 完整消息';$('report-meta').textContent='读取原消息…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
-  try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+' · 会话 '+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
+  try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+' · 会话 '+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });
 $('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++; });

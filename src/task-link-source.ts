@@ -1,12 +1,13 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {lstat} from 'node:fs/promises';
+import {lstatSync} from 'node:fs';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {safeEnv} from './repair-workspace.js';
 import {parseDevelopmentTask,type DevelopmentTask} from './task-contract.js';
-import {observeTaskWorkspace,requireTaskObservation,type TaskObservation} from './task-source.js';
+import {observeTaskWorkspace,requireTaskObservation,assertTaskObservationCurrentSync,taskGitReadSync,type TaskObservation} from './task-source.js';
 const exec=promisify(execFile),issued=new WeakMap<object,string>();
 type Entry={path:string;mode:string;object:string;stage?:number};
 export type TaskLinkSource={schemaVersion:1;kind:'tongxu-task-candidate-source';observation:TaskObservation;headEntries:Entry[];indexEntries:Entry[];workModes:Array<{path:string;executable:boolean|null}>;executableModeContract:'git-owner-execute-bit';selectedFilesOnly:true;wholeWorkspaceClean:false;observedAt:string;commands:Array<{argv:string[];stdout:string}>};
@@ -27,6 +28,12 @@ export async function observeTaskLinkSource(input:DevelopmentTask):Promise<TaskL
 }
 export function requireTaskLinkSource(v:TaskLinkSource,p:DevelopmentTask){
   if(issued.get(v)!==hash(canonical(v)))throw new Error('actual_task_candidate_source_required');requireTaskObservation(v.observation,p);return v;
+}
+export function assertTaskLinkSourceCurrentSync(p:DevelopmentTask,v:TaskLinkSource){
+  requireTaskLinkSource(v,p);assertTaskObservationCurrentSync(p,v.observation);
+  const index=v.commands.find(c=>c.argv.includes('ls-files'))?.stdout;
+  if(index===undefined||taskGitReadSync(p,['ls-files','--stage','-z','--',...p.paths])!==index)throw new Error('message_task_index_changed_before_send');
+  for(const before of v.workModes){let current:boolean|null=null;try{const st=lstatSync(join(p.workspace,before.path));if(!st.isFile()||st.isSymbolicLink())throw new Error('message_task_mode_changed_before_send');current=!!(st.mode&0o100);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}if(current!==before.executable)throw new Error('message_task_mode_changed_before_send');}
 }
 export function taskLinkSourceMatches(v:TaskLinkSource){
   if(v.executableModeContract!=='git-owner-execute-bit')throw new Error('task_link_execution_mode_contract_unverified');

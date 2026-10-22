@@ -41,10 +41,10 @@ import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
 import { MessageResourceRecords } from './message-resource-store.js';
 import { TaskCandidateLinks } from './task-link-store.js';
-import { observeTaskLinkSource } from './task-link-source.js';
+import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-link-source.js';
 import { TaskInbox } from './task-inbox.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
-import { observeTaskWorkspace } from './task-source.js';
+import { observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
 import {LocalScopeControls} from './scope-controls.js';
 import {DeliveryRecords} from './delivery-store.js';
@@ -284,7 +284,13 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
 
   async refreshMessageTaskSources(run:string){
     const state=this.messages().status(run),ids=[...new Set<string>([...state.plan.participants.map(p=>p.item),...this.taskInboxRecords(fn=>fn()).sourceTasks(run)])];
-    for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){if(this.taskLinks().hasSource(id))await this.refreshTaskLinkSource(id);else{const p=this.tasks().definition(id);this.tasks().observe(p,await observeTaskWorkspace(p));}}
+    const guards:Array<()=>void>=[];
+    for(const id of ids)if(parse(this.item(id),'candidate').kind==='development-task'){
+      const p=this.tasks().definition(id);
+      if(this.taskLinks().hasSource(id)){const source=await this.refreshTaskLinkSource(id);guards.push(()=>assertTaskLinkSourceCurrentSync(p,source));}
+      else{const observation=await observeTaskWorkspace(p);this.tasks().observe(p,observation);guards.push(()=>assertTaskObservationCurrentSync(p,observation));}
+    }
+    return ()=>{for(const check of guards)check();};
   }
   private authorityItem(id:string):Row {
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);

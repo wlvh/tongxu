@@ -9,6 +9,7 @@ import {prepareTaskOwner} from '../../src/tasks.js';
 import {runMessages} from '../../src/messages.js';
 import type {MessageNativeHandle} from '../../src/message-runtime.js';
 import {canonical} from '../../src/comparison.js';
+import {hash} from '../../src/snapshot.js';
 import {messageAuthority} from '../w6/message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 const control=(s:any,option='check-counterexample')=>({option,threadId:s.nativeControl.threadId,sessionId:s.nativeControl.sessionId,turnId:s.nativeControl.turnId});
@@ -61,4 +62,22 @@ test('after exact interruption and capture recovery, the original A can handle a
 test('an owned bootstrap denied ordinary usage is known unstarted and can retry after that condition changes',async t=>{
   const f=await nativeControlFixture(t,'quota-toggle'),first=await f.controls.execute('contact');assert.equal((first.execution as any).newModelRequests,0);const run=(first.execution as any).run;assert.equal(f.q.messages().status(run).runtimes[0]!.ended.proof.knownUnstarted,true);
   await rm(f.quotaFile);const pending=f.controls.execute('contact'),s=await active(f);await f.controls.controlNative('contact',control(s));const result=await pending;assert.equal((result.execution as any).completed,true);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);assert.equal(f.q.messages().status(run).runtimes[0]!.attempt,2);
+});
+
+test('TNC-F01: source changed during the final actual provider lookup cannot send a supplement',async t=>{
+  const f=await nativeControlFixture(t),ledger=await ledgerFixture(t),arm=join(ledger.root,'arm'),entered=join(ledger.root,'entered'),release=join(ledger.root,'release');
+  let provider=await readFile(ledger.profile.executable,'utf8');provider=provider.replace("import {DatabaseSync}","import fs from 'node:fs';\nimport {DatabaseSync}");const marker='const c=JSON.parse(input),db=new DatabaseSync(';assert.ok(provider.includes(marker));
+  provider=provider.replace(marker,`const c=JSON.parse(input);if(c.command==='lookup'&&fs.existsSync(${JSON.stringify(arm)})){fs.unlinkSync(${JSON.stringify(arm)});fs.writeFileSync(${JSON.stringify(entered)},'entered');const until=Date.now()+2500;while(!fs.existsSync(${JSON.stringify(release)})&&Date.now()<until)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);if(!fs.existsSync(${JSON.stringify(release)}))throw new Error('fixture_release_missing');}const db=new DatabaseSync(`);
+  await writeFile(ledger.profile.executable,provider,{mode:0o700});ledger.profile.executableSha256=hash(provider);const spec=ledger.profile.resources[0]!;f.request.authorityIntent='bounded-messages';f.request.resourceBudget=[{ledgerId:ledger.profile.ledgerId,resourceRef:spec.ref,unit:spec.unit,quantity:1}];f.controls=await f.reload();f.q.taskInbox().enqueue(Buffer.from(canonical(f.request)));const selected=await prepareTaskOwner(f.store,f.task,f.request.id),plan=JSON.parse(await readFile(selected.plan,'utf8'));await messageAuthority({...f,item:f.task,plan,write:async()=>writeFile(selected.plan,canonical(plan))});f.q.resources().configure(Buffer.from(canonical(ledger.profile)));
+  const pending=f.controls.execute('contact'),s=await active(f);await writeFile(arm,'armed');const attempt=f.controls.controlNative('contact',control(s)).then(value=>({accepted:true,value,reason:null}),error=>({accepted:false,value:null,reason:error.message}));
+  await until(async()=>{try{return await readFile(entered,'utf8');}catch{return null;}},Boolean);await writeFile(join(f.definition.workspace,'sample.js'),'export const lateChanged=70657;\n');await writeFile(release,'release');const result=await attempt;assert.equal(result.accepted,false);assert.match(result.reason,/candidate_or_material_changed|source_changed_before_send/);
+  await f.controls.controlNative('contact',control(s,'interrupt-current'));await pending;const calls=await f.calls();assert.equal(calls.filter(c=>c.method==='turn/steer').length,0);assert.equal(calls.filter(c=>c.kind==='input').length,1);await writeFile(join(f.root,'late-source-proof.json'),canonical({result,calls,ledger:ledger.state()}));
+});
+
+test('unconsumed supplement leaves the task unresolved but complete original final remains readable over HTTP',async t=>{
+  const f=await nativeControlFixture(t);let script=await readFile(f.codex,'utf8');script=script.replace('consumed:[...x.replyReferences,supplement.supplementSha256]','consumed:[...x.replyReferences]');await writeFile(f.codex,script);f.request.participant.executableSha256=hash(script);f.controls=await f.reload();
+  const pending=f.controls.execute('contact'),s=await active(f);await f.controls.controlNative('contact',control(s));const ended=await pending,run=(ended.execution as any).run;assert.equal((ended.execution as any).completed,false);assert.equal((ended.state[0] as any).phase,'unresolved');
+  const app=await startWorkbench(f.planPath);t.after(()=>app.close());const u=new URL(app.url),response=await fetch(u.origin+'/api/message-report/task/'+run+'/'+f.request.id,{headers:{Authorization:'Bearer '+u.hash.slice(1)}});assert.equal(response.status,200);const report=await response.json() as any;
+  assert.equal(report.consumptionConfirmed,false);assert.equal(report.reportBodyKind,'unconfirmed_original');assert.equal(report.completeCapture,true);assert.equal(report.reportText,report.report);assert.equal(hash(report.report),report.reportSha256);assert.match(report.reportText,/核对边界值反例/);
+  await assert.rejects(f.controls.closeInterrupted('contact'),/interruption_or_resources_unresolved/);await f.controls.execute('contact');assert.equal((await f.calls()).filter(c=>c.kind==='input').length,1);
 });

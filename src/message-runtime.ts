@@ -73,20 +73,20 @@ export class ReadonlyDialog {
     }catch(e){await rpc.close();throw e;}
   }
   address(){return proof('route',this.o,null,this.route);}
-  async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void){
+  async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,beforeSendSync?:()=>void){
     const text=canonical(envelope);if(Buffer.byteLength(text)>1024*1024||envelope.run!==this.o.run||canonical(envelope.to)!==canonical(this.route))throw new Error('message_runtime_input_or_address_changed');
     if(this.rpc.failure||this.rpc.exit)throw new Error('message_recipient_not_running');
     const startIndex=this.rpc.events.length;let turn:string;
     if(this.o.participant.tool==='codex'){
       const usage=await this.rpc.request('account/rateLimits/read',{});if(usage.ordinaryUsageAllowed!==true)throw new Error('ordinary_usage_unavailable');await beforeSend();
-      let accepted:Row;try{accepted=await this.rpc.request('turn/start',turnParams(this.route,text));}catch(e){
+      let accepted:Row;try{beforeSendSync?.();accepted=await this.rpc.request('turn/start',turnParams(this.route,text));}catch(e){
         const sent=jsonLines(await regular(join(this.o.directory,'stdin.ndjson'),16*1024*1024)),last=sent.at(-1),errors=this.rpc.events.filter(m=>m.id===last?.id&&m.error);
         if(last?.method==='turn/start'&&canonical(last.params)===canonical(turnParams(this.route,text))&&errors.length===1&&[-32600,-32602].includes(errors[0].error.code)&&!this.rpc.events.slice(startIndex).some(m=>m.method==='turn/started'))delivered(proof('refused',this.o,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,inputSha256:hash(text),source:'actual_invalid_request_reply',error:errors[0].error}));throw e;
       }turn=accepted.turn?.id;if(typeof turn!=='string'||!turn||this.turns.includes(turn))throw new Error('message_turn_identity_mismatch');this.turns.push(turn);delivered(proof('delivered',this.o,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId:turn,inputSha256:hash(text),source:'actual_turn_start_reply'}));
       const terminal=await this.rpc.waitFor(m=>this.rpc.events.indexOf(m)>=startIndex&&m.params?.threadId===this.route.threadId&&((m.method==='turn/completed'&&m.params.turn?.id===turn)||(m.method==='thread/status/changed'&&m.params.status?.activeFlags?.some((s:string)=>['waitingOnApproval','waitingOnUserInput'].includes(s)))),this.o.timeoutMs);if(terminal.method!=='turn/completed')throw new Error('message_waiting_on_user_or_approval');
       if(this.rpc.failure)throw new Error(this.rpc.failure);const requests=jsonLines(await regular(join(this.o.directory,'stdin.ndjson'),16*1024*1024)).filter(m=>m.id!==undefined&&m.method),responses=codexReplyMap(requests,this.rpc.events);if([...responses.values()].some(r=>Object.hasOwn(r,'error')))throw new Error('message_rpc_reply_ambiguous');const result=parseCodexResult(await regular(join(this.o.directory,'stdout.ndjson'),16*1024*1024),binding(this.o,this.route,this.turns));if(result.status!=='final_observed')throw new Error('message_final_not_complete');const final=result.turns.at(-1)!.final!.text;return proof('reply',this.o,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId:turn,inputSha256:hash(text),finalText:final,finalSha256:hash(final),...consumption(final,envelope)});
     }
-    await beforeSend();const uuid=randomUUID(),version=this.claudeVersion!;this.rpc.send(messageClaudeInput(version,this.route.sessionId,uuid,text));
+    await beforeSend();const uuid=randomUUID(),version=this.claudeVersion!;beforeSendSync?.();this.rpc.send(messageClaudeInput(version,this.route.sessionId,uuid,text));
     const init=await this.rpc.waitFor(m=>m.type==='system'&&m.subtype==='init'&&(version==='2.1.233'||this.rpc.events.indexOf(m)>=startIndex),30000);checkMessageClaudeInit(init,this.route.sessionId,version);
     const echo=await this.rpc.waitFor(m=>this.rpc.events.indexOf(m)>=startIndex&&m.type==='user'&&m.uuid===uuid,this.o.timeoutMs);
     if(echo.session_id!==this.route.sessionId||echo.message?.role!=='user'||echo.message.content!==text)throw new Error('message_claude_input_receipt_mismatch');
@@ -201,7 +201,7 @@ export class OwnedReadonlyDialog{
     const request:NativeControlRequest={id:messageControlDigest(this.o.run,c),action:c.action,threadId:expected.threadId,sessionId:expected.sessionId,turnId:expected.turnId,input:messageControlInput(this.o.run,c)};
     const pending=this.native.control(request).then(r=>controlledReceipt(this.o,c.messageId,r.request));this.controls.add(pending);pending.finally(()=>this.controls.delete(pending)).catch(()=>{});return pending;
   }
-  async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void){
+  async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,_beforeSendSync?:()=>void){
     const text=canonical(envelope);if(this.envelope||Buffer.byteLength(text)>1024*1024||envelope.run!==this.o.run||canonical(envelope.to)!==canonical(this.route))throw new Error('message_runtime_input_or_address_changed');
     this.envelope=structuredClone(envelope);this.beforeSend=beforeSend;this.delivered=delivered;
     try{

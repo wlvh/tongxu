@@ -76,7 +76,8 @@ export class MessageRecords {
   });}
   /** The intent commits before the transport side effect. A rollback at the
    * final check can never erase an already submitted native action. */
-  nativeControlSend(run:string,participant:string,request:NativeControlRequest,observations:OwnerObservation[],send:()=>void){return this.transaction(()=>{
+  nativeControlSend(run:string,participant:string,request:NativeControlRequest,observations:OwnerObservation[],send:()=>void,checkSource?:()=>void){return this.transaction(()=>{
+    checkSource?.();
     const checked=this.nativeControlTarget(run,participant,request,observations),intent=checked.f.e.find(e=>e.kind==='message_control_send_registered'&&e.data.request.id===request.id)?.data;
     if(!intent||intent.participant!==participant||canonical(intent.request)!==canonical(checked.request)||checked.f.e.some(e=>e.kind==='message_control_ack'&&e.data.receipt.request.id===request.id))throw new Error('message_native_control_original_intent_required');send();
   });}
