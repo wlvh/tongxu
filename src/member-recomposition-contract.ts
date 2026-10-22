@@ -2,12 +2,19 @@ import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messageId,messagePath} from './message-contract.js';
 import {memberReturnReference,type MemberReturnReference} from './integration-member-contract.js';
 import {parseRecompositionGovernance,type RecompositionGovernance} from './recomposition-test-contract.js';
-export type MemberRecompositionPlan={schemaVersion:1;kind:'tongxu-member-recomposition';id:string;store:string;memberReturn:MemberReturnReference;repairPlan:{path:string;sha256:string};newMember:{path:string;sha256:string};testPlan:{path:string;sha256:string};source:string;governance?:RecompositionGovernance};
+import {join} from 'node:path';
+import {canonical} from './comparison.js';
+import {hash} from './snapshot.js';
+export type RecompositionRetry={previous:string;resultSha256:string;source:string};
+export type MemberRecompositionPlan={schemaVersion:1;kind:'tongxu-member-recomposition';id:string;store:string;memberReturn:MemberReturnReference;repairPlan:{path:string;sha256:string};newMember:{path:string;sha256:string};testPlan:{path:string;sha256:string};source:string;governance?:RecompositionGovernance;retry?:RecompositionRetry};
 export function parseMemberRecompositionPlan(raw:Buffer):MemberRecompositionPlan{
   if(raw.length>32768)throw new Error('member_recomposition_plan_invalid');let p:any;try{p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw));}catch{throw new Error('member_recomposition_plan_invalid');}
   const ref=(x:any)=>exactKeys(x,['path','sha256'])&&messagePath(x.path)&&isAuthorityDigest(x.sha256);
-  if(!exactKeys(p,['schemaVersion','kind','id','store','memberReturn','repairPlan','newMember','testPlan','source',...(p&&Object.hasOwn(p,'governance')?['governance']:[])])||p.schemaVersion!==1||p.kind!=='tongxu-member-recomposition'||!messageId(p.id)||!messagePath(p.store)||!memberReturnReference(p.memberReturn)||![p.repairPlan,p.newMember,p.testPlan].every(ref)||typeof p.source!=='string'||!p.source.trim()||p.source.length>2048||p.source.includes('\0'))throw new Error('member_recomposition_plan_invalid');if(Object.hasOwn(p,'governance'))parseRecompositionGovernance(p.governance);return p;
+  if(!exactKeys(p,['schemaVersion','kind','id','store','memberReturn','repairPlan','newMember','testPlan','source',...(p&&Object.hasOwn(p,'governance')?['governance']:[]),...(p&&Object.hasOwn(p,'retry')?['retry']:[])])||p.schemaVersion!==1||p.kind!=='tongxu-member-recomposition'||!messageId(p.id)||!messagePath(p.store)||!memberReturnReference(p.memberReturn)||![p.repairPlan,p.newMember,p.testPlan].every(ref)||typeof p.source!=='string'||!p.source.trim()||p.source.length>2048||p.source.includes('\0'))throw new Error('member_recomposition_plan_invalid');if(Object.hasOwn(p,'governance'))parseRecompositionGovernance(p.governance);
+  if(Object.hasOwn(p,'retry')&&(!p.governance||!exactKeys(p.retry,['previous','resultSha256','source'])||!messageId(p.retry.previous)||p.retry.previous===p.id||!isAuthorityDigest(p.retry.resultSha256)||typeof p.retry.source!=='string'||!p.retry.source.trim()||p.retry.source.length>2048||p.retry.source.includes('\0')))throw new Error('member_recomposition_retry_invalid');return p;
 }
+export const memberRecompositionIdentity=(p:MemberRecompositionPlan)=>hash(canonical({memberReturn:p.memberReturn,repairPlan:p.repairPlan.sha256,...(p.retry?{id:p.id,retry:p.retry}:{})}));
+export const memberRecompositionDirectory=(p:MemberRecompositionPlan)=>join(p.store,'member-recomposition-'+memberRecompositionIdentity(p));
 export type RecompositionLink={schemaVersion:1;kind:'tongxu-member-recomposition-link';id:string;memberReturn:MemberReturnReference;repair:{operation:string;bindingHash:string;resultSha256:string;evidenceSha256:string};composition:{item:string;packet:number;fingerprint:string;subjectSha256:string};source:string};
 export function parseRecompositionLink(raw:Buffer):RecompositionLink{
   if(raw.length>32768)throw new Error('member_recomposition_link_invalid');let p:any;try{p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw));}catch{throw new Error('member_recomposition_link_invalid');}

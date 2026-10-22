@@ -22,6 +22,6 @@ export function parseRecompositionGovernance(value:unknown):RecompositionGoverna
  * IDs later used to consume it. Including resource-request IDs here would
  * create a cycle: those IDs already contain this action's payload hash. */
 export function recompositionTestPayload(p:MemberRecompositionPlan){
-  return {schemaVersion:1,kind:'tongxu-recomposition-test-input',id:p.id,store:p.store,memberReturn:p.memberReturn,repairPlan:p.repairPlan,newMember:p.newMember,testPlan:p.testPlan,source:p.source};
+  return {schemaVersion:1,kind:'tongxu-recomposition-test-input',id:p.id,store:p.store,memberReturn:p.memberReturn,repairPlan:p.repairPlan,newMember:p.newMember,testPlan:p.testPlan,source:p.source,...(p.retry?{retry:p.retry}:{})};
 }
 export const recompositionTestPayloadSha=(p:MemberRecompositionPlan)=>hash(canonical(recompositionTestPayload(p)));

@@ -2,6 +2,7 @@ import type {DatabaseSync} from 'node:sqlite';
 import {installTestAuthorityGuard} from './test-authority.js';
 
 const guards=[
+  {name:'recomposition_retry_successor_unique',sql:`CREATE UNIQUE INDEX recomposition_retry_successor_unique ON events(json_extract(data,'$.value.retry.previous')) WHERE kind='recomposition_test_prepared' AND json_type(data,'$.value.retry')='object'`},
   {name:'purpose_test_consumer_guard',sql:`CREATE TRIGGER purpose_test_consumer_guard BEFORE INSERT ON events
 WHEN NEW.kind IN ('integration_authority_bound','delivery_validation_authority_bound') AND EXISTS(SELECT 1 FROM events r WHERE r.kind='authority_action_reserved' AND r.object='authority-intent:'||json_extract(NEW.data,'$.value.authorityIntent') AND json_extract(r.data,'$.request.action')='test' AND json_type(r.data,'$.request.payloadSha256') IS NOT NULL)
 BEGIN SELECT RAISE(ABORT,'test_authority_purpose_mismatch'); END`},

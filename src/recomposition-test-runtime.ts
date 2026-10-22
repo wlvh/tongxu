@@ -27,7 +27,9 @@ export function recompositionTestRuntime(q:QueueStore,p:MemberRecompositionPlan,
     state,
     async prepare(raw:Buffer,manifest:Buffer,testPlan:Buffer){
       if(state()?.phase==='recorded')return;
-      await refresh();records.prepare(raw,manifest,testPlan,fresh);
+      let previousCapture;
+      if(p.retry){const prior=records.state(p.retry.previous);if(!prior.binding)throw new Error('recomposition_retry_original_run_required');previousCapture=await readRecompositionTestCapture(prior.directory,prior.binding,records.executions(p.retry.previous));records.complete(p.retry.previous,previousCapture);}
+      await refresh();records.prepare(raw,manifest,testPlan,fresh,previousCapture);
       for(const id of g.testResourceRequests){let claim=q.resources().status(id);if(claim.state==='prepared_not_sent')claim=await resourceAction(q.directory,id,'claim','background');if(claim.state!=='held')throw new Error('recomposition_test_original_resource_unresolved');}
       await refresh();records.check(p.id,fresh);
     },

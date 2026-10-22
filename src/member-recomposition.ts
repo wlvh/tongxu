@@ -5,7 +5,7 @@ import {QueueStore} from './queue-store.js';
 import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {regular,exists} from './repair-workspace.js';
-import {parseMemberRecompositionPlan} from './member-recomposition-contract.js';
+import {parseMemberRecompositionPlan,memberRecompositionIdentity,memberRecompositionDirectory} from './member-recomposition-contract.js';
 import {parseQueueRepairPlan,runQueueRepair} from './queue-repair.js';
 import {loadBundle,parsePlan,verify} from './verification.js';
 import {readPacket} from './queue-evidence.js';
@@ -22,10 +22,11 @@ async function freeze(path:string,b:Buffer){try{await writeFile(path,b,{flag:'wx
  * observation. Configured Owner grants bind this test's fixed inputs and
  * resources separately from the repaired member and successor integration. */
 export async function runMemberRecomposition(path:string){
-  const raw=await regular(path,32768),p=parseMemberRecompositionPlan(raw),id=hash(canonical({memberReturn:p.memberReturn,repairPlan:p.repairPlan.sha256})),directory=join(p.store,'member-recomposition-'+id),q=await QueueStore.open(p.store);let mutex:DatabaseSync|undefined;
+  const raw=await regular(path,32768),p=parseMemberRecompositionPlan(raw),id=memberRecompositionIdentity(p),directory=memberRecompositionDirectory(p),q=await QueueStore.open(p.store);let mutex:DatabaseSync|undefined,previousMutex:DatabaseSync|undefined;
   try{
     if(p.governance)q.recompositionTests().protect();
     if(!await exists(directory))await privateDirectory(directory,true);else await privateDirectory(directory,false);await freeze(join(directory,'request.json'),raw);const lock=join(directory,'controller.sqlite');try{await writeFile(lock,'',{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}await regular(lock);mutex=new DatabaseSync(lock);try{mutex.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{throw new Error('member_recomposition_controller_active');}
+    if(p.retry){const prior=q.recompositionTests().state(p.retry.previous),previousLock=join(prior.directory,'controller.sqlite');await regular(previousLock);previousMutex=new DatabaseSync(previousLock);try{previousMutex.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{throw new Error('recomposition_retry_original_controller_active');}}
     const fixedPlan=join(directory,'repair-plan.json');if(!await exists(fixedPlan)){const b=await regular(p.repairPlan.path);if(hash(b)!==p.repairPlan.sha256)throw new Error('member_recomposition_repair_plan_changed');await freeze(fixedPlan,b);}const repairPlanBytes=await regular(fixedPlan),repairPlan=parseQueueRepairPlan(repairPlanBytes);if(hash(repairPlanBytes)!==p.repairPlan.sha256||repairPlan.store!==p.store||canonical(repairPlan.memberReturn)!==canonical(p.memberReturn))throw new Error('member_recomposition_repair_plan_changed');
     let repair=q.reviewRecords().state(repairPlan.operation).repair;if(repair.phase!=='returned'||!['completed','completed_recovered_candidate'].includes(repair.result.status)||!repair.result.actualRepairPerformed)throw new Error('member_recomposition_completed_repair_required');
     // This original terminal reader checks saved tests, tool calls, sessions
@@ -79,5 +80,5 @@ export async function runMemberRecomposition(path:string){
     if(packet.summary.gaps.some(g=>g!=='sample_failure_or_incomplete_comparison')||!packet.summary.composition?.subject.testedTree)throw new Error('member_recomposition_original_verification_incomplete');
     if(!transferring&&!governed)gate();await freeze(transferPath,encoded({requestSha256:hash(canonical(p)),repairResultSha256:repair.resultSha256,packetFingerprint:packet.fingerprint,subjectSha256:packet.summary.composition.sha256,reportSha256:packet.reportHash}));const imported=q.import(packet),begun=q.begin(imported.item,'member-recomposition:'+id);if(!begun.operation)throw new Error('member_recomposition_queue_occupied');if(begun.status==='running')q.evaluate(begun.operation);
     const link={schemaVersion:1,kind:'tongxu-member-recomposition-link',id:p.id,memberReturn:p.memberReturn,repair:{operation:repairPlan.operation,bindingHash:repair.bindingHash,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256},composition:{item:imported.item,packet:imported.packet,fingerprint:packet.fingerprint,subjectSha256:packet.summary.composition.sha256},source:p.source},recorded=q.memberRecompositions().record(encoded(link));await freeze(join(directory,'link.json'),encoded(link));return await finish(link,recorded.proofSha256,begun.operation,processes);
-  }finally{if(mutex?.isTransaction)mutex.exec('ROLLBACK');mutex?.close();q.close();}
+  }finally{if(previousMutex?.isTransaction)previousMutex.exec('ROLLBACK');previousMutex?.close();if(mutex?.isTransaction)mutex.exec('ROLLBACK');mutex?.close();q.close();}
 }
