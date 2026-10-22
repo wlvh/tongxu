@@ -24,6 +24,11 @@ export class SecretaryWorkbench{
   }
   manifest(){return {planSha256:this.ref.sha256,source:this.ref.source,ownerSelected:!!this.owners,overallReviewIds:this.reviewIds,readOnly:true,ownerDecisionToolsAvailable:false};}
   async owner(){return {selection:this.manifest(),owner:this.owners?(await this.owners.state())[0]:{available:false,reason:'owner_control_not_selected'},permissionsGranted:false};}
-  async reviews(){return {selection:this.manifest(),reviews:this.overall?await this.overall.state():[],permissionsGranted:false};}
+  async reviews(){
+    // This readonly object is not the page's running controller. Its empty
+    // process-local active map cannot prove that an original review is idle.
+    const reviews=(this.overall?await this.overall.state():[]).map(({active,currentControllerProblem,...original})=>original);
+    return {selection:this.manifest(),reviews,controllerActivity:'not_observed',permissionsGranted:false};
+  }
   async report(id:string){if(!this.overall||!this.reviewIds.includes(id))throw new Error('secretary_overall_report_not_selected');return this.overall.report(id);}
 }
