@@ -3,7 +3,6 @@ import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsum
 import {requirePublicationProcessEnded} from './publication-process.js';
 import {requirePublicationDispatchCapture,type PublicationDispatchCapture} from './publication-dispatch-capture.js';
 import {PublicationReturns} from './publication-return-store.js';
-import {requirePublicationProcessEnded} from './publication-process.js';
 import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
 import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
 import {installMemberRefutationOriginalsGuard} from './member-refutation-format.js';
