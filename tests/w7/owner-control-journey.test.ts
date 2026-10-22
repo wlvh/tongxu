@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {writeFile} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {deliveryControlsFixture} from './delivery-controls-fixture.js';
 import {startWorkbench} from '../../src/workbench.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
+import {SecretaryWorkbench} from '../../src/secretary-workbench.js';
+import {SecretaryTools} from '../../src/secretary-tools.js';
 
 test('a stopped outcome can be resumed through the same workbench Owner source; independent stops and revocations survive',async t=>{
   const f=await deliveryControlsFixture(t),item=f.q.status().items.find((x:any)=>x.id===f.item),catalog={schemaVersion:2,kind:'tongxu-task-controls',contacts:[],scopeControls:['investment','implementation','merge'].map(control=>({id:control,title:control,source:'fixture',scopeSha256:hash(canonical(item.context.scope)),control}))},catalogPath=join(f.root,'journey-controls.json');
@@ -29,6 +31,8 @@ test('a stopped outcome can be resumed through the same workbench Owner source; 
   const original=f.q.status(),wrong=await owner('apply',{proposalSha256:opened.value.proposalSha256,sourceUrl:'https://github.com/fixture/reception/issues/9#issuecomment-7400000001'});assert.equal(wrong.status,503);assert.deepEqual(f.q.status(),original);
   const applied=await apply(opened.value.proposalSha256);assert.equal(applied.status,200,JSON.stringify(applied));
   const final=await state();assert.equal(final.ownerControls[0].controls.find((c:any)=>c.control==='investment').state,'open');assert.equal(final.scopeControls.find((c:any)=>c.control==='investment').state,'open');
+  const selected=await SecretaryWorkbench.load({path:f.workbenchPath,sha256:hash(await readFile(f.workbenchPath)),source:'fixture'},f.store,f.item),c=item.candidate,tools=new SecretaryTools(f.store,f.item,{repository:c.repository,pr:c.pr,H:c.H,B:c.B,target:c.targetRef},join(f.root,'secretary-read'),undefined,false,false,selected);
+  const read=await tools.call({tool:'tongxu_owner_controls',arguments:{},callId:'after-direct-resume'});assert.deepEqual(JSON.parse(read.contentItems[0].text).data.owner,final.ownerControls[0]);
   for(const c of ['implementation','merge'])assert.equal(final.scopeControls.find((x:any)=>x.control===c).state,'stopped');
   assert.equal(final.ownerControls[0].requests.find((r:any)=>r.proposalSha256===f.a.confirmed.sha).revoked,true);assert.equal(final.deliveries[0].batch.outcomes.at(-1).proposal.outcome,'stopped');assert.equal(final.deliveries[0].batch.userOutcomeAccepted,false);
   // A second stop/reopen is a new decision, not the already-applied first open.
