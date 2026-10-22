@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, writeFile, lstat, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, lstat, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,7 @@ const encode = (x: any[]) => Buffer.from(x.map(v => JSON.stringify(v) + '\n').jo
 const single = () => ({ ...binding(), turnIds: ['turn-one'] });
 const singleFrames = () => [rootFrame(), ...turnFrames('turn-one')];
 const exec = promisify(execFile), cli = fileURLToPath(new URL('../../src/codex-result-cli.js', import.meta.url));
-async function dir(t: test.TestContext) { const d = await mkdtemp(join(tmpdir(), 'tongxu-codex-results-')); t.after(() => rm(d, { recursive: true, force: true })); return d; }
+async function dir(t: test.TestContext) { const d = await realpath(await mkdtemp(join(tmpdir(), 'tongxu-codex-results-'))); t.after(() => rm(d, { recursive: true, force: true })); return d; }
 async function inputs(d: string, raw = encode(frames()), b = binding()) { const input = join(d, 'input.ndjson'), bp = join(d, 'binding.json'); await writeFile(input, raw, { mode: 0o600 }); await writeFile(bp, JSON.stringify(b), { mode: 0o600 }); return { input, binding: bp }; }
 
 // A real CLI success here establishes offline packet preparation only, never real model execution.

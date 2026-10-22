@@ -94,5 +94,5 @@ test('persistent original resumes exact history; interruption survives restart a
 test('an actual nested owned operation keeps its exact absolute path beyond the short native ID length',async t=>{
   const f=await setup(t,{beforeControl:async()=>{},beforeControlSendSync:(_r,send)=>send()},true,true);assert.ok(f.options.operation.length>256);
   const result=f.session.turn(JSON.stringify({candidateH:f.candidate.H}),f.candidate,findingSchema),s=await f.active();await f.session.control(f.request(s,'long-path-steer','steer'));await result;await f.session.close();
-  const captured=await readOwnedCodexSession(f.options.directory);assert.equal(captured.binding.run,f.options.operation);assert.equal(captured.parsed.handoffReady,true);
+  const captured=await readOwnedCodexSession(f.options.directory);assert.equal(captured.binding.run,f.options.operation);assert.equal(captured.parsed.status,'final_observed');assert.equal(captured.parsed.handoffReady,false); // A fact verifier is not the reviewer-to-impact route.
 });
