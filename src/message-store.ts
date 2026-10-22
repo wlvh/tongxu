@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseMessagePlan,messagePlanId,continuationMessagePrefix,checkMessageBilling,messageControlDigest,messageControlInput,type MessagePlan } from './message-contract.js';
+import { parseMessagePlan,messagePlanId,continuationMessagePrefix,checkMessageBilling,messageControlDigest,messageControlInput,type MessagePlan,type MessageNativeResume } from './message-contract.js';
 import {parseNativeControlRequest,type NativeControlRequest} from './native-control-contract.js';
 import type { OwnerObservation } from './authority-source.js';
 import { requireDialogProof,type DialogProof } from './message-runtime.js';
@@ -32,6 +32,7 @@ export class MessageRecords {
   private gate(run:string,observations:OwnerObservation[],requireResources=true){
     const f=this.fixed(run);for(const a of f.plan.participants){const before=f.r.bindings[a.id],current=this.item(a.item);if(!current.current||current.packet!==before.packet||current.fingerprint!==before.fingerprint)throw new Error('message_candidate_or_material_changed');if((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(current.context.scope.id) as Row)?.stopped)throw new Error('new_investment_stopped');}
     const parent=this.continuationParentValue(run);if(parent)this.continuationSourceValue(parent);
+    if(f.plan.nativeResume)this.nativeResumeSourceValue(run);
     const configured=this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();if(configured&&!f.plan.resourceBudget)throw new Error('message_configured_resource_consumer_not_yet_bound');
     if(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()){
       if(f.plan.authorityIntent===null)throw new Error('message_coordination_authority_required');const a=this.authority(f.plan.authorityIntent,observations),request=a.request,first=f.r.bindings[f.plan.participants[0]!.id];
@@ -49,8 +50,23 @@ export class MessageRecords {
     if(prior.attempt>=3)throw new Error('message_unstarted_bootstrap_retry_limit');
     const starts:Row[]=(this.db.prepare("SELECT object,data FROM events WHERE kind='message_runtime_started'").all() as Row[]).map(e=>({...e,data:JSON.parse(e.data).value}));for(const s of starts)if(s.data.item===p.item&&s.data.role===p.role){const oldRun=s.object.slice(9),state=this.view(oldRun),runtime=state.runtimes.find(r=>r.participant===s.data.participant)!;if(runtime.attempt!==s.data.attempt)continue;const unresolved=state.messages.some(m=>m.to===s.data.participant&&['Unknown','Delivered'].includes(m.state));if(!runtime.ended||unresolved)throw new Error('message_prior_role_runtime_active_or_unknown');}
     this.coordinationGate?.(run,undefined,participant,'message_runtime_started');
-    const attempt=prior.attempt+1,directory=join(this.directory,'messages-'+run,'runtimes',hash(participant),'attempt-'+attempt);this.event(run,'runtime_started',{participant,attempt,directory,item:p.item,role:p.role,controllerPid:process.pid,startedAt:now()});return this.view(run);
+    const attempt=prior.attempt+1,resume=f.plan.nativeResume?this.nativeResumeSourceValue(run):null,directory=resume?join(resume.directory,'resume-'+run,'attempt-'+attempt):join(this.directory,'messages-'+run,'runtimes',hash(participant),'attempt-'+attempt);this.event(run,'runtime_started',{participant,attempt,directory,item:p.item,role:p.role,controllerPid:process.pid,startedAt:now(),...(resume?{nativeResume:resume.source}:{})});return this.view(run);
   });}
+  private nativeResumeOriginal(run:string,participant:string,messageId:string){
+    const f=this.fixed(run),p=f.plan.participants.find(p=>p.id===participant),runtime=this.runtime(f,participant),message=this.view(run).messages.find(m=>m.id===messageId&&m.to===participant);
+    if(f.plan.participants.length!==1||p?.tool!=='codex'||p.parent!==null||!f.plan.nativeControls||f.plan.messages.length!==1||!message||!(message.state==='Reply'&&message.reply?.reportedConsumption===true||message.state==='Interrupted')||runtime.captureVerification?.proof.successfulCapture!==true||!runtime.started||!runtime.ended||!runtime.route)throw new Error('native_resume_exact_ended_source_required');
+    if(f.plan.resourceBudget&&this.resourceResult?.(run)!==true)throw new Error('native_resume_original_resources_unsettled');
+    const ref=runtime.ended.originals['native/binding.json'];if(!ref)throw new Error('native_resume_owned_capture_required');
+    const binding=JSON.parse(this.bytes(ref.sha256).toString()),captureSha256=hash(canonical({run,participant,messageId,originals:runtime.ended.originals}));
+    return {f,p,runtime,source:{run,participant,messageId,captureSha256},binding};
+  }
+  nativeResumeReference(run:string,participant:string,messageId:string):MessageNativeResume{return this.transaction(()=>this.nativeResumeOriginal(run,participant,messageId).source);}
+  private nativeResumeSourceValue(run:string){
+    const f=this.fixed(run),ref=f.plan.nativeResume;if(!ref||ref.run===run)throw new Error('native_resume_source_required');const old=this.nativeResumeOriginal(ref.run,ref.participant,ref.messageId),participant=f.plan.participants[0]!,before=old.f.r.bindings[ref.participant],current=f.r.bindings[participant.id];
+    if(canonical(ref)!==canonical(old.source)||canonical(participant)!==canonical(old.p)||old.f.plan.executionKind!==f.plan.executionKind||before.packet!==current.packet||before.fingerprint!==current.fingerprint||canonical(before.candidate)!==canonical(current.candidate)||canonical(before.context)!==canonical(current.context))throw new Error('native_resume_scope_or_capture_changed');
+    return {source:old.source,directory:old.runtime.started.directory as string,originals:old.runtime.ended.originals as Record<string,{sha256:string;bytes:number}>,binding:old.binding};
+  }
+  nativeResumeSource(run:string){return this.transaction(()=>this.nativeResumeSourceValue(run));}
   private route(run:string,participant:string,route:Row){return this.transaction(()=>{const f=this.fixed(run),r=this.runtime(f,participant);if(!r.started)throw new Error('message_runtime_not_started');if(r.route){if(canonical(r.route)!==canonical(route))throw new Error('message_original_recipient_is_fixed');return this.view(run);}this.event(run,'route_bound',{participant,attempt:r.attempt,route});return this.view(run);});}
   intent(run:string,id:string,envelope:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.gate(run,observations),m=f.plan.messages.find(m=>m.id===id);if(!m)throw new Error('message_missing');if(f.e.some(e=>e.kind==='message_send_registered'&&e.data.id===id))throw new Error('message_unknown_or_sent_never_resend');this.coordinationGate?.(run,id,undefined,'message_send_registered');

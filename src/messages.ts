@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join,dirname } from 'node:path';
 import { mkdir,writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
@@ -24,7 +24,7 @@ function completed(state:Row){return state.messages.every((m:Row)=>m.state==='Re
 function nativeSpec(p:MessagePlan,participant:string){const controls=p.nativeControls?.filter(c=>p.messages.find(m=>m.id===c.messageId)?.to===participant);return controls?.length?{nativeControls:controls}:{};}
 async function replay(q:QueueStore,run:string,directory:string){
   const r=q.messages(),s=r.status(run),frozen=r.frozen(run),errors:string[]=[];for(const runtime of s.runtimes){if(!runtime.started)continue;const p=runtime.started.directory;try{
-    const participant=s.plan.participants.find(a=>a.id===runtime.participant)!;const spec:RuntimeSpec={run,participant,executionKind:s.plan.executionKind,directory:p,assembly:JSON.parse(frozen.assemblies[participant.id]!.toString()),binding:s.registration.bindings[participant.id],timeoutMs:s.plan.timeoutMs,...nativeSpec(s.plan,participant.id)};
+    const participant=s.plan.participants.find(a=>a.id===runtime.participant)!;const spec:RuntimeSpec={run,participant,executionKind:s.plan.executionKind,directory:p,assembly:JSON.parse(frozen.assemblies[participant.id]!.toString()),binding:s.registration.bindings[participant.id],timeoutMs:s.plan.timeoutMs,...nativeSpec(s.plan,participant.id),...(s.plan.nativeResume?{nativeResume:r.nativeResumeSource(run)}:{})};
     // Ended capture checks do not interrogate today's executable or credentials.
     if(runtime.ended?.proof.knownUnstarted){r.record(run,runtime.participant,await inspectUnstartedDialog(spec));continue;}
     const result=await inspectDialogCapture(spec,r.submitted(run,runtime.participant),r.nativeControlRequests(run,runtime.participant));for(const proof of result.proofs)r.record(run,runtime.participant,proof);r.record(run,runtime.participant,result.ended);if(result.error){errors.push(result.error);r.problem(run,null,result.error);}
@@ -43,9 +43,9 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     await ensurePrivate(directory);
     const lockPath=join(directory,'controller.sqlite');try{await writeFile(lockPath,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}await regular(lockPath,4*1024*1024);lock=new DatabaseSync(lockPath);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{lock.close();lock=undefined;throw new Error('message_controller_active');}
     const records=q.messages();let previous:ReturnType<MessageRecords['status']>|null=null;try{previous=records.status(run);}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}
-    const parent=records.continuationParent(run);
+    const continuation=records.continuationParent(run);if(continuation&&p.nativeResume)throw new Error('native_resume_and_new_context_cannot_mix');const parent=continuation??p.nativeResume?.run;
     if(parent){const path=join(store,'messages-'+parent,'controller.sqlite');await regular(path,4*1024*1024);parentLock=new DatabaseSync(path);try{parentLock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{parentLock.close();parentLock=undefined;throw new Error('continuation_original_controller_active');}}
-    const checkParent=async()=>{if(parent){const recovered=await replay(q,parent,join(store,'messages-'+parent));if(recovered.recoveryErrors.length)throw new Error('continuation_original_capture_unresolved');records.continuationSource(parent);}};
+    const checkParent=async()=>{if(parent){const recovered=await replay(q,parent,join(store,'messages-'+parent));if(recovered.recoveryErrors.length)throw new Error('continuation_original_capture_unresolved');if(p.nativeResume){if(canonical(records.nativeResumeReference(parent,p.nativeResume.participant,p.nativeResume.messageId))!==canonical(p.nativeResume))throw new Error('native_resume_scope_or_capture_changed');}else records.continuationSource(parent);}};
     if(previous?.runtimes.some((r:Row)=>r.started)){
       const recovered=await replay(q,run,directory);
       // No recipient of a dispatched message may change. A bootstrap with
@@ -60,12 +60,12 @@ export async function runMessages(store:string,planPath:string,recoverOnly=false
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
     const runtimes=new Map<string,ReadonlyDialog|OwnedReadonlyDialog>(),specs=new Map<string,RuntimeSpec>(),turnObservations=new Map<string,OwnerObservation[]>(),turnSourceChecks=new Map<string,()=>void>();let sent=0,activeMessage:string|null=null;
     try{
-      await q.refreshMessageTaskSources(run);records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
+      await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
       for(const m of p.messages){activeMessage=m.id;await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
           await ensurePrivate(join(directory,'runtimes'));await ensurePrivate(join(directory,'runtimes',hash(m.to)));
-          await refreshMessageResources(q,run,p);const state=records.startRuntime(run,m.to,await observations(q,p,directory)),spec:RuntimeSpec={run,participant,executionKind:p.executionKind,directory:state.runtimes.find(r=>r.participant===m.to)!.started.directory,assembly:promptObjects[m.to]!,binding:state.registration.bindings[m.to],timeoutMs:p.timeoutMs,...nativeSpec(p,m.to)};specs.set(m.to,spec);
+          await refreshMessageResources(q,run,p);const state=records.startRuntime(run,m.to,await observations(q,p,directory)),spec:RuntimeSpec={run,participant,executionKind:p.executionKind,directory:state.runtimes.find(r=>r.participant===m.to)!.started.directory,assembly:promptObjects[m.to]!,binding:state.registration.bindings[m.to],timeoutMs:p.timeoutMs,...nativeSpec(p,m.to),...(p.nativeResume?{nativeResume:records.nativeResumeSource(run)}:{})};await ensurePrivate(dirname(spec.directory));specs.set(m.to,spec);
           const controlObservations=new Map<string,OwnerObservation[]>(),controlSourceChecks=new Map<string,()=>void>(),runtime=spec.nativeControls?await OwnedReadonlyDialog.open(spec,{
             beforeTurnSendSync:()=>{const check=turnSourceChecks.get(participant.id);if(!check)throw new Error('message_task_source_check_required');check();records.check(run,turnObservations.get(participant.id)??[],activeMessage??undefined);},
             control:{beforeControl:async request=>{

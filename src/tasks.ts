@@ -26,7 +26,7 @@ export async function workTaskOwner(store:string,task:string,limit=4,currentBill
     const q=await QueueStore.open(store);let next;try{next=q.taskInbox().status(task).find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));}finally{q.close();}
     if(!next)return {task,runs,pending:[],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     if(next.phase==='waiting')return {task,runs,pending:[next],newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
-    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling);runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests});
+    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling);runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true)});
     if(!result.completed||!result.resourcesSettled)break;
   }
   const q=await QueueStore.open(store);try{return {task,runs,pending:q.taskInbox().status(task).filter(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase)),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};}finally{q.close();}
@@ -42,11 +42,11 @@ export async function runTaskContact(store:string,planPath:string,currentBilling
   const steps=[];let from:TaskOwnerRequest['from']=null;
   for(const template of requests){const request:TaskOwnerRequest={...template,from},q=await QueueStore.open(store);try{q.taskInbox().enqueue(Buffer.from(canonical(request)));}finally{q.close();}
     let selected;try{selected=await prepareTaskOwner(store,request.task,request.id);}catch(e){return {steps,completed:false,waiting:e instanceof Error?e.message:'task_contact_waiting',newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true};}
-    const result=await runMessages(store,selected.plan,false,selected.run,currentBilling);steps.push({task:request.task,id:request.id,run:selected.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests});
+    const result=await runMessages(store,selected.plan,false,selected.run,currentBilling);steps.push({task:request.task,id:request.id,run:selected.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true)});
     if(!result.completed||!result.resourcesSettled)return {steps,completed:false,waiting:'original_task_result_or_resources_unresolved',newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true};
     from={task:request.task,run:selected.run,messageId:request.id};
   }
-  return {steps,completed:true,newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true,nativeSessionResumed:false};
+  return {steps,completed:true,newModelRequests:steps.reduce((n,s)=>n+s.newModelRequests,0),workerEnded:true,nativeSessionResumed:steps.at(-1)?.nativeSessionResumed??false,nativeSessionResumeScope:'final_return_to_owner'};
 }
 
 export async function linkTaskCandidate(store:string,requestPath:string){const raw=await regular(requestPath,8192),p=parseTaskCandidateLink(raw),q=await QueueStore.open(store);try{const source=await q.refreshTaskLinkSource(p.task);return q.taskLinks().attach(raw,source);}finally{q.close();}}
