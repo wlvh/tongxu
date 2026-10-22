@@ -1,5 +1,6 @@
 import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication-contract.js';
-import {publicationGuardsCurrent} from './publication-guards.js';
+import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey} from './publication-guards.js';
+import {requirePublicationProcessEnded} from './publication-process.js';
 import {requirePublicationDispatchCapture,type PublicationDispatchCapture} from './publication-dispatch-capture.js';
 import {parseMemberRefutationRequest,type MemberRefutationRequest} from './member-refutation-contract.js';
 import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
@@ -460,7 +461,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});
     return new CoordinationRecords(this.db,transaction,id=>this.authorityItem(id),run=>({state:messages.status(run),materials:messages.frozen(run).materials,submitted:participant=>messages.submitted(run,participant)}),this.directory);
   }
-  resources(): ResourceRecords {return this.resourceRecords(fn=>this.transaction(fn));}
+  resources(): ResourceRecords {
+    // Persist the old-consumer guard before any result validation can fail.
+    // Read-only projections use resourceRecords directly and do not mutate.
+    this.transaction(()=>{if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey))installPublicationResultGuard(this.db);});
+    return this.resourceRecords(fn=>this.transaction(fn));
+  }
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
     return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{
@@ -472,6 +478,10 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         const publication=action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
         if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
+    },(request,record,dispatch)=>{
+      const action=a.reservedAction(request.authorityIntent);if(action.request.action!=='publish')return;
+      this.publicationOriginalProcessesEnded(request.operation);
+      if(dispatch)this.event('publication_resource_result_admitted','resource:'+resourceRequestHash(request),{originalOperation:request.operation,outcomeSha256:record.outcomeSha256});
     });
   }
   private receiverResourceClaimGate(action:Row,request:ResourceRequest){
@@ -708,10 +718,15 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(resultSha256,bytes);this.event('publication_result_recorded','publication:'+id,{resultSha256,publicationBindingSha256:binding.bindingSha256});return {resultSha256,duplicate:false};
   });}
   private publicationResourceOutcome(operation:string,action:Row,claimedAt:string):ResourceOutcome{
+    this.publicationOriginalProcessesEnded(operation);
     const state=this.publicationHistory(operation),binding=this.publicationBinding(operation),record=state.events.find((e:Row)=>e.kind==='result_recorded');
     if(!binding||!record||binding.authorityIntent!==action.requestId||binding.actionSha256!==action.requestSha256||record.publicationBindingSha256!==binding.bindingSha256)throw new Error('publication_verified_original_result_required');
     const proof=this.blob(record.resultSha256),value=JSON.parse(proof.toString());if(value.publicationBindingSha256!==binding.bindingSha256||value.stages.length!==2||value.stages.some((s:Row)=>!Number.isFinite(Date.parse(s.preparedAt))||Date.parse(s.preparedAt)<Date.parse(claimedAt)))throw new Error('publication_original_result_binding_changed');for(const stage of value.stages)for(const ref of Object.values(stage.originals) as Row[])this.blob(ref.sha256);
     return {state:'completed',source:value.source,executionKind:'external',proof};
+  }
+  private publicationOriginalProcessesEnded(operation:string){
+    const state=this.publicationHistory(operation);
+    for(const name of ['comment','status']){const stage=state.stages?.[name];if(!stage?.intent)throw new Error('publication_verified_original_result_required');requirePublicationProcessEnded(stage.started?.pid,stage.started?.identity);}
   }
   private publicationHistory(id: string): Row {
     const events = (this.db.prepare("SELECT kind,data,observed_at FROM events WHERE object=? AND kind LIKE 'publication_%' ORDER BY id").all(`publication:${id}`) as Row[]).map(e => ({ ...parse(e, 'data'), kind: e.kind.slice(12), at: e.observed_at }));

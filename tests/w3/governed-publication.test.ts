@@ -20,6 +20,7 @@ test('governed publication consumes its exact permission and original resource, 
   const result=await publication(f.pubPath,'publish');assert.equal(result.status,'published_verified');assert.equal(result.remoteCurrent,true);assert.equal(result.resourcesSettled,true);assert.equal((await f.remote()).posts.length,2);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);assert.ok((await readFile(f.trace)).equals(before));
   assert.equal((await publication(f.pubPath,'prepare')).status,'prepared_original_dispatch_exists');assert.equal((await f.remote()).posts.length,2);
   await f.owner.adopt({kind:'revoke',decision:f.owner.confirmed.sha});const again=await publication(f.pubPath,'publish');assert.equal(again.status,'published_verified');assert.equal(again.resourcesSettled,true);assert.equal((await f.remote()).posts.length,2);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);assert.ok((await readFile(f.trace)).equals(before));
+  const remote=await f.remote();remote.comments[0].body+=' explicit later remote edit';await f.change({comments:remote.comments});const changed=await publication(f.pubPath,'reconcile');assert.equal(changed.status,'publication_pending_or_unknown');assert.equal(changed.resourcesSettled,true);assert.equal(f.ledger.state().settlements.length,1);assert.equal((await f.remote()).posts.length,2);
 });
 
 test('a stop at the actual publication effect proves no send, then resumes the original held resource',async t=>{

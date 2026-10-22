@@ -15,7 +15,7 @@ export type ResourceOutcome={state:'completed'|'failed'|'cancelled';source:strin
 export class ResourceRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,
     private authority:(id:string,fresh:OwnerObservation[]|null)=>Row,
-    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome,private newClaimGate?:(action:Row,request:ResourceRequest,dispatch:boolean)=>void){}
+    private execution:(operation:string,action:Row,claimedAt:string)=>ResourceOutcome,private newClaimGate?:(action:Row,request:ResourceRequest,dispatch:boolean)=>void,private outcomeGate?:(request:ResourceRequest,record:Row,dispatch:boolean)=>void){}
   private event(kind:string,object:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind,object,JSON.stringify(data),now());}
   private events(key:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'resource_%' ORDER BY id").all('resource:'+key) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
   private blob(b:Buffer){const h=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(h,b);this.bytes(h);return h;}
@@ -89,9 +89,10 @@ export class ResourceRecords {
     if(kind==='record_result')this.validateOutcome(state);
     return {protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:kind,requestId:id,request:kind==='capabilities'?null:f.request,outcome:kind==='record_result'?state.outcome?.outcome??null:null};
   });}
-  private validateOutcome(state:Row){
+  private validateOutcome(state:Row,dispatch=false){
     const record=state.outcome;if(!record||hash(canonical(record.outcome))!==record.outcomeSha256)throw new Error('resource_original_outcome_missing_or_changed');
     this.bytes(record.outcome.evidenceSha256);
+    this.outcomeGate?.(state.request,record,dispatch);
   }
   dispatchClaim(id:string,capabilities:LedgerObservation,observations:OwnerObservation[],callerRole:AuthorityRole,directory:string,retryRefused=false){return this.transaction(()=>{
     const f=this.fixed(id),state=this.statusOf(id),capCommand:LedgerCommand={protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:'capabilities',requestId:id,request:null,outcome:null};
@@ -149,7 +150,7 @@ export class ResourceRecords {
   });}
   dispatchResult(id:string,capabilities:LedgerObservation,directory:string){return this.transaction(()=>{
     const f=this.fixed(id),s=this.statusOf(id),c:LedgerCommand={protocol:f.profile.protocol,ledgerId:f.profile.ledgerId,command:'capabilities',requestId:id,request:null,outcome:null};requireLedgerObservation(capabilities,f.profile,c);
-    this.validateOutcome(s);
+    this.validateOutcome(s,true);
     if(capabilities.reply.result.credentialState!=='available'||capabilities.reply.result.recordResult!==true)throw new Error('original_ledger_result_permission_unavailable');
     if(!s.outcome||s.state!=='result_pending')throw new Error('resource_result_unavailable_conflicting_or_already_recorded');
     if(s.pendingResultAttempt)throw new Error('resource_original_result_requires_lookup_not_resend');

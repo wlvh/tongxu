@@ -70,7 +70,7 @@ export class AuthorityRecords {
     this.db.exec('DROP TRIGGER authority_legacy_native_guard;'+next+';'+receiverResourceGuard+';');this.db.prepare('INSERT INTO meta VALUES(?,?)').run(receiverConsumerKey,hash(admittedReceiver));this.event('authority_receiver_consumer_enabled','authority-profile',{contract:'governed-receiver-v1',previousGuardSha256:this.blob(Buffer.from(previous)),guardSha256:this.blob(Buffer.from(next)),executionGranted:false});return {enabled:true,duplicate:false,executionGranted:false};
   });}
   enableGovernedPublication(){return this.transaction(()=>{
-    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey))return {enabled:true,duplicate:true,executionGranted:false};
+    this.profile();if(this.db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey)){installPublicationGuards(this.db);return {enabled:true,duplicate:true,executionGranted:false};}
     if(this.db.prepare('SELECT 1 FROM claims').get()||this.db.prepare("SELECT 1 FROM operations WHERE status!='complete'").get())throw new Error('queue_has_active_or_unknown_operation');
     const previous=(this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='authority_legacy_effect_guard'").get() as Row).sql;
     if(previous!==legacyPublicationEffectGuard)throw new Error('publication_legacy_guard_changed');
