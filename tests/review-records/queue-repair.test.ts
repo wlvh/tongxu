@@ -26,26 +26,7 @@ const dockerPath=process.env.TONGXU_TEST_DOCKER_CONFIG;
 if(!dockerPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG required');
 const docker=JSON.parse(await readFile(dockerPath,'utf8'));
 
-async function setupRepair(t: test.TestContext, mode='return', modelMode='project') {
-  const f=await setup(t,mode), model=await fixture(t,modelMode);
-  const objects=f.plan.objects;
-  await mkdir(join(objects,'src'));await mkdir(join(objects,'test'));
-  await writeFile(join(objects,'src/normalize.mjs'),"export function normalizeLabel(value){return value.trim();}\n");
-  await writeFile(join(objects,'src/index.mjs'),"export {normalizeLabel} from './normalize.mjs';\n");
-  await writeFile(join(objects,'README.md'),'Explicit queue repair fixture; empty labels must become Untitled.\n');
-  await writeFile(join(objects,'test/normalize.test.mjs'),"import assert from 'node:assert/strict';import {normalizeLabel} from '../src/index.mjs';assert.equal(normalizeLabel('  '),'Untitled');assert.equal(normalizeLabel(' X '),'X');\n");
-  await git(objects,['add','.']); await git(objects,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','explicit queue fixture defect']);
-  const H=await git(objects,['rev-parse','HEAD']), item=await f.packet({H});
-  f.plan.item=item.item;f.plan.sourcePaths=['src/normalize.mjs','test/normalize.test.mjs'];await writeFile(f.path,JSON.stringify(f.plan));
-  f.q.enableSupplements();f.q.reviewRecords().enable();
-  const receiver=await runReception(f.path), original=f.q.receiverState(receiver.operation), evidence=f.q.receiverEvidence(receiver.operation);
-  const testPlan=join(f.root,'tests.json');await writeFile(testPlan,JSON.stringify({schemaVersion:2,executor:docker,tools:[{id:'existing-tests',argv:[docker.node,'test/normalize.test.mjs'],timeoutMs:10000}]}));
-  const request={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:join(f.root,'managed'),objects,candidate:{kind:'github-pr',repository:'fixture/reception',pr:1,H,B:evidence.manifest.candidate.B,target:'fixture'},allowedPaths:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md'],protectedPaths:['test/normalize.test.mjs'],contract:'Trim labels; empty becomes Untitled, preserve nonempty values and exports.',testPlan,testPlanSha256:hash(await readFile(testPlan)),findings:[],authorization:{source:'fixture:explicit scoped repair',allowRepair:true,allowReconcileEnded:true,maxRepairRounds:3},demonstrationFixture:true,generatedDirectories:[]};
-  const requestPath=join(f.root,'request.json');await writeFile(requestPath,JSON.stringify(request));
-  const p={schemaVersion:1,kind:'tongxu-queue-repair',store:f.store,operation:receiver.operation,packet:evidence.packet,judgmentId:original.receiver.judgmentId,bindingHash:original.receiver.bindingHash,context:evidence.context,request:requestPath,requestSha256:hash(await readFile(requestPath)),config:model.configPath,configSha256:hash(await readFile(model.configPath))};
-  const planPath=join(f.root,'queue-repair.json');await writeFile(planPath,JSON.stringify(p));
-  return {...f,model,original,evidence,request,requestPath,p,planPath,operation:receiver.operation,H};
-}
+import {setupRepair,coordinatedRepair} from './queue-repair-fixture.js';
 test('original queue RETURN starts the existing project repair, preserves the judgment, records factual counters and does not dispatch twice',async t=>{
   const f=await setupRepair(t), judgment=JSON.stringify(f.original.receiver.judgment), r=await runQueueRepair(f.planPath);
   assert.equal(r.repairStatus,'completed');assert.equal(r.counters.actualFileWrites,1);assert.equal(r.counters.fixedNewCandidates,1);assert.equal(r.counters.writeHandoffs,1);assert.equal(r.counters.publishedReworkBatches,0);
@@ -68,16 +49,6 @@ test('an existing repair entry cannot bypass a newly registered coordination han
   const c=await f.packet({pr:3,H:f.H}),next={...plan,previous:hash((await import('../../src/comparison.js')).canonical(plan)),revision:'r2',actors:[...plan.actors,{id:'C',tool:'codex'}],tasks:[task('C',c.item),task('B',other.item)]};f.q.coordination().register(Buffer.from(JSON.stringify(next)));
   await assert.rejects(()=>runQueueRepair(f.planPath),/coordination_explicit_write_handoff_required/);assert.deepEqual(await readFile(f.model.trace),before);assert.equal(f.q.status().claims.length,0);
 });
-async function coordinatedRepair(t:test.TestContext,start=true,messageMode='complete'){
-  const f=await setupRepair(t),messages=await messageFixture(t,messageMode),other=await f.packet({pr:2,H:f.H});
-  let script=await readFile(messages.codex,'utf8');script=script.replace("report:'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId","report:JSON.stringify((()=>{const c=JSON.parse(x.material.find(m=>m.name==='coordination-context.json').text),task=x.body.split('\\n')[0].slice(18);return {kind:'tongxu-coordination-feedback',task,revision:c.revision,parts:[],report:'Explicit fixture consumed '+c.outputs.map(o=>o.sha256).join(',')};})())");await writeFile(messages.codex,script);
-  const plan={schemaVersion:1,kind:'tongxu-task-coordination',name:'coordinated-repair-fixture',revision:'r1',previous:null,source:'Explicit test: new managed workspace after original readonly task, no external writer takeover',authorityIntent:null,mode:'stage_serial',actors:[{id:'A',tool:'codex'},{id:'B',tool:'codex'}],tasks:[{id:'A',item:f.plan.item,actor:'A',originActor:'A',dispatch:'owner_backlog',stages:['investigate','implement'],independentPaths:f.request.allowedPaths,workspace:join(f.request.executionRoot,'workspace'),publishBranch:'fixture-repair-A',outputs:[{id:'fixed-label',stage:'implement',kind:'repair_candidate'}]},{id:'B',item:other.item,actor:'B',originActor:'B',dispatch:'owner_backlog',stages:['investigate'],independentPaths:[],workspace:null,publishBranch:null,outputs:[]}],shared:[],dependencies:[{task:'B',stage:'investigate',producer:'A',capability:'fixed-label'}]};
-  const config={schemaVersion:1,kind:'tongxu-coordination-readonly-execution',source:'Explicit fixture processes; no real models',executionKind:'fixture',actors:['A','B'].map(id=>({id,tool:'codex',executable:messages.codex,executableSha256:hash(script),disabledMcpServers:[],allowedInstructionSources:[]})),taskBodies:{A:'Review the scoped label contract before a new managed repair workspace is prepared.',B:'Read the actual repaired candidate, code diff, tests and independent report from A.'},authorityIntents:{A:null,B:null},billing:messages.plan.billing,timeoutMs:1000,refreshUnsent:false};
-  const planPath=join(f.root,'coordination.json'),configPath=join(f.root,'coordination-execution.json');await writeFile(planPath,JSON.stringify(plan));await writeFile(configPath,JSON.stringify(config));
-  const first=await runCoordination(f.store,planPath,configPath,!start);assert.equal(first.newModelRequests,start?1:0);if(start)assert.equal(first.results['A:investigate'].completed,true,JSON.stringify(first.errors));assert.equal(first.prepared['B:investigate'],undefined);
-  const from=first.prepared['A:investigate'],p={...f.p,coordination:{planId:first.coordination,task:'A',capability:'fixed-label',fromRun:from.run,fromMessage:from.messageId}};await writeFile(f.planPath,JSON.stringify(p));
-  return {...f,messages,coordPlan:plan,coordPlanPath:planPath,coordConfigPath:configPath,coordId:first.coordination,coordinatedPlan:p};
-}
 test('coordinated task hands one managed repair to the correct operation and a later task actually consumes its new candidate',async t=>{
   const f=await coordinatedRepair(t),result=await runQueueRepair(f.planPath);assert.equal(result.repairStatus,'completed');assert.equal(result.coordinationOutput.kind,'repair_candidate');assert.equal(result.coordinationOutput.afterH,result.after.H);assert.equal(result.counters.actualFileWrites,1);
   const context=f.q.coordination().context(f.coordId),artifact=JSON.parse(context.value.outputs[0].text);assert.match(artifact.artifact.material['src/normalize.mjs'].text,/Untitled/);assert.match(artifact.artifact.diff,/Untitled/);assert.equal(artifact.artifact.result.review.candidateH,result.after.H);assert.equal(artifact.artifact.result.tests.passed,true);assert.equal('stdout' in artifact.artifact.result.tests.tools[0],false);

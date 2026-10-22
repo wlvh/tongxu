@@ -1,0 +1,17 @@
+import {exactKeys,isAuthorityDigest} from './authority-contract.js';
+import {messageId,messagePath} from './message-contract.js';
+import {canonical} from './comparison.js';
+import {hash} from './snapshot.js';
+
+export type WorkspaceHandoffRequest={
+  schemaVersion:1;kind:'tongxu-managed-workspace-handoff';id:string;
+  prior:{operation:string;bindingHash:string;resultSha256:string;evidenceSha256:string};
+  successor:{plan:string;sha256:string};workspaceStateSha256:string;authorityIntent:string|null;source:string;
+};
+export function parseWorkspaceHandoff(raw:Buffer):WorkspaceHandoffRequest{
+  if(raw.length>32*1024)throw new Error('workspace_handoff_request_limit');let p:any;try{p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw));}catch{throw new Error('workspace_handoff_request_invalid');}
+  if(!exactKeys(p,['schemaVersion','kind','id','prior','successor','workspaceStateSha256','authorityIntent','source'])||p.schemaVersion!==1||p.kind!=='tongxu-managed-workspace-handoff'||!messageId(p.id)||!exactKeys(p.prior,['operation','bindingHash','resultSha256','evidenceSha256'])||typeof p.prior.operation!=='string'||!/^[a-f0-9-]{36}$/.test(p.prior.operation)||![p.prior.bindingHash,p.prior.resultSha256,p.prior.evidenceSha256,p.workspaceStateSha256].every(isAuthorityDigest)||!exactKeys(p.successor,['plan','sha256'])||!messagePath(p.successor.plan)||!isAuthorityDigest(p.successor.sha256)||!(p.authorityIntent===null||messageId(p.authorityIntent))||typeof p.source!=='string'||!p.source.trim()||p.source.length>2048||p.source.includes('\0'))throw new Error('workspace_handoff_request_invalid');return p;
+}
+/** Coordinate permission names this exact transfer. Actual repair still
+ * requires the successor's independent implement permission and resources. */
+export const workspaceHandoffPayloadSha256=(p:WorkspaceHandoffRequest)=>{const {authorityIntent,...v}=p;return hash(canonical(v));};

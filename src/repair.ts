@@ -8,7 +8,7 @@ import { assemblePromptSet,inspectPromptSet } from './role-prompts.js';
 import { runClaude } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
-import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
+import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, checkRepairIndex, type Grant, type Tree } from './repair-workspace.js';
 import type { Candidate } from './live-codex.js';
 import { validateProjectContract, projectTestPlan, projectMaterial, projectModelTestResult, bindProjectTestToCandidate, needsProjectReviewBindingSupplement, testProject, reconcileProjectTests, type ProjectContract } from './project-repair.js';
 
@@ -167,6 +167,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     const pending = JSON.parse((await regular(join(operation, 'completion-intent.json'), 4 * 1024 * 1024)).toString());
     if (!reconcileEnded || processState(pending.controllerPid) !== 'ended') throw new Error('finalization_owner_active_or_unknown');
   }
+  await checkRepairIndex(plan.workspace,operation,grant.allowedPaths,original);
   const lease = await acquireWorkspace(plan.workspace, operation, reconcileEnded, grant, project ? () => reconcileProjectTests(operation, plan.project!) : undefined);
   const initial = JSON.parse((await regular(join(operation, 'initial-tree.json'), project ? 20 * 1024 * 1024 : undefined)).toString()) as Tree;
   let fact: RepairSession | undefined, reviewer: RepairSession | undefined;

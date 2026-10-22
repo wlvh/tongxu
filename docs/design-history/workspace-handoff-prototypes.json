@@ -1,0 +1,14 @@
+[
+  {
+    "originalPath": "src/workspace-handoff-contract.ts",
+    "preservedPath": "docs/design-history/workspace-handoff-contract.ts.txt",
+    "sha256": "cddd02bfc31b4e832305699e1f32418217382f0cbce89129e2fbd7f2706fae48",
+    "reason": "Unwired stronger in-place takeover prototype, superseded by Issue8 comment6331971488. Preserved without making it a runtime requirement."
+  },
+  {
+    "originalPath": "src/workspace-handoff-store.ts",
+    "preservedPath": "docs/design-history/workspace-handoff-store.ts.txt",
+    "sha256": "adc5563a342413b775802844968c69ffdcd711a03fca86614d81b44d8a79af00",
+    "reason": "Unwired stronger in-place takeover prototype, superseded by Issue8 comment6331971488. Preserved without making it a runtime requirement."
+  }
+]

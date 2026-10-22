@@ -18,6 +18,8 @@ import {MemberRecompositionRecords} from './member-recomposition-store.js';
 import type {RecompositionLink,MemberRecompositionPlan} from './member-recomposition-contract.js';
 import {RecompositionTestRecords,type RecompositionTestSource} from './recomposition-test-store.js';
 import { DatabaseSync } from 'node:sqlite';
+import {withManagedRepairCapture,type ManagedRepairCapture} from './workspace-handoff-originals.js';
+import type {RepairContinuation} from './repair-continuation-contract.js';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -115,6 +117,14 @@ PRAGMA user_version=3;
 `;
 
 export class QueueStore {
+  private continuationCapture:ManagedRepairCapture|undefined;
+  async withRepairContinuation<T>(reference:RepairContinuation|undefined,action:()=>Promise<T>):Promise<T>{
+    if(!reference)return action();
+    if(this.continuationCapture)throw new Error('repair_continuation_already_active');
+    return withManagedRepairCapture({store:this.directory,operation:reference.operation,bindingHash:reference.bindingHash},()=>this.managedRepairOriginal(reference.operation),async capture=>{
+      this.continuationCapture=capture;try{return await action();}finally{this.continuationCapture=undefined;}
+    });
+  }
   private publicationEffectCapabilities=new Map<string,{operation:string;stage:string}>();
   private activePublicationEffect:{operation:string;stage:string;directory:string;binding:Row}|null=null;
   private constructor(readonly directory: string, private db: DatabaseSync) {}
@@ -622,12 +632,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const coordination=this.coordinationRecords(fn=>fn());
     return new ReviewRecords(this.db, fn => this.transaction(fn), (id, current) => this.reviewSource(id, current), id => this.publicationHistory(id),(operation,proposed,observations)=>{
       this.repairAuthorization(operation,proposed,observations);
-      coordination.repairGate(operation,proposed);
+      coordination.repairGate(operation,proposed,true,this.continuationCapture);
       this.memberRepairAdmission(operation,proposed);
     },(operation,reference,current)=>this.memberRepairSource(operation,reference,current));
   }
+  managedRepairOriginal(operation:string){return this.transaction(()=>{
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const repair=JSON.parse(op.result)?.repair;
+    if(!repair?.evidenceSha256)throw new Error('handoff_original_reconciliation_required');
+    return {op,repair,plan:this.blob(repair.planSha256),request:this.blob(repair.requestSha256),config:this.blob(repair.configSha256),evidence:this.blob(repair.evidenceSha256)};
+  });}
   repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{
-    this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation,proposed,false);const p=JSON.parse(proposed.plan.toString());
+    this.repairAuthorization(operation,proposed,observations,false);this.coordinationRecords(fn=>fn()).repairGate(operation,proposed,false,this.continuationCapture);const p=JSON.parse(proposed.plan.toString());
     if(p.memberReturn){enableMemberRecompositionFormat(this.db);const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,stage=parse(op,'result')?.repair,value={packet:op.packet,memberReturn:p.memberReturn,planSha256:hash(proposed.plan),requestSha256:hash(proposed.request),configSha256:hash(proposed.config),authorityIntent:p.governance.authorityIntent,resourceRequests:p.governance.resourceRequests},old=this.db.prepare("SELECT data FROM events WHERE kind='member_repair_resource_bound' AND object=? ORDER BY id DESC LIMIT 1").get(operation) as Row|undefined;
       if(old&&canonical(JSON.parse(old.data))!==canonical(value)&&!(stage?.phase==='closed_unstarted'&&p.replacesClosedBinding===stage.bindingHash))throw new Error('member_repair_resource_binding_changed');
       for(const b of [proposed.plan,proposed.request,proposed.config])this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(b),b);if(!old||canonical(JSON.parse(old.data))!==canonical(value))this.event('member_repair_resource_bound',operation,value);

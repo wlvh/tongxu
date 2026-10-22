@@ -28,6 +28,7 @@
 - [本人来源与委托](docs/owner_authority.md)、[原资源认领](docs/resource_claims.md)、[三类停止控制](docs/scope_controls.md)
 - [成果批次与本人决定](docs/delivery_outcomes.md)、[实际场景后的独立判断](docs/delivery_assessment.md)
 - [最小集成候选](docs/minimal_integration.md)、[成员修复与反证后新接收](docs/integration_member_repair.md)、[已结束部分构造接续](docs/integration_continuation.md)
+- [原实现者可靠续做与最小显式交接](docs/managed_workspace_handoff.md)：默认 A 继续，B 审核回 A；保留原成果和唯一写者，按 #8 最新澄清取消通用原地接管的强制要求。
 
 目标界面覆盖本批目标、组织方式、委托与停止、成果验收、复盘抽查五项控制；秘书对话与原三工作区保留。当前直接入口已覆盖受管联系、有限撤回、停止和成果决定；目标／组织变更、委托准备及复盘的完整界面连接仍待补齐。人的采用、技术判断与依据委托作出的处置分别记录。
 
@@ -58,7 +59,7 @@ node --test dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js
 
 配置必须指向已核的本地 Docker socket、现有程序和固定镜像 ID，完整格式见 [Docker 入口](docs/docker_verification.md)。无需再建虚拟机，也不嵌套 bubblewrap。`npm test` 继续保留原 Linux/bubblewrap 专属路线；`npm run test:mac` 提供不含 Docker 的 Mac 适用检查。
 
-`relay-cli` 的一次入口可完成真实 Codex 两轮、程序交给 Claude 并返回 Codex 综合。受管工程修复、队列审核返工和成员修复已有后续入口，保存实际修改、固定测试、新候选与独立再审；最初的纯函数样例仍保留。已有完整操作优先回读，不为展示组合重复调用模型。受治理重新组合的新测试授权、已有工作区跨执行者交接、真实远端候选桥和完整会话控制仍有连接工作，不能将已有单条链扩称为全部验收。
+`relay-cli` 的一次入口可完成真实 Codex 两轮、程序交给 Claude 并返回 Codex 综合。受管工程修复、队列审核返工和成员修复已有后续入口，保存实际修改、固定测试、新候选与独立再审；最初的纯函数样例仍保留。已有完整操作优先回读，不为展示组合重复调用模型。受治理重新组合的新测试授权、原实现者可靠续做、最小显式责任交接及完整会话控制仍须逐段验收，不能将已有单条链扩称为全部验收。
 
 ## 本机工作台
 

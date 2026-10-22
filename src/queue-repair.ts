@@ -14,14 +14,16 @@ import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import { resourceAction } from './resource-claims.js';
 import type { AuthorityRole } from './authority-contract.js';
 import {memberReturnReference,type MemberReturnReference} from './integration-member-contract.js';
+import {parseRepairContinuation,type RepairContinuation} from './repair-continuation-contract.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
-  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]};coordination?:{planId:string;task:string;capability:string;fromRun:string;fromMessage:string};memberReturn?:MemberReturnReference };
+  request: string; requestSha256: string; config: string; configSha256: string; replacesClosedBinding?:string; governance?:{authorityIntent:string;resourceRequests:string[]};coordination?:{planId:string;task:string;capability:string;fromRun:string;fromMessage:string};memberReturn?:MemberReturnReference;continuation?:RepairContinuation };
 const uuid = /^[a-f0-9-]{36}$/, digest = /^[a-f0-9]{64}$/;
 export function parseQueueRepairPlan(bytes: Buffer): QueueRepairPlan {
   const p = JSON.parse(bytes.toString());
-  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance','coordination','memberReturn'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if (p.schemaVersion !== 1 || p.kind !== 'tongxu-queue-repair' || !uuid.test(p.operation) || !uuid.test(p.judgmentId) || !Number.isSafeInteger(p.packet) || p.packet < 1 || !digest.test(p.bindingHash) || !digest.test(p.requestSha256) || !digest.test(p.configSha256) || !p.context || p.replacesClosedBinding!==undefined&&!digest.test(p.replacesClosedBinding) || Object.keys(p).filter(k=>!['replacesClosedBinding','governance','coordination','memberReturn','continuation'].includes(k)).sort().join() !== 'bindingHash,config,configSha256,context,judgmentId,kind,operation,packet,request,requestSha256,schemaVersion,store') throw new Error('invalid_queue_repair_plan');
+  if(p.continuation!==undefined)parseRepairContinuation(p.continuation);
   if(p.memberReturn!==undefined&&!memberReturnReference(p.memberReturn))throw new Error('invalid_queue_repair_member_return');
   if(p.coordination!==undefined&&(!p.coordination||Object.keys(p.coordination).sort().join()!=='capability,fromMessage,fromRun,planId,task'||!digest.test(p.coordination.planId)||!digest.test(p.coordination.fromRun)||['task','capability','fromMessage'].some(k=>typeof p.coordination[k]!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(p.coordination[k]))))throw new Error('invalid_queue_repair_coordination');
   if(p.governance!==undefined&&(!p.governance||Object.keys(p.governance).sort().join()!=='authorityIntent,resourceRequests'||typeof p.governance.authorityIntent!=='string'||!p.governance.authorityIntent.trim()||p.governance.authorityIntent.length>128||!Array.isArray(p.governance.resourceRequests)||p.governance.resourceRequests.length>32||new Set(p.governance.resourceRequests).size!==p.governance.resourceRequests.length||p.governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!digest.test(r))))throw new Error('invalid_queue_repair_governance');
@@ -82,7 +84,13 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
         priorReview:member?member.priorReview:{operation:p.operation,packet:evidence.packet,judgmentId:r.judgmentId,bindingHash:r.bindingHash,inputSha256:r.inputSha256,report:r.judgment.report,findings:r.judgment.findings,context:evidence.context},
         queueOperation:member?member.queueOperation:{store:p.store,operation:p.operation}
       };
-      const effectiveBytes = Buffer.from(JSON.stringify(effective));let observations:OwnerObservation[]=[],role:AuthorityRole='implementer',prior:Row|null=null;
+      if(p.continuation){
+        const old=q.managedRepairOriginal(p.continuation.operation),result=old.repair.result;
+        effective.priorReview!.continuation={...p.continuation,priorResult:{status:result.status,before:result.before,after:result.after,treeSha256:result.treeSha256,factReport:result.data?.factReport??null,independentReview:result.data?.review??null},adoptedSource:'exact committed candidate; staged/working/untracked originals preserved separately in the original queue',newExecutionContext:true,nativeSessionResumed:false,reportsGrantPermissions:false};
+      }
+      const effectiveBytes = Buffer.from(JSON.stringify(effective));
+      return await q.withRepairContinuation(p.continuation,async()=>{
+      let observations:OwnerObservation[]=[],role:AuthorityRole='implementer',prior:Row|null=null;
       try{prior=records.state(p.operation).repair;}catch(e){if(!(e instanceof Error)||e.message!=='queue_repair_not_registered')throw e;}
       // Refuse aliases before any resource preparation/claim or new model
       // admission. A known unstarted replacement keeps its explicit lineage.
@@ -127,6 +135,7 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
       } catch (e) {
         records.controller(p.operation,bound,'unknown',{reason:e instanceof Error?e.message:'repair_unavailable'}); throw e;
       }
+      });
     } finally { q.close(); }
   });
 }

@@ -8,6 +8,8 @@ import { messagePlanId,parseMessagePlan } from './message-contract.js';
 import { parseCoordinationExecution,coordinationExecutionIdentity,coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority } from './coordination-execution-contract.js';
 import { join } from 'node:path';
 import { projectModelTestResult } from './project-repair.js';
+import {parseRepairContinuation} from './repair-continuation-contract.js';
+import {requireManagedRepairCapture,type ManagedRepairCapture} from './workspace-handoff-originals.js';
 
 type Row=Record<string,any>;
 /** Coordination facts use the original queue. Feedback can satisfy a technical
@@ -158,14 +160,46 @@ export class CoordinationRecords {
     }
     return {recorded,newPermissionGranted:false};
   });}
+  private continuations():Row[]{return (this.db.prepare("SELECT id,object FROM events WHERE kind='coordination_repair_continued' ORDER BY id").all() as Row[]).map(row=>this.events(row.object.slice(13)).find(e=>e.id===row.id)!.data);}
+  /** Recorded in the original queue, inside the same transaction as the new
+   * repair reservation. A transient capture alone is never a write grant. */
+  private continueRepair(entry:Row,plan:Row,request:Row,capture:ManagedRepairCapture|undefined,reserve:boolean){
+    const records=this.continuations();
+    if(records.some(r=>r.releasedOperations.includes(entry.operation)))throw new Error('coordination_original_responsibility_released');
+    if(plan.continuation===undefined)return [] as string[];
+    const p=parseRepairContinuation(plan.continuation),oldOp=this.db.prepare('SELECT * FROM operations WHERE id=?').get(p.operation) as Row,oldRepair=oldOp&&JSON.parse(oldOp.result)?.repair;
+    if(p.operation===entry.operation||!oldRepair||oldOp.status!=='complete'||oldRepair.phase!=='returned'||oldRepair.controllerReturned!==true||oldRepair.bindingHash!==p.bindingHash||oldRepair.resultSha256!==p.resultSha256||oldRepair.evidenceSha256!==p.evidenceSha256)throw new Error('continuation_original_reconciliation_required');
+    const oldPlan=JSON.parse(this.bytes(oldRepair.planSha256).toString()),oldRequest=JSON.parse(this.bytes(oldRepair.requestSha256).toString()),oldResult=JSON.parse(this.bytes(p.resultSha256).toString());this.bytes(p.evidenceSha256);
+    if(!oldPlan.coordination)throw new Error('continuation_original_coordination_required');
+    const old=this.fixed(oldPlan.coordination.planId),previous=old.events.find(e=>e.kind==='coordination_repair_bound'&&e.data.operation===p.operation)?.data,current=this.fixed(plan.coordination.planId),task=current.plan.tasks.find(t=>t.id===entry.task)!;
+    if(!previous||previous.planSha256!==oldRepair.planSha256||previous.requestSha256!==oldRepair.requestSha256||previous.configSha256!==oldRepair.configSha256||entry.task!==previous.task||!this.ancestry(current).some(f=>f.id===old.id)||canonical(previous.scope)!==canonical(entry.scope)||request.candidate.H!==oldResult.after.H||request.candidate.repository!==oldRequest.candidate.repository||request.candidate.pr!==oldRequest.candidate.pr||request.candidate.target!==oldRequest.candidate.target||request.candidate.B!==oldRequest.candidate.B)throw new Error('continuation_exact_task_and_committed_candidate_required');
+    if(p.mode==='same_owner'?entry.actor!==previous.actor:entry.actor===previous.actor||task.originActor!==previous.actor||task.dispatch==='owner_backlog')throw new Error('continuation_explicit_responsibility_mismatch');
+    const same=(a:string,b:string)=>process.platform==='darwin'?a.toLowerCase()===b.toLowerCase():a===b;
+    if(same(entry.workspace,previous.workspace)||same(request.executionRoot,oldRequest.executionRoot)||entry.workspace.startsWith(oldRequest.executionRoot+'/')||previous.workspace.startsWith(request.executionRoot+'/'))throw new Error('continuation_fresh_managed_workspace_required');
+    const bound=records.find(r=>r.operation===entry.operation),previousContinuation=records.find(r=>r.operation===p.operation),releasedOperations=[...new Set([p.operation,...previousContinuation?.releasedOperations??[]])];
+    if(records.some(r=>r.operation!==entry.operation&&r.priorOperation===p.operation))throw new Error('continuation_unique_successor_required');
+    const binding={operation:entry.operation,priorOperation:p.operation,priorBindingHash:p.bindingHash,resultSha256:p.resultSha256,evidenceSha256:p.evidenceSha256,planSha256:entry.planSha256,requestSha256:entry.requestSha256,configSha256:entry.configSha256,priorActor:previous.actor,actor:entry.actor,priorWorkspace:previous.workspace,workspace:entry.workspace,priorPublishBranch:previous.publishBranch,publishBranch:entry.publishBranch,adoptedH:request.candidate.H,mode:p.mode,adoption:p.adoption,workspaceStateSha256:p.workspaceStateSha256,releasedOperations,newExecutionContext:true,nativeSessionResumed:false};
+    if(bound){if(canonical(bound.binding)!==canonical(binding))throw new Error('continuation_original_binding_changed');this.bytes(bound.captureSha256);for(const sha of bound.originals)this.bytes(sha);return releasedOperations;}
+    if(!capture)throw new Error('continuation_actual_original_capture_required');const c=requireManagedRepairCapture(capture);
+    const signature=hash(canonical({operation:oldOp.id,status:oldOp.status,repair:oldRepair,plan:oldRepair.planSha256,request:oldRepair.requestSha256,config:oldRepair.configSha256}));
+    if(c.reference.operation!==p.operation||c.reference.bindingHash!==p.bindingHash||c.sourceSignature!==signature||c.workspaceStateSha256!==p.workspaceStateSha256||c.workspace.H!==request.candidate.H||c.workspace.workspace!==previous.workspace||c.workspace.writerLease!==null||c.workspace.unmergedPaths.length||this.db.prepare('SELECT 1 FROM claims WHERE operation=?').get(p.operation))throw new Error('continuation_original_state_changed_or_occupied');
+    if(reserve){
+      const originals=[...c.originals].map(([sha,b])=>{if(hash(b)!==sha)throw new Error('continuation_original_changed');return this.blob(b);});
+      const workspace=c.workspace,changes={staged:workspace.stagedPaths.map(path=>({path,before:workspace.headEntries.filter(e=>e.path===path),after:workspace.indexEntries.filter(e=>e.path===path)})),unstaged:workspace.workingPaths.map(path=>({path,before:workspace.indexEntries.filter(e=>e.path===path),after:workspace.files[path]??null})),untracked:workspace.untrackedPaths};
+      const proof={reference:c.reference,sourceSignature:c.sourceSignature,workspace,changes,registeredExecutionsEnded:true,processes:c.processes,dockerExecutions:c.dockerExecutions,originalControllerExclusivelyHeld:true,uncommittedPolicy:'preserved_separately_not_applied',adoptedH:request.candidate.H,writePermissionGranted:false};
+      this.event(current.id,'repair_continued',{...binding,binding,captureSha256:this.blob(Buffer.from(canonical(proof))),originals,at:now(),source:p.source});
+    }
+    return releasedOperations;
+  }
+  continuation(operation:string):Row|null{return this.transaction(()=>{const row=this.continuations().find(r=>r.operation===operation);if(!row)return null;return {...row,capture:JSON.parse(this.bytes(row.captureSha256).toString()),writePermissionGranted:false};});}
   /** Same-transaction check at repair reservation and every subsequent effect.
    * This accepts only a fresh program-managed workspace after a completed
    * owned readonly task. It does not take over an external writer or App. */
-  repairGate(operation:string,proposed?:{plan:Buffer;request:Buffer;config:Buffer},reserve=true){return this.transaction(()=>{
+  repairGate(operation:string,proposed?:{plan:Buffer;request:Buffer;config:Buffer},reserve=true,capture?:ManagedRepairCapture){return this.transaction(()=>{
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');
     const repair=JSON.parse(op.result)?.repair,raw=proposed?.plan??(repair?this.bytes(repair.planSha256):null),p=raw?JSON.parse(raw.toString()):null;
     const history=(this.db.prepare("SELECT object FROM events WHERE kind='coordination_registered'").all() as Row[]).map(x=>this.fixed(x.object.slice(13))).filter(f=>f.plan.tasks.some(t=>t.item===op.item));
-    if(!p?.coordination){if(history.length)throw new Error('coordination_explicit_write_handoff_required');return;}
+    if(!p?.coordination){if(history.length||p?.continuation)throw new Error('coordination_explicit_write_handoff_required');return;}
     const ref=p.coordination,f=this.fixed(ref.planId),{task,binding}=this.currentTask(f,ref.task),requestBytes=proposed?.request??this.bytes(repair.requestSha256),configBytes=proposed?.config??this.bytes(repair.configSha256),request=JSON.parse(requestBytes.toString()),config=JSON.parse(configBytes.toString());
     if(history.some(h=>h.plan.name!==f.plan.name))throw new Error('coordination_item_has_multiple_arrangements');
     const output=task.outputs.find(o=>o.id===ref.capability),actor=f.plan.actors.find(a=>a.id===task.actor);
@@ -184,11 +218,14 @@ export class CoordinationRecords {
       const runtime=state.runtimes.find((r:Row)=>r.participant===task.actor);if(runtime?.started&&(!runtime.ended||runtime.captureVerification?.proof.successfulCapture!==true&&runtime.ended.proof.knownUnstarted!==true||state.messages.some((m:Row)=>m.to===task.actor&&['Unknown','Delivered'].includes(m.state))))throw new Error('coordination_actor_active_or_unknown');
     }
     const entry={task:task.id,capability:ref.capability,operation,item:op.item,packet:op.packet,actor:task.actor,workspace:task.workspace,publishBranch:task.publishBranch,repository:binding.candidate.repository,scope:f.registration.scope,planSha256:hash(raw!),requestSha256:hash(requestBytes),configSha256:hash(configBytes),fromRun:ref.fromRun,fromMessage:ref.fromMessage,priorSessionId:original.message.reply.sessionId,priorTurnId:original.message.reply.turnId,newExecutionContext:true,nativeSessionResumed:false,startMode:'new_managed_workspace'};
+    const released=this.continueRepair(entry,p,request,capture,reserve);
     for(const row of this.db.prepare("SELECT id,object FROM events WHERE kind='coordination_repair_bound'").all() as Row[]){
       const x=this.events(row.object.slice(13)).find(e=>e.id===row.id)!.data;
       if(x.operation===operation){if(canonical(x)!==canonical(entry)&&!(repair?.phase==='closed_unstarted'&&p.replacesClosedBinding===repair.bindingHash&&x.workspace!==entry.workspace))throw new Error('coordination_original_repair_binding_changed');continue;}
       const samePath=(a:string,b:string)=>process.platform==='darwin'?a.toLowerCase()===b.toLowerCase():a===b;
-      if(samePath(x.workspace,entry.workspace)||x.repository===entry.repository&&x.publishBranch===entry.publishBranch||canonical(x.scope)===canonical(entry.scope)&&x.actor===entry.actor&&!this.repairEnded(x.operation))throw new Error('coordination_write_responsibility_held');
+      if(released.includes(x.operation))continue;
+      const sameTask=this.fixed(row.object.slice(13)).plan.name===f.plan.name&&x.task===entry.task;
+      if(samePath(x.workspace,entry.workspace)||x.repository===entry.repository&&x.publishBranch===entry.publishBranch||canonical(x.scope)===canonical(entry.scope)&&(sameTask||x.actor===entry.actor&&!this.repairEnded(x.operation)))throw new Error('coordination_write_responsibility_held');
     }
     if(reserve&&!f.events.some(e=>e.kind==='coordination_repair_bound'&&e.data.operation===operation))this.event(f.id,'repair_bound',entry);
     return entry;

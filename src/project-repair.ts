@@ -18,7 +18,7 @@ const paths = (p: unknown, max: number): p is string[] => Array.isArray(p) && p.
 export type ProjectContract = {
   sourceCandidate: Candidate; materialPaths: string[]; protectedPaths: string[]; contract: string;
   testPlan: string; testPlanSha256: string; dependencyHash: string | null; generatedDirectories: string[];
-  priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown };
+  priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown;continuation?:unknown };
   queueOperation?: { store: string; operation: string;sourceReviewOperation?:string;memberReturnSha256?:string };
 };
 export type ProjectRequest = {
