@@ -116,7 +116,11 @@ export class AuthorityRecords {
       const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
       return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo:selected.kind==='delegate'?'selected_target':selected.kind==='confirm_action'?'selected_task':'whole_scope',createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
     });
-    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
+    const controls=(['implementation','investment','merge'] as const).map(control=>{
+      const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;
+      return {control,state:row?.stopped?'stopped' as const:'open' as const,revision:row?.revision??0,recorded:!!row,verifiedOwnerStop:owner?.state==='stopped',effectiveAt:row?.effective_at??null};
+    });
+    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
   });}
   inspectRecordedDecision(sha:string){return this.transaction(()=>{
     const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
