@@ -34,7 +34,8 @@ async function putFixed(path: string, bytes: Buffer) {
   try { await writeFile(path, bytes, { flag: 'wx', mode: 0o600 }); }
   catch (e: any) { if (e.code !== 'EEXIST') throw e; if (hash(await regular(path)) !== hash(bytes)) throw new Error('queue_repair_original_changed'); }
 }
-async function lock<T>(store: string, operation: string, action: () => Promise<T>) {
+export async function withQueueRepairLock<T>(store: string, operation: string, action: () => Promise<T>) {
+  if(!uuid.test(operation))throw new Error('invalid_queue_repair_operation');
   if (await realpath(store) !== store) throw new Error('queue_repair_store_not_canonical');
   const path = join(store, `repair-controller-${operation}.sqlite`);
   try { await writeFile(path, '', { flag: 'wx', mode: 0o600 }); } catch (e: any) { if (e.code !== 'EEXIST') throw e; }
@@ -68,7 +69,7 @@ export async function repairEvidence(operation: string, queueOperation: string, 
 export async function runQueueRepair(planPath: string, reconcileEnded = false,expectedPlanSha256?:string): Promise<Row> {
   const planBytes = await regular(planPath), p = parseQueueRepairPlan(planBytes);
   if(expectedPlanSha256!==undefined&&hash(planBytes)!==expectedPlanSha256)throw new Error('queue_repair_selected_plan_changed');
-  return lock(p.store,p.operation,async()=> {
+  return withQueueRepairLock(p.store,p.operation,async()=> {
     // Re-read the supplier capture before using the stored finding. No resend.
     let actualReception=p.operation;
     if(p.memberReturn){const q=await QueueStore.open(p.store);try{actualReception=q.memberRepairInput(p.operation,p.memberReturn,false).receptionOperation;}finally{q.close();}}
@@ -143,7 +144,7 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false,ex
 export async function closeUnstartedQueueRepair(planPath:string,source:string,expectedPlanSha256?:string){
   const bytes=await regular(planPath),p=parseQueueRepairPlan(bytes);
   if(expectedPlanSha256!==undefined&&hash(bytes)!==expectedPlanSha256)throw new Error('queue_repair_selected_plan_changed');
-  return lock(p.store,p.operation,async()=>{
+  return withQueueRepairLock(p.store,p.operation,async()=>{
     const q=await QueueStore.open(p.store);try{
       const records=q.reviewRecords(),state=records.state(p.operation),r=state.repair,root=r.executionRoot;
       if(r.planSha256!==hash(bytes)||!source.trim()||source.length>2048)throw new Error('unstarted_close_plan_changed');

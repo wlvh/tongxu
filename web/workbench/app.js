@@ -489,7 +489,7 @@ async function runQueueAction(id){
 }
 async function returnWorkAction(entry,action){
   if(pendingReturnWork.has(entry.id))return;pendingReturnWork.add(entry.id);render();
-  try{const response=await fetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notice(action==='start'?'已交给原退回处理执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
+  try{const response=await fetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(entry.preparation?{selectionSha256:entry.preparation.selectionSha256}:{}),cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notice(action==='start'?'已按所选原退回固定本次计划并交给原执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
   catch(e){notice('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
 }
 async function openReturnReport(entry){
@@ -508,10 +508,12 @@ function returnWorkPanel(task){
   const section=append(el('section',null,'collaboration'),el('h3','处理原退回'),el('p','核实意见、必要修复与新独立审核沿原计划执行。报告不能授予写权；没有问题不制造返工。','small'));
   const phases={not_started:'尚未启动处理',reserved:'原处理已登记',prepared:'原工作区已准备',dispatched:'原处理已启动',unknown:'原执行或结果待核',returned:'原处理结果已保存',closed_unstarted:'已核未开始并关闭'};
   for(const entry of entries){const box=append(el('div',null,'note-card return-work-card'),el('h4',entry.title));if(!entry.available){box.append(el('p','此项不可执行：'+readableReason(entry.reason),'small'));section.append(box);continue;}
+    if(entry.waitingForReturn){box.append(el('p','尚无已完成的普通退回。新结果进入原队列后刷新即可选择；不会自动启动修复。','small'));section.append(box);continue;}
     const r=entry.repair,busy=entry.active||pendingReturnWork.has(entry.id),stopped=task.controls.some(c=>c.stopped&&['investment','implementation'].includes(c.kind));
     box.append(el('p',(phases[r.phase]||'原阶段待核')+(busy?' · 当前入口正在处理':''),'small'));
     box.append(el('p','原接收：'+returnExecutionLabel(r.executionKind)+(r.result?' · 处理：'+returnExecutionLabel(r.result.executionKind):''),'small'));
     box.append(el('p','材料包 '+r.packet+' · 原候选 '+r.candidate.H.slice(0,12)+' · 目标 '+r.candidate.targetRef,'small'));
+    if(entry.preparation)box.append(el('p',(entry.preparation.prepared?'本次计划已按原退回固定，重复进入沿用原操作。':'本次计划将由程序根据所选原退回与已固定范围准备，无需另写计划文件。')+' 原操作 '+r.operation,'small'));
     const scope=append(el('details'),el('summary','核对修改范围与原依据'),el('p','受管目录：'+entry.selectedWork.executionRoot,'small'),el('p','允许修改：'+entry.selectedWork.allowedPaths.join('、'),'small'),el('p','保护路径：'+entry.selectedWork.protectedPaths.join('、'),'small'),el('p',entry.selectedWork.contract,'wrap'),el('p','原权限来源：'+entry.selectedWork.authorizationSource+'；实际执行前仍需通过原权限、资源和写者检查。','small'));box.append(scope);
     if(!r.current)box.append(el('p','原材料已变化或适用性待核；历史报告保留，不据此启动新的处理。','small'));if(stopped)box.append(el('p','本范围已登记停止新增投入或实施；已发结果继续保存，解除对应停止前不开始新工作。','small'));if(entry.currentControllerProblem||r.originalProblem)box.append(el('p','原处理待核：'+readableReason(entry.currentControllerProblem||r.originalProblem),'small'));
     if(r.result){const result=r.result;box.append(el('p','结果：'+result.status+' · '+(result.actualRepairPerformed?'已发生代码修改':'没有代码修改'),'small'));box.append(el('p','候选 '+(result.beforeH||'未核')+' → '+(result.afterH||'未核'),'small'));box.append(el('p','定向测试：'+(result.testsPassed?'通过':'请读原结果')+' · 新独立审核：'+(result.reviewVerdict||'未记录')+' · 审核候选 '+(result.reviewCandidateH||'未记录'),'small'));}

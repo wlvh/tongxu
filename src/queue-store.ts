@@ -344,6 +344,20 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       return {current,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),items:items.map(id=>q.authorityItem(id))};
     }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  /** Discover only original RETURNs for this selected source. Reading does
+   * not reserve work, migrate the queue or infer a new execution grant. */
+  static async observeIncomingReturns(directory:string,item:string,operation?:string){
+    const q=await QueueStore.connect(directory,true);
+    try{q.db.exec('BEGIN');q.item(item);
+      const rows=(operation?q.db.prepare('SELECT * FROM operations WHERE item=? AND id=?').all(item,operation):q.db.prepare("SELECT * FROM operations WHERE item=? AND json_extract(result,'$.receiver.judgment.verdict')='RETURN_FOR_WORK' ORDER BY started_at DESC,id").all(item)) as Row[];
+      return rows.map(op=>{try{const source=q.reviewSource(op.id,false),r=source.receiver;
+        if(r.judgment.verdict!=='RETURN_FOR_WORK'||!r.controllerReturned||r.subject)throw new Error('return_preparation_requires_completed_individual_return');
+        let current=true;try{q.reviewSource(op.id,true);}catch{current=false;}
+        const original={operation:op.id,item,packet:op.packet,candidate:source.candidate,context:source.context,judgmentId:r.judgmentId,bindingHash:r.bindingHash,inputSha256:r.inputSha256,executionKind:r.executionKind,judgment:r.judgment};
+        return {...original,selectionSha256:hash(canonical(original)),current,available:true as const};
+      }catch(e){return {operation:op.id,item,available:false as const,reason:e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'original_return_unavailable'};}});
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   static async observeQueueRepair(directory:string,item:string,raw:Buffer,full=false){
     const p=JSON.parse(raw.toString()),q=await QueueStore.connect(directory,true);
     try{q.db.exec('BEGIN');const op=q.db.prepare('SELECT * FROM operations WHERE id=?').get(p.operation) as Row|undefined;
