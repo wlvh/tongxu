@@ -1,0 +1,23 @@
+import type test from 'node:test';
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import {join,basename} from 'node:path';
+import {setupRepair} from '../review-records/queue-repair-fixture.js';
+import {hash} from '../../src/snapshot.js';
+import {startWorkbench} from '../../src/workbench.js';
+import {runReception} from '../../src/receiver.js';
+
+/** All reusable scope configuration is fixed before the new RETURN exists.
+ * arrive() uses the original receiver, never writes a new repair plan. */
+export async function freshReturnFixture(t:test.TestContext,mode='project'){
+  const hooks:Array<()=>unknown>=[],f=await setupRepair({after:(fn:()=>unknown)=>hooks.push(fn)} as unknown as test.TestContext,'return',mode),executionParent=join(f.root,'incoming-workspaces');await mkdir(executionParent);
+  const request=f.request,profile={schemaVersion:1,kind:'tongxu-return-preparation',candidate:{repository:request.candidate.repository,pr:request.candidate.pr,B:request.candidate.B,target:request.candidate.target},scope:f.evidence.context.scope,objects:request.objects,executionParent,allowedPaths:request.allowedPaths,materialPaths:request.materialPaths,protectedPaths:request.protectedPaths,contract:request.contract,testPlan:{path:request.testPlan,sha256:request.testPlanSha256},config:{path:f.model.configPath,sha256:hash(await readFile(f.model.configPath))},authorization:request.authorization,demonstrationFixture:true,generatedDirectories:request.generatedDirectories},profilePath=join(f.root,'supported-return-scope.json');await writeFile(profilePath,JSON.stringify(profile));
+  const sources=[{id:'original',title:'新到达退回（明确样例）',store:f.store,item:f.plan.item}],catalog={schemaVersion:2,kind:'tongxu-return-controls',entries:[{id:'incoming',title:'按既定范围处理新退回',source:'original',prepare:{path:profilePath,sha256:hash(await readFile(profilePath))}}]},catalogPath=join(f.root,'return-controls.json');await writeFile(catalogPath,JSON.stringify(catalog));
+  const plan={schemaVersion:1,kind:'tongxu-controlled-workbench',title:'新退回进入原处理流程',goal:'工作台先启动，新RETURN到达后只选择原件，不手写本次计划。',sources,returnControls:{path:catalogPath,sha256:hash(await readFile(catalogPath))}},path=join(f.root,'workbench.json');await writeFile(path,JSON.stringify(plan));
+  let app=await startWorkbench(path),closed=false;
+  const location=()=>{const u=new URL(app.url);return {u,headers:{Authorization:'Bearer '+u.hash.slice(1)}};},get=async()=>{const {u,headers}=location();return await(await fetch(u.origin+'/api/state',{headers})).json() as any;},post=async(entry:any,action:string,body:any={selectionSha256:entry.preparation.selectionSha256})=>{const {u,headers}=location();return fetch(u.origin+'/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{...headers,Origin:u.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});},report=async(id:string)=>{const {u,headers}=location();return await(await fetch(u.origin+'/api/return-report/'+id,{headers})).json() as any;};
+  const close=async()=>{if(!closed){closed=true;await app.close();}},reopen=async()=>{await close();app=await startWorkbench(path);closed=false;return app.url;};
+  t.after(async()=>{await close();if(process.env.TONGXU_FRESH_RETURN_EVIDENCE){const out=process.env.TONGXU_FRESH_RETURN_EVIDENCE;await mkdir(out,{recursive:true});await writeFile(join(out,basename(f.root)+'.json'),JSON.stringify({root:f.root,modelRoot:f.model.root,store:f.store,mode,path,profilePath,catalogPath,officialModels:0,originalsPreservedInPlace:true},null,2)+'\n');f.q.close();}else for(const fn of hooks.reverse())await fn();});
+  const startedAt=new Date().toISOString(),arrive=async()=>{const H=f.H,packet=await f.packet({H});const returned=await runReception(f.path);await writeFile(join(f.root,'arrival.json'),JSON.stringify({startedAt,arrivedAt:new Date().toISOString(),H,packet,operation:returned.operation,originalOperation:f.operation,source:'Fresh fixture source/evidence packet for the same registered candidate; a different H is a separate queue item.',repairPlanWrittenByFixture:false,unchangedScopeFiles:[profilePath,catalogPath,path]},null,2)+'\n');return {...returned,H,packet:packet.packet};};
+  return {...f,sources,profile,profilePath,catalog,catalogPath,path,location,get,post,report,close,reopen,arrive,executionParent};
+}
+export async function waitIncoming(f:Awaited<ReturnType<typeof freshReturnFixture>>,id:string,check:(r:any)=>boolean){const end=Date.now()+90000;let value;while(Date.now()<end){value=(await f.get()).returnWork.find((x:any)=>x.id===id);if(value&&check(value))return value;await new Promise(r=>setTimeout(r,25));}throw new Error('incoming_return_timeout:'+JSON.stringify(value));}

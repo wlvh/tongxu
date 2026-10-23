@@ -1,0 +1,59 @@
+import type {DatabaseSync} from 'node:sqlite';
+import {canonical} from './comparison.js';
+import {hash} from './snapshot.js';
+import {now} from './contract.js';
+import {parseWorkspaceHandoff,workspaceHandoffPayloadSha256,type WorkspaceHandoffRequest} from './workspace-handoff-contract.js';
+import {requireManagedRepairCapture,type ManagedRepairCapture} from './workspace-handoff-originals.js';
+import type {OwnerObservation} from './authority-source.js';
+
+type Row=Record<string,any>;
+export type WorkspaceHandoffBinding={priorOperation:string;successorOperation:string;workspace:string;branch:string;publishBranch:string;sourceSignature:string;successorPlanSha256:string;successorRequestSha256:string;successorConfigSha256:string;item:string;packet:number;fingerprint:string;candidate:Row;scope:Row;priorActor:string;nextActor:string;priorCoordination:string;nextCoordination:string;executionRoot:string};
+/** Original queue events and blobs hold the immutable transfer. Preparation
+ * alone never releases responsibility or supplies implement permissions. */
+export class WorkspaceHandoffRecords{
+  constructor(private db:DatabaseSync,private transaction:<T>(fn:()=>T)=>T,
+    private source:(request:WorkspaceHandoffRequest,successorPlan:Buffer)=>WorkspaceHandoffBinding,
+    private authorize:(request:WorkspaceHandoffRequest,binding:WorkspaceHandoffBinding,observations:OwnerObservation[])=>void){}
+  private bytes(sha:string){const r=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row|undefined,b=r&&Buffer.from(r.bytes);if(!b||hash(b)!==sha)throw new Error('workspace_handoff_original_changed');return b;}
+  private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
+  private events(id:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'workspace_handoff_%' ORDER BY id").all('workspace-handoff:'+id) as Row[]).map(e=>{const ref=JSON.parse(e.data),value=JSON.parse(this.bytes(ref.sha256).toString());if(canonical(value)!==canonical(ref.value))throw new Error('workspace_handoff_index_changed');return {...e,data:value};});}
+  private event(id:string,kind:string,value:Row){const sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('workspace_handoff_'+kind,'workspace-handoff:'+id,canonical({sha256,value}),now());}
+  private fixed(id:string){const events=this.events(id),p=events.find(e=>e.kind==='workspace_handoff_prepared')?.data;if(!p)throw new Error('workspace_handoff_not_prepared');const request=parseWorkspaceHandoff(this.bytes(p.requestSha256)),successor=this.bytes(p.successorPlanSha256),binding=JSON.parse(this.bytes(p.bindingSha256).toString()) as WorkspaceHandoffBinding;if(request.id!==id||hash(successor)!==request.successor.sha256||binding.successorPlanSha256!==request.successor.sha256||workspaceHandoffPayloadSha256(request)!==p.payloadSha256)throw new Error('workspace_handoff_binding_changed');for(const sha of p.originals)this.bytes(sha);return {request,successor,binding,prepared:p,events};}
+  private all(){return (this.db.prepare("SELECT object FROM events WHERE kind='workspace_handoff_prepared' ORDER BY id").all() as Row[]).map(e=>this.fixed(e.object.slice('workspace-handoff:'.length)));}
+  private active(x:ReturnType<WorkspaceHandoffRecords['fixed']>){return x.events.some(e=>e.kind==='workspace_handoff_transferred')&&!x.events.some(e=>e.kind==='workspace_handoff_cancelled_unstarted');}
+  private samePath(a:string,b:string){return process.platform==='darwin'?a.toLowerCase()===b.toLowerCase():a===b;}
+  private lineage(binding:WorkspaceHandoffBinding,id:string){
+    const previous=this.all().filter(x=>x.request.id!==id&&this.active(x)&&this.samePath(x.binding.workspace,binding.workspace)),next=previous.filter(x=>!previous.some(y=>y.binding.priorOperation===x.binding.successorOperation));
+    if(next.length>1||next.length===1&&next[0]!.binding.successorOperation!==binding.priorOperation)throw new Error('workspace_handoff_latest_owner_required');
+    if(previous.some(x=>x.binding.priorOperation===binding.priorOperation||x.binding.successorOperation===binding.successorOperation))throw new Error('workspace_handoff_unique_successor_required');
+    return previous.map(x=>x.binding.priorOperation);
+  }
+  prepare(raw:Buffer,successorPlan:Buffer,capture:ManagedRepairCapture,observations:OwnerObservation[]){return this.transaction(()=>{
+    const p=parseWorkspaceHandoff(raw),c=requireManagedRepairCapture(capture),binding=this.source(p,successorPlan);
+    if(hash(successorPlan)!==p.successor.sha256||c.reference.operation!==p.prior.operation||c.reference.bindingHash!==p.prior.bindingHash||c.sourceSignature!==binding.sourceSignature||c.workspaceStateSha256!==p.workspaceStateSha256||c.workspace.workspace!==binding.workspace||c.workspace.branch!==binding.branch||c.workspace.H!==binding.candidate.H||c.workspace.writerLease!==null)throw new Error('workspace_handoff_exact_original_required');
+    this.authorize(p,binding,observations);
+    if(this.events(p.id).length){const old=this.fixed(p.id);if(!this.bytes(old.prepared.requestSha256).equals(raw)||canonical(old.binding)!==canonical(binding))throw new Error('workspace_handoff_id_changed');return {...this.stateOf(p.id),duplicate:true};}
+    if(binding.priorOperation===binding.successorOperation||binding.priorActor===binding.nextActor)throw new Error('workspace_handoff_new_responsibility_required');this.lineage(binding,p.id);
+    const originals=[...c.originals].map(([sha,b])=>{if(hash(b)!==sha)throw new Error('workspace_handoff_original_changed');return this.blob(b);}),sourceProof={reference:c.reference,sourceSignature:c.sourceSignature,workspace:c.workspace,workspaceStateSha256:c.workspaceStateSha256,processes:c.processes,dockerExecutions:c.dockerExecutions,registeredExecutionsEnded:true,permissionGranted:false};
+    this.event(p.id,'prepared',{requestSha256:this.blob(raw),successorPlanSha256:this.blob(successorPlan),bindingSha256:this.blob(Buffer.from(canonical(binding))),captureSha256:this.blob(Buffer.from(canonical(sourceProof))),payloadSha256:workspaceHandoffPayloadSha256(p),originals,preparedAt:now()});return {...this.stateOf(p.id),duplicate:false};
+  });}
+  activate(id:string,capture:ManagedRepairCapture,observations:OwnerObservation[]){return this.transaction(()=>{
+    const x=this.fixed(id),c=requireManagedRepairCapture(capture),current=this.source(x.request,x.successor);this.authorize(x.request,current,observations);
+    if(c.reference.operation!==x.binding.priorOperation||c.sourceSignature!==x.binding.sourceSignature||canonical(current)!==canonical(x.binding))throw new Error('workspace_handoff_source_changed');
+    if(this.active(x))return {...this.stateOf(id),duplicate:true};
+    if(x.events.some(e=>e.kind==='workspace_handoff_cancelled_unstarted'))throw new Error('workspace_handoff_cancelled');
+    if(c.workspaceStateSha256!==x.request.workspaceStateSha256||c.workspace.writerLease!==null)throw new Error('workspace_handoff_workspace_changed');const ancestors=this.lineage(x.binding,id);
+    if(this.db.prepare('SELECT 1 FROM claims WHERE operation IN (?,?)').get(x.binding.priorOperation,x.binding.successorOperation))throw new Error('workspace_handoff_original_claim_active_or_unknown');
+    this.event(id,'transferred',{priorOperation:x.binding.priorOperation,successorOperation:x.binding.successorOperation,ancestors,workspace:x.binding.workspace,branch:x.binding.branch,publishBranch:x.binding.publishBranch,sourceSignature:c.sourceSignature,workspaceStateSha256:c.workspaceStateSha256,at:now(),sourceFilesChanged:false,implementPermissionGranted:false});return {...this.stateOf(id),duplicate:false};
+  });}
+  permit(operation:string,id:string,plan:Buffer,request:Buffer,config:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
+    const x=this.fixed(id),current=this.source(x.request,x.successor);this.authorize(x.request,current,observations);
+    if(!this.active(x)||x.binding.successorOperation!==operation||hash(plan)!==x.binding.successorPlanSha256||hash(request)!==x.binding.successorRequestSha256||hash(config)!==x.binding.successorConfigSha256||canonical(current)!==canonical(x.binding)||this.all().some(y=>this.active(y)&&y.binding.priorOperation===operation))throw new Error('workspace_handoff_successor_binding_changed');
+    const transferred=x.events.find(e=>e.kind==='workspace_handoff_transferred')!.data;
+    return {id,...x.binding,releasedOperations:[x.binding.priorOperation,...transferred.ancestors],captureSha256:x.prepared.captureSha256,requestSha256:x.prepared.requestSha256,implementPermissionGranted:false};
+  });}
+  sourceReleased(operation:string){return this.transaction(()=>this.all().some(x=>this.active(x)&&x.binding.priorOperation===operation));}
+  material(id:string){return this.transaction(()=>{const x=this.fixed(id);return {...x,binding:x.binding,capture:JSON.parse(this.bytes(x.prepared.captureSha256).toString())};});}
+  private stateOf(id:string){const x=this.fixed(id);return {id,binding:x.binding,requestSha256:x.prepared.requestSha256,captureSha256:x.prepared.captureSha256,payloadSha256:x.prepared.payloadSha256,phase:x.events.some(e=>e.kind==='workspace_handoff_cancelled_unstarted')?'cancelled_unstarted':this.active(x)?'transferred':'prepared_not_transferred',writePermissionGranted:false,newModelInputs:0};}
+  state(id:string){return this.transaction(()=>this.stateOf(id));}
+}

@@ -1,0 +1,32 @@
+import type {DatabaseSync} from 'node:sqlite';
+import {hash} from './snapshot.js';
+
+export const publicationConsumerKey='owner_governed_publication_v1';
+export const legacyPublicationEffectGuard=`CREATE TRIGGER authority_legacy_effect_guard BEFORE INSERT ON events WHEN EXISTS(SELECT 1 FROM meta WHERE key='owner_authority_profile') AND (NEW.kind='overall_review_dispatched' OR NEW.kind IN ('publication_intent','publication_started')) BEGIN SELECT RAISE(ABORT,'authority_consumer_binding_required'); END`;
+const admission=(kind:string)=>`EXISTS(SELECT 1 FROM events a JOIN events b ON b.kind='authority_publication_bound' AND b.object=NEW.object WHERE a.kind='${kind}' AND a.id=(SELECT MAX(id) FROM events) AND a.object=NEW.object AND json_extract(a.data,'$.stage')=json_extract(NEW.data,'$.stage') AND json_extract(a.data,'$.publicationBindingSha256')=json_extract(b.data,'$.bindingSha256'))`;
+export const governedPublicationEffectGuard=`CREATE TRIGGER authority_legacy_effect_guard BEFORE INSERT ON events WHEN EXISTS(SELECT 1 FROM meta WHERE key='owner_authority_profile') AND (NEW.kind='overall_review_dispatched' OR NEW.kind='publication_intent' AND NOT ${admission('member_publication_admitted')} OR NEW.kind='publication_started' AND NOT ${admission('authority_publication_start_admitted')}) BEGIN SELECT RAISE(ABORT,'authority_consumer_binding_required'); END`;
+export const overallConsumerKey='owner_governed_overall_v1';
+export const overallAdmission=`EXISTS(SELECT 1 FROM events a WHERE a.kind='authority_overall_admitted' AND a.object=NEW.object AND a.id=(SELECT MAX(id) FROM events) AND json_extract(a.data,'$.operation')=json_extract(NEW.data,'$.operation') AND json_extract(a.data,'$.id')=json_extract(NEW.data,'$.id') AND json_extract(a.data,'$.inputSha256')=json_extract(NEW.data,'$.inputSha256') AND json_extract(a.data,'$.attempt')=json_extract(NEW.data,'$.attempt'))`;
+export function expectedEffectGuard(db:DatabaseSync,publication=Boolean(db.prepare('SELECT 1 FROM meta WHERE key=?').get(publicationConsumerKey)),overall=Boolean(db.prepare('SELECT 1 FROM meta WHERE key=?').get(overallConsumerKey))){
+  const base=publication?governedPublicationEffectGuard:legacyPublicationEffectGuard;
+  return overall?base.replace("NEW.kind='overall_review_dispatched'","NEW.kind='overall_review_dispatched' AND NOT "+overallAdmission):base;
+}
+const overallResultGuard=`CREATE TRIGGER overall_resource_result_guard BEFORE INSERT ON events
+WHEN NEW.kind='resource_result_dispatched' AND EXISTS(SELECT 1 FROM events r WHERE r.kind='resource_execution_outcome' AND r.object=NEW.object AND json_extract(r.data,'$.source')='verified_overall_review_capture')
+BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM events a WHERE a.kind='overall_resource_result_admitted' AND a.id=(SELECT MAX(id) FROM events) AND a.object=NEW.object AND json_extract(a.data,'$.originalOperation')=json_extract(NEW.data,'$.originalOperation') AND json_extract(a.data,'$.outcomeSha256')=json_extract(NEW.data,'$.outcomeSha256')) THEN RAISE(ABORT,'overall_original_terminal_check_required') END; END`;
+export function installOverallResultGuard(db:DatabaseSync){const old=db.prepare("SELECT sql FROM sqlite_schema WHERE name='overall_resource_result_guard'").get() as any;if(old&&old.sql!==overallResultGuard)throw new Error('overall_result_guard_changed');if(!old)db.exec(overallResultGuard);}
+const resultGuard={name:'publication_resource_result_guard',sql:`CREATE TRIGGER publication_resource_result_guard BEFORE INSERT ON events
+WHEN NEW.kind='resource_result_dispatched' AND EXISTS(SELECT 1 FROM events p JOIN events r ON r.kind='authority_action_reserved' AND r.object='authority-intent:'||json_extract(p.data,'$.authorityIntent') WHERE p.kind='resource_request_prepared' AND p.object=NEW.object AND json_extract(r.data,'$.request.action')='publish')
+BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM events a WHERE a.kind='publication_resource_result_admitted' AND a.id=(SELECT MAX(id) FROM events) AND a.object=NEW.object AND json_extract(a.data,'$.originalOperation')=json_extract(NEW.data,'$.originalOperation') AND json_extract(a.data,'$.outcomeSha256')=json_extract(NEW.data,'$.outcomeSha256')) THEN RAISE(ABORT,'publication_original_terminal_check_required') END; END`};
+export function installPublicationResultGuard(db:DatabaseSync){const old=db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(resultGuard.name) as any;if(old&&old.sql!==resultGuard.sql)throw new Error('publication_result_guard_changed');if(!old)db.exec(resultGuard.sql);}
+const guards=[
+  {name:'publication_authority_unique',sql:`CREATE UNIQUE INDEX publication_authority_unique ON events(json_extract(data,'$.authorityIntent')) WHERE kind='authority_publication_bound'`},
+  {name:'publication_resource_claim_guard',sql:`CREATE TRIGGER publication_resource_claim_guard BEFORE INSERT ON events
+WHEN NEW.kind='resource_claim_dispatched' AND EXISTS(SELECT 1 FROM events p JOIN events r ON r.kind='authority_action_reserved' AND r.object='authority-intent:'||json_extract(p.data,'$.authorityIntent') WHERE p.kind='resource_request_prepared' AND p.object=NEW.object AND json_extract(r.data,'$.request.action')='publish')
+BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM events a JOIN events b ON b.kind='authority_publication_bound' AND b.object='publication:'||json_extract(NEW.data,'$.originalOperation') WHERE a.kind='member_resource_claim_admitted' AND a.object=NEW.object AND a.id=(SELECT MAX(id) FROM events) AND json_extract(a.data,'$.requestSha256')=json_extract(NEW.data,'$.requestSha256') AND json_extract(a.data,'$.publicationBindingSha256')=json_extract(b.data,'$.bindingSha256') AND EXISTS(SELECT 1 FROM json_each(b.data,'$.resourceRequests') WHERE value=json_extract(NEW.data,'$.requestSha256'))) THEN RAISE(ABORT,'publication_resource_binding_required') END; END`}
+];
+export function publicationGuardsCurrent(db:DatabaseSync){return (db.prepare('SELECT value FROM meta WHERE key=?').get(publicationConsumerKey) as any)?.value===hash(governedPublicationEffectGuard)&&guards.every(g=>(db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any)?.sql===g.sql);}
+export function installPublicationGuards(db:DatabaseSync){
+  installPublicationResultGuard(db);
+  for(const g of guards){const old=db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any;if(old&&old.sql!==g.sql)throw new Error('publication_guard_changed');if(!old)db.exec(g.sql);}
+}

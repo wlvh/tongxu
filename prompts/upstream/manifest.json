@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "fixed-upstream-prompt-sources",
+  "sources": [
+    {
+      "key": "review",
+      "repository": "wlvh/coding-workflow",
+      "revision": "1772cd2c25bfc42b7a89cf38b35bf19d3dc22000",
+      "path": "zh/prompts/pr_review_system.md",
+      "localPath": "prompts/upstream/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/review.md",
+      "gitBlob": "135c129135d8609d8265e83329a2b25f9134a053",
+      "sha256": "08e491ed00e59294408d9a97dd6b64bfa1b5d1d3bd44ba51ada4a6c85585ebe9",
+      "bytes": 7404,
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/prompts/pr_review_system.md"
+    },
+    {
+      "key": "issue",
+      "repository": "wlvh/coding-workflow",
+      "revision": "1772cd2c25bfc42b7a89cf38b35bf19d3dc22000",
+      "path": "zh/prompts/issue_agent.md",
+      "localPath": "prompts/upstream/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/issue.md",
+      "gitBlob": "50aa37f93595f536c9cf4f9210dbdd6b9cdaed06",
+      "sha256": "4d223d297c9de9b817f435b37dac3922b233e2978859a9af354e0a0934246021",
+      "bytes": 1674,
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/prompts/issue_agent.md"
+    },
+    {
+      "key": "workflow",
+      "repository": "wlvh/coding-workflow",
+      "revision": "1772cd2c25bfc42b7a89cf38b35bf19d3dc22000",
+      "path": "zh/docs/development_workflow/README.md",
+      "localPath": "prompts/upstream/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/workflow.md",
+      "gitBlob": "4f65d8851f896431827bf3f327d14dd33384b8c8",
+      "sha256": "44cb352caa056c86b8f26fe13998bf1a90544f627f29f37de248a2e804ab52c0",
+      "bytes": 23347,
+      "url": "https://github.com/wlvh/coding-workflow/blob/1772cd2c25bfc42b7a89cf38b35bf19d3dc22000/zh/docs/development_workflow/README.md"
+    }
+  ]
+}

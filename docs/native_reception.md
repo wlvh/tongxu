@@ -1,0 +1,64 @@
+# 队列中的独立接收角色
+
+本项接续 #5/#6，固定前置为 PR20 `b8dd9e21a35479d68f872b45f795799882dd2587`，分支 `feat/w3-native-reception` 真实目标为 `feat/local-reception-integration`。用户已要求在既有边界内连续推进；没有新的合并、生产写入或费用授权。原影子队列、W5 协作入口、原始失败与审核记录保留。
+
+NR01 一个显式入口读取队列中准确 item/packet，完成原影子评价后，把固定候选、S/r、原 W1/W2 材料及明确选择的候选源码、已有审阅报告交给全新独立 Claude 接收会话。源码按准确 Git H 读取，不读作者未提交工作。报告是证据，不能提供程序、权限、下一条 shell 或新的材料路径。输入过大/材料不符在发送前失败，不能静默截断。
+
+NR02 复用现有 SQLite operations、claims、controls 和 events，不新建并行调度账本。独立接收是原操作的后续阶段，记录固定输入hash、判断ID和一次派发意图，并重新占用原目标与席位。新派发前核材料仍当前、无矛盾、必要前置和停止新增投入状态；停止实施/合并不阻止只读核实。新材料到来不改旧判断的对象，返回时标明适用性已经变化。
+
+NR03 默认只执行已有官方 Claude CLI、已有本人订阅与已确认用量边界。接收角色加载完整公共边界和 receiver 角色；必要材料通过stdin固定交付。沿用 safe-mode、无工具/MCP、dontAsk、无API计费覆盖，核真实init和最终result。一个packet最多发起一次本阶段任务；输出绑定原operation、判断ID、完整输入hash及候选。保存完整自然语言报告与机器关联，ACCEPT/退回/材料不足均不自动授予生产权限。
+
+NR04 原操作的影子结果、接收意图、实际启动/输入/原输出/终态和队列消费分别记录。部分答案、等待/额度错误、错候选或错会话都不能成为成功判断。重复入口读取原操作及原件，不生成替身。接收运行期间旧evaluate不能释放它的占用；同目标/席位限制沿用现有队列，其他无关工作可继续。
+
+NR05 中断先核原控制器和原CLI，活跃/未知时不接管。确认结束后 reconcile 只读取原始捕获；若有完整匹配终态，则关联回原操作，不再发模型。无完整结果时保持未决；明确 close-ended 可在核原进程已结束后记录“原结果未决，停止该次接收”，保留全部原件并释放占用，绝不改写为成功或自动重试。同一packet即使关闭也不会重发；新的实质材料才有新操作。停止新增投入不阻止读取/关联已经收到的结果。
+
+NR06 验收取得一次真实的“已登记候选→程序交给独立Claude→完整判断返回→原队列实际关联”及重复入口零新派发。故障样例覆盖停止/前置/占用、发送前候选变化、返回时材料变化、并发入口、错误结果、捕获中断、完整原件恢复和明确关闭；样例与真实调用分开。独立审核必须针对准确候选。接收者的技术判断、真实发送/返回、生产授权、发布和合并分别记录，完整G1/G2不据此全部通过。
+
+入口：`node dist/src/receiver-cli.js run --plan ABS_TRUSTED_PLAN`；恢复用 `reconcile --store ABS_QUEUE --operation ID`；关闭已结束但未决的一次接收用 `close-ended --store ABS_QUEUE --operation ID --source REFERENCE`。所有输入由可信操作者给出，接收模型无调用这些控制入口的工具。原 schema3 库保持可读，不自动迁移；新增状态保存在既有表与事件中。接入前显式执行 `enable --store ABS_QUEUE`，确认没有活跃/未知操作后，将格式标记改为4、登记事件，并安装接收原件/占用保护触发器。新打开的旧程序拒绝新格式；已打开的旧连接也会被同库触发器阻止覆盖接收原件或提前删除receiving占用，不复制库或新增表。未安装保护的旧实验格式4不允许新派发，确认无活动操作后可显式enable补齐；原结果仍保留可核。默认建库仍为3，run不隐式启用。
+
+## 执行计划与结果
+
+`run` 使用以下明确计划（占位值需要替换成已有现场）：
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "tongxu-queue-receiver",
+  "store": "/absolute/private/existing-queue",
+  "item": "64_HEX_ITEM_FROM_QUEUE_ADD",
+  "claudeExecutable": "/absolute/existing/claude",
+  "objects": "/absolute/existing/git-repository",
+  "sourcePaths": ["src/relevant.ts", "docs/relevant-contract.md"],
+  "material": [{"path": "/absolute/private/fixed-review.txt", "sha256": "64_HEX_DIGEST"}],
+  "billing": {
+    "mode": "existing_subscription_only",
+    "evidence": "/absolute/private/existing-usage-evidence.txt",
+    "evidenceSha256": "64_HEX_DIGEST",
+    "observedAt": "EXISTING_OBSERVATION_TIME",
+    "usageCreditsEnabled": false
+  },
+  "timeoutMs": 900000,
+  "executionKind": "native_capture"
+}
+```
+
+费用字段只引用既有核实材料，填JSON本身不证明订阅或允许新增费用；程序还核既有文件hash、观察时效、实际CLI版本/认证路线及API覆盖。接收角色不获得这些控制入口。`fixture` 仅供明确标注的无模型测试进程，结果不记成真实独立接收。
+
+程序从原队列核原blob，交付完整manifest/report/plan和各工具原输出；W1其他材料只提供原件索引，选定源码按H读取、额外审阅报告按hash固定。输入明确列出这个范围，未提供的材料不能当成已审核。输入总上限1MiB，单源码文件最多2MiB，不能为了运行而静默截断；超限时先缩小真实审核范围和固定材料。
+
+接收结果为 `ACCEPT_WITHIN_SCOPE`、`RETURN_FOR_WORK` 或 `INSUFFICIENT_EVIDENCE`，包含完整自然语言判断。其operation、判断ID和bindingHash必须与程序登记一致。`independentReception=judgment_recorded` 仅说明匹配原件的角色判断已保存；`productionActionAllowed=false` 不变。`externalActionSent` 只在真实角色已返回时确认模型请求送达，未知派发保留unknown；`externalProductionActionSent=false` 明确没有发布/合并请求。原普通影子评价仍不派发模型。
+
+控制器使用原operation目录内的SQLite事务互斥；这个文件只作可由操作系统释放的互斥，不存第二份任务账本。强杀后先看准确原CLI及捕获。已完整退出而尚未关联的原结果可以恢复，活跃CLI不能关闭占用；结果未决且CLI已核结束时，显式close-ended保留未决结果和原件后释放席位。关闭不会让同一packet重发。返回时若队列已有新材料，旧判断保留但明确不覆盖新材料。
+
+专项测试入口为 `npm run test:receiver`。它使用明确测试进程，不访问供应商认证或发模型请求；实际原生验收另保存版本、init/最终消息、完整输入/输出、队列操作和重复读取记录。
+
+
+## 首次独立审核及修补
+
+固定5ec58d1独立判断 NR-REVIEW-5ec58d1-20261019T130911Z 为 REWORK_REQUIRED，两条P1，无Owner取舍。报告SHA256 2931bdc87df56336f9d7843bf222169a2e3d7d42f6c030da93269d3fea6c9a2a，原反例/报告保持。
+
+NR-F1：同PR新H成为不同item，原门只查旧item内部。修补在预留、最后派发、返回以及后续读取时，按同一repo/PR比较已知W1来源观察；H/B/target或同scope的S/r版本有更新/顺序不明时不把旧材料当当前。更晚完成的旧W2不成为新候选；不同任务scope不自动互相采用。旧判断原文保留，输出区分materialMatchedAtReturn和当前已知currentMaterialMatches，仍不证明远端实时状态或Owner采用。
+
+NR-F2：旧客户端若在enable前已打开，旧evaluate更新零行后仍会删除接收占用。格式标记只能挡住新打开者；因此在同一显式enable事务安装两条数据库触发保护。旧连接也不能覆盖已有receiver绑定或删除receiving的claim；合法完成先把原operation写为complete再释放。没有第二套账本、权限层或新表。
+
+修补后需对准确新H独立再核；原79项通过不能覆盖上述反例。真实接收验收与代码复核分别记录，仍不得据此声称合并或完整G1/G2。

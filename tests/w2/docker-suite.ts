@@ -1,0 +1,10 @@
+import { spawn } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+const config = process.argv[2] ?? process.env.TONGXU_TEST_DOCKER_CONFIG;
+if (!config) throw new Error('Supply the existing Docker config JSON path to test:docker');
+const paths = ['../w1/cli.test.js', '../w1/collection.test.js', './docker.integration.js', './verification.test.js', '../w3/queue.test.js'].map(p => fileURLToPath(new URL(p, import.meta.url)));
+const child = spawn(process.execPath, ['--test', ...paths], { stdio: 'inherit', env: { ...process.env, TMPDIR: await realpath(tmpdir()), TONGXU_TEST_DOCKER_CONFIG: await realpath(config) } });
+child.on('error', e => { process.stderr.write(e.message + '\n'); process.exitCode = 1; });
+child.on('close', code => { process.exitCode = code ?? 1; });

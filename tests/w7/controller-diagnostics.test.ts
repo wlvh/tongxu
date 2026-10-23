@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {controlFixture} from './task-controls-fixture.js';
+import {prepareTaskOwner} from '../../src/tasks.js';
+import {canonical} from '../../src/comparison.js';
+import {observeTask} from '../../src/secretary-tools.js';
+import {startWorkbench,workbenchState,parseWorkbenchPlan} from '../../src/workbench.js';
+import {hash} from '../../src/snapshot.js';
+import {runInNewContext} from 'node:vm';
+test('preparation failure survives a new controller and remains separate from the original model result',async t=>{
+  const f=await controlFixture(t);f.q.taskInbox().enqueue(Buffer.from(canonical(f.request)));const prepared=await prepareTaskOwner(f.store,f.task,f.request.id),path=join(f.store,'task-inbox',f.task,f.request.id,'context.json'),original=await readFile(path);await writeFile(path,'different input');await f.controls.execute('contact');const next=await f.load();t.after(()=>next.drain());let state=(await next.state())[0] as any;assert.equal(state.phase,'prepared');assert.equal(state.lastControllerReturn.reason,'task_prepared_file_changed');assert.equal(state.lastControllerReturn.newModelRequests,null);assert.equal((await f.calls()).length,0);assert.ok(!JSON.stringify(state).includes(f.root));
+  const c=f.q.tasks().current(f.task).manifest.candidate,s=await observeTask(f.store,f.task,{repository:c.repository,pr:null,H:c.H,B:c.B,target:c.targetRef,kind:'development-task',taskId:f.task,sourceSha256:c.sourceSha256});assert.equal(s.developmentTask.controllerReturns.at(-1).reason,state.lastControllerReturn.reason);
+  await writeFile(path,original);await next.execute('contact');state=(await next.state())[0] as any;assert.equal(state.phase,'returned');assert.equal(state.lastControllerReturn.completed,true);assert.equal(state.controllerReturnCount,2);const report=await next.report('contact');
+  await writeFile(path,'another failed input');await next.execute('contact');state=(await next.state())[0] as any;assert.equal(state.phase,'returned');assert.equal(state.lastControllerReturn.completed,false);assert.equal((await next.report('contact')).report,report.report);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);assert.equal(state.run,prepared.run);
+});
+test('failure before inbox registration is recorded without creating a task request or dispatch proof',async t=>{
+  const f=await controlFixture(t);await writeFile(join(f.definition.workspace,'sample.js'),'export const changed=111;\n');await assert.rejects(f.controls.begin('contact'),/candidate_changed/);const state=(await f.controls.state())[0] as any;assert.equal(state.phase,'not_registered');assert.equal(state.currentMaterial,false);assert.equal(state.lastControllerReturn.reason,'task_control_candidate_changed');assert.equal(state.lastControllerReturn.meaning,'controller_return_not_dispatch_proof');assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);
+});
+test('a slow status read cannot lose the result of the exact execution that has already ended',async t=>{
+  const f=await controlFixture(t),read=f.controls.state.bind(f.controls);let first=true;f.controls.state=async(id?:string)=>{if(first){first=false;const end=Date.now()+5000;while(!f.q.taskInbox().controllerReturns(f.task).some(r=>r.completed)&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert.ok(f.q.taskInbox().controllerReturns(f.task).some(r=>r.completed));await new Promise(r=>setTimeout(r,10));}return read(id);};const result=await f.controls.execute('contact');assert.equal((result.execution as any).completed,true);assert.equal((result.execution as any).newModelRequests,1);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);
+});
+test('a later zero-input replay cannot replace the result owned by a slow first caller',async t=>{
+  const f=await controlFixture(t),read=f.controls.state.bind(f.controls);let first=true,second:any;
+  f.controls.state=async(id?:string)=>{if(first){first=false;const end=Date.now()+5000;while(!f.q.taskInbox().controllerReturns(f.task).some(r=>r.completed)&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert.ok(f.q.taskInbox().controllerReturns(f.task).some(r=>r.completed));await new Promise(r=>setTimeout(r,20));second=await f.controls.execute('contact');}return read(id);};
+  const result=await f.controls.execute('contact'),returns=f.q.taskInbox().controllerReturns(f.task);assert.deepEqual(returns.map(r=>r.newModelRequests),[1,0]);assert.equal((result.execution as any).newModelRequests,1);assert.equal((result.execution as any).observationSha256,returns[0]!.observationSha256);assert.equal(second.execution.newModelRequests,0);assert.equal(second.execution.observationSha256,returns[1]!.observationSha256);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);
+});
+test('a failed registration reports an unsaved diagnostic without replacing bounded original history',async t=>{
+  const f=await controlFixture(t);for(let i=0;i<256;i++)f.q.taskInbox().recordControllerReturn(Buffer.from(canonical(f.request)),{catalogSha256:hash(canonical(f.catalog)),actionId:'contact',stage:'registration',expectedPacket:f.catalog.contacts[0]!.packet,expectedSourceSha256:f.catalog.contacts[0]!.sourceSha256,run:null,completed:false,resourcesSettled:null,newModelRequests:null,reason:'fixture_prior_'+i},Buffer.from('explicit prior fixture observation '+i));
+  await writeFile(join(f.definition.workspace,'sample.js'),'export const changed=71;\n');const app=await startWorkbench(f.planPath);t.after(()=>app.close());const u=new URL(app.url),headers={Authorization:'Bearer '+u.hash.slice(1),Origin:u.origin,'Content-Type':'application/json',Connection:'close'},response=await fetch(u.origin+'/api/task-control/contact/start',{method:'POST',headers,body:'{}'}),body=await response.json() as any,state=await(await fetch(u.origin+'/api/state',{headers})).json() as any;
+  assert.equal(response.status,503);assert.equal(body.error,'task_control_candidate_changed');assert.equal(body.diagnosticRecorded,false);assert.equal(body.diagnosticError,'task_controller_history_bound');assert.equal(state.taskControls[0].unsavedControllerReturn.persisted,false);assert.equal(state.taskControls[0].unsavedControllerReturn.reason,body.error);assert.equal(state.taskControls[0].lastControllerReturn.reason,'fixture_prior_255');assert.equal(f.q.taskInbox().controllerReturns(f.task).length,256);assert.equal(f.q.taskInbox().status(f.task).length,0);assert.equal((await f.calls()).length,0);
+});
+test('an earlier full reply cannot hide a later prepared owner request in the task label',async t=>{
+  const f=await controlFixture(t);await f.controls.execute('contact');const second={...f.request,id:'later-owner-request'};f.q.taskInbox().enqueue(Buffer.from(canonical(second)));await prepareTaskOwner(f.store,f.task,second.id);
+  const state=await workbenchState(parseWorkbenchPlan(await readFile(f.planPath))),task=state.tasks[0],js=await readFile(new URL('../../../web/workbench/app.js',import.meta.url),'utf8'),fn=js.slice(js.indexOf('function statusOf('),js.indexOf('\nasync function api('));
+  assert.equal(task!.developmentTask.inbox.find((r:any)=>r.id===f.request.id).phase,'returned');assert.equal(task!.developmentTask.inbox.find((r:any)=>r.id===second.id).phase,'prepared');assert.equal(runInNewContext(fn+';statusOf(task)',{task})[0],'负责人待办尚未完成');assert.equal((await f.calls()).filter(x=>x.kind==='input').length,1);
+});
