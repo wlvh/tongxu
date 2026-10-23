@@ -65,8 +65,9 @@ export async function repairEvidence(operation: string, queueOperation: string, 
   };
   return { operation:queueOperation, bindingHash, resultSha256:hash(resultBytes), terminalRecordSha256:hash(terminalBytes), counters, nativeEvidenceRevalidatedBy:'runRepair terminal reader', productionActionAllowed:false };
 }
-export async function runQueueRepair(planPath: string, reconcileEnded = false): Promise<Row> {
+export async function runQueueRepair(planPath: string, reconcileEnded = false,expectedPlanSha256?:string): Promise<Row> {
   const planBytes = await regular(planPath), p = parseQueueRepairPlan(planBytes);
+  if(expectedPlanSha256!==undefined&&hash(planBytes)!==expectedPlanSha256)throw new Error('queue_repair_selected_plan_changed');
   return lock(p.store,p.operation,async()=> {
     // Re-read the supplier capture before using the stored finding. No resend.
     let actualReception=p.operation;
@@ -139,8 +140,9 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false): 
     } finally { q.close(); }
   });
 }
-export async function closeUnstartedQueueRepair(planPath:string,source:string){
+export async function closeUnstartedQueueRepair(planPath:string,source:string,expectedPlanSha256?:string){
   const bytes=await regular(planPath),p=parseQueueRepairPlan(bytes);
+  if(expectedPlanSha256!==undefined&&hash(bytes)!==expectedPlanSha256)throw new Error('queue_repair_selected_plan_changed');
   return lock(p.store,p.operation,async()=>{
     const q=await QueueStore.open(p.store);try{
       const records=q.reviewRecords(),state=records.state(p.operation),r=state.repair,root=r.executionRoot;

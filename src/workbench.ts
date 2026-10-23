@@ -19,6 +19,7 @@ import type {WorkbenchRuntimeIdentity} from './workbench-launch.js';
 import {QueueEventControls} from './queue-event-controls.js';
 import {SourceTickLoop,validateEventPolling,type EventPollingSelection} from './event-loop.js';
 import {SecretaryControls} from './secretary-controls.js';
+import {ReturnControls} from './return-controls.js';
 
 type Row = Record<string, any>;
 export type WorkbenchPlan = {
@@ -33,12 +34,14 @@ export type WorkbenchPlan = {
   eventControls?:{path:string;sha256:string};
   eventPolling?:EventPollingSelection[];
   secretary?:{path:string;sha256:string};
+  returnControls?:{path:string;sha256:string};
 };
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && !!v.trim() && v.length <= max && !v.includes('\0');
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   const p = JSON.parse(bytes.toString());
   if (p.schemaVersion !== 1 || !['tongxu-local-workbench','tongxu-controlled-workbench'].includes(p.kind) || !text(p.title, 100) || !text(p.goal, 1000) || !Array.isArray(p.sources) || !p.sources.length || p.sources.length > 8) throw new Error('invalid_workbench_plan');
-  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length&&!p.ownerControls?.length&&!p.organization&&!p.overallReviews?.length&&!p.eventControls&&!p.eventPolling&&!p.secretary):Object.hasOwn(p,'controls')||Object.hasOwn(p,'ownerControls')||Object.hasOwn(p,'organization')||Object.hasOwn(p,'overallReviews')||Object.hasOwn(p,'deliveryExecutions')||Object.hasOwn(p,'eventControls')||Object.hasOwn(p,'eventPolling')||Object.hasOwn(p,'secretary'))throw new Error('invalid_workbench_controls');
+  if(p.kind==='tongxu-controlled-workbench'?(p.controls?!exactKeys(p.controls,['path','sha256'])||!messagePath(p.controls.path)||!isAuthorityDigest(p.controls.sha256):!p.deliveries?.length&&!p.ownerControls?.length&&!p.organization&&!p.overallReviews?.length&&!p.eventControls&&!p.eventPolling&&!p.secretary&&!p.returnControls):Object.hasOwn(p,'controls')||Object.hasOwn(p,'ownerControls')||Object.hasOwn(p,'organization')||Object.hasOwn(p,'overallReviews')||Object.hasOwn(p,'deliveryExecutions')||Object.hasOwn(p,'eventControls')||Object.hasOwn(p,'eventPolling')||Object.hasOwn(p,'secretary')||Object.hasOwn(p,'returnControls'))throw new Error('invalid_workbench_controls');
+  if(Object.hasOwn(p,'returnControls')&&(!exactKeys(p.returnControls,['path','sha256'])||!messagePath(p.returnControls.path)||!isAuthorityDigest(p.returnControls.sha256)))throw new Error('invalid_workbench_return_controls');
   if(Object.hasOwn(p,'eventControls')&&(!exactKeys(p.eventControls,['path','sha256'])||!messagePath(p.eventControls.path)||!isAuthorityDigest(p.eventControls.sha256)))throw new Error('invalid_workbench_event_controls');
   if(Object.hasOwn(p,'secretary')&&(!exactKeys(p.secretary,['path','sha256'])||!messagePath(p.secretary.path)||!isAuthorityDigest(p.secretary.sha256)))throw new Error('invalid_workbench_secretary');
   if(Object.hasOwn(p,'deliveryExecutions')&&(!p.ownerControls?.length||!exactKeys(p.deliveryExecutions,['path','sha256'])||!messagePath(p.deliveryExecutions.path)||!isAuthorityDigest(p.deliveryExecutions.sha256)))throw new Error('invalid_workbench_delivery_executions');
@@ -52,7 +55,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'ownerControls')&&(!Array.isArray(p.ownerControls)||!p.ownerControls.length||p.ownerControls.length>8||new Set(p.ownerControls).size!==p.ownerControls.length||p.ownerControls.some((id:unknown)=>!ids.has(id))))throw new Error('invalid_workbench_owner_controls');
   if(Object.hasOwn(p,'overallReviews'))validateOverallSelections(p.overallReviews,[...ids] as string[]);
   if(Object.hasOwn(p,'eventPolling'))validateEventPolling(p.eventPolling,p.sources);
-  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}) };
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}),...(p.returnControls?{returnControls:p.returnControls}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -141,6 +144,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const queueActions=p.eventControls?await QueueEventControls.load(p.eventControls.path,p.eventControls.sha256,p.sources):null;
   const polling=p.eventPolling?await SourceTickLoop.load(p.eventPolling,p.sources):null;
   const secretary=p.secretary?await SecretaryControls.load(p.secretary.path,p.secretary.sha256,p.sources):null;
+  const returns=p.returnControls?await ReturnControls.load(p.returnControls.path,p.returnControls.sha256,p.sources):null;
   const assets = new Map<string, { type: string; bytes: Buffer }>();
   for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   let host = '';
@@ -158,7 +162,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const url = new URL(req.url ?? '/', 'http://' + host);
       if (url.search&&!/^\/api\/judgment-feedback-report\/[a-z0-9-]{1,64}$/.test(url.pathname)) { json(res, 400, { error: 'query_not_supported' }); return; }
       if(req.method!=='GET'){
-        if(!controls&&!deliveryControls?.writable&&!ownerControls&&!organization&&!overall&&!queueActions&&!secretary){json(res,405,{error:'read_only_workbench'});return;}
+        if(!controls&&!deliveryControls?.writable&&!ownerControls&&!organization&&!overall&&!queueActions&&!secretary&&!returns){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
         const action=/^\/api\/task-control\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|cancel|native|close-interrupted)$/.exec(url.pathname);
         const scope=/^\/api\/scope-control\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(stopped|open)$/.exec(url.pathname);
@@ -171,11 +175,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const overallBaseline=/^\/api\/overall-baseline\/([a-z0-9-]{1,64})\/prepare$/.exec(url.pathname);
         const retrospective=/^\/api\/overall-review\/([a-z0-9-]{1,64})\/(prepare|run|reconcile|close-unstarted)$/.exec(url.pathname);
         const queueAction=/^\/api\/queue-action\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/run$/.exec(url.pathname);
+        const returnAction=/^\/api\/return-work\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(start|reconcile|close-unstarted)$/.exec(url.pathname);
         const secretaryAction=/^\/api\/secretary\/([a-z0-9-]{1,64})\/(ask|close-unstarted)$/.exec(url.pathname);
-        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||deliveryExecution&&deliveryWork||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&(retrospective||overallBaseline)||queueActions&&queueAction||secretary&&secretaryAction)){json(res,405,{error:'task_control_route_not_allowed'});return;}
+        if(req.method!=='POST'||!(controls&&(action||scope)||deliveryControls?.writable&&(delivery||batchPreparation)||deliveryExecution&&deliveryWork||ownerControls&&owner||scopeFollowups&&followup||organization&&arrangement||overall&&(retrospective||overallBaseline)||queueActions&&queueAction||secretary&&secretaryAction||returns&&returnAction)){json(res,405,{error:'task_control_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation||deliveryWork?98304:delivery||secretaryAction?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
+        if(returnAction){json(res,202,await returns!.begin(returnAction[1]!,returnAction[2]!,body));return;}
         if(secretaryAction){if(secretaryAction[2]==='ask')json(res,202,await secretary!.begin(secretaryAction[1]!,body));else{if(!exactKeys(body,['requestId']))throw new Error('secretary_question_invalid');json(res,200,await secretary!.closeUnstarted(secretaryAction[1]!,body.requestId));}return;}
         if(queueAction){if(!exactKeys(body,['requestId']))throw new Error('event_control_request_id_invalid');json(res,200,await queueActions!.execute(queueAction[1]!,body.requestId));return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
@@ -194,7 +200,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       }
       const asset = assets.get(url.pathname); if (asset) { reply(res, 200, asset.type, asset.bytes); return; }
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { const snapshot=await workbenchState(p);json(res, 200, {...snapshot,...(deliveryExecution?{deliveryExecution:await Promise.all((snapshot.deliveries??[]).filter(d=>d.available).map(async d=>{try{return {...await deliveryExecution.state(d.id),available:true};}catch(e){return {batchId:d.id,available:false,reason:safeError(e)};}}))}:{}),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(queueActions?{queueActions:await queueActions.state(),queueOptions:queueActions.manifest(),mode:controls?.mode??'bounded_queue_controls'}:{}),...(polling?{sourcePolling:polling.state()}:{}),...(secretary?{secretaries:await secretary.state(),mode:controls?.mode??'bounded_secretary'}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      if (url.pathname === '/api/state') { const snapshot=await workbenchState(p);json(res, 200, {...snapshot,...(deliveryExecution?{deliveryExecution:await Promise.all((snapshot.deliveries??[]).filter(d=>d.available).map(async d=>{try{return {...await deliveryExecution.state(d.id),available:true};}catch(e){return {batchId:d.id,available:false,reason:safeError(e)};}}))}:{}),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(returns?{returnWork:await returns.state(),mode:controls?.mode??'bounded_return_work'}:{}),...(queueActions?{queueActions:await queueActions.state(),queueOptions:queueActions.manifest(),mode:controls?.mode??'bounded_queue_controls'}:{}),...(polling?{sourcePolling:polling.state()}:{}),...(secretary?{secretaries:await secretary.state(),mode:controls?.mode??'bounded_secretary'}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      const returnReport=/^\/api\/return-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);if(returnReport){if(!returns)throw new Error('report_not_found');json(res,200,await returns.report(returnReport[1]!));return;}
       const deliveryWorkReport=/^\/api\/delivery-work-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);if(deliveryWorkReport){if(!deliveryExecution)throw new Error('report_not_found');json(res,200,await deliveryExecution.report(deliveryWorkReport[1]!,deliveryWorkReport[2]!));return;}
       const secretaryReport=/^\/api\/secretary-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);if(secretaryReport){if(!secretary)throw new Error('report_not_found');json(res,200,await secretary.report(secretaryReport[1]!,secretaryReport[2]!));return;}
       const overallReport=/^\/api\/overall-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);if(overallReport){if(!overall)throw new Error('report_not_found');json(res,200,await overall.report(overallReport[1]!));return;}
@@ -215,5 +222,5 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('workbench_address_unavailable');
   host = '127.0.0.1:' + address.port;
   polling?.start();
-  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await polling?.drain();await secretary?.drain();await controls?.drain();await scopeFollowups?.drain();await deliveryExecution?.drain();await overall?.drain();await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':returns?'bounded_return_work':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));const returnDrain=returns?.drain();await polling?.drain();await secretary?.drain();await controls?.drain();await scopeFollowups?.drain();await deliveryExecution?.drain();await overall?.drain();await returnDrain;await closed;} };
 }

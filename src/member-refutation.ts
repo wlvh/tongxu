@@ -14,8 +14,8 @@ import {settleReceiverResources} from './receiver-authority.js';
 async function freeze(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(!(await regular(path,4*1024*1024)).equals(bytes))throw new Error('member_refutation_frozen_input_changed');}}
 /** Consume an ended refutation, then use the original receiver. Nothing in a
  * model report can select its program, permissions, candidate or next input. */
-export async function runMemberRefutation(path:string,action:'prepare'|'run'='run'){
-  const raw=await regular(path,32768),p=parseMemberRefutationPlan(raw),id=hash(canonical({memberReturn:p.memberReturn,repairPlan:p.repairPlan.sha256})),directory=join(p.store,'member-refutation-'+id),q=await QueueStore.open(p.store);let lock:DatabaseSync|undefined;
+export async function runMemberRefutation(path:string,action:'prepare'|'run'='run',expectedPlanSha256?:string){
+  const raw=await regular(path,32768),p=parseMemberRefutationPlan(raw);if(expectedPlanSha256!==undefined&&hash(raw)!==expectedPlanSha256)throw new Error('member_refutation_selected_plan_changed');const id=hash(canonical({memberReturn:p.memberReturn,repairPlan:p.repairPlan.sha256})),directory=join(p.store,'member-refutation-'+id),q=await QueueStore.open(p.store);let lock:DatabaseSync|undefined;
   try{
     await privateDirectory(directory,!await exists(directory));await freeze(join(directory,'request.json'),raw);
     const lockPath=join(directory,'controller.sqlite');try{await writeFile(lockPath,'',{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}await regular(lockPath);lock=new DatabaseSync(lockPath);try{lock.exec('PRAGMA busy_timeout=0;BEGIN IMMEDIATE');}catch{throw new Error('member_refutation_controller_active');}

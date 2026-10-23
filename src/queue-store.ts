@@ -344,6 +344,33 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       return {current,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),items:items.map(id=>q.authorityItem(id))};
     }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
+  static async observeQueueRepair(directory:string,item:string,raw:Buffer,full=false){
+    const p=JSON.parse(raw.toString()),q=await QueueStore.connect(directory,true);
+    try{q.db.exec('BEGIN');const op=q.db.prepare('SELECT * FROM operations WHERE id=?').get(p.operation) as Row|undefined;
+      if(!op||op.item!==item||p.store!==directory)throw new Error('return_control_task_mismatch');
+      const source=p.memberReturn?q.memberRepairSource(p.operation,p.memberReturn,false):q.reviewSource(p.operation,false),receiver=source.reception??source.receiver;
+      if(receiver.judgment?.verdict!=='RETURN_FOR_WORK'||p.packet!==op.packet||p.judgmentId!==receiver.judgmentId||p.bindingHash!==receiver.bindingHash||canonical(p.context)!==canonical(source.context))throw new Error('return_control_original_return_mismatch');
+      const records=new ReviewRecords(q.db,fn=>fn(),(id,current)=>q.reviewSource(id,current),()=>{throw new Error('readonly_view_cannot_authorize');});let original:ReturnType<ReviewRecords['state']>|null=null;
+      try{original=records.state(p.operation);}catch(e){if((e as Error).message!=='queue_repair_not_registered')throw e;}
+      const replacing=!!original&&original.repair.planSha256!==hash(raw)&&original.repair.phase==='closed_unstarted'&&p.replacesClosedBinding===original.repair.bindingHash;
+      if(original&&original.repair.planSha256!==hash(raw)&&!replacing)throw new Error('return_control_original_plan_changed');
+      const r=replacing?null:original?.repair,result=r?.result??null;let current=true;try{if(p.memberReturn)q.memberRepairSource(p.operation,p.memberReturn,true);else q.reviewSource(p.operation,true);}catch{current=false;}
+      if(result&&(!r?.resultSha256||canonical(JSON.parse(q.blob(r.resultSha256).toString()))!==canonical(result)||!r.evidenceSha256))throw new Error('return_control_original_result_changed');if(r?.evidenceSha256)q.blob(r.evidenceSha256);
+      const resources=(r?.resourceRequests??p.governance?.resourceRequests??[]).map((id:string)=>{try{const records=q.resourceRecords(fn=>fn()),state=records.status(id);return {id,state:state.state,settled:records.settledOutcome(id)};}catch{return {id,state:'unavailable',settled:false};}});
+      return {operation:p.operation,item,packet:p.packet,current,candidate:source.candidate,scope:source.context.scope,sourceJudgmentId:receiver.judgmentId,originalVerdict:receiver.judgment.verdict,executionKind:receiver.executionKind,phase:r?.phase??'not_started',originalProblem:r?.phase==='unknown'?original?.events.findLast(e=>e.kind==='repair_unknown')?.data.reason??null:null,...(replacing?{replacesKnownClosedBinding:original!.repair.bindingHash}:{}),controllerReturned:r?.controllerReturned??null,originalControllerState:r?.controllerPid?processState(r.controllerPid):'not_registered',resources,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),governanceConfigured:!!p.governance,
+        result:result?{status:result.status,executionKind:result.executionKind,beforeH:result.before?.H??null,afterH:result.after?.H??null,actualRepairPerformed:result.actualRepairPerformed===true,testsPassed:result.data?.tests?.passed===true,reviewVerdict:result.data?.review?.verdict??null,reviewCandidateH:result.data?.review?.candidateH??null,resultSha256:r!.resultSha256}:null,
+        ...(full?{originalReturn:receiver.judgment,originalResult:result,repairHistory:original?.events??[],originalRequest:original?JSON.parse(original.request.toString()):null}:{}),newModelInputs:0,writingPermissionGranted:false,productionActionAllowed:false};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  static async observeMemberRefutation(directory:string,memberItem:string,raw:Buffer,full=false){
+    const p=JSON.parse(raw.toString()),q=await QueueStore.connect(directory,true);
+    try{q.db.exec('BEGIN');if(p.store!==directory)throw new Error('return_control_task_mismatch');const source=q.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id);
+      if(source.request.member.item!==memberItem||source.state.requestSha256!==p.memberReturn.requestSha256||source.state.sourceSha256!==p.memberReturn.sourceSha256)throw new Error('return_control_refutation_source_mismatch');
+      let state:Row|null=null;try{state=q.memberRefutationView(p.id);}catch(e){if((e as Error).message!=='member_refutation_not_recorded')throw e;}
+      const receiver=state?.reception?.operation?q.receiverOperation(state.reception.operation).receiver:null;
+      return {id:p.id,phase:receiver?.phase??(state?'prepared_not_sent':'not_registered'),current:state?.current??source.state.current,reason:state?.reason??null,parentOperation:source.request.reception.operation,reception:state?.reception??null,verdict:receiver?.judgment?.verdict??null,...(full&&receiver?.judgment?{report:receiver.judgment}:{}),newModelInputs:0,priorAcceptanceTransferred:false,productionActionAllowed:false};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   static async observeOverallReview(directory:string,item:string,raw:Buffer,full=false){
     const p=JSON.parse(raw.toString()),q=await QueueStore.connect(directory,true);
     try{q.db.exec('BEGIN');const op=q.receiverOperation(p.operation).op;if(op.item!==item||p.store!==directory)throw new Error('overall_task_not_selected');
@@ -453,10 +480,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if(member.current_packet!==proof.member.packet||memberPacket.fingerprint!==proof.member.fingerprint||member.observation_conflict||!this.receiverCandidateCurrent(member)||packet.manifest_hash!==proof.parent.manifestSha256||packet.report_hash!==proof.parent.reportSha256||packet.context_hash!==proof.parent.contextSha256)throw new Error('member_refutation_source_no_longer_current');}
     return {sha256:ref.sha256,...proof};
   }
-  memberRefutation(id:string){return this.transaction(()=>{const original=this.memberRefutationOriginal(id);let current=false,reason:string|null=null;
+  private memberRefutationView(id:string){const original=this.memberRefutationOriginal(id);let current=false,reason:string|null=null;
     try{const packet=this.packet(original.value.packet),item=this.item(packet.item);this.memberRefutationEvidence(packet,true);current=item.current_packet===packet.id&&!item.observation_conflict&&this.receiverCandidateCurrent(item);if(!current)reason='member_refutation_source_no_longer_current';}catch(e){reason=e instanceof Error?e.message:'member_refutation_source_unavailable';}
     const op=this.db.prepare('SELECT id,status,result FROM operations WHERE packet=?').get(original.value.packet) as Row|undefined,receiver=op?parse(op,'result')?.receiver:null;
-    return {...original.value,id,current,reason,proof:original.proof,reception:op?{operation:op.id,status:op.status,phase:receiver?.phase??null,planSha256:receiver?.planSha256??null}:null,duplicate:true,newModelInputs:0};});}
+    return {...original.value,id,current,reason,proof:original.proof,reception:op?{operation:op.id,status:op.status,phase:receiver?.phase??null,planSha256:receiver?.planSha256??null}:null,duplicate:true,newModelInputs:0};}
+  memberRefutation(id:string){return this.transaction(()=>this.memberRefutationView(id));}
   enableMemberRefutationSourceChecks(item:string){return this.transaction(()=>{if(parse(this.packet(this.item(item).current_packet),'summary').memberRefutation)installMemberRefutationOriginalsGuard(this.db);});}
   attachMemberRefutation(raw:Buffer){return this.transaction(()=>{
     const request=parseMemberRefutationRequest(raw),requestSha256=hash(raw),known=this.db.prepare("SELECT 1 FROM events WHERE kind='member_refutation_attached' AND object=?").get('member-refutation:'+request.id);
