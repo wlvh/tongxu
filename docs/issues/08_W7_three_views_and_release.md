@@ -1,3 +1,8 @@
+<!-- current-flow-delivery-boundary-20261023 -->
+> 当前实施顺序遵循[2026-10-23 用户确认](https://github.com/wlvh/tongxu/issues/2#issuecomment-6356584442)：先按声明版本、环境、材料和权限固定一条正常入口可用流程，之后持续推进。只维护[现有验收映射](/Users/lyuhongwang/Desktop/tongxu/local-runs/autonomous-completion-20261020T052200Z/completion-coverage.json)的 `currentRemainder`；本文件历史正文不能独立成为待办清单。已交付后端复用，A 持续实现、B 独立审核回 A、最小显式交接；通用接管、全部52项和外部治理不作首条只读试用前置。原52项/12项校正、代码、原操作和历史审核保留。本次文档同步不是产品验收、本人采用或合并批准。
+
+---
+
 # W7：读取真实任务与报告的本机工作台
 
 本子范围连接已有真实队列、原生接收与 W6 双任务记录。固定前置 PR25 `c10c24851e9ad6b00462fb9156562afb2cb729a6`；独立分支 `feat/w7-local-readonly-workbench`，真实 target `feat/w6-paired-reception`。既有双任务已实际回读 A、转交 B 并返回完整判断；首试围栏失败与同操作恢复保留。完整 G1/G2/G3 和用户接受不据此成立。

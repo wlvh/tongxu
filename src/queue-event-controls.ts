@@ -36,8 +36,8 @@ function parse(raw:Buffer):Entry[]{
 /** A fixed consumer of the original hint and preference records. It cannot
  * configure a source, construct a new permission, dispatch an agent or merge. */
 export class QueueEventControls {
-  private constructor(private path:string,readonly catalogSha256:string,private entries:Array<{entry:Entry;source:Source}>){ }
-  static async load(path:string,sha256:string,sources:Source[],selectedSource?:string){
+  private constructor(private path:string,readonly catalogSha256:string,private entries:Array<{entry:Entry;source:Source}>,private executionKind?:'fixture'|'github'){ }
+  static async load(path:string,sha256:string,sources:Source[],selectedSource?:string,executionKind?:'fixture'|'github'){
     if(!messagePath(path)||!isAuthorityDigest(sha256)||selectedSource!==undefined&&!sourceId(selectedSource))throw new Error('event_control_reference_invalid');
     const raw=await regular(path,128*1024);if(hash(raw)!==sha256)throw new Error('event_control_catalog_changed');
     const entries=parse(raw).filter(e=>selectedSource===undefined||e.source===selectedSource).map(entry=>{
@@ -46,7 +46,11 @@ export class QueueEventControls {
       return {entry,source:structuredClone(source)};
     });
     if(!entries.length)throw new Error('event_control_task_not_selected');
-    return new QueueEventControls(path,sha256,entries);
+    const controls=new QueueEventControls(path,sha256,entries,executionKind);
+    // The caller's executor kind is a boundary, not a label on its result.
+    // Verify before starting a model and again at the original action gate.
+    if(executionKind)for(const f of entries){const item=await controls.context(f),q=await QueueStore.open(f.source.store);try{controls.profile(q,f,item);}finally{q.close();}}
+    return controls;
   }
   manifest(){return {catalogSha256:this.catalogSha256,actions:this.entries.map(({entry:e})=>({id:e.id,title:e.title,source:e.source,kind:e.kind,...(e.kind==='hint'?{hintKind:e.hintKind}:{preference:e.preference}),permissionsGranted:false})),modelDispatchAvailable:false};}
   private selected(id:string){const f=this.entries.find(f=>f.entry.id===id);if(!f)throw new Error('event_control_not_selected');return f;}
@@ -59,6 +63,7 @@ export class QueueEventControls {
   private profile(q:QueueStore,f:{entry:Entry;source:Source},item:any){
     const profile=q.events().configuration();
     if(hash(canonical(profile))!==f.entry.profileSha256||profile.repository.toLowerCase()!==item.candidate.repository.toLowerCase()||!profile.prs.includes(item.candidate.pr))throw new Error('event_control_source_profile_changed');
+    if(this.executionKind&&profile.executionKind!==this.executionKind)throw new Error('secretary_queue_execution_kind_mismatch');
     return profile;
   }
   async state(){return Promise.all(this.entries.map(async f=>{

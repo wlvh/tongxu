@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,readdir} from 'node:fs/promises';
+import {readFile,writeFile,readdir,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {secretaryFixture} from '../w4/secretary-fixture.js';
 import {hash} from '../../src/snapshot.js';
 import {startWorkbench} from '../../src/workbench.js';
 import {SecretaryControls} from '../../src/secretary-controls.js';
+import {closeUnstartedSecretary} from '../../src/secretary.js';
 
 import {secretaryEntryFixture as fixture} from './secretary-entry-fixture.js';
 
@@ -51,4 +52,34 @@ test('same workbench composes secretary, direct queue receipt and foreground tic
   const direct=async()=>fetch(f.u.origin+'/api/queue-action/remind/run',{method:'POST',headers:{...f.headers,Origin:f.u.origin,'Content-Type':'application/json'},body:JSON.stringify({requestId:'one-direct-reminder'})});
   const first=await(await direct()).json() as any,again=await(await direct()).json() as any;assert.equal(first.originalId,again.originalId);assert.equal(again.duplicate,true);assert.equal((await f.get()).queueActions[0].receipts.length,2);
   const logs=await f.logs();await f.get();await f.get();assert.deepEqual(await f.logs(),logs);assert.equal(logs.filter(x=>x.kind==='model-input').length,1);
+});
+
+test('ended metadata-only stop closes explicitly, preserves every original and allows a new question attempt',async t=>{
+  const f=await fixture(t,'late-stop-once'),requestId='zero-input',question='核对这个原任务的当前记录';
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
+  const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=(await readdir(native,{withFileTypes:true})).filter(n=>n.isFile()).map(n=>n.name),originals=await Promise.all(names.map(n=>readFile(join(native,n))));
+  assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);assert.equal((await f.post('close-unstarted',{requestId})).status,200);
+  assert.equal((await f.get()).secretaries[0].questions[0].phase,'closed_unstarted');
+  const receipt=JSON.parse((await readFile(join(output,'closed-unstarted.json'))).toString());assert.equal(receipt.proof.metadataOnly,true);assert.equal(receipt.proof.modelInputs,0);
+  assert.deepEqual(await Promise.all(names.map(n=>readFile(join(native,n)))),originals);
+  f.q.control('scope','investment','open','fixture:resume-after-proven-zero-input');
+  await f.post('ask',{requestId,question});assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const retry=await(await f.post('ask',{requestId:'explicit-new-attempt',question})).json() as any;assert.equal(retry.requestId,'explicit-new-attempt');
+  await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-new-attempt'&&q.phase==='completed'));
+  assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);assert.deepEqual(await Promise.all(names.map(n=>readFile(join(native,n)))),originals);
+});
+
+test('metadata closure rejects live, partial, incomplete, model-intent and tool evidence even without a final answer',async t=>{
+  const f=await fixture(t,'late-stop'),requestId='metadata-negative';await f.post('ask',{requestId,question:'explicit zero-input negative fixture'});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
+  const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),read=(n:string)=>readFile(join(native,n)),status=await read('capture-status.json');
+  const altered=async(name:string,bytes:Buffer|undefined,pattern:RegExp)=>{const old=await read(name);try{if(bytes)await writeFile(join(native,name),bytes);else await unlink(join(native,name));await assert.rejects(closeUnstartedSecretary(output),pattern);}finally{await writeFile(join(native,name),old);}};
+  await altered('process.json',Buffer.from(JSON.stringify({pid:process.pid})),/active_or_unknown/);
+  await altered('exit.json',undefined,/ENOENT/);await altered('capture-status.json',undefined,/ENOENT/);
+  const input=await read('stdin.ndjson'),partial=input.subarray(0,input.length-1),capture=JSON.parse(status.toString());capture.files['stdin.ndjson']=hash(partial);await writeFile(join(native,'capture-status.json'),JSON.stringify(capture));
+  try{await altered('stdin.ndjson',partial,/partial_frame/);}finally{await writeFile(join(native,'capture-status.json'),status);}
+  await writeFile(join(native,'turn-1-intent.json'),'{}');try{await assert.rejects(closeUnstartedSecretary(output),/model_input_registered/);}finally{await unlink(join(native,'turn-1-intent.json'));}
+  const raw=await read('stdout.ndjson'),tool=Buffer.concat([raw,Buffer.from(JSON.stringify({id:'unexpected',method:'item/tool/call',params:{}})+'\n')]),updated=JSON.parse(status.toString());updated.files['stdout.ndjson']=hash(tool);await writeFile(join(native,'capture-status.json'),JSON.stringify(updated));
+  try{await altered('stdout.ndjson',tool,/protocol_unknown/);}finally{await writeFile(join(native,'capture-status.json'),status);}
+  assert.equal((await closeUnstartedSecretary(output)).closed,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
 });

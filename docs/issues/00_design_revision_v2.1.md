@@ -1,3 +1,8 @@
+<!-- current-flow-delivery-boundary-20261023 -->
+> 当前实施顺序遵循[2026-10-23 用户确认](https://github.com/wlvh/tongxu/issues/2#issuecomment-6356584442)：先按声明版本、环境、材料和权限固定一条正常入口可用流程，之后持续推进。只维护[现有验收映射](/Users/lyuhongwang/Desktop/tongxu/local-runs/autonomous-completion-20261020T052200Z/completion-coverage.json)的 `currentRemainder`；本文件历史正文不能独立成为待办清单。已交付后端复用，A 持续实现、B 独立审核回 A、最小显式交接；通用接管、全部52项和外部治理不作首条只读试用前置。原52项/12项校正、代码、原操作和历史审核保留。本次文档同步不是产品验收、本人采用或合并批准。
+
+---
+
 正文同步自 `docs/issues/00_design_revision_v2.1.md`。现行规范：`docs/tongxu_v2_plan.md` v2.3。
 
 ## 本项含义

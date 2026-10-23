@@ -1,3 +1,8 @@
+<!-- current-flow-delivery-boundary-20261023 -->
+> 当前实施顺序遵循[2026-10-23 用户确认](https://github.com/wlvh/tongxu/issues/2#issuecomment-6356584442)：先按声明版本、环境、材料和权限固定一条正常入口可用流程，之后持续推进。只维护[现有验收映射](/Users/lyuhongwang/Desktop/tongxu/local-runs/autonomous-completion-20261020T052200Z/completion-coverage.json)的 `currentRemainder`；本文件历史正文不能独立成为待办清单。已交付后端复用，A 持续实现、B 独立审核回 A、最小显式交接；通用接管、全部52项和外部治理不作首条只读试用前置。原52项/12项校正、代码、原操作和历史审核保留。本次文档同步不是产品验收、本人采用或合并批准。
+
+---
+
 # W4 原生执行器：依据真实能力逐步接入（#6 自足条款）
 
 现行范围仍为 v2.3 和 [#2 持续开发安排](https://github.com/wlvh/tongxu/issues/2#issuecomment-6251133759)。本轮先交付无模型调用的原生隔离自检软件，完整 W4/G2 保留下述双引擎、两轮与角色边界验收；不把自检命名为已接通秘书或独立接收者。

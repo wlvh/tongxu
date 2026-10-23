@@ -13,8 +13,9 @@ import {sourceTick} from '../../src/event-tick.js';
 import {ownerDecisionText,scopeBodyHash,type AuthorityProfile,type ActionRequest} from '../../src/authority-contract.js';
 import {fixtureOwnerObservation} from '../../src/authority-source.js';
 
-async function fixture(t:test.TestContext){
+async function fixture(t:test.TestContext,executionKind:'fixture'|'github'='fixture'){
   const f=await secretaryFixture(t,'queue-action'),source=await sourceFixture(t,'fixture/reception');f.q.enableSupplements();
+  source.profile.executionKind=executionKind;if(executionKind==='github')source.profile.pollIntervalMs=60000;
   await source.change({H:f.p.candidate.H,B:f.p.candidate.B,target:f.p.candidate.target});f.q.events().configure(Buffer.from(canonical(source.profile)));
   const actions=[{id:'remind',title:'核查原任务的接收条件',source:'selected',profileSha256:hash(canonical(source.profile)),kind:'hint',hintKind:'consumer_feedback'}],catalog={schemaVersion:1,kind:'tongxu-queue-event-controls',actions},path=join(f.root,'queue-options.json');await writeFile(path,JSON.stringify(catalog));
   f.p.kind='tongxu-task-secretary';f.p.queueActions={path,sha256:hash(await readFile(path)),source:'selected'};f.p.question='请登记一次对原任务接收条件的核查提醒，并明确说明是否已执行任务。';await writeFile(f.secretaryPlan,JSON.stringify(f.p));
@@ -78,4 +79,13 @@ test('one-shot preference cannot be consumed again under another request identit
   const gate=new SecretaryTools(f.store,f.item,f.p.candidate,join(f.root,'bounded-gate'),undefined,false,false,undefined,false,f.controls);
   await assert.rejects(gate.call({tool:'tongxu_queue_action',arguments:{action:'priority',priority:-2},callId:'extra-payload'}),/query_not_allowed/);
   assert.equal(f.a.status().intents.length,1);
+});
+
+test('secretary executor kind must match its original queue source before launch and at action registration',async t=>{
+  const f=await fixture(t),sources=[{id:'selected',store:f.store,item:f.item}],before=f.q.status().events;
+  await assert.rejects(QueueEventControls.load(f.catalogPath,f.p.queueActions!.sha256,sources,'selected','github'),/secretary_queue_execution_kind_mismatch/);
+  // This explicitly local fake remains a fake: changing its source category
+  // only exercises the dangerous classification mismatch, never GitHub.
+  const formal=await fixture(t,'github');await assert.rejects(runSecretary(formal.secretaryPlan,formal.output),/secretary_queue_execution_kind_mismatch/);assert.equal((await formal.logs()).length,0);assert.equal(formal.q.status().events.filter((e:any)=>e.kind==='source_hint').length,0);
+  assert.equal(f.q.status().events.filter((e:any)=>e.kind==='source_hint').length,before.filter((e:any)=>e.kind==='source_hint').length);
 });

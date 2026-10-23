@@ -7,7 +7,7 @@ import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt } from './
 import { save } from './live-process.js';
 import { exists, regular } from './repair-workspace.js';
 import { BoundedCodexSession, readRepairSession, secretarySchema } from './repair-native.js';
-import { verifySecretaryCapture } from './secretary-capture.js';
+import { verifySecretaryCapture, verifyUnstartedSecretaryCapture } from './secretary-capture.js';
 import { SecretaryTools, observeTask,selectedSecretaryTools } from './secretary-tools.js';
 import {TaskControls} from './task-controls.js';
 import {exactKeys} from './authority-contract.js';
@@ -48,7 +48,7 @@ export function parseSecretaryPlan(bytes: Buffer): SecretaryPlan {
 }
 const specs=(p:SecretaryPlan)=>selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true,!!p.queueActions);
 const loadControls=async(p:SecretaryPlan)=>{if(!p.taskControls)return undefined;const controls=await TaskControls.load(p.taskControls.path,p.taskControls.sha256,[{id:p.taskControls.source,store:p.store,item:p.item}]);if(controls.manifest().contacts.some(c=>c.executionKind!==p.executionKind))throw new Error('secretary_contact_execution_kind_mismatch');return controls;};
-const loadQueueActions=async(p:SecretaryPlan)=>p.queueActions?QueueEventControls.load(p.queueActions.path,p.queueActions.sha256,[{id:p.queueActions.source,store:p.store,item:p.item}],p.queueActions.source):undefined;
+const loadQueueActions=async(p:SecretaryPlan)=>p.queueActions?QueueEventControls.load(p.queueActions.path,p.queueActions.sha256,[{id:p.queueActions.source,store:p.store,item:p.item}],p.queueActions.source,p.executionKind==='fixture'?'fixture':'github'):undefined;
 async function inputs(p: SecretaryPlan) {
   const prompts: string[] = [];
   for (const ref of [...p.prompts, ...p.allowedInstructionSources]) {
@@ -146,9 +146,14 @@ export async function readSecretaryResult(planPath:string,output:string){
 export async function closeUnstartedSecretary(output:string){
   if(!await exists(output))await privateDirectory(output,true);else await privateDirectory(output,false);
   return lock(output,async()=>{
-    if(await exists(join(output,'codex-secretary')))throw new Error('secretary_original_capture_requires_reconciliation');
-    const path=join(output,'closed-unstarted.json');if(await exists(path))return {closed:true,duplicate:true,newModelTasks:0};
-    save(path,{kind:'secretary-closed-unstarted',closedAt:new Date().toISOString(),source:'explicit_workbench_request',nativeDirectoryAbsent:true,originalControllerLockAcquired:true});
+    const native=join(output,'codex-secretary'),nativeDirectoryAbsent=!await exists(native);let proof:unknown;
+    if(!nativeDirectoryAbsent){
+      const raw=await regular(join(output,'plan.json')),p=parseSecretaryPlan(raw),bytes=await regular(join(output,'inputs.json')),frozen=JSON.parse(bytes.toString()),intent=JSON.parse((await regular(join(output,'operation.json'))).toString());
+      verifyFrozenSecretaryInputs(p,frozen);if(intent.planSha256!==hash(raw)||intent.inputSha256!==hash(bytes))throw new Error('secretary_operation_binding_changed');
+      proof=await verifyUnstartedSecretaryCapture(native,p,frozen,hash(bytes),output);
+    }
+    const path=join(output,'closed-unstarted.json');if(await exists(path)){const prior=JSON.parse((await regular(path)).toString());if(prior.nativeDirectoryAbsent!==nativeDirectoryAbsent||canonical(prior.proof??null)!==canonical(proof??null))throw new Error('secretary_closed_original_changed');return {closed:true,duplicate:true,newModelTasks:0};}
+    save(path,{kind:'secretary-closed-unstarted',closedAt:new Date().toISOString(),source:'explicit_workbench_request',nativeDirectoryAbsent,originalControllerLockAcquired:true,...(proof?{proof}:{})});
     return {closed:true,duplicate:false,newModelTasks:0};
   });
 }

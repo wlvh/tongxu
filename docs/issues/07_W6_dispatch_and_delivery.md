@@ -1,3 +1,8 @@
+<!-- current-flow-delivery-boundary-20261023 -->
+> 当前实施顺序遵循[2026-10-23 用户确认](https://github.com/wlvh/tongxu/issues/2#issuecomment-6356584442)：先按声明版本、环境、材料和权限固定一条正常入口可用流程，之后持续推进。只维护[现有验收映射](/Users/lyuhongwang/Desktop/tongxu/local-runs/autonomous-completion-20261020T052200Z/completion-coverage.json)的 `currentRemainder`；本文件历史正文不能独立成为待办清单。已交付后端复用，A 持续实现、B 独立审核回 A、最小显式交接；通用接管、全部52项和外部治理不作首条只读试用前置。原52项/12项校正、代码、原操作和历史审核保留。本次文档同步不是产品验收、本人采用或合并批准。
+
+---
+
 # W6：两个固定接收任务的阶段协作
 
 本子范围在已有真实执行器、原队列接收、发布和受限秘书基础上，细化 #8 的一个可执行片段。固定前置为 PR24 `e5ca71fa4883b0546758d3e6c0b793e8fdc806a1`，独立分支 `feat/w6-paired-reception`，真实 target `feat/w4-readonly-secretary`。独立双任务示例是两个固定候选 A/B 的接收工作；仅 B 的共享接收阶段等 A 的指定独立判断，不等整个上游 Issue 关闭或合并。

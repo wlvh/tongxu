@@ -1,3 +1,8 @@
+<!-- current-flow-delivery-boundary-20261023 -->
+> 当前实施顺序遵循[2026-10-23 用户确认](https://github.com/wlvh/tongxu/issues/2#issuecomment-6356584442)：先按声明版本、环境、材料和权限固定一条正常入口可用流程，之后持续推进。只维护[现有验收映射](/Users/lyuhongwang/Desktop/tongxu/local-runs/autonomous-completion-20261020T052200Z/completion-coverage.json)的 `currentRemainder`；本文件历史正文不能独立成为待办清单。已交付后端复用，A 持续实现、B 独立审核回 A、最小显式交接；通用接管、全部52项和外部治理不作首条只读试用前置。原52项/12项校正、代码、原操作和历史审核保留。本次文档同步不是产品验收、本人采用或合并批准。
+
+---
+
 # W3 持久影子接收现场（#5 自足实施条款）
 
 状态：依据真实 W1/W2 软件细化的 W3 首个可用子版；条款范围已经独立只读复核。本轮执行固定为 shadow，生产受管接收和完整 G1 尚待后述前置。W1 为 [Draft PR #13](https://github.com/wlvh/tongxu/pull/13) @ `6c6640eebbcedcf19d8444c4a39c3843b3304cb2`；W2 为 [Draft PR #14](https://github.com/wlvh/tongxu/pull/14) @ `c73c0bf45d40b9560a66baa8186ca4b41d291800`（代码 `792cdfd3dafba7af15bfb058bf5ac75e77e689b1` 已独立 Codex 技术复审 PASS、44 项测试通过；追加仅区分宿主 Git 版本字段并记录验证，Claude 影响核实待审）。W3 分支 `feat/w3-shadow-reception` 从该固定 W2 建立，真实 base/target 为 `feat/w2-isolated-evidence`；相对 main `1ba5ae893b49e5856a4e8d682139f70e5c907f5f` 额外含 W1 三个、W2 三个提交。正式合入前置保留；前置变化须重新核对，不秘密改目标。沿 #2 持续开发安排推进；不重开全局设计，不新增秘书、治理平台、审批 DSL 或后台模型循环。
