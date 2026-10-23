@@ -747,13 +747,21 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.repairAuthorization(operation,proposed,observations);
       coordination.repairGate(operation,proposed,true,this.continuationCapture);
       this.memberRepairAdmission(operation,proposed);
-    },(operation,reference,current)=>this.memberRepairSource(operation,reference,current),(operation,plan,observations)=>this.overallAuthorization(operation,plan,observations,true,true));
+    },(operation,reference,current)=>this.memberRepairSource(operation,reference,current),(operation,plan,observations)=>this.overallAuthorization(operation,plan,observations,true,true),(operation,selected)=>{
+      // These fixed routing fields only exclude unrelated chains. A possible
+      // match must still read its own packet context and all selected originals.
+      const {op}=this.receiverOperation(operation),item=this.item(op.item),candidate=parse(item,'candidate'),context=parse(item,'context'),c=selected.candidate,s=selected.context.scope;
+      if(candidate.repository.toLowerCase()!==c.repository.toLowerCase()||candidate.pr!==c.pr||context.scope.id!==s.id||context.scope.version!==s.version)return false;
+      const original=parseQueueContextBlob(this.blob(this.packet(op.packet).context_hash));
+      return canonical(original.scope)===canonical(s);
+    });
   }
-  reconcilePublishedRepairBatches() {
+  reconcilePublishedRepairBatches(operation:string) {
     // Older queues can still publish. Enabling review records remains explicit;
     // this consumer neither upgrades their format nor invents repair history.
     if(![9,10,11,12,13,14,15,16].includes(queueFeatureVersion(this.db)))return {enabled:false,recorded:0,batches:[],newModelInputs:0,newRemoteRequests:0};
-    return {enabled:true,...this.reviewRecords().reconcilePublishedRepairs()};
+    const selected=this.transaction(()=>this.reviewSource(operation,false));
+    return {enabled:true,...this.reviewRecords().reconcilePublishedRepairs(selected)};
   }
   overallGate(operation:string,plan:Buffer,observations:OwnerObservation[],held=true){return this.transaction(()=>this.overallAuthorization(operation,plan,observations,held));}
   private overallAuthorization(operation:string,raw:Buffer,observations:OwnerObservation[],held=true,admit=false){

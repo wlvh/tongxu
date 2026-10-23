@@ -49,7 +49,30 @@ test('failure after both verified receipts leaves original publication recoverab
 test('a comment alone does not count; original explicit rejected retry completes the same batch',async t=>{
   const f=await fixture(t,'reject-status'),trace=await readFile(f.trace),partial=await publication(f.pubPath,'publish');
   assert.equal(partial.status,'publication_pending_or_unknown');assert.equal(partial.repairBatches,null);
-  assert.equal(f.q.reconcilePublishedRepairBatches().recorded,0);
+  assert.equal(f.q.reconcilePublishedRepairBatches(f.publicationOperation).recorded,0);
   const completed=await publication(f.pubPath,'retry-rejected','fixture:known rejected status continuation');assert.equal(completed.repairBatches!.recorded,1);
   assert.equal((await f.remote()).comments.length,1);assert.equal((await f.remote()).posts.length,3);assert.deepEqual(await readFile(f.trace),trace);
+});
+
+test('repair admission isolates other PRs and scopes but still rejects damaged originals in its own chain',async t=>{
+  for(const scenario of ['other-pr','other-scope','same-chain']){
+    const f=await publicationFixture(t,'normal','return');f.q.enableSupplements();f.q.reviewRecords().enable();
+    assert.equal((await publication(f.pubPath,'publish')).status,'published_verified');
+    const next=await f.packet({pr:scenario==='other-pr'?2:1,scopeId:scenario==='other-scope'?'other-scope':'scope'}),path=join(f.root,'next-reception.json');
+    await writeFile(path,JSON.stringify({...f.plan,item:next.item,executionKind:'native_capture'}));
+    const received=await runReception(path),state=f.q.receiverState(received.operation),e=f.q.receiverEvidence(received.operation),c=e.manifest.candidate,bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));
+    const args=[received.operation,bytes({operation:received.operation,packet:e.packet,judgmentId:state.receiver.judgmentId,bindingHash:state.receiver.bindingHash,context:e.context}),bytes({candidate:{...c,target:c.targetRef},authorization:{allowRepair:true,source:'fixture:bounded original permission'},executionRoot:join(f.root,'not-started-repair')}),bytes({executionKind:'native_capture'})] as const;
+    const old=f.q.publicationState(f.result.operation),trace=await readFile(f.trace),remote=await f.remote(),db=new DatabaseSync(join(f.store,'queue.sqlite'));
+    try {
+      const sha=old.prepared.documentSha256,original=db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha)!.bytes!;
+      db.prepare('DELETE FROM blobs WHERE hash=?').run(sha);
+      if(scenario==='same-chain'){
+        assert.throws(()=>f.q.reviewRecords().reserve(...args),/stored_evidence_hash_mismatch/);assert.equal(db.prepare('SELECT COUNT(*) n FROM claims').get()!.n,0);
+        db.prepare('INSERT INTO blobs VALUES(?,?)').run(sha,original);
+      }
+      assert.equal(f.q.reviewRecords().reserve(...args).repair.phase,'reserved');
+      assert.equal(db.prepare('SELECT COUNT(*) n FROM claims').get()!.n,1);
+      assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual((await f.remote()).posts,remote.posts);
+    }finally{db.close();}
+  }
 });

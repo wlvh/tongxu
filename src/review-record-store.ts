@@ -26,7 +26,8 @@ export class ReviewRecords {
     private source: (id: string, requireCurrent: boolean) => Row,
     private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void,
     private memberSource?:(operation:string,reference:unknown,current:boolean)=>Row,
-    private overallGate?:(operation:string,plan:Buffer,observations:OwnerObservation[])=>void) {}
+    private overallGate?:(operation:string,plan:Buffer,observations:OwnerObservation[])=>void,
+    private belongsToChain?:(operation:string,source:Row)=>boolean) {}
   private repairSource(id:string,plan:Row,current:boolean):Row{
     if(plan.memberReturn!==undefined){if(!this.memberSource)throw new Error('member_repair_source_consumer_required');return this.memberSource(id,plan.memberReturn,current);}
     const s=this.source(id,current);return {...s,kind:'individual-return',reception:s.receiver};
@@ -62,7 +63,8 @@ export class ReviewRecords {
   reserve(id: string, plan: Buffer, request: Buffer, config: Buffer,observations:OwnerObservation[]=[]) {
     // Commit recovered publication facts before admission: a refusal at the
     // reflection gate must not roll back the very evidence that closed it.
-    this.reconcilePublishedRepairs();
+    const selected=this.transaction(()=>this.repairSource(id,JSON.parse(plan.toString()),false));
+    this.reconcilePublishedRepairs(selected);
     return this.transaction(() => {
       this.requireMode(); const { op, result } = this.operation(id);
       if (result.repair) {
@@ -179,23 +181,27 @@ export class ReviewRecords {
     if(entry.ordinal-through>3&&!this.reflectionDue(chain))this.event('simplification_reflection_due',`reflection:${chain}`,{trigger:entry,afterOrdinal:through,source:'adopted #7 more than three actually published repair batches',kind:'existing_web_gpt_simplification',status:'awaiting_responsible_response_and_authorized_existing_entry',modelDispatched:false,newPermissionGranted:false});
     return {...entry,duplicate:false,reflectionDue:this.reflectionDue(chain)};
   }
-  reconcilePublishedRepairs() {
+  reconcilePublishedRepairs(selected?:Row) {
     return this.transaction(()=>{
       this.requireMode();
       const repairs=(this.db.prepare("SELECT id,result FROM operations WHERE json_extract(result,'$.repair.phase')='returned' ORDER BY rowid").all() as Row[]).map(({id,result})=>({id,repair:JSON.parse(result).repair}));
       const publications=this.db.prepare("SELECT object FROM events WHERE kind='publication_verified' AND json_extract(data,'$.stage')='status' GROUP BY object ORDER BY MIN(id)").all() as Row[];
-      const batches:Row[]=[];
+      const batches:Row[]=[];let checkedPublications=0;
+      const relevant=(id:string)=>!selected||(this.belongsToChain?this.belongsToChain(id,selected):chainKey(this.source(id,false))===chainKey(selected));
       for(const {object} of publications){
-        const operation=object.slice('publication:'.length),p=this.publication(operation);
+        const operation=object.slice('publication:'.length);
+        if(!relevant(operation))continue;
+        checkedPublications++;
+        const p=this.publication(operation);
         if(!p.document||p.stages.comment?.lastState!=='verified'||p.stages.status?.lastState!=='verified')continue;
         for(const {id,repair} of repairs){
-          if(repair.result?.after?.H!==p.document.candidate.H)continue;
+          if(repair.result?.after?.H!==p.document.candidate.H||!relevant(id))continue;
           const x=this.fixed(id);
           const source=this.repairSource(id,JSON.parse(x.plan.toString()),false),published=this.source(operation,false);
           if(this.publishedRepairMatches(x,p,source,published))batches.push(this.recordPublishedRepair(id,operation,x,p,source));
         }
       }
-      return {checkedPublications:publications.length,recorded:batches.filter(b=>!b.duplicate).length,batches,newModelInputs:0,newRemoteRequests:0};
+      return {checkedPublications,recorded:batches.filter(b=>!b.duplicate).length,batches,newModelInputs:0,newRemoteRequests:0};
     });
   }
   registerJudgment(id: string, classification: { taskClass: string; riskClass: string; coverageWindow: string; source: string }) {
