@@ -459,17 +459,62 @@ function timeline(events) {
   const list = el('div', null, 'timeline'); if (!events.length) return el('p', '尚无所选任务的协作记录。', 'empty');
   events.forEach(e => append(list, append(el('article', null, 'timeline-row'), el('time', date(e.observedAt)), el('span', null, 'timeline-line'), append(el('div'), el('strong', eventNames[e.kind] || '原操作事件'), el('p', e.title))))); return list;
 }
+const secretaryDrafts=new Map(),pendingSecretary=new Set(),pendingQueueActions=new Map();
+const questionPhases={registered_not_sent:'问题已保存，尚未确认送出',submitted_or_unknown:'已有原捕获，结果仍待核实',completed:'完整回答已核实',closed_unstarted:'已核未发送并关闭'};
+async function askSecretary(source,requestId,question){
+  if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
+  try{const r=await fetch('/api/secretary/'+encodeURIComponent(source)+'/ask',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,question}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'问题未登记');const draft=secretaryDrafts.get(source);if(draft&&draft.question===question)draft.id=v.requestId;await refresh();notice('已保存并核对原问题。是否已经发送、是否取得完整回答，以下方原记录为准。');}
+  catch(e){await refresh();notice('提问尚未完成：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+}
+async function closeSecretaryQuestion(source,id){
+  if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
+  try{const r=await fetch('/api/secretary/'+encodeURIComponent(source)+'/close-unstarted',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'原执行仍需核查');await refresh();notice('已核实原秘书没有启动执行并保留原问题。此操作不终止已经发送的任务。');}
+  catch(e){notice('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+}
+async function openSecretaryReport(source,q){
+  const nonce=++reportNonce;$('report-title').textContent='工作秘书 · 完整回答';$('report-meta').textContent='读取原捕获…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  try{const v=await api('/api/secretary-report/'+encodeURIComponent(source)+'/'+encodeURIComponent(q.requestId));if(nonce!==reportNonce||!$('report-dialog').open)return;if(v.phase!=='completed'||!v.result)throw new Error('secretary_original_unknown');$('report-meta').textContent=(v.executionKind==='fixture'?'明确测试夹具 · ':'')+'会话 '+v.sessionId+' · 原文摘要 '+v.reportSha256;$('report-body').textContent=v.result.report;$('report-raw').textContent=JSON.stringify({question:v.question,sessionId:v.sessionId,turnId:v.turnId,observations:v.result.observations,queueReceipts:v.result.queueReceipts,contactExecutions:v.result.contactExecutions},null,2);document.querySelector('#report-original summary').textContent='查看原问题、会话和工具回执';$('report-original').hidden=false;}
+  catch(e){if(nonce===reportNonce)$('report-body').textContent='原回答仍待核实：'+readableReason(e.message);}
+}
+async function runQueueAction(id){
+  const prior=pendingQueueActions.get(id);if(prior?.active)return;const request=prior||{id:crypto.randomUUID(),active:false};request.active=true;pendingQueueActions.set(id,request);render();
+  try{const r=await fetch('/api/queue-action/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:request.id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'队列动作未完成');pendingQueueActions.delete(id);await refresh();notice(v.record?.effect==='local_queue_preference_applied'?'原获准队列偏好已保存；这不表示任务已经执行。':'核查提醒已登记；这不表示接收者已经收到或完成模型任务。');}
+  catch(e){request.active=false;await refresh();notice('队列动作仍待核对：'+readableReason(e.message));}finally{render();}
+}
+function secretaryView(){
+  const n=append(el('div'),intro('工作秘书与跟进','围绕所选原任务提问，完整回答与实际回执一起保存。秘书的解释不代替本人采用或技术审核。'));
+  for(const s of state.secretaries||[]){
+    const section=append(el('section',null,'note-card'),el('h2',s.title),el('p',s.executionKind==='fixture'?'明确测试夹具，未使用真实模型。':'每个新问题使用受限秘书上下文，沿用已配置的订阅与工具边界。','small'));
+    if(!s.available){section.append(el('p',readableReason(s.reason),'small'));n.append(section);continue;}
+    const draft=secretaryDrafts.get(s.source)||{id:crypto.randomUUID(),question:''};secretaryDrafts.set(s.source,draft);
+    const form=el('form',null,'outcome-form'),label=el('label','向此任务的秘书提问'),input=el('textarea');input.rows=3;input.maxLength=8192;input.id='secretary-question-'+s.source;input.value=draft.question;label.htmlFor=input.id;input.oninput=()=>{if(input.value!==draft.question){draft.question=input.value;draft.id=crypto.randomUUID();}};
+    const submit=el('button','提交问题','outline');submit.type='submit';submit.disabled=pendingSecretary.has(s.source)||(s.questions||[]).some(q=>q.active);form.onsubmit=e=>{e.preventDefault();if(draft.question.trim())askSecretary(s.source,draft.id,draft.question);};append(form,label,input,submit);section.append(form);
+    for(const q of s.questions||[]){const row=el('div',null,'report-row'),body=append(el('div'),el('strong',q.question,'wrap'),el('p',date(q.createdAt)+' · '+(questionPhases[q.phase]||'原问题待核')+(q.active?' · 当前入口正在处理':''),'small'));if(q.reason)body.append(el('p',readableReason(q.reason),'small'));if(q.controllerRecordProblem)body.append(el('p','入口诊断保存失败：'+readableReason(q.controllerRecordProblem),'small'));const buttons=el('div',null,'actions');
+      if(q.phase==='completed'){const full=el('button','查看完整回答','outline');full.onclick=()=>openSecretaryReport(s.source,q);buttons.append(full);}
+      else if(q.phase!=='closed_unstarted'){const resume=el('button',q.phase==='registered_not_sent'?'继续原问题':'核对原捕获','outline');resume.disabled=q.active||pendingSecretary.has(s.source);resume.onclick=()=>askSecretary(s.source,q.requestId,q.question);buttons.append(resume);if(q.phase==='registered_not_sent'){const close=el('button','关闭已核未发送的问题','quiet');close.disabled=resume.disabled;close.onclick=()=>closeSecretaryQuestion(s.source,q.requestId);buttons.append(close);}}
+      append(row,body,buttons);section.append(row);
+    }n.append(section);
+  }
+  if(state.queueActions?.length){const section=append(el('section',null,'note-card'),el('h2','直接跟进原任务'),el('p','与秘书使用同一动作和原回执。提醒只请求核查，队列偏好仅改变已获准的安排。','small'));
+    for(const a of state.queueActions){const row=el('div',null,'report-row'),body=append(el('div'),el('strong',a.title),el('p',a.available?(a.executionKind==='fixture'?'明确测试夹具 · ':'')+((a.receipts||[]).length?'已有 '+a.receipts.length+' 条原回执':'尚未登记此动作'):readableReason(a.reason),'small')),button=el('button',a.kind==='hint'?'登记核查提醒':'应用获准偏好','outline');button.disabled=!a.available||pendingQueueActions.get(a.id)?.active;button.onclick=()=>runQueueAction(a.id);append(row,body,button);section.append(row);for(const receipt of (a.receipts||[]).slice(0,3))section.append(el('p',date(receipt.recordedAt)+' · '+(receipt.effect==='local_queue_preference_applied'?'原队列偏好已生效':'提醒已登记，未据此派发任务')+' · 回执 '+receipt.eventId,'small'));}n.append(section);
+  }
+  for(const p of state.sourcePolling||[])n.append(append(el('section',null,'note-card'),el('h2','来源补查'),el('p','PR '+p.prs.join('、')+' · '+(p.executionKind==='fixture'?'明确测试来源 · ':'')+(p.active?'正在检查来源':p.limitReached?'本次检查次数已到上限':'按原配置等待下一次检查')),el('p','最近检查 '+date(p.lastStartedAt)+' · 已完成 '+p.checksFinished+' 次入口检查。实际来源状态以原任务记录为准。','small'),p.lastError?el('p',readableReason(p.lastError),'small'):null,el('p','只检查来源，不启动模型。关闭本机入口后停止新检查，原结果保留。','small')));
+  return n;
+}
+
 function render() {
   if (!state) return;
   $('runtime-version').hidden=!state.runtime;if(state.runtime)$('runtime-version').textContent='本次运行版本 '+state.runtime.sourceHead.slice(0,12)+' · 配置 '+state.runtime.planSha256.slice(0,12)+' · 已匹配固定源码、构建与配置记录';
-  const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length||state.deliveryPreparation?.length?'成果准备与决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null].filter(Boolean);
+  const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length||state.deliveryPreparation?.length?'成果准备与决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null,state.secretaries?.length?'秘书提问':null,state.queueActions?.length?'获准跟进':null,state.sourcePolling?.length?'来源补查':null].filter(Boolean);
   $('access-mode').textContent=state.mode==='read_only'?'只读':'受控入口';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':'已配置：'+abilities.join('、')+'。实际动作按原范围、权限与资源执行；页面钥匙不代替本人签署。';
+  document.querySelector('[data-view="secretary"]').hidden=!state.secretaries?.length&&!state.queueActions?.length&&!state.sourcePolling?.length;
+  $('observation-boundary').textContent=state.sourcePolling?.length?'来源是本机原记录；已配置的前台补查按自己的周期核对来源。刷新页面不启动模型，各队列分别观测。':'来源是本机保存的运行记录。刷新只读取已有结果，不启动模型。各队列分别观测。';
   document.querySelector('[data-view="deliveries"]').hidden=!state.deliveries?.length&&!state.deliveryPreparation?.length;
   document.querySelector('[data-view="organization"]').hidden=!state.organization?.length;
   document.querySelector('[data-view="retrospective"]').hidden=!state.tasks.some(t=>t.available)&&!state.overallReviews?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
+  $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():view==='secretary'?secretaryView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
@@ -479,7 +524,7 @@ async function refresh() {
     state = await api('/api/state'); const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = '本机读取 · ' + date(at);
     notice(state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
   } catch (e) { notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
-  finally { $('refresh').disabled = false;if((state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive)))controlRefresh=setTimeout(refresh,2000); }
+  finally { $('refresh').disabled = false;if((state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive)))controlRefresh=setTimeout(refresh,2000); }
 }
 async function openReport(t, o) {
   const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; $('report-dialog').showModal();

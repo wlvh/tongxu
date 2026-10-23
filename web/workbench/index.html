@@ -21,6 +21,7 @@
       <button data-view="events"><span aria-hidden="true">↳</span>协作记录</button>
       <button data-view="organization" hidden><span aria-hidden="true">⇄</span>组织方式</button>
       <button data-view="retrospective" hidden><span aria-hidden="true">◷</span>判断与复盘</button>
+      <button data-view="secretary" hidden><span aria-hidden="true">◌</span>工作秘书与跟进</button>
     </nav>
     <div class="side-note"><span class="dot"></span>连接本地原队列<p>刷新只读取已有记录。<br>原报告和失败历史保留。</p></div>
     <div class="side-bottom"><span id="access-mode" class="pill neutral">只读</span><p id="access-description">当前页面提供查看与核对；<br>没有批准、合并或派发入口。</p></div>
@@ -29,7 +30,7 @@
     <header class="topbar"><div><span class="eyebrow">工作现场</span><span id="observed">尚未读取</span></div><div class="actions"><button id="theme" class="quiet" aria-label="切换明暗主题">明暗</button><button id="refresh" class="refresh">刷新记录 <span aria-hidden="true">↻</span></button></div></header>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <main id="content" tabindex="-1" aria-live="polite"><div class="loading">正在读取本机记录…</div></main>
-    <footer><p id="runtime-version" hidden></p>来源是本机保存的运行记录。本次查看不会重新核对 GitHub，也不会启动模型。各队列分别观测。</footer>
+    <footer><p id="runtime-version" hidden></p><span id="observation-boundary">来源是本机保存的运行记录。本次查看不会重新核对 GitHub，也不会启动模型。各队列分别观测。</span></footer>
   </div>
   <dialog id="report-dialog" aria-labelledby="report-title"><div class="dialog-head"><div><span class="eyebrow">原始报告</span><h2 id="report-title">完整报告</h2></div><button id="close-report" class="quiet" aria-label="关闭完整报告">关闭 ×</button></div><p id="report-meta" class="report-meta"></p><pre id="report-body" tabindex="0" role="region" aria-label="完整报告正文"></pre><details id="report-original" hidden><summary>查看完整传输原文（含消息引用）</summary><pre id="report-raw" tabindex="0" role="region" aria-label="完整传输原文"></pre></details></dialog>
 </body>

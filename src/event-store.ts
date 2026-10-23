@@ -49,6 +49,16 @@ export class EventRecords {
     this.event('configured','event-profile',{profileSha256:sha,executionKind:p.executionKind,automaticModelDispatch:false});return {duplicate:false,profileSha256:sha,modelTasksStarted:0};
   });}
   configuration(){return this.transaction(()=>this.profile());}
+  controlReceipt(kind:'hint'|'preference',id:string){return this.transaction(()=>{
+    this.profile();if(!/^qe-[a-f0-9]{64}-[a-f0-9]{32}$/.test(id))throw new Error('event_control_receipt_id_invalid');
+    const object=(kind==='hint'?'event-hint:':'queue-preference:')+id,event=this.events(object,kind==='hint'?'hint':'preference_applied')[0] as Row|undefined;
+    if(!event)return null;this.bytes(event.data.sha256);return {...event.data,eventId:event.id,recordedAt:event.observed_at,modelTasksStarted:0};
+  });}
+  controlReceipts(kind:'hint'|'preference',prefix:string){return this.transaction(()=>{
+    this.profile();if(!/^qe-[a-f0-9]{64}-$/.test(prefix))throw new Error('event_control_receipt_prefix_invalid');
+    const head=(kind==='hint'?'event-hint:':'queue-preference:')+prefix,rows=this.db.prepare('SELECT id,data,observed_at FROM events WHERE kind=? AND substr(object,1,?)=? ORDER BY id DESC LIMIT 32').all('source_'+(kind==='hint'?'hint':'preference_applied'),head.length,head) as Row[];
+    return rows.map(e=>{const data=JSON.parse(e.data);this.bytes(data.sha256);return {...data,eventId:e.id,recordedAt:e.observed_at,modelTasksStarted:0};});
+  });}
   applyPreference(intentId:string,raw:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
     const p=this.profile(),preference=parseQueuePreference(raw),sha256=hash(canonical(preference)),object='queue-preference:'+intentId,old=this.events(object,'preference_applied')[0];
     if(old){if(old.data.sha256!==sha256)throw new Error('original_preference_intent_changed');this.bytes(old.data.sha256);return {...old.data,duplicate:true};}

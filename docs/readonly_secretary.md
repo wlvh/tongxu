@@ -16,6 +16,16 @@ SQ06 验收一次真实 Codex 秘书询问原任务的接收、发布和剩余�
 
 入口：`secretary-cli run --plan ABS_PLAN --output ABS_NEW_PRIVATE_RUN`，再次使用同一计划和同一输出目录只读取已完成原运行。这个入口没有协调派发或控制能力；后续 W6 的双任务协作须另按实际接口细化，不能由本次问答推出。
 
+## 当前正常入口连接（2026-10-23）
+
+上文是原只读子范围。后续已增加固定任务联系、成果及本人控制/复盘的同源查询；[本次原 #9 接续](https://github.com/wlvh/tongxu/issues/9#issuecomment-6355882627)进一步连接工作台提问、获准催办/队列偏好和有界定期补查。仍复用原秘书、原 TaskInbox、EventRecords、来源核实与权限记录。
+
+页面只接收有限问题、已选任务和请求 ID。执行器、完整提示、工具目录、输出根与订阅边界由可信配置固定。先保存原请求，再运行原秘书；登记、实际输入、完整返回、等待/未知分别显示。刷新不发模型，重复 ID 不换输入，已发未知先核原捕获；秘书离线时原直接控制仍可用。
+
+催办工具只选择固定提示内容，返回原 hint 回执，不将它称为已派发或已完成。队列偏好只选择固定 payload，按原秘书角色的 coordinate 授权重新核来源，再沿原 reserveAction/applyPreference 保存；逐次确认与有限委托按各自原规则消费，不复制或扩大批准。直接按钮使用同一后端和回执。所有模型输出均为数据，不能产生新参数、权限或命令。
+
+定期检查连接原 sourceTick 和固定 profile，沿原间隔、范围及跨进程锁运行。它只补查来源/原材料，空变化和重复检查不调用模型或合并。前台入口关闭后不再发新检查，已开始的原检查按原执行结束/未知记录保留；不安装常驻服务。验收包含漏一次通知后的实际到期补回、重复/重开、无权偏好和原素材变化，以及同一页面的原秘书完整回答。真实工具面变化另做一次有界原生核实，测试样例和真实结果分开。
+
 计划固定 `schemaVersion=1`、`kind=tongxu-readonly-secretary`，其余字段见 `SecretaryPlan`：store/item/candidate 来自原队列；codexExecutable/codexSha256 来自现有官方程序；prompts 恰为公共运行边界和秘书文件的 path/sha256；question 是一次进展问题；scopeSource/arrangementSource 保留已有采用来源。disabledMcpServers 与 allowedInstructionSources 取实际原生配置与允许的固定文件，不能用默认空数组忽略现有权限。
 
 本角色只使用 Codex，费用依据也须对应 Codex。billing 保留 mode/evidence/evidenceSha256/observedAt，并固定 `ordinaryUsageRequired=true`。现有账号可以已有 credits；本字段不声称账号余额为零或额外额度已经关闭。新原生连接核 ChatGPT 认证，每次发送前核 `ordinaryUsageAllowed=true`，拒绝 API 覆盖，固定普通 service tier；不可用即停，不启用额度或切换新计费路径。证据超过24小时要求刷新相关只读预检，不重查全部认证路线。
