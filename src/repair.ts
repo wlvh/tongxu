@@ -8,6 +8,7 @@ import { assemblePromptSet,inspectPromptSet } from './role-prompts.js';
 import { runClaude,readClaudeExecution } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
+import { parseCodexResult } from './codex-results.js';
 import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, checkRepairIndex, type Grant, type Tree } from './repair-workspace.js';
 import type { Candidate } from './live-codex.js';
 import { validateProjectContract, projectTestPlan, projectMaterial, projectModelTestResult, bindProjectTestToCandidate, needsProjectReviewBindingSupplement, testProject, reconcileProjectTests, type ProjectContract } from './project-repair.js';
@@ -95,27 +96,44 @@ export async function readRepairReports(root:string,requestSha256:string,result:
   if(saved.fixedSha256!==hash(JSON.stringify({planSha256:hash(planBytes),inputs}))||!isDeepStrictEqual(plan.candidate,result.before)||!isDeepStrictEqual(plan.project?.sourceCandidate,request.candidate)||!isDeepStrictEqual(plan.project?.queueOperation,request.queueOperation))throw new Error('repair_report_operation_mismatch');
   const codex=result.codexStages,claude=result.claudeStages;
   if(!Array.isArray(codex)||!Array.isArray(claude)||codex.length+claude.length>24||new Set([...codex,...claude]).size!==codex.length+claude.length||codex.some(s=>typeof s!=='string'||!/^attempt-[1-3]\/(?:fact-and-repair|review-(?:[1-3]|recovered))$/.test(s))||claude.some(s=>typeof s!=='string'||!/^attempt-[1-3]\/impact-[1-3]$/.test(s)))throw new Error('repair_report_stage_invalid');
-  const reports=[];
-  for(const stage of [...codex,...claude] as string[]){
+  const context=result.status==='completed_recovered_candidate'?result.data?.sourceContext:null;
+  if(result.status==='completed_recovered_candidate'&&!context)throw new Error('repair_report_recovery_context_missing');
+  if(context&&(!/^attempt-[1-3]\/fact-and-repair$/.test(context.factStage)||!/^attempt-[1-3]\/impact-[1-3]$/.test(context.impactStage)||context.grantId!==inputs.grant.id||!Number.isSafeInteger(context.rawPrefixBytes)||context.rawPrefixBytes<1||!sha.test(context.rawPrefixSha256)||!['completed','unknown_or_interrupted'].includes(result.data.writerTerminal)))throw new Error('repair_report_recovery_context_invalid');
+  const stages=[...new Set([...(context?[context.factStage,context.impactStage]:[]),...codex,...claude])] as string[],reports=[];
+  for(const stage of stages){
     const names=files.map(([n])=>n).filter(n=>n.startsWith(stage+'/')),directory=join(operation,stage);if(!names.length)throw new Error('repair_report_stage_missing');
     for(const name of names)await checked(name);
-    if(codex.includes(stage)){
-      const parsed=await readRepairSession(directory),b=parsed.binding,role=stage.endsWith('/fact-and-repair')?'verifier_fact':'reviewer',sent=JSON.parse((await checked(stage+'/inputs.json')).toString());
-      if(b.run!==operation||b.inputManifestSha256!==saved.fixedSha256||b.sourceKind!==result.executionKind||b.role!==role||b.candidate.B!==result.before.B||!Array.isArray(sent)||sent.length!==parsed.turns.length)throw new Error('repair_report_session_mismatch');
+    const historical=!!context&&(stage===context.factStage||stage===context.impactStage),prefixOnly=historical&&stage===context.factStage&&result.data.writerTerminal!=='completed';
+    if(codex.includes(stage)||stage===context?.factStage){
+      let parsed;
+      if(prefixOnly){
+        // Display only the already completed turns bound by the sealed recovery
+        // context. This is not a completion receipt for the interrupted writer.
+        const raw=await checked(stage+'/stdout.ndjson'),b=JSON.parse((await checked(stage+'/binding.json')).toString()),pairs=JSON.parse((await checked(stage+'/reconciled-tools.json')).toString());
+        if(context.rawPrefixBytes>raw.length||hash(raw.subarray(0,context.rawPrefixBytes))!==context.rawPrefixSha256)throw new Error('repair_report_recovery_prefix_changed');
+        const prefix=raw.subarray(0,context.rawPrefixBytes),messages=new TextDecoder('utf8',{fatal:true}).decode(prefix).trim().split('\n').map(line=>JSON.parse(line)),ids=[...new Set(messages.filter(m=>m.method==='turn/started'&&m.params?.threadId===b.threadId).map(m=>m.params.turn?.id))];
+        if(!ids.length||!isDeepStrictEqual(ids,b.turnIds.slice(0,ids.length)))throw new Error('repair_report_recovery_turns_changed');
+        parsed=parseCodexResult(prefix,{...b,turnIds:ids},pairs);
+        if(parsed.status!=='final_observed'||!isDeepStrictEqual(JSON.parse(parsed.turns.at(-1)!.final!.text),context.decision))throw new Error('repair_report_recovery_prefix_not_final');
+      }else parsed=await readRepairSession(directory);
+      const b=parsed.binding,role=stage.endsWith('/fact-and-repair')?'verifier_fact':'reviewer',sent=JSON.parse((await checked(stage+'/inputs.json')).toString());
+      if(b.run!==operation||b.inputManifestSha256!==saved.fixedSha256||b.sourceKind!==result.executionKind||b.role!==role||b.candidate.B!==result.before.B||!Array.isArray(sent)||(prefixOnly?sent.length<parsed.turns.length:sent.length!==parsed.turns.length))throw new Error('repair_report_session_mismatch');
+      if(prefixOnly&&!isDeepStrictEqual(context.candidate,sent[parsed.turns.length-1]?.subjectCandidate))throw new Error('repair_report_recovery_candidate_changed');
       for(const [index,turn] of parsed.turns.entries()){
         if(!turn.final||JSON.parse(turn.final.text).candidateH!==sent[index]?.subjectCandidate?.H)throw new Error('repair_report_turn_candidate_mismatch');
-        reports.push({stage,role,sessionId:b.sessionId,turnId:turn.id,turn:index+1,candidate:sent[index].subjectCandidate,protocol:b.protocol,finalText:turn.final.text});
+        if(prefixOnly){const receipt=JSON.parse((await checked(stage+'/turn-'+(index+1)+'-final.json')).toString());if(receipt.turnId!==turn.id||!isDeepStrictEqual(receipt.final,turn.final)||!isDeepStrictEqual(receipt.subjectCandidate,sent[index].subjectCandidate))throw new Error('repair_report_recovery_receipt_changed');}
+        reports.push({stage,role,sessionId:b.sessionId,turnId:turn.id,turn:index+1,candidate:sent[index].subjectCandidate,protocol:b.protocol,finalText:turn.final.text,...(historical?{historicalBeforeRecovery:true,wholeStageCompleted:!prefixOnly}:{})});
       }
     }else{
       const parsed=await readClaudeExecution(directory),receipt=JSON.parse((await checked(stage+'/completed.json')).toString());
       if(['sessionId','rawSha256','inputSha256','systemPromptSha256','finalText'].some(k=>(parsed as any)[k]!==receipt[k]))throw new Error('repair_report_impact_mismatch');
-      reports.push({stage,role:'verifier_impact',sessionId:parsed.sessionId,turnId:null,turn:1,protocol:parsed.protocol,finalText:parsed.finalText});
+      reports.push({stage,role:'verifier_impact',sessionId:parsed.sessionId,turnId:null,turn:1,protocol:parsed.protocol,finalText:parsed.finalText,...(historical?{historicalBeforeRecovery:true,wholeStageCompleted:true}:{})});
     }
     // Parsers consume their original files. Verify the sealed bytes again so
     // a concurrent change cannot silently replace the first checked capture.
     for(const name of names)await checked(name);
   }
-  return {kind:'original-completed-repair-reports',executionKind:result.executionKind,terminalRecordSha256:terminalSha256,reports,modelCallsStartedByThisRead:0,source:'original queue result and sealed execution captures; no current workspace or billing refresh'};
+  return {kind:'original-completed-repair-reports',executionKind:result.executionKind,terminalRecordSha256:terminalSha256,reports,...(context?{recoveryHistory:{factStage:context.factStage,impactStage:context.impactStage,writerTerminal:result.data.writerTerminal,originalWriterResent:false}}:{}),modelCallsStartedByThisRead:0,source:'original queue result and sealed execution captures; no current workspace or billing refresh'};
 }
 
 async function checkFinished(operation: string, workspace: string, result: any, project = false) {
