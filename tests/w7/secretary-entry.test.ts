@@ -12,6 +12,24 @@ import {secretaryEntryFixture as fixture} from './secretary-entry-fixture.js';
 
 async function waitFor(f:Awaited<ReturnType<typeof fixture>>,condition:(s:any)=>boolean){const until=Date.now()+12000;let state;while(Date.now()<until){state=await f.get();if(condition(state))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('fixture_workbench_question_timeout:'+JSON.stringify(state));}
 
+test('a CLI update after installation uses the same normal entry without editing its template; old answers survive another update',async t=>{
+  const f=await fixture(t),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
+  const templateBefore=await readFile(f.secretaryPlan),catalogBefore=await readFile(f.catalogPath);
+  const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','99.7.0'));
+  assert.notEqual(hash(await readFile(f.p.codexExecutable)),f.p.codexSha256);
+  assert.equal((await f.post('ask',{requestId,question})).status,202);
+  await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId===requestId&&q.phase==='completed'));
+  const directory=join(f.root,hash(requestId)),selected=JSON.parse(await readFile(join(directory,'input-plan.json'),'utf8'));
+  assert.equal(selected.runtimeSelection.configuredSha256,f.p.codexSha256);assert.equal(selected.runtimeSelection.observedVersion,'codex-cli 99.7.0');
+  assert.equal(selected.codexSha256,hash(await readFile(f.p.codexExecutable)));
+  const resultBefore=await readFile(join(directory,'execution/result.json')),traceBefore=await readFile(f.trace);
+  await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','100.0.0'));
+  assert.equal((await f.post('ask',{requestId,question})).status,202);
+  const again=await f.get();assert.equal(again.secretaries[0].questions[0].phase,'completed');
+  assert.deepEqual(await readFile(f.trace),traceBefore);assert.deepEqual(await readFile(join(directory,'execution/result.json')),resultBefore);
+  assert.deepEqual(await readFile(f.secretaryPlan),templateBefore);assert.deepEqual(await readFile(f.catalogPath),catalogBefore);
+});
+
 test('normal page entry saves exact question, returns original complete answer and reopens without another model',async t=>{
   const f=await fixture(t),before=f.q.status(),question='请说明原任务目前的接收结果、尚未核实的事项和下一步。';
   assert.equal((await f.get()).secretaries[0].questions.length,0);assert.equal((await f.logs()).length,0);

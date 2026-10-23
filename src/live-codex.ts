@@ -2,7 +2,8 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { hash } from './snapshot.js';
-import { parseCodexResult, type ResultBinding } from './codex-results.js';
+import { parseCodexResult, currentCodexProtocol, type ResultBinding } from './codex-results.js';
+import {codexConversation,cliVersion} from './cli-capabilities.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 
 export type Candidate = ResultBinding['candidate'];
@@ -27,7 +28,7 @@ function checkFeatureBoundary(config: any, features: string[], controlledToolHos
 
 export async function runCodex(o: CodexTask) {
   await newStage(o.directory);
-  const identity = await executable(o.executable, 'codex-cli 0.163.0-alpha.10.2'); save(join(o.directory, 'executable.json'), identity);
+  const identity = await executable(o.executable, codexConversation,o.sourceKind??'native_capture'); save(join(o.directory, 'executable.json'), identity);
   for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
   const cwd = join(o.directory, 'workspace'); await mkdir(cwd, { mode: 0o700 });
   const args: string[] = [];
@@ -61,8 +62,8 @@ export async function runCodex(o: CodexTask) {
       if (!source || hash(await readFile(path)) !== source.sha256) throw new Error('unexpected_instruction_source');
     }
     const t = thread.thread;
-    if (!t?.id || !t.sessionId || t.cwd !== cwd || t.cliVersion !== '0.163.0-alpha.10.2' || t.forkedFromId != null || t.parentThreadId != null) throw new Error('native_root_identity_mismatch');
-    binding = { schemaVersion: 1, protocol: 'codex-app-server/0.163.0-alpha.10.2', sourceKind: o.sourceKind ?? 'native_capture', role: o.role, run: o.run, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.arrangementSource, inputManifestSha256: o.inputManifestSha256, promptSha256: hash(JSON.stringify({ system: o.system, inputs: o.inputs })), candidate: o.candidate };
+    if (!t?.id || !t.sessionId || t.cwd !== cwd || t.cliVersion !== cliVersion(identity.version,'codex') || t.forkedFromId != null || t.parentThreadId != null) throw new Error('native_root_identity_mismatch');
+    binding = { schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.sourceKind ?? 'native_capture', role: o.role, run: o.run, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.arrangementSource, inputManifestSha256: o.inputManifestSha256, promptSha256: hash(JSON.stringify({ system: o.system, inputs: o.inputs })), candidate: o.candidate };
     save(join(o.directory, 'binding.json'), binding);
     for (let index = 0; index < o.inputs.length; index++) {
       const allowed = await rpc.request('account/rateLimits/read', {});
@@ -125,7 +126,7 @@ export async function readCodexExecution(directory: string) {
     // exact request stream above proves empty environments and no tool access.
     // Keep the original policy checks; never rewrite or fill in old records.
     const identity = await read('executable.json'), launch = await read('launch.json');
-    if (binding.protocol !== 'codex-app-server/0.163.0-alpha.10.2' || identity.version !== 'codex-cli 0.163.0-alpha.10.2' || !Array.isArray(launch.args) || launch.args.some((x: unknown) => typeof x !== 'string' || x.includes('stable_environment_tools'))) throw new Error('unsupported_historical_feature_boundary');
+    if (binding.protocol !== 'codex-app-server/0.163.0-alpha.10.2' || identity.version !== 'codex-cli 0.163.0-alpha.10.2' || identity.selection!==undefined || !Array.isArray(launch.args) || launch.args.some((x: unknown) => typeof x !== 'string' || x.includes('stable_environment_tools'))) throw new Error('unsupported_historical_feature_boundary');
     checkFeatureBoundary(config, readonlyCaptureV1Features, false);
   } else checkConfig(config);
   return parsed;

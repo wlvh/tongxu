@@ -6,14 +6,15 @@ import { execFile } from 'node:child_process';
 import {parseNativeControlRequest,type NativeControlRequest,type NativeControlReceipt,type NativeControlPolicy} from './native-control-contract.js';
 import {canonical} from './comparison.js';
 import { hash } from './snapshot.js';
-import { parseCodexResult, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
+import { parseCodexResult, currentCodexProtocol, resultCliVersion, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
 import { repairToolSpecs, projectRepairToolSpecs, exists,regular } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
+import {codexConversation,cliVersion} from './cli-capabilities.js';
 const exec = promisify(execFile);
-const sameOwnedThread=(t:any,b:ResultBinding)=>Boolean(t&&t.id===b.threadId&&t.sessionId===b.sessionId&&t.cwd===b.workspace&&t.cliVersion==='0.163.0-alpha.10.2'&&t.ephemeral===false&&t.parentThreadId==null&&t.forkedFromId==null);
+const sameOwnedThread=(t:any,b:ResultBinding)=>Boolean(t&&t.id===b.threadId&&t.sessionId===b.sessionId&&t.cwd===b.workspace&&t.cliVersion===resultCliVersion(b)&&t.ephemeral===false&&t.parentThreadId==null&&t.forkedFromId==null);
 
 export type NativeOptions = {
   executable: string; directory: string; operation: string; candidate: Candidate;
@@ -151,8 +152,8 @@ export class BoundedCodexSession {
     await newStage(o.directory);
     if(this.previous)save(join(o.directory,'resume-source.json'),{directory:o.resumeFrom,sourceSha256:this.previous.sourceSha256});
     for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
-    const identity = await executable(o.executable, 'codex-cli 0.163.0-alpha.10.2'); save(join(o.directory, 'executable.json'), identity);
-    if(this.previous&&canonical(identity)!==canonical(this.previous.identity))throw new Error('native_resume_executable_changed');
+    const identity = await executable(o.executable, {...codexConversation,methods:[...codexConversation.methods!,...(o.persistent?['thread/read','thread/resume','turn/steer','turn/interrupt']:[])]},o.executionKind); save(join(o.directory, 'executable.json'), identity);
+    if(this.previous&&identity.path!==this.previous.identity.path)throw new Error('native_resume_executable_changed');
     if (o.gate && o.executionKind === 'native_capture') {
       // This supported Mac CLI resolves its host from the same installed package.
       // Reuse that bundled program; never install one or fall back to PATH.
@@ -209,7 +210,7 @@ export class BoundedCodexSession {
       if (thread.cwd !== cwd || thread.approvalPolicy !== 'never' || thread.sandbox?.type !== 'readOnly' || thread.sandbox.networkAccess !== false || thread.modelProvider !== 'openai') throw new Error('native_role_boundary_not_applied');
       for (const path of thread.instructionSources ?? []) { const source = o.allowedInstructionSources.find(x => x.path === path); if (!source || hash(await readFile(path)) !== source.sha256) throw new Error('unexpected_instruction_source'); }
       const t = thread.thread;
-      if (!t?.id || !t.sessionId || t.cwd !== cwd || t.cliVersion !== '0.163.0-alpha.10.2' || t.parentThreadId != null || t.forkedFromId != null || o.persistent&&t.ephemeral!==false) throw new Error('native_root_identity_mismatch');
+      if (!t?.id || !t.sessionId || t.cwd !== cwd || t.cliVersion !== (this.previous?resultCliVersion(this.previous.binding):cliVersion(identity.version,'codex')) || t.parentThreadId != null || t.forkedFromId != null || o.persistent&&t.ephemeral!==false) throw new Error('native_root_identity_mismatch');
       if(this.previous){
         const b=this.previous.binding;if(t.id!==b.threadId||t.sessionId!==b.sessionId||canonical(thread.instructionSources)!==canonical(this.previous.thread.instructionSources))throw new Error('native_resume_identity_changed');
         // The real resume protocol does not repeat thread/started. Retain the
@@ -217,7 +218,7 @@ export class BoundedCodexSession {
         const current=await this.request('thread/read',{threadId:b.threadId,includeTurns:true});save(join(o.directory,'resume-history.json'),current);
         if(!sameOwnedThread(current.thread,b)||current.thread.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
       }
-      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, protocol: 'codex-app-server/0.163.0-alpha.10.2', sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
+      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
       save(join(o.directory, 'binding.json'), this.binding); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
     } catch (e) { await this.close(); throw e; }
   }
@@ -316,18 +317,18 @@ export async function readOwnedCodexSession(directory:string,ancestors:string[]=
   originals['stdout.ndjson']=await regular(join(directory,'stdout.ndjson'),16*1024*1024);originals['stdin.ndjson']=await regular(join(directory,'stdin.ndjson'),16*1024*1024);
   const lines=(b:Buffer)=>{if(!b.length||b.at(-1)!==10)throw new Error('native_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(b).trim().split('\n').map(x=>JSON.parse(x));};
   const sent=lines(originals['stdin.ndjson']),received=lines(originals['stdout.ndjson']);
-  if(exit.code!==0||exit.signal!==null||!Number.isSafeInteger(processRecord.pid)||processRecord.pid<=0||identity.version!=='codex-cli 0.163.0-alpha.10.2'||launch.command!==identity.path||launch.cwd!==binding.workspace||!directory.startsWith(binding.run+'/')||pairs.length||canonical(sent)!==canonical(contract))throw new Error('native_original_capture_mismatch');
+  if(exit.code!==0||exit.signal!==null||!Number.isSafeInteger(processRecord.pid)||processRecord.pid<=0||!cliVersion(identity.version,'codex')||launch.command!==identity.path||launch.cwd!==binding.workspace||!directory.startsWith(binding.run+'/')||pairs.length||canonical(sent)!==canonical(contract))throw new Error('native_original_capture_mismatch');
   const requests=sent.filter(m=>typeof m.method==='string'&&Object.hasOwn(m,'id'));
   if(new Set(requests.map(m=>m.id)).size!==requests.length||sent.some(m=>!['initialize','initialized','account/read','account/rateLimits/read','config/read','thread/start','thread/resume','thread/read','turn/start','turn/steer','turn/interrupt'].includes(m.method)))throw new Error('native_original_unregistered_input');
   const reply=(request:any)=>{const list=received.filter(m=>m.id===request?.id&&!m.method);if(list.length!==1||!Object.hasOwn(list[0],'result')||Object.hasOwn(list[0],'error'))throw new Error('native_original_request_unknown');return list[0].result;};
   requests.forEach(reply);if(received.some(m=>Object.hasOwn(m,'id')&&(m.method||!requests.some(r=>r.id===m.id))))throw new Error('native_original_unexpected_response');
   const account=requests.find(m=>m.method==='account/read'),configuration=requests.find(m=>m.method==='config/read');if(reply(account)?.account?.type!=='chatgpt'||canonical(reply(configuration))!==canonical(config))throw new Error('native_original_config_changed');
   const lifecycle=requests.filter(m=>m.method==='thread/start'||m.method==='thread/resume');if(lifecycle.length!==1||canonical(reply(lifecycle[0]))!==canonical(thread))throw new Error('native_original_thread_changed');
-  const t=thread.thread;if(!t||t.id!==binding.threadId||t.sessionId!==binding.sessionId||t.cwd!==binding.workspace||t.cliVersion!=='0.163.0-alpha.10.2'||t.ephemeral!==false||t.parentThreadId!=null||t.forkedFromId!=null||thread.cwd!==binding.workspace||thread.approvalPolicy!=='never'||thread.sandbox?.type!=='readOnly'||thread.sandbox.networkAccess!==false||thread.modelProvider!=='openai'||!Array.isArray(thread.instructionSources))throw new Error('native_original_persistent_boundary_required');
+  const t=thread.thread;if(!t||t.id!==binding.threadId||t.sessionId!==binding.sessionId||t.cwd!==binding.workspace||t.cliVersion!==resultCliVersion(binding)||t.ephemeral!==false||t.parentThreadId!=null||t.forkedFromId!=null||thread.cwd!==binding.workspace||thread.approvalPolicy!=='never'||thread.sandbox?.type!=='readOnly'||thread.sandbox.networkAccess!==false||thread.modelProvider!=='openai'||!Array.isArray(thread.instructionSources))throw new Error('native_original_persistent_boundary_required');
   let prior:OwnedCodexCapture|undefined,start=lifecycle[0];
   if(start.method==='thread/resume'){
     const source=await read('resume-source.json');prior=await readOwnedCodexSession(source.directory,[...ancestors,directory]);
-    if(prior.sourceSha256!==source.sourceSha256||canonical({...binding,turnIds:prior.binding.turnIds,promptSha256:prior.binding.promptSha256})!==canonical(prior.binding)||canonical(inputs.slice(0,prior.inputs.length))!==canonical(prior.inputs)||canonical(identity)!==canonical(prior.identity)||canonical(start.params)!==canonical({threadId:binding.threadId,cwd:binding.workspace,approvalPolicy:'never',sandbox:'read-only',excludeTurns:true,runtimeWorkspaceRoots:[binding.workspace]}))throw new Error('native_original_resume_chain_changed');
+    if(prior.sourceSha256!==source.sourceSha256||canonical({...binding,turnIds:prior.binding.turnIds,promptSha256:prior.binding.promptSha256})!==canonical(prior.binding)||canonical(inputs.slice(0,prior.inputs.length))!==canonical(prior.inputs)||identity.path!==prior.identity.path||canonical(start.params)!==canonical({threadId:binding.threadId,cwd:binding.workspace,approvalPolicy:'never',sandbox:'read-only',excludeTurns:true,runtimeWorkspaceRoots:[binding.workspace]}))throw new Error('native_original_resume_chain_changed');
     const history=await read('resume-history.json'),request=requests.find(m=>m.method==='thread/read');if(canonical(reply(request))!==canonical(history)||!sameOwnedThread(history.thread,binding)||history.thread.status?.type!=='idle'||canonical(history.thread.turns?.map((v:any)=>({id:v.id,status:v.status})))!==canonical(prior.parsed.turns.map(v=>({id:v.id,status:v.terminal}))))throw new Error('native_original_resume_history_changed');
     start=prior.start;
   }else if(await exists(join(directory,'resume-source.json')))throw new Error('native_original_resume_source_unexpected');

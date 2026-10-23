@@ -6,7 +6,7 @@ import {regular,exists} from './repair-workspace.js';
 import {canonical} from './comparison.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messageId,messagePath} from './message-contract.js';
-import {parseSecretaryPlan,runSecretary,readSecretaryResult,closeUnstartedSecretary,type SecretaryPlan} from './secretary.js';
+import {parseSecretaryPlan,selectSecretaryRuntime,runSecretary,readSecretaryResult,closeUnstartedSecretary,type SecretaryPlan} from './secretary.js';
 import {save} from './live-process.js';
 
 type Source={id:string;store:string;item:string};
@@ -52,7 +52,10 @@ export class SecretaryControls {
     await privateDirectory(directory,false);const r=JSON.parse((await regular(join(directory,'question.json'),128*1024)).toString()) as Question;
     if(r.schemaVersion!==1||r.kind!=='tongxu-workbench-question'||r.source!==f.source.id||r.item!==f.source.item||r.store!==f.source.store||directory!==this.directory(f,r.requestId))throw new Error('secretary_question_binding_changed');
     const template=await regular(join(directory,'template.json'),128*1024),plan=await regular(join(directory,'input-plan.json'),128*1024),p=parseSecretaryPlan(plan);
-    if(hash(template)!==r.templateSha256||hash(plan)!==r.planSha256||canonical(p)!==canonical({...parseSecretaryPlan(template),question:r.question})||p.store!==f.source.store||p.item!==f.source.item)throw new Error('secretary_question_binding_changed');
+    const originalTemplate=parseSecretaryPlan(template);
+    const expected={...originalTemplate,question:r.question,...(p.runtimeSelection?{codexSha256:p.codexSha256,runtimeSelection:p.runtimeSelection}:{})};
+    if(p.runtimeSelection&&p.runtimeSelection.configuredSha256!==originalTemplate.codexSha256)throw new Error('secretary_runtime_selection_invalid');
+    if(hash(template)!==r.templateSha256||hash(plan)!==r.planSha256||canonical(p)!==canonical(expected)||p.store!==f.source.store||p.item!==f.source.item)throw new Error('secretary_question_binding_changed');
     return {directory,request:r};
   }
   private async view(f:Frozen,original:{directory:string;request:Question},full=false){
@@ -88,7 +91,9 @@ export class SecretaryControls {
         if(pending)original=pending;
         else{
           if((await this.questions(f)).length>=4096)throw new Error('secretary_question_history_limit');await ensure(directory);
-          const plan=Buffer.from(canonical({...f.plan,question:body.question}));await fixed(join(directory,'template.json'),f.template);await fixed(join(directory,'input-plan.json'),plan);
+          // Resolve the configured installed CLI for this new question only.
+          // Re-entry reads the original question before ever probing again.
+          const plan=Buffer.from(canonical(await selectSecretaryRuntime({...f.plan,question:body.question},true)));await fixed(join(directory,'template.json'),f.template);await fixed(join(directory,'input-plan.json'),plan);
           const request:Question={schemaVersion:1,kind:'tongxu-workbench-question',source:f.source.id,item:f.source.item,store:f.source.store,requestId:body.requestId,question:body.question,templateSha256:hash(f.template),planSha256:hash(plan),createdAt:new Date().toISOString()};
           await fixed(join(directory,'question.json'),Buffer.from(canonical(request)));original={directory,request};
         }
