@@ -6,6 +6,7 @@ import {ReturnControls} from '../../src/return-controls.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
 import {runQueueRepair} from '../../src/queue-repair.js';
+import {readRepairReports} from '../../src/repair.js';
 import {returnWorkFixture as page,waitForReturnWork as wait,type Basic} from './return-work-fixture.js';
 
 const opts={timeout:120000};
@@ -16,8 +17,22 @@ test('page starts original repair once, captures actual tests and independent ne
   assert.equal((await f.post('start')).status,202);assert.equal((await f.post('start')).status,202);
   const done=await wait(f,r=>r.available&&!r.active&&r.repair.phase==='returned');assert.equal(done.repair.result.status,'completed');assert.equal(done.repair.result.actualRepairPerformed,true);assert.equal(done.repair.result.testsPassed,true);assert.equal(done.repair.result.reviewCandidateH,done.repair.result.afterH);assert.notEqual(done.repair.result.beforeH,done.repair.result.afterH);
   const full=await(await fetch(f.u.origin+'/api/return-report/original-return',{headers:f.headers})).json() as any;assert.equal(full.repair.originalReturn.report,original.report);assert.equal(full.repair.originalResult.data.review.verdict,'PASS');assert.equal(f.q.status().claims.length,0);
+  assert.equal(full.originalReports.available,true);assert.equal(full.originalReports.reports.length,5);
+  const operation=join(f.request.executionRoot,'operation'),fact=JSON.parse(await readFile(join(operation,'attempt-1/fact-and-repair/completed.json'),'utf8')),impact=JSON.parse(await readFile(join(operation,'attempt-1/impact-1/completed.json'),'utf8'));
+  assert.deepEqual(full.originalReports.reports.filter((r:any)=>r.role==='verifier_fact').map((r:any)=>r.finalText),fact.finalAnswers.map((r:any)=>r.text));assert.equal(full.originalReports.reports.find((r:any)=>r.role==='verifier_impact').finalText,impact.finalText);
   const after=await readFile(f.model.trace);assert.notDeepEqual(after,trace);assert.equal((await f.post('reconcile')).status,202);await wait(f,r=>!r.active);assert.deepEqual(await readFile(f.model.trace),after);
   const controls=await ReturnControls.load(f.catalogPath,hash(await readFile(f.catalogPath)),f.sources),old=f.q.status().events,report=await controls.report('original-return');assert.equal(report.available,true);assert.deepEqual(f.q.status().events,old);assert.deepEqual(await readFile(f.model.trace),after);
+  const result=full.repair.originalResult,requestHash=full.repair.originalRequestSha256,terminalHash=full.repair.originalEvidence.terminalRecordSha256;
+  await assert.rejects(readRepairReports(f.request.executionRoot,'0'.repeat(64),result,terminalHash),/request_changed/);
+  await assert.rejects(readRepairReports(f.request.executionRoot,requestHash,result,'0'.repeat(64)),/terminal_changed/);
+  await assert.rejects(readRepairReports(f.request.executionRoot,requestHash,{...result,after:{...result.after,H:'0'.repeat(40)}},terminalHash),/result_mismatch/);
+  const rawPath=join(operation,'attempt-1/fact-and-repair/stdout.ndjson'),raw=await readFile(rawPath);await writeFile(join(f.root,'report-before-tamper.ndjson'),raw);
+  try{await writeFile(rawPath,Buffer.concat([raw,Buffer.from('\n')]));const held=await controls.report('original-return');assert.ok('originalReports' in held);assert.equal(held.originalReports?.available,false);assert.equal(held.repair.originalResult.data.review.verdict,'PASS');}finally{await writeFile(rawPath,raw);}
+  // Reading a historical completed report neither resumes nor requires today's
+  // worktree to equal the old candidate; its sealed original capture is enough.
+  const sourcePath=join(f.request.executionRoot,'workspace/src/normalize.mjs'),source=await readFile(sourcePath);
+  try{await writeFile(sourcePath,Buffer.concat([source,Buffer.from('\n// Later uncommitted work, outside this saved result.\n')]));const historical=await controls.report('original-return');assert.ok('originalReports' in historical);assert.equal(historical.originalReports?.available,true);}finally{await writeFile(sourcePath,source);}
+  assert.deepEqual(f.q.status().events,old);assert.deepEqual(await readFile(f.model.trace),after);assert.deepEqual(await readFile(rawPath),raw);
 });
 
 test('page cannot retarget a repair to another task or changed plan, and stopped execution does not launch model work',opts,async t=>{
@@ -32,7 +47,7 @@ test('page closes only proven unstarted preparation, retains original request an
   const f=await page(t,'broken'),trace=await readFile(f.model.trace);await f.post('start');await wait(f,r=>!r.active&&r.currentControllerProblem==='project_material_missing');
   const original=await readFile(join(f.request.executionRoot,'request.json'));await f.post('close-unstarted');const closed=await wait(f,r=>!r.active&&r.repair.phase==='closed_unstarted');assert.equal(closed.repair.phase,'closed_unstarted');assert.deepEqual(await readFile(f.model.trace),trace);assert.deepEqual(await readFile(join(f.request.executionRoot,'request.json')),original);
   const old=f.q.reviewRecords().state((f as Basic).operation).repair,request={...f.request,executionRoot:join(f.root,'explicit-corrected-request')};await writeFile(f.requestPath,JSON.stringify(request));await writeFile(f.planPath,JSON.stringify({...f.p,requestSha256:hash(await readFile(f.requestPath)),replacesClosedBinding:old.bindingHash}));const sha=hash(await readFile(f.planPath)),catalog={...f.catalog,entries:f.catalog.entries.map(e=>({...e,repair:{path:f.planPath,sha256:sha}}))};await writeFile(f.catalogPath,JSON.stringify(catalog));
-  const corrected=await ReturnControls.load(f.catalogPath,hash(await readFile(f.catalogPath)),f.sources),ready=(await corrected.state())[0]!;assert.ok('repair' in ready);assert.equal(ready.repair.phase,'not_started');await corrected.begin('original-return','start',{});await corrected.drain();const done=(await corrected.state())[0]!;assert.ok('repair' in done);assert.equal(done.repair.result!.status,'completed');assert.deepEqual(await readFile(join(f.request.executionRoot,'request.json')),original);
+  const corrected=await ReturnControls.load(f.catalogPath,hash(await readFile(f.catalogPath)),f.sources),ready=(await corrected.state())[0]!;assert.ok('repair' in ready);assert.equal(ready.repair.phase,'not_started');await corrected.begin('original-return','start',{});await wait({...f,get:async()=>({returnWork:await corrected.state()})},r=>!r.active&&r.repair.phase==='returned');await corrected.drain();const done=(await corrected.state())[0]!;assert.ok('repair' in done);assert.equal(done.repair.result!.status,'completed');assert.deepEqual(await readFile(join(f.request.executionRoot,'request.json')),original);
 });
 
 test('page keeps partial actual writes unknown, rejects unsent closure and reconciles the original candidate without writing twice',opts,async t=>{

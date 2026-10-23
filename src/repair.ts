@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
 import { assemblePromptSet,inspectPromptSet } from './role-prompts.js';
-import { runClaude } from './live-claude.js';
+import { runClaude,readClaudeExecution } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
 import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, checkRepairIndex, type Grant, type Tree } from './repair-workspace.js';
@@ -73,6 +73,49 @@ async function reconcileWrites(operation: string, initial: Tree, current: Tree, 
     save(path + '.reconciliation.json', { originalIntentSha256: hash(await readFile(path)), outcome: actual === r.afterSha256 ? 'applied_before_interruption' : 'not_applied_before_interruption', observedTreeSha256: treeHash(current), oldRequestWillNotBeResent: true });
   }
   return { changed, observedTreeSha256: treeHash(current), originalToolRequestsResent: false };
+}
+
+/** Read the reports bound to a saved terminal result. This never resumes a
+ * controller or checks today's mutable workspace in place of historical bytes. */
+export async function readRepairReports(root:string,requestSha256:string,result:any,terminalSha256:string){
+  if(resolve(root)!==root||!sha.test(requestSha256)||!sha.test(terminalSha256))throw new Error('repair_report_reference_invalid');
+  const requestBytes=await regular(join(root,'request.json'),2*1024*1024),operation=join(root,'operation');
+  if(hash(requestBytes)!==requestSha256)throw new Error('repair_report_request_changed');
+  const request=JSON.parse(requestBytes.toString()),terminalBytes=await regular(join(operation,'terminal-record.json'),4*1024*1024);
+  if(hash(terminalBytes)!==terminalSha256)throw new Error('repair_report_terminal_changed');
+  const terminal=JSON.parse(terminalBytes.toString());
+  if(!isDeepStrictEqual(terminal.result,result)||request.executionRoot!==root||!isDeepStrictEqual(request.candidate,result.sourceCandidate)||!terminal.files||Array.isArray(terminal.files))throw new Error('repair_report_result_mismatch');
+  const files=Object.entries(terminal.files);if(files.length>20000)throw new Error('repair_report_file_limit');
+  const checked=async(name:string)=>{
+    if(!Object.hasOwn(terminal.files,name)||!sha.test(terminal.files[name]))throw new Error('repair_report_unsealed_file');
+    const bytes=await regular(join(operation,name),32*1024*1024);if(hash(bytes)!==terminal.files[name])throw new Error('repair_report_evidence_changed');return bytes;
+  };
+  for(const [name,digest] of files)if(!name||name.startsWith('/')||name.includes('\\')||name.split('/').some(p=>!p||p==='.'||p==='..')||typeof digest!=='string'||!sha.test(digest))throw new Error('repair_report_unsafe_manifest');
+  const saved=JSON.parse((await checked('operation.json')).toString()),planBytes=await checked('plan.json'),plan=JSON.parse(planBytes.toString()),inputs=JSON.parse((await checked('fixed-inputs.json')).toString());
+  if(saved.fixedSha256!==hash(JSON.stringify({planSha256:hash(planBytes),inputs}))||!isDeepStrictEqual(plan.candidate,result.before)||!isDeepStrictEqual(plan.project?.sourceCandidate,request.candidate)||!isDeepStrictEqual(plan.project?.queueOperation,request.queueOperation))throw new Error('repair_report_operation_mismatch');
+  const codex=result.codexStages,claude=result.claudeStages;
+  if(!Array.isArray(codex)||!Array.isArray(claude)||codex.length+claude.length>24||new Set([...codex,...claude]).size!==codex.length+claude.length||codex.some(s=>typeof s!=='string'||!/^attempt-[1-3]\/(?:fact-and-repair|review-(?:[1-3]|recovered))$/.test(s))||claude.some(s=>typeof s!=='string'||!/^attempt-[1-3]\/impact-[1-3]$/.test(s)))throw new Error('repair_report_stage_invalid');
+  const reports=[];
+  for(const stage of [...codex,...claude] as string[]){
+    const names=files.map(([n])=>n).filter(n=>n.startsWith(stage+'/')),directory=join(operation,stage);if(!names.length)throw new Error('repair_report_stage_missing');
+    for(const name of names)await checked(name);
+    if(codex.includes(stage)){
+      const parsed=await readRepairSession(directory),b=parsed.binding,role=stage.endsWith('/fact-and-repair')?'verifier_fact':'reviewer',sent=JSON.parse((await checked(stage+'/inputs.json')).toString());
+      if(b.run!==operation||b.inputManifestSha256!==saved.fixedSha256||b.sourceKind!==result.executionKind||b.role!==role||b.candidate.B!==result.before.B||!Array.isArray(sent)||sent.length!==parsed.turns.length)throw new Error('repair_report_session_mismatch');
+      for(const [index,turn] of parsed.turns.entries()){
+        if(!turn.final||JSON.parse(turn.final.text).candidateH!==sent[index]?.subjectCandidate?.H)throw new Error('repair_report_turn_candidate_mismatch');
+        reports.push({stage,role,sessionId:b.sessionId,turnId:turn.id,turn:index+1,candidate:sent[index].subjectCandidate,protocol:b.protocol,finalText:turn.final.text});
+      }
+    }else{
+      const parsed=await readClaudeExecution(directory),receipt=JSON.parse((await checked(stage+'/completed.json')).toString());
+      if(['sessionId','rawSha256','inputSha256','systemPromptSha256','finalText'].some(k=>(parsed as any)[k]!==receipt[k]))throw new Error('repair_report_impact_mismatch');
+      reports.push({stage,role:'verifier_impact',sessionId:parsed.sessionId,turnId:null,turn:1,protocol:parsed.protocol,finalText:parsed.finalText});
+    }
+    // Parsers consume their original files. Verify the sealed bytes again so
+    // a concurrent change cannot silently replace the first checked capture.
+    for(const name of names)await checked(name);
+  }
+  return {kind:'original-completed-repair-reports',executionKind:result.executionKind,terminalRecordSha256:terminalSha256,reports,modelCallsStartedByThisRead:0,source:'original queue result and sealed execution captures; no current workspace or billing refresh'};
 }
 
 async function checkFinished(operation: string, workspace: string, result: any, project = false) {

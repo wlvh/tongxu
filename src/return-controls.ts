@@ -11,6 +11,7 @@ import {parseQueueRepairPlan,type QueueRepairPlan} from './queue-repair.js';
 import {parseMemberRefutationPlan,type MemberRefutationPlan} from './member-refutation-contract.js';
 import {LiveProcess,checkCapture,save} from './live-process.js';
 import type {ProjectRequest} from './project-repair.js';
+import {readRepairReports} from './repair.js';
 
 type Ref={path:string;sha256:string};
 type Source={id:string;store:string;item:string};
@@ -62,7 +63,9 @@ export class ReturnControls {
     const key=this.key(f),base={id:f.entry.id,title:f.entry.title,source:f.entry.source,active:this.active.has(key),currentControllerProblem:this.problems.get(key)??null,selectedWork:{executionRoot:f.request.executionRoot,allowedPaths:f.request.allowedPaths,protectedPaths:f.request.protectedPaths,contract:f.request.contract,authorizationSource:f.request.authorization?.source??null,authorizationIsRecheckedByOriginalExecutor:true}};
     try{const repair=await QueueStore.observeQueueRepair(f.source.store,f.source.item,f.raw,full);let refutation=null;
       if(f.refutation&&repair.result?.status==='skipped_refuted')refutation=await QueueStore.observeMemberRefutation(f.source.store,f.source.item,f.refutation.raw,full);
-      return {...base,available:true,repair,refutation,refutationConfigured:!!f.refutation,refutedNeedsNewReception:repair.result?.status==='skipped_refuted'&&refutation?.phase!=='returned',modelCallsStartedByThisRead:0,ownerApproval:false,productionActionAllowed:false};
+      let originalReports=null;
+      if(full&&repair.originalResult){try{originalReports={available:true,...await readRepairReports(repair.originalRequest.executionRoot,repair.originalRequestSha256!,repair.originalResult,repair.originalEvidence.terminalRecordSha256)};}catch(e){originalReports={available:false,reason:reason(e),complete:false,modelCallsStartedByThisRead:0};}}
+      return {...base,available:true,repair,originalReports,refutation,refutationConfigured:!!f.refutation,refutedNeedsNewReception:repair.result?.status==='skipped_refuted'&&refutation?.phase!=='returned',modelCallsStartedByThisRead:0,ownerApproval:false,productionActionAllowed:false};
     }catch(e){return {...base,available:false,reason:reason(e),modelCallsStartedByThisRead:0,ownerApproval:false};}
   }
   async state(){return Promise.all(this.entries.map(f=>this.view(f)));}
