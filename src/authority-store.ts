@@ -113,7 +113,7 @@ export class AuthorityRecords {
   });}
   baselineContents(sha:string){return this.transaction(()=>{
     const prepared=this.prepared(sha),p=prepared.proposal;if(p.kind!=='accept_baseline')throw new Error('baseline_proposal_required');
-    const a=this.adoption(p.adoption,false),material=Object.entries(p.material).map(([role,ref])=>{const bytes=this.bytes(ref.sha256);if(bytes.length>256*1024)throw new Error('baseline_material_limit');return {role,...ref,bytes:bytes.length,text:new TextDecoder('utf8',{fatal:true}).decode(bytes)};});
+    const a=this.adoption(p.adoption,false),material=Object.entries(p.material).map(([role,ref])=>{const bytes=this.bytes(ref.sha256);if(bytes.length>256*1024)throw new Error('baseline_material_limit');return {role,...ref,bytes:bytes.length,text:new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(bytes)};});
     return {proposalSha256:sha,adoption:p.adoption,scopeId:a.proposal.scopeId,scopeVersion:a.proposal.scopeVersion,material,contentsAreNotAcceptance:true,permissionsGranted:false};
   });}
   forScope(scopeId:string,selection:{item:string;target:string}){return this.transaction(()=>{
