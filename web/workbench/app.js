@@ -494,16 +494,18 @@ async function openReturnReport(entry){
     else if(result)parts.push('部分原报告尚不可核读；下列保存结果不能替代完整原文：'+readableReason(v.originalReports?.reason||'original_return_work_unavailable'));
     if(result){const data=result.data||{};for(const [label,value] of [['保存的事实核实结论',data.factReport],['保存的综合结论',data.decision],['保存的独立再审结论',data.review],['测试结果',data.tests||data.baseline]])if(value)parts.push(label+'\n'+(value.report||value.finalText||JSON.stringify(value,null,2)));}
     if(v.refutation?.report)parts.push('反证后的新接收报告\n'+v.refutation.report.report);
-    $('report-meta').textContent=(r.executionKind==='fixture'?'明确模型夹具':'原生执行记录')+' · 原操作 '+r.operation+' · '+(r.current?'对应当前材料':'历史材料，不能沿用新执行权')+' · 不代表本人接受或合并';$('report-body').textContent=parts.join('\n\n');$('report-raw').textContent=JSON.stringify({originalReturn:r.originalReturn,result,originalReports:v.originalReports,refutation:v.refutation,resources:r.resources,repairHistory:r.repairHistory},null,2);document.querySelector('#report-original summary').textContent='查看完整结构化结果与原关联';$('report-original').hidden=false;
+    $('report-meta').textContent='原接收：'+returnExecutionLabel(r.executionKind)+(result?' · 处理：'+returnExecutionLabel(result.executionKind):'')+' · 原操作 '+r.operation+' · '+(r.current?'对应当前材料':'历史材料，不能沿用新执行权')+' · 不代表本人接受或合并';$('report-body').textContent=parts.join('\n\n');$('report-raw').textContent=JSON.stringify({originalReturn:r.originalReturn,result,originalReports:v.originalReports,refutation:v.refutation,resources:r.resources,repairHistory:r.repairHistory},null,2);document.querySelector('#report-original summary').textContent='查看完整结构化结果与原关联';$('report-original').hidden=false;
   }catch(e){if(nonce===reportNonce)$('report-body').textContent='原处理结果尚不可读：'+readableReason(e.message);}
 }
+function returnExecutionLabel(kind){return kind==='fixture'?'明确模型夹具':kind==='native_capture'?'原生执行记录':'来源待核';}
 function returnWorkPanel(task){
   const entries=(state.returnWork||[]).filter(e=>e.source===task.id);if(!entries.length)return null;
   const section=append(el('section',null,'collaboration'),el('h3','处理原退回'),el('p','核实意见、必要修复与新独立审核沿原计划执行。报告不能授予写权；没有问题不制造返工。','small'));
   const phases={not_started:'尚未启动处理',reserved:'原处理已登记',prepared:'原工作区已准备',dispatched:'原处理已启动',unknown:'原执行或结果待核',returned:'原处理结果已保存',closed_unstarted:'已核未开始并关闭'};
-  for(const entry of entries){const box=append(el('div',null,'note-card'),el('h4',entry.title));if(!entry.available){box.append(el('p','此项不可执行：'+readableReason(entry.reason),'small'));section.append(box);continue;}
+  for(const entry of entries){const box=append(el('div',null,'note-card return-work-card'),el('h4',entry.title));if(!entry.available){box.append(el('p','此项不可执行：'+readableReason(entry.reason),'small'));section.append(box);continue;}
     const r=entry.repair,busy=entry.active||pendingReturnWork.has(entry.id),stopped=task.controls.some(c=>c.stopped&&['investment','implementation'].includes(c.kind));
-    box.append(el('p',(r.executionKind==='fixture'?'明确测试夹具 · ':'')+(phases[r.phase]||'原阶段待核')+(busy?' · 当前入口正在处理':''),'small'));
+    box.append(el('p',(phases[r.phase]||'原阶段待核')+(busy?' · 当前入口正在处理':''),'small'));
+    box.append(el('p','原接收：'+returnExecutionLabel(r.executionKind)+(r.result?' · 处理：'+returnExecutionLabel(r.result.executionKind):''),'small'));
     box.append(el('p','材料包 '+r.packet+' · 原候选 '+r.candidate.H.slice(0,12)+' · 目标 '+r.candidate.targetRef,'small'));
     const scope=append(el('details'),el('summary','核对修改范围与原依据'),el('p','受管目录：'+entry.selectedWork.executionRoot,'small'),el('p','允许修改：'+entry.selectedWork.allowedPaths.join('、'),'small'),el('p','保护路径：'+entry.selectedWork.protectedPaths.join('、'),'small'),el('p',entry.selectedWork.contract,'wrap'),el('p','原权限来源：'+entry.selectedWork.authorizationSource+'；实际执行前仍需通过原权限、资源和写者检查。','small'));box.append(scope);
     if(!r.current)box.append(el('p','原材料已变化或适用性待核；历史报告保留，不据此启动新的处理。','small'));if(stopped)box.append(el('p','本范围已登记停止新增投入或实施；已发结果继续保存，解除对应停止前不开始新工作。','small'));if(entry.currentControllerProblem||r.originalProblem)box.append(el('p','原处理待核：'+readableReason(entry.currentControllerProblem||r.originalProblem),'small'));
