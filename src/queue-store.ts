@@ -749,6 +749,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.memberRepairAdmission(operation,proposed);
     },(operation,reference,current)=>this.memberRepairSource(operation,reference,current),(operation,plan,observations)=>this.overallAuthorization(operation,plan,observations,true,true));
   }
+  reconcilePublishedRepairBatches() {
+    // Older queues can still publish. Enabling review records remains explicit;
+    // this consumer neither upgrades their format nor invents repair history.
+    if(![9,10,11,12,13,14,15,16].includes(queueFeatureVersion(this.db)))return {enabled:false,recorded:0,batches:[],newModelInputs:0,newRemoteRequests:0};
+    return {enabled:true,...this.reviewRecords().reconcilePublishedRepairs()};
+  }
   overallGate(operation:string,plan:Buffer,observations:OwnerObservation[],held=true){return this.transaction(()=>this.overallAuthorization(operation,plan,observations,held));}
   private overallAuthorization(operation:string,raw:Buffer,observations:OwnerObservation[],held=true,admit=false){
     const p=JSON.parse(raw.toString()),source=this.reviewSource(operation,true),op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;

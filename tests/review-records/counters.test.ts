@@ -14,9 +14,10 @@ test('only matched published new candidates count, four batches create one persi
   const fixture=(n:number,pr=1)=>{
     const id='repair-'+n,H=String(n).repeat(40).slice(0,40),B='b'.repeat(40),candidate={repository:'fixture/reception',pr,H,B,targetRef:'base'},context={scope:{id:'S',version:'1',source:'fixture:adoption'}};
     const bytes=Buffer.from('{}'),sha=hash(bytes);db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,bytes);
-    const result={repair:{phase:'returned',bindingHash:sha,planSha256:sha,requestSha256:sha,configSha256:sha,evidenceSha256:sha,counters:{actualFileWrites:1},result:{actualRepairPerformed:true,status:'completed',executionKind:'native_capture',before:{H:'a'.repeat(40)},after:{H}}}};
+    const repairResult={actualRepairPerformed:true,status:'completed',executionKind:'native_capture',before:{H:'a'.repeat(40)},after:{H}},resultBytes=Buffer.from(JSON.stringify(repairResult)),resultSha=hash(resultBytes);db.prepare('INSERT INTO blobs VALUES(?,?)').run(resultSha,resultBytes);
+    const result={repair:{phase:'returned',bindingHash:sha,planSha256:sha,requestSha256:sha,configSha256:sha,resultSha256:resultSha,evidenceSha256:sha,counters:{actualFileWrites:1},result:repairResult}};
     db.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(id,n,'complete',JSON.stringify(result));sources[id]={candidate,context};sources['publication-'+n]={candidate,context};
-    publications['publication-'+n]={document:{candidate,publicationId:'publication-'+n},stages:{comment:{lastState:'verified',verified:{remote:{id:n}}},status:{lastState:'verified',verified:{remote:{id:n,candidateH:H}}}}};
+    publications['publication-'+n]={document:{candidate,publicationId:'publication-'+n},stages:{comment:{lastState:'verified',intent:{remotePreflight:{H,B,target:'base'}},verified:{remote:{id:n}}},status:{lastState:'verified',intent:{remotePreflight:{H,B,target:'base'}},verified:{remote:{id:n,candidateH:H}}}}};
     return {id,publication:'publication-'+n};
   };
   let chain='';

@@ -60,6 +60,9 @@ export class ReviewRecords {
   }
   state(id: string) { return this.transaction(() => { this.requireMode(true); const x = this.fixed(id); if (x.repair.resultSha256) this.bytes(x.repair.resultSha256); return { ...x, events: this.events(id).filter(e => e.kind.startsWith('repair_')) }; }); }
   reserve(id: string, plan: Buffer, request: Buffer, config: Buffer,observations:OwnerObservation[]=[]) {
+    // Commit recovered publication facts before admission: a refusal at the
+    // reflection gate must not roll back the very evidence that closed it.
+    this.reconcilePublishedRepairs();
     return this.transaction(() => {
       this.requireMode(); const { op, result } = this.operation(id);
       if (result.repair) {
@@ -149,15 +152,50 @@ export class ReviewRecords {
   }
   publishedRepair(id: string, publicationOperation: string) {
     return this.transaction(() => {
-      this.requireMode(); const x = this.fixed(id), r = x.repair.result, p = this.publication(publicationOperation), source = this.repairSource(id,JSON.parse(x.plan.toString()),false), published = this.source(publicationOperation, false);
-      if (x.repair.phase !== 'returned' || !r.actualRepairPerformed || !(x.repair.counters.actualFileWrites>0) || r.executionKind !== 'native_capture' || !['completed','completed_recovered_candidate'].includes(r.status) || p.stages.comment?.lastState !== 'verified' || p.stages.status?.lastState !== 'verified' || p.document.candidate.H !== r.after.H || p.document.candidate.B !== source.candidate.B || p.document.candidate.repository !== source.candidate.repository || p.document.candidate.pr !== source.candidate.pr || p.document.candidate.targetRef !== source.candidate.targetRef || canonical(published.context.scope)!==canonical(source.context.scope)) throw new Error('published_repair_not_bound_to_verified_new_candidate');
-      const chain=chainKey(source),key = `published-repair:${chain}`, known = this.events(key, 'repair_batch_published'), duplicate = known.find(e => e.data.H === r.after.H);
-      if (duplicate) return { ...duplicate.data, duplicate: true };
-      const entry = { operation: id, publicationOperation, publicationId: p.document.publicationId, H: r.after.H, beforeH: r.before.H, scope: source.context.scope, chain, ordinal: known.length + 1, comment: p.stages.comment.verified.remote, status: p.stages.status.verified.remote, evidenceSha256: x.repair.evidenceSha256 };
-      this.event('repair_batch_published', key, entry);
-      const responses=this.events(`reflection:${chain}`,'simplification_reflection_response'), through=responses.at(-1)?.data.throughOrdinal??0;
-      if (entry.ordinal-through > 3 && !this.reflectionDue(chain)) this.event('simplification_reflection_due', `reflection:${chain}`, { trigger: entry, afterOrdinal:through, source: 'adopted #7 more than three actually published repair batches', kind: 'existing_web_gpt_simplification', status: 'awaiting_responsible_response_and_authorized_existing_entry', modelDispatched: false, newPermissionGranted: false });
-      return { ...entry, duplicate: false, reflectionDue: this.reflectionDue(chain) };
+      this.requireMode(); const x = this.fixed(id), p = this.publication(publicationOperation), source = this.repairSource(id,JSON.parse(x.plan.toString()),false), published = this.source(publicationOperation, false);
+      if (!this.publishedRepairMatches(x,p,source,published)) throw new Error('published_repair_not_bound_to_verified_new_candidate');
+      return this.recordPublishedRepair(id,publicationOperation,x,p,source);
+    });
+  }
+  private publishedRepairMatches(x: Row,p: Row,source: Row,published: Row) {
+    const r=x.repair.result,c=p.document?.candidate;
+    return x.repair.phase==='returned' && r?.actualRepairPerformed===true && x.repair.counters?.actualFileWrites>0 && r.executionKind==='native_capture'
+      && ['completed','completed_recovered_candidate'].includes(r.status) && r.before.H!==r.after.H
+      && p.stages.comment?.lastState==='verified' && p.stages.status?.lastState==='verified'
+      && c?.H===r.after.H && c.B===source.candidate.B && c.repository===source.candidate.repository && c.pr===source.candidate.pr && c.targetRef===source.candidate.targetRef
+      && p.stages.status.verified?.remote.candidateH===c.H && canonical(published.context.scope)===canonical(source.context.scope)
+      && ['comment','status'].every(stage=>{const observed=p.stages[stage].intent?.remotePreflight;return observed?.H===c.H && observed.B===c.B && observed.target===c.targetRef;});
+  }
+  private recordPublishedRepair(id:string,publicationOperation:string,x:Row,p:Row,source:Row) {
+    // Read the original bytes even for a duplicate; metadata cannot hide a lost
+    // or changed original result. QueueStore verifies publication blobs too.
+    if(canonical(JSON.parse(this.bytes(x.repair.resultSha256).toString()))!==canonical(x.repair.result))throw new Error('review_original_changed');
+    this.bytes(x.repair.evidenceSha256);
+    const r=x.repair.result,chain=chainKey(source),key=`published-repair:${chain}`,known=this.events(key,'repair_batch_published'),duplicate=known.find(e=>e.data.H===r.after.H);
+    if(duplicate)return {...duplicate.data,duplicate:true,reflectionDue:this.reflectionDue(chain)};
+    const entry={operation:id,publicationOperation,publicationId:p.document.publicationId,H:r.after.H,beforeH:r.before.H,scope:source.context.scope,chain,ordinal:known.length+1,comment:p.stages.comment.verified.remote,status:p.stages.status.verified.remote,evidenceSha256:x.repair.evidenceSha256};
+    this.event('repair_batch_published',key,entry);
+    const through=this.events(`reflection:${chain}`,'simplification_reflection_response').at(-1)?.data.throughOrdinal??0;
+    if(entry.ordinal-through>3&&!this.reflectionDue(chain))this.event('simplification_reflection_due',`reflection:${chain}`,{trigger:entry,afterOrdinal:through,source:'adopted #7 more than three actually published repair batches',kind:'existing_web_gpt_simplification',status:'awaiting_responsible_response_and_authorized_existing_entry',modelDispatched:false,newPermissionGranted:false});
+    return {...entry,duplicate:false,reflectionDue:this.reflectionDue(chain)};
+  }
+  reconcilePublishedRepairs() {
+    return this.transaction(()=>{
+      this.requireMode();
+      const repairs=(this.db.prepare("SELECT id,result FROM operations WHERE json_extract(result,'$.repair.phase')='returned' ORDER BY rowid").all() as Row[]).map(({id,result})=>({id,repair:JSON.parse(result).repair}));
+      const publications=this.db.prepare("SELECT object FROM events WHERE kind='publication_verified' AND json_extract(data,'$.stage')='status' GROUP BY object ORDER BY MIN(id)").all() as Row[];
+      const batches:Row[]=[];
+      for(const {object} of publications){
+        const operation=object.slice('publication:'.length),p=this.publication(operation);
+        if(!p.document||p.stages.comment?.lastState!=='verified'||p.stages.status?.lastState!=='verified')continue;
+        for(const {id,repair} of repairs){
+          if(repair.result?.after?.H!==p.document.candidate.H)continue;
+          const x=this.fixed(id);
+          const source=this.repairSource(id,JSON.parse(x.plan.toString()),false),published=this.source(operation,false);
+          if(this.publishedRepairMatches(x,p,source,published))batches.push(this.recordPublishedRepair(id,operation,x,p,source));
+        }
+      }
+      return {checkedPublications:publications.length,recorded:batches.filter(b=>!b.duplicate).length,batches,newModelInputs:0,newRemoteRequests:0};
     });
   }
   registerJudgment(id: string, classification: { taskClass: string; riskClass: string; coverageWindow: string; source: string }) {
