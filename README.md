@@ -24,13 +24,14 @@
 - [角色 prompt 装配及工具权限](prompts/README.md)
 - [无 PR 任务与原负责人待办](docs/task_intake.md)、[准确候选关联](docs/task_candidate_link.md)
 - [任务协调与共同部分](docs/task_coordination.md)、[工作台／秘书的受管联系](docs/task_controls.md)
+- [原角色按需要联系预登记任务并消费完整回复](docs/task_contact_choice.md)、[原退回处理入口](docs/return_workbench.md)
 - [受治理的新独立接收](docs/governed_reception.md)
 - [本人来源与委托](docs/owner_authority.md)、[原资源认领](docs/resource_claims.md)、[三类停止控制](docs/scope_controls.md)
 - [成果批次与本人决定](docs/delivery_outcomes.md)、[实际场景后的独立判断](docs/delivery_assessment.md)
 - [最小集成候选](docs/minimal_integration.md)、[成员修复与反证后新接收](docs/integration_member_repair.md)、[已结束部分构造接续](docs/integration_continuation.md)
 - [原实现者可靠续做与最小显式交接](docs/managed_workspace_handoff.md)：默认 A 继续，B 审核回 A；保留原成果和唯一写者，按 #8 最新澄清取消通用原地接管的强制要求。
 
-工作台已连接目标、固定组织方式、委托与停止、成果验证／判断及按需复盘五项控制，秘书从同一原记录读取完整结果。接受基线可固定三类原文并另核执行许可；新范围后续工作保留原负责人、原输入和准确任务记录。当前收口重点是把这些已有能力装配到同一个明确案例，验证跨能力恢复并完成最终固定安装。正常历史任务缺少独立本人来源时，相关动作保持未验证；页面可见、技术判断和本人接受分别记录。
+工作台已连接目标、固定组织方式、委托与停止、成果验证／判断及按需复盘五项控制，秘书从同一原记录读取完整结果。接受基线可固定三类原文并另核执行许可；新范围后续工作保留原负责人、原输入和准确任务记录。原角色有限联系已完成真实 Codex→Claude→Codex 全文往返，退回处理和在途共享工作另有明确样例证据；它们复用原任务与执行记录。正常启动的准确版本、配置与声明流程见本机 `TRY_TONGXU.md` 和唯一 `completion-coverage.json.currentRemainder.firstTrial`，不会因后续能力未齐而撤回已固定的试用流程。正常历史任务缺少独立本人来源时，只暂停依赖它的动作；页面可见、技术判断和本人接受分别记录。
 
 ## 只读 PR 交接
 
