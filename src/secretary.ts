@@ -63,6 +63,31 @@ function checkSelectedPlan(source:SecretaryPlan,selected:SecretaryPlan){
   if(source.runtimeSelection){if(canonical(source)!==canonical(selected))throw new Error('secretary_plan_changed');return;}
   if(!selected.runtimeSelection||selected.runtimeSelection.configuredSha256!==source.codexSha256||canonical({...source,codexSha256:selected.codexSha256,runtimeSelection:selected.runtimeSelection})!==canonical(selected))throw new Error('secretary_runtime_selection_invalid');
 }
+async function recordedSecretaryPlan(original:Buffer,output:string){
+  const selection=join(output,'runtime-selection.json'),sourcePath=join(output,'source-plan.json'),planPath=join(output,'plan.json');
+  if(await exists(selection)){
+    const record=JSON.parse((await regular(selection,4*1024*1024)).toString());
+    if(!exactKeys(record,['schemaVersion','kind','source','selected'])||record.schemaVersion!==1||record.kind!=='tongxu-secretary-runtime-selection'||!exactKeys(record.source,['sha256','base64'])||!exactKeys(record.selected,['sha256','base64']))throw new Error('secretary_runtime_selection_invalid');
+    const decode=(part:any)=>{if(typeof part.base64!=='string'||!(/^[a-f0-9]{64}$/).test(part.sha256))throw new Error('secretary_runtime_selection_invalid');const bytes=Buffer.from(part.base64,'base64');if(bytes.toString('base64')!==part.base64||hash(bytes)!==part.sha256)throw new Error('secretary_runtime_selection_invalid');return bytes;};
+    const source=decode(record.source),selected=decode(record.selected);
+    if(!source.equals(original))throw new Error('secretary_plan_changed');
+    checkSelectedPlan(parseSecretaryPlan(source),parseSecretaryPlan(selected));
+    for(const [path,bytes] of [[sourcePath,source],[planPath,selected]] as const)if(await exists(path)&&!bytes.equals(await regular(path)))throw new Error('secretary_plan_changed');
+    return selected;
+  }
+  // Read old captures exactly as recorded. A missing half of an old, non-atomic
+  // selection is not permission to repeat an unknown execution.
+  if(await exists(sourcePath)){
+    if(!original.equals(await regular(sourcePath)))throw new Error('secretary_plan_changed');
+    const selected=await regular(planPath);checkSelectedPlan(parseSecretaryPlan(original),parseSecretaryPlan(selected));return selected;
+  }
+  if(await exists(planPath)){const selected=await regular(planPath);if(!original.equals(selected))throw new Error('secretary_plan_changed');return selected;}
+  return null;
+}
+async function preserveSelectedFile(path:string,bytes:Buffer){
+  try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}
+  catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(!bytes.equals(await regular(path)))throw new Error('secretary_plan_changed');}
+}
 const specs=(p:SecretaryPlan)=>selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true,!!p.queueActions);
 const loadControls=async(p:SecretaryPlan)=>{if(!p.taskControls)return undefined;const controls=await TaskControls.load(p.taskControls.path,p.taskControls.sha256,[{id:p.taskControls.source,store:p.store,item:p.item}]);if(controls.manifest().contacts.some(c=>c.executionKind!==p.executionKind))throw new Error('secretary_contact_execution_kind_mismatch');return controls;};
 const loadQueueActions=async(p:SecretaryPlan)=>p.queueActions?QueueEventControls.load(p.queueActions.path,p.queueActions.sha256,[{id:p.queueActions.source,store:p.store,item:p.item}],p.queueActions.source,p.executionKind==='fixture'?'fixture':'github'):undefined;
@@ -114,19 +139,18 @@ export async function runSecretary(planPath: string, output: string) {
   return lock(output, async () => {
     if(await exists(join(output,'closed-unstarted.json')))throw new Error('secretary_original_closed_unstarted');
     const savedPlan = join(output, 'plan.json'), savedInputs = join(output, 'inputs.json'), native = join(output, 'codex-secretary');
-    const sourcePlan=join(output,'source-plan.json');let planBytes=originalPlanBytes,p=originalPlan;
-    if(await exists(sourcePlan)){
-      if(!originalPlanBytes.equals(await regular(sourcePlan)))throw new Error('secretary_plan_changed');
-      planBytes=await regular(savedPlan);p=parseSecretaryPlan(planBytes);checkSelectedPlan(originalPlan,p);
-    }else if(!await exists(savedPlan)){
-      p=await selectSecretaryRuntime(originalPlan);planBytes=Buffer.from(canonical(p));
-      await writeFile(sourcePlan,originalPlanBytes,{flag:'wx',mode:0o600});
+    let planBytes=await recordedSecretaryPlan(originalPlanBytes,output);
+    if(!planBytes){
+      if(await exists(savedInputs)||await exists(native)||await exists(join(output,'operation.json')))throw new Error('secretary_original_selection_missing');
+      planBytes=Buffer.from(canonical(await selectSecretaryRuntime(originalPlan)));
+      // One atomic authoritative record precedes both recoverable projections.
+      save(join(output,'runtime-selection.json'),{schemaVersion:1,kind:'tongxu-secretary-runtime-selection',source:{sha256:hash(originalPlanBytes),base64:originalPlanBytes.toString('base64')},selected:{sha256:hash(planBytes),base64:planBytes.toString('base64')}});
     }
+    if(await exists(join(output,'runtime-selection.json')))await preserveSelectedFile(join(output,'source-plan.json'),originalPlanBytes);
     // The sent bytes must use the same property ordering as the saved plan;
     // otherwise a subsequent read could reconstruct a different prompt.
-    p=parseSecretaryPlan(planBytes);
-    if (await exists(savedPlan)) { if (!planBytes.equals(await regular(savedPlan))) throw new Error('secretary_plan_changed'); }
-    else await writeFile(savedPlan, planBytes, { flag: 'wx', mode: 0o600 });
+    const p=parseSecretaryPlan(planBytes);
+    await preserveSelectedFile(savedPlan,planBytes);
     if (!await exists(savedInputs)) {
       if (await exists(native)) throw new Error('secretary_original_inputs_missing');
       save(savedInputs, await inputs(p));
@@ -163,10 +187,8 @@ export async function runSecretary(planPath: string, output: string) {
 /** Verify a saved answer from its original capture. This read cannot create a
  * directory, acquire an execution lock, write a result, or start a model. */
 export async function readSecretaryResult(planPath:string,output:string){
-  const raw=await regular(planPath),source=parseSecretaryPlan(raw);await privateDirectory(output,false);
-  const saved=await regular(join(output,'plan.json'));let p=source;
-  if(await exists(join(output,'source-plan.json'))){if(!raw.equals(await regular(join(output,'source-plan.json'))))throw new Error('secretary_plan_changed');p=parseSecretaryPlan(saved);checkSelectedPlan(source,p);}
-  else if(!raw.equals(saved))throw new Error('secretary_plan_changed');
+  const raw=await regular(planPath);await privateDirectory(output,false);
+  const saved=await recordedSecretaryPlan(raw,output);if(!saved)throw new Error('secretary_original_plan_missing');const p=parseSecretaryPlan(saved);
   const bytes=await regular(join(output,'inputs.json')),frozen=JSON.parse(bytes.toString());verifyFrozenSecretaryInputs(p,frozen);
   const intent=JSON.parse((await regular(join(output,'operation.json'))).toString());
   if(intent.planSha256!==hash(saved)||intent.inputSha256!==hash(bytes))throw new Error('secretary_operation_binding_changed');
