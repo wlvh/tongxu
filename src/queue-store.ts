@@ -156,7 +156,7 @@ export class QueueStore {
    * original text is returned; the captured judgment is never rewritten. */
   static async observeReceptionReport(directory:string,itemId:string,operation:string){
     const q=await this.connect(directory,true);
-    try{q.db.exec('BEGIN');const {op,result,receiver}=q.receiverOperation(operation);if(op.item!==itemId)throw new Error('report_not_found');
+    try{q.db.exec('BEGIN');const selected=q.db.prepare('SELECT item FROM operations WHERE id=?').get(operation) as Row|undefined;if(selected?.item!==itemId)throw new Error('report_not_found');const {op,result,receiver}=q.receiverOperation(operation);
       const item=q.item(itemId),packet=q.packet(op.packet),e=q.packetEvidence(packet),r=q.currentReceiverResult(op,result)?.receiver,j=receiver?.judgment;
       const invalid=receiver?.invalidResult,report=invalid?q.blob(invalid.finalTextSha256).toString():j?.report;if(typeof report!=='string')throw new Error('report_not_found');
       const material=parse(packet,'summary'),sources=(e.manifest.rounds??[]).flatMap((round:any)=>(round.sources??[]).map((s:any)=>({id:s.id,url:s.url,bodySha256:s.bodyHash,observedAt:round.finishedAt??round.startedAt})));
