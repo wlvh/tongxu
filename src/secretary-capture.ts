@@ -17,7 +17,7 @@ function metadataRequests(directory:string,p:SecretaryPlan,frozen:any){
     request('initialize', { clientInfo: { name: (p.taskControls||p.queueActions)?'tongxu-task-secretary':'tongxu-readonly-secretary', version: '0.1.0' }, capabilities: { experimentalApi: true } }),
     { method: 'initialized', params: {} },
     request('account/read', { refreshToken: false }), request('config/read', { includeLayers: false, cwd }), request('account/rateLimits/read', {}),
-    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: secretaryInstructions(!!p.taskControls,!!p.queueActions), dynamicTools: selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true,!!p.queueActions), environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
+    request('thread/start', { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: frozen.system, developerInstructions: secretaryInstructions(!!p.taskControls,!!p.queueActions,p.receptionReports===true,!!p.taskSources), dynamicTools: selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true,!!p.queueActions,p.receptionReports===true,!!p.taskSources), environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd] }),
     request('account/rateLimits/read', {})
   ];
 }

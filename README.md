@@ -22,6 +22,7 @@
 - [证据补充：保留首次判断，在原任务登记新增原件后补核](docs/reception_supplement.md)
 - [结果发布：固定公开摘要、提交状态、读回与中断恢复](docs/result_publication.md)
 - [受限秘书：查询原任务的实际状态并保留回答依据](docs/readonly_secretary.md)
+- [秘书读取原接收报告全文与正式收尾记录](docs/secretary_original_reports.md)：历史接收、材料适用性与今天的收尾事实分别回答。
 - [角色 prompt 装配及工具权限](prompts/README.md)
 - [无 PR 任务与原负责人待办](docs/task_intake.md)、[准确候选关联](docs/task_candidate_link.md)
 - [任务协调与共同部分](docs/task_coordination.md)、[工作台／秘书的受管联系](docs/task_controls.md)
