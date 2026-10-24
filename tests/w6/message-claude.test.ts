@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,link,symlink} from 'node:fs/promises';
+import {readFile,writeFile,link,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {messageFixture} from './message-fixture.js';
@@ -9,10 +9,10 @@ import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
 import {messageClaudeVersion,messageClaudeInput,checkMessageClaudeInit,messageClaudeFinal} from '../../src/message-claude.js';
 
-test('exact supported Claude profiles keep legacy input and require 304 composed input',()=>{
+test('Claude release labels are not an allowlist; archived wire profiles and actual init identity remain distinct',()=>{
   assert.equal(messageClaudeVersion('2.1.233 (Claude Code)'),'2.1.233');
   assert.equal(messageClaudeVersion('2.1.304 (Claude Code)'),'2.1.304');
-  for(const version of ['2.1.299 (Claude Code)','2.1.305 (Claude Code)','2.1.304'])assert.throws(()=>messageClaudeVersion(version),/unsupported/);
+  for(const version of ['2.1.299','2.1.305','99.7.0'])assert.equal(messageClaudeVersion(version+' (Claude Code)'),version);assert.throws(()=>messageClaudeVersion('2.1.304'),/identity_not_observed/);
   assert.equal('client_composed' in messageClaudeInput('2.1.233','s','u','@literal'),false);
   assert.equal(messageClaudeInput('2.1.304','s','u','@literal').client_composed,true);
   const init={type:'system',subtype:'init',session_id:'s',claude_code_version:'2.1.304',permissionMode:'dontAsk',apiKeySource:'none',tools:[],mcp_servers:[]};
@@ -38,11 +38,11 @@ test('304 lifecycle has one matching terminal command and no concealed tool, err
   const variants:any[][]=[[...base,{type:'assistant',session_id:'s',message:{content:[{type:'text',text:'late text'}]}}],base.slice(0,-1),[...base,lifecycle('completed')],[...base,{type:'control_request',session_id:'s'}],base.map(x=>({...x,session_id:'other'})),make({terminal_reason:'aborted_streaming'}),make({is_error:true}),make({api_error_status:429}),make({permission_denials:[{tool:'Read'}]}),[...base.slice(0,-1),{type:'assistant',session_id:'s',message:{content:[{type:'tool_use'}]}},base.at(-1)!],[...base.slice(0,-1),init,base.at(-1)!]];
   for(const key of ['killed','refused'] as const){const e=structuredClone(base),r=e.find(x=>x.type==='result') as any;r.subagent_stats[key][key==='killed'?'user':'budget']=1;variants.push(e);}for(const events of variants)assert.throws(()=>messageClaudeFinal(events,'s','2.1.304','u'),/not_complete|boundary|initialization_ambiguous/);
 });
-test('readonly vendor executables may have hard links while symlinks and changed content remain rejected',async t=>{
+test('readonly vendor executables may have hard links; configured paths remain exact while historical fingerprints do not pin new runs',async t=>{
   const f=await messageFixture(t,'304');await link(f.claude,join(f.root,'vendor-hardlink'));await link(f.codex,join(f.root,'codex-hardlink'));const r=await runMessages(f.store,f.path);assert.equal(r.completed,true,JSON.stringify(r.problems));assert.equal(r.newModelRequests,4);const trace=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),trace);
   const linked=await messageFixture(t,'304'),alias=join(linked.root,'symlink-codex');await symlink(linked.codex,alias);linked.plan.participants[0]!.executable=alias;await linked.write();const refused=await runMessages(linked.store,linked.path);assert.equal(refused.newModelRequests,0);assert.match(JSON.stringify(refused.problems),/executor_file_invalid/);assert.equal((await linked.calls()).length,0);
   const parent=await messageFixture(t,'304'),directoryAlias=join(parent.root,'install-alias');await symlink(parent.root,directoryAlias);parent.plan.participants[0]!.executable=join(directoryAlias,'codex-messages.mjs');await parent.write();const parentRefusal=await runMessages(parent.store,parent.path);assert.equal(parentRefusal.newModelRequests,0);assert.match(JSON.stringify(parentRefusal.problems),/executor_file_invalid/);assert.equal((await parent.calls()).length,0);
-  const changed=await messageFixture(t,'304');changed.plan.participants[0]!.executableSha256='a'.repeat(64);await changed.write();const mismatch=await runMessages(changed.store,changed.path);assert.equal(mismatch.newModelRequests,0);assert.match(JSON.stringify(mismatch.problems),/executor_changed/);assert.equal((await changed.calls()).length,0);
+  const changed=await messageFixture(t,'304');changed.plan.participants[0]!.executableSha256='a'.repeat(64);await changed.write();const selected=await runMessages(changed.store,changed.path);assert.equal(selected.completed,true,JSON.stringify(selected.problems));assert.equal(selected.newModelRequests,4);const prior=await readFile(changed.trace);assert.equal((await runMessages(changed.store,changed.path,true)).completed,true);assert.deepEqual(await readFile(changed.trace),prior);
 });
 
 test('304 rechecks the actual init of each input before accepting a second-round reply',async t=>{
@@ -56,4 +56,11 @@ test('complete per-input 304 originals correct an old failed classification by a
   const db=new DatabaseSync(join(f.store,'queue.sqlite')),row=db.prepare("SELECT id,data FROM events WHERE kind='message_runtime_ended' AND json_extract(data,'$.value.participant')='impact'").get() as any,record=JSON.parse(row.data);record.value.proof.successfulCapture=false;const bytes=Buffer.from(canonical(record.value));record.sha256=hash(bytes);db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(record.sha256,bytes);const old=JSON.stringify(record);db.prepare('UPDATE events SET data=? WHERE id=?').run(old,row.id);db.prepare("DELETE FROM events WHERE kind='message_reply' AND json_extract(data,'$.value.id')='impact-followup'").run();db.close();
   const trace=await readFile(f.trace),replayed=await runMessages(f.store,f.path,true);assert.equal(replayed.completed,true,JSON.stringify(replayed.problems));const runtime=replayed.runtimes.find(x=>x.participant==='impact')!;assert.equal(runtime.ended.proof.successfulCapture,false);assert.equal(runtime.captureVerification!.source,'strict_original_claude_input_recheck');assert.equal(runtime.captureVerification!.proof.successfulCapture,true);assert.equal(replayed.messages[2]!.reply.reportedConsumption,true);assert.deepEqual(await readFile(f.trace),trace);
   const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,true);const check=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.equal((check.prepare('SELECT data FROM events WHERE id=?').get(row.id) as any).data,old);assert.equal((check.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='message_runtime_revalidated'").get() as any).n,1);}finally{check.close();}assert.deepEqual(await readFile(f.trace),trace);
+});
+
+test('an unfamiliar Claude release with the same stream contract works after its installed bytes change, and re-entry does not resend',async t=>{
+  const f=await messageFixture(t,'304');const script=await readFile(f.claude,'utf8');await writeFile(f.claude,script.replaceAll('2.1.304','99.7.0'));
+  const r=await runMessages(f.store,f.path);assert.equal(r.completed,true,JSON.stringify(r.problems));assert.equal(r.newModelRequests,4);
+  const runtime=r.runtimes.find(x=>x.participant==='impact')!,identity=JSON.parse(await readFile(join(runtime.started.directory,'executable.json'),'utf8'));assert.equal(identity.version,'99.7.0 (Claude Code)');
+  const trace=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),trace);
 });

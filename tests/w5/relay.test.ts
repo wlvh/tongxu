@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, cp, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, cp, mkdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hash } from '../../src/snapshot.js';
@@ -11,7 +11,7 @@ import { readCodexExecution } from '../../src/live-codex.js';
 // These are deliberately synthetic process executors. They never import a
 // vendor CLI, read credentials, or make network/model requests.
 async function fixture(t: test.TestContext, mode = '') {
-  const root = await mkdtemp(join(tmpdir(), 'tongxu-relay-fixture-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tongxu-relay-fixture-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const trace = join(root, 'calls.ndjson'); await writeFile(trace, '');
   const script = `#!${process.execPath}
 import fs from 'node:fs'; import readline from 'node:readline';
@@ -68,6 +68,14 @@ test('historical empty-environment captures keep their original feature contract
   const index = launch.args.indexOf('features.stable_environment_tools=false');
   assert.ok(index > 0); launch.args.splice(index - 1, 2);
   await writeFile(join(path, 'launch.json'), JSON.stringify(launch));
+  // Explicitly reconstruct the archived capture shape, rather than pretend a
+  // newly capability-negotiated capture had the old feature contract.
+  const binding=JSON.parse(await readFile(join(path,'binding.json'),'utf8'));
+  binding.protocol='codex-app-server/0.163.0-alpha.10.2';delete binding.runtimeVersion;
+  await writeFile(join(path,'binding.json'),JSON.stringify(binding));
+  const identity=JSON.parse(await readFile(join(path,'executable.json'),'utf8'));
+  delete identity.selection;delete identity.capabilities;
+  await writeFile(join(path,'executable.json'),JSON.stringify(identity));
   const trace = await readFile(f.trace, 'utf8');
   assert.equal((await readCodexExecution(path)).status, 'final_observed');
   config.config.features.stable_environment_tools = true;

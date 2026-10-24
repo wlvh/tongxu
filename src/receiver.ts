@@ -209,7 +209,7 @@ async function runFixedReception(bytes: Buffer) {
       output=await mutex(r.directory, async () => {
         await writeFile(join(r.directory, 'binding-input.json'), prepared.input, { flag: 'wx', mode: 0o600 });
         await writeFile(join(r.directory,'role-prompt.json'),prepared.promptAssembly,{flag:'wx',mode:0o600});
-        await runClaude({ executable: p.claudeExecutable, directory: join(r.directory, 'claude'), system: prepared.system.toString(), input: prepared.input.toString(), timeoutMs: p.timeoutMs,
+        await runClaude({ executionKind:p.executionKind, executable: p.claudeExecutable, directory: join(r.directory, 'claude'), system: prepared.system.toString(), input: prepared.input.toString(), timeoutMs: p.timeoutMs,
           ...(p.governance?{refreshBeforeDispatch:()=>governance.refresh(),dispatchGate:<T>(effect:()=>T)=>{freshBilling(p);return q.receiverEffect(operation,r.bindingHash,governance.observations,effect);}}:{beforeDispatch:()=>{freshBilling(p);q.receiverDispatch(operation,r.bindingHash);}}) });
         return consume(q, operation);
       });
