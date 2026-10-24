@@ -1,16 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,readdir,unlink} from 'node:fs/promises';
+import {readFile,writeFile,readdir,unlink,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {secretaryFixture} from '../w4/secretary-fixture.js';
 import {hash} from '../../src/snapshot.js';
 import {startWorkbench} from '../../src/workbench.js';
 import {SecretaryControls} from '../../src/secretary-controls.js';
-import {closeUnstartedSecretary} from '../../src/secretary.js';
+import {closeUnstartedSecretary,selectSecretaryRuntime} from '../../src/secretary.js';
+import {canonical} from '../../src/comparison.js';
+import {save} from '../../src/live-process.js';
 
 import {secretaryEntryFixture as fixture} from './secretary-entry-fixture.js';
 
 async function waitFor(f:Awaited<ReturnType<typeof fixture>>,condition:(s:any)=>boolean){const until=Date.now()+12000;let state;while(Date.now()<until){state=await f.get();if(condition(state))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('fixture_workbench_question_timeout:'+JSON.stringify(state));}
+
+test('interrupted web registration then CLI upgrade preserves the selected request, permits explicit closure and a new request',async t=>{
+  const f=await fixture(t),requestId='interrupted-registration',question='原组合任务做成了什么，现在还需要处理什么？',directory=join(f.root,hash(requestId));
+  const template=await readFile(f.secretaryPlan),plan=Buffer.from(canonical(await selectSecretaryRuntime({...f.p,question})));
+  await mkdir(directory,{recursive:true,mode:0o700});await writeFile(join(directory,'template.json'),template);await writeFile(join(directory,'input-plan.json'),plan);
+  const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','99.8.0'));
+  assert.equal((await f.post('ask',{requestId,question})).status,202);
+  let state=await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active),old=state.secretaries[0].questions[0];
+  assert.equal(old.requestId,requestId);assert.equal(old.phase,'registered_not_sent');assert.equal(old.reason,'secretary_runtime_or_billing_changed');
+  assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);assert.deepEqual(await readFile(join(directory,'template.json')),template);assert.equal((await f.logs()).length,0);
+  assert.equal((await f.post('ask',{requestId,question:'不能替换原问题'})).status,503);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);
+  assert.equal((await f.post('ask',{requestId,question})).status,202);assert.equal((await f.logs()).length,0);
+  assert.equal((await f.post('ask',{requestId:'new-after-explicit-close',question})).status,202);
+  state=await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='new-after-explicit-close'&&q.phase==='completed'));
+  assert.equal(state.secretaries[0].questions.find((q:any)=>q.requestId===requestId).phase,'closed_unstarted');assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+  assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);assert.deepEqual(await readFile(join(directory,'template.json')),template);
+});
+
+test('atomic web registration is visible before projections and same request restores them without selecting a new CLI',async t=>{
+  const f=await fixture(t),requestId='atomic-before-projections',question='原问题保持不变',directory=join(f.root,hash(requestId));
+  const template=await readFile(f.secretaryPlan),plan=Buffer.from(canonical(await selectSecretaryRuntime({...f.p,question}))),encode=(bytes:Buffer)=>({base64:bytes.toString('base64'),sha256:hash(bytes)});
+  await mkdir(directory,{recursive:true,mode:0o700});
+  save(join(directory,'registration.json'),{schemaVersion:1,kind:'tongxu-web-secretary-registration',request:{schemaVersion:1,kind:'tongxu-workbench-question',source:'selected',item:f.item,store:f.store,requestId,question,templateSha256:hash(template),planSha256:hash(plan),createdAt:new Date().toISOString()},template:encode(template),plan:encode(plan)});
+  const master=await readFile(join(directory,'registration.json'));
+  assert.equal((await f.get()).secretaries[0].questions[0].requestId,requestId);assert.equal((await f.logs()).length,0);
+  assert.equal((await f.post('ask',{requestId,question})).status,202);await waitFor(f,s=>s.secretaries[0].questions[0]?.phase==='completed');
+  const trace=await readFile(f.trace);assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);assert.deepEqual(await readFile(join(directory,'registration.json')),master);
+  assert.equal((await f.post('ask',{requestId,question})).status,202);assert.deepEqual(await readFile(f.trace),trace);
+  await writeFile(join(directory,'input-plan.json'),Buffer.from('conflicting projection'));
+  assert.equal((await f.post('ask',{requestId,question})).status,503);assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(await readFile(join(directory,'registration.json')),master);
+});
 
 test('a CLI update after installation uses the same normal entry without editing its template; old answers survive another update',async t=>{
   const f=await fixture(t),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
