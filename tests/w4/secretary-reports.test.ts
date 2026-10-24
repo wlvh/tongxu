@@ -38,6 +38,7 @@ test('full report/source tools reject unselected operations, extra arguments, fo
   await assert.rejects(readSecretarySources(f.store,f.item,f.p.candidate,{...selection,profileSha256:'0'.repeat(64)},'fixture',join(f.root,'wrong-profile')),/selection_changed/);
   await assert.rejects(readSecretarySources(f.store,f.item,f.p.candidate,selection,'native_capture',join(f.root,'wrong-kind')),/selection_changed/);
   assert.equal((await s.get()).requests.length,0);
+  await s.change({reportedRepo:'other/repository'});const foreign=await readSecretarySources(f.store,f.item,f.p.candidate,selection,'fixture',join(f.root,'foreign-original'));assert.equal(foreign.originalIdentityVerified,false);assert.equal(foreign.currentCandidate,null);assert.ok(foreign.documents.every((d:any)=>d.kind==='comments'&&d.value.length===0));
 });
 
 test('missing related source retains original closeout and a large source observation remains replayable with explicit omissions',async t=>{
@@ -45,7 +46,7 @@ test('missing related source retains original closeout and a large source observ
   await s.change({H:f.p.candidate.H,B:f.p.candidate.B,target:f.p.candidate.target,prState:'closed',comments:Array.from({length:40},(_,i)=>({id:100+i,user:{id:1},body:'明确测试正文"\\'.repeat(2400),html_url:'https://github.com/fixture/reception/pull/1#issuecomment-'+(100+i)}))});f.q.events().configure(Buffer.from(canonical(s.profile)));
   const dir=join(f.root,'bounded-source-query');await mkdir(dir);const selection={profileSha256:hash(canonical(s.profile)),relatedPulls:[77]},gate=new SecretaryTools(f.store,f.item,f.p.candidate,dir,undefined,false,false,undefined,false,undefined,true,selection,'fixture');
   const request={tool:'tongxu_task_sources',arguments:{},callId:'source-with-gap'},reply=await gate.call(request),data=JSON.parse(reply.contentItems[0].text).data;
-  assert.equal(data.currentCandidate.state,'closed');assert.equal(data.observedCandidateMatchesTask,true);assert.equal(data.related[0].available,false);assert.equal(data.related[0].status,404);assert.ok(data.gaps.includes('related_77_source_http_404'));assert.equal(data.sourceReadComplete,false);
+  assert.equal(data.currentCandidate.state,'closed');assert.equal(data.observedCandidateMatchesTask,true);assert.equal(data.related[0].available,false);assert.equal(data.related[0].status,404);assert.ok(data.gaps.includes('related_77_source_http_404'));assert.equal(data.sourceReadComplete,false);assert.equal(data.originalSourceReadComplete,true);assert.equal(data.relatedSourcesComplete,false);assert.equal(data.projectionComplete,false);
   assert.ok(data.omissions.length>0);assert.equal(data.documents.find((d:any)=>d.kind==='comments').omittedCount,8);assert.ok(Buffer.byteLength(JSON.stringify(data))<128*1024);
   const file=await readFile(join(dir,'queries/source-with-gap.json'));assert.ok(file.length<1024*1024);assert.equal((await gate.observations()).length,1);const reads=(await s.get()).requests.length;
   assert.deepEqual(await gate.call(request),reply);assert.equal((await s.get()).requests.length,reads);assert.deepEqual(await readFile(join(dir,'queries/source-with-gap.json')),file);

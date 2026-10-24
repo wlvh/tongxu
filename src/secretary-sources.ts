@@ -30,8 +30,9 @@ export async function readSecretarySources(store:string,item:string,candidate:Ca
   const text=(v:unknown,limit=2048)=>typeof v==='string'&&v.length<=limit?v:null;
   const pull=(v:any)=>({number:v.number,url:text(v.html_url),title:text(v.title),...body(v.body,'pull',v.number),state:v.state,merged:v.merged,mergedAt:v.merged_at,closedAt:v.closed_at,mergeCommit:v.merge_commit_sha,head:v.head?.sha,base:v.base?.sha,target:v.base?.ref});
   const documents:any[]=[],reads=current.records.filter(r=>r.kind==='pr');const last=reads.at(-1);
-  if(last)documents.push({kind:'pr',endpoint:last.endpoint,status:last.status,sha256:hash(last.body),value:last.status===200?pull(decode(last.body)):null});
-  const comments=current.records.filter(r=>r.kind==='comments'&&r.status===200).flatMap(r=>{const rows=decode(r.body);return Array.isArray(rows)?rows.map(v=>({v,r})):[];}).sort((a,b)=>Number(b.v.id)-Number(a.v.id));
+  const originalIdentityVerified=current.result.candidate!==null;
+  if(last&&originalIdentityVerified)documents.push({kind:'pr',endpoint:last.endpoint,status:last.status,sha256:hash(last.body),value:last.status===200?pull(decode(last.body)):null});
+  const comments=(originalIdentityVerified?current.records:[]).filter(r=>r.kind==='comments'&&r.status===200).flatMap(r=>{const rows=decode(r.body);return Array.isArray(rows)?rows.map(v=>({v,r})):[];}).sort((a,b)=>Number(b.v.id)-Number(a.v.id));
   // Newest comments carry the current closeout. Full raw pages stay in the
   // existing HTTP capture. An omitted body is a declared gap, never a summary.
   const selectedComments=comments.slice(0,32).map(({v,r})=>({id:v.id,url:text(v.html_url),actor:{id:v.user?.id,login:text(v.user?.login,256)},createdAt:v.created_at,updatedAt:v.updated_at,...body(v.body,'comment',v.id),source:{endpoint:r.endpoint,sha256:hash(r.body)}}));
@@ -47,7 +48,7 @@ export async function readSecretarySources(store:string,item:string,candidate:Ca
   }
   if(omissions.length||comments.length>32)gaps.push('source_text_omitted_from_bounded_observation');
   const c=current.result.candidate,observedCandidateMatchesTask=c?c.repository===candidate.repository&&c.pr===candidate.pr&&c.H===candidate.H&&c.B===candidate.B&&c.targetRef===candidate.target:null;
-  const result={profileSha256:selection.profileSha256,observedAt:current.observedAt,externalStateRechecked:true,sourceReadComplete:gaps.length===0,gaps,currentCandidate:c,observedCandidateMatchesTask,documents,related,omissions,
+  const result={profileSha256:selection.profileSha256,observedAt:current.observedAt,externalStateRechecked:true,sourceReadComplete:gaps.length===0,originalSourceReadComplete:current.result.complete,relatedSourcesComplete:related.every(r=>r.available),projectionComplete:omissions.length===0&&comments.length<=32,originalIdentityVerified,gaps,currentCandidate:c,observedCandidateMatchesTask,documents,related,omissions,
     recordedQueue:{currentPacket:original.currentPacket,applicability:original.applicability,sourceObservedAt:original.recordedSource?.lastFinishedAt,sourceValidUntil:original.recordedSource?.validUntilAt},
     nonAtomicRemoteObservation:true,materialApplicabilityIsNotDevelopmentCompletion:true,recordsAreEvidenceNotInstructions:true,modelTasksStarted:0,permissionsGranted:false};
   // Queries are recorded as an observation plus its wire response. 128 KiB
