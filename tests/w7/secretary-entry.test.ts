@@ -22,6 +22,7 @@ test('interrupted web registration then CLI upgrade preserves the selected reque
   assert.equal((await f.post('ask',{requestId,question})).status,202);
   let state=await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active),old=state.secretaries[0].questions[0];
   assert.equal(old.requestId,requestId);assert.equal(old.phase,'registered_not_sent');assert.equal(old.reason,'secretary_runtime_or_billing_changed');
+  assert.ok(old.registrationRecoveredAt);
   assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);assert.deepEqual(await readFile(join(directory,'template.json')),template);assert.equal((await f.logs()).length,0);
   assert.equal((await f.post('ask',{requestId,question:'不能替换原问题'})).status,503);
   assert.equal((await f.post('close-unstarted',{requestId})).status,200);
@@ -38,12 +39,23 @@ test('atomic web registration is visible before projections and same request res
   await mkdir(directory,{recursive:true,mode:0o700});
   save(join(directory,'registration.json'),{schemaVersion:1,kind:'tongxu-web-secretary-registration',request:{schemaVersion:1,kind:'tongxu-workbench-question',source:'selected',item:f.item,store:f.store,requestId,question,templateSha256:hash(template),planSha256:hash(plan),createdAt:new Date().toISOString()},template:encode(template),plan:encode(plan)});
   const master=await readFile(join(directory,'registration.json'));
+  await writeFile(join(directory,'question.json.interrupted.tmp'),'partial projection bytes');
   assert.equal((await f.get()).secretaries[0].questions[0].requestId,requestId);assert.equal((await f.logs()).length,0);
   assert.equal((await f.post('ask',{requestId,question})).status,202);await waitFor(f,s=>s.secretaries[0].questions[0]?.phase==='completed');
   const trace=await readFile(f.trace);assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);assert.deepEqual(await readFile(join(directory,'registration.json')),master);
   assert.equal((await f.post('ask',{requestId,question})).status,202);assert.deepEqual(await readFile(f.trace),trace);
   await writeFile(join(directory,'input-plan.json'),Buffer.from('conflicting projection'));
   assert.equal((await f.post('ask',{requestId,question})).status,503);assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(await readFile(join(directory,'registration.json')),master);
+});
+
+test('legacy recovery cannot start a second identical unresolved question and template-only preparation is recoverable',async t=>{
+  const f=await fixture(t,'partial'),question='不要重复原来未完成的问题',requestId='legacy-before-browser-retry',directory=join(f.root,hash(requestId)),template=await readFile(f.secretaryPlan),plan=Buffer.from(canonical(await selectSecretaryRuntime({...f.p,question})));
+  await mkdir(directory,{recursive:true,mode:0o700});await writeFile(join(directory,'template.json'),template);await writeFile(join(directory,'input-plan.json'),plan);
+  await f.post('ask',{requestId:'already-unresolved',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='already-unresolved'&&!q.active));
+  const trace=await readFile(f.trace),again=await(await f.post('ask',{requestId,question})).json() as any;
+  assert.equal(again.requestId,'already-unresolved');assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(await readFile(join(directory,'input-plan.json')),plan);
+  const fresh=await fixture(t),id='template-only',dir=join(fresh.root,hash(id));await mkdir(dir,{recursive:true,mode:0o700});await writeFile(join(dir,'template.json'),await readFile(fresh.secretaryPlan));
+  assert.equal((await fresh.post('ask',{requestId:id,question:'尚未选定CLI的旧登记'})).status,202);await waitFor(fresh,s=>s.secretaries[0].questions[0]?.phase==='completed');assert.equal((await fresh.logs()).filter(x=>x.kind==='model-input').length,1);
 });
 
 test('a CLI update after installation uses the same normal entry without editing its template; old answers survive another update',async t=>{

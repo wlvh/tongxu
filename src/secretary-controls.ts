@@ -1,4 +1,5 @@
-import {writeFile,readdir} from 'node:fs/promises';
+import {writeFile,readdir,rename,unlink} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {hash,privateDirectory} from './snapshot.js';
@@ -12,10 +13,18 @@ import {save} from './live-process.js';
 type Source={id:string;store:string;item:string};
 type Entry={source:string;title:string;template:{path:string;sha256:string};outputRoot:string};
 type Frozen={entry:Entry;source:Source;template:Buffer;plan:SecretaryPlan};
-type Question={schemaVersion:1;kind:'tongxu-workbench-question';source:string;item:string;store:string;requestId:string;question:string;templateSha256:string;planSha256:string;createdAt:string};
+type Question={schemaVersion:1;kind:'tongxu-workbench-question';source:string;item:string;store:string;requestId:string;question:string;templateSha256:string;planSha256:string;createdAt:string;registrationRecoveredAt?:string};
 type Registration={directory:string;request:Question;template:Buffer;plan:Buffer};
 const errorCode=(e:unknown)=>e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'secretary_original_unknown';
 async function fixed(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(!(await regular(path)).equals(bytes))throw new Error('secretary_question_id_changed');}}
+async function projection(path:string,bytes:Buffer){
+  if(await exists(path)){if(!(await regular(path,128*1024)).equals(bytes))throw new Error('secretary_question_id_changed');return;}
+  // The registration transaction excludes competing publishers. A partial
+  // write stays in a private temporary file, never at the projection path.
+  const temporary=path+'.'+randomUUID()+'.tmp';
+  try{await writeFile(temporary,bytes,{flag:'wx',mode:0o600});if(await exists(path)){if(!(await regular(path,128*1024)).equals(bytes))throw new Error('secretary_question_id_changed');}else await rename(temporary,path);}
+  finally{await unlink(temporary).catch(e=>{if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;});}
+}
 async function ensure(path:string){try{await privateDirectory(path,true);}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;await privateDirectory(path,false);}}
 
 /** The page selects a fixed original secretary. User input can change only the
@@ -78,10 +87,14 @@ export class SecretaryControls {
   private async restoreRegistration(original:Registration){
     // Called only under the existing registration transaction. These are
     // recoverable projections, never permission to replace conflicting bytes.
-    await fixed(join(original.directory,'template.json'),original.template);await fixed(join(original.directory,'input-plan.json'),original.plan);await fixed(join(original.directory,'question.json'),Buffer.from(canonical(original.request)));
+    await projection(join(original.directory,'template.json'),original.template);await projection(join(original.directory,'input-plan.json'),original.plan);await projection(join(original.directory,'question.json'),Buffer.from(canonical(original.request)));
+  }
+  private async pendingQuestion(f:Frozen,question:string){
+    for(const q of (await this.questions(f)).filter(q=>q.request.question===question)){const state=await this.view(f,q);if(state.active||['registered_not_sent','submitted_or_unknown'].includes(state.phase))return this.original(f,q.directory);}
+    return undefined;
   }
   private async view(f:Frozen,original:{directory:string;request:Question},full=false){
-    const {directory,request}=original,output=join(directory,'execution'),base={requestId:request.requestId,question:request.question,createdAt:request.createdAt,templateSha256:request.templateSha256,active:this.active.has(directory),controllerRecordProblem:this.problems.get(directory)??null,newModelTasks:0};
+    const {directory,request}=original,output=join(directory,'execution'),base={requestId:request.requestId,question:request.question,createdAt:request.createdAt,...(request.registrationRecoveredAt?{registrationRecoveredAt:request.registrationRecoveredAt}:{}),templateSha256:request.templateSha256,active:this.active.has(directory),controllerRecordProblem:this.problems.get(directory)??null,newModelTasks:0};
     if(await exists(join(output,'closed-unstarted.json')))return {...base,phase:'closed_unstarted',canResume:false};
     try{const result=await readSecretaryResult(join(directory,'input-plan.json'),output);return {...base,phase:'completed',canResume:false,executionKind:result.executionKind,sessionId:result.sessionId,turnId:result.turnId,reportSha256:hash(result.report),...(full?{result}:{})};}
     catch(e){const sent=await exists(join(output,'codex-secretary')),last=await exists(join(directory,'controller-return.json'))?JSON.parse((await regular(join(directory,'controller-return.json'))).toString()):null;return {...base,phase:sent?'submitted_or_unknown':'registered_not_sent',canResume:!base.active,reason:base.active?null:last?.reason??(sent?errorCode(e):null),automaticResend:false};}
@@ -110,24 +123,26 @@ export class SecretaryControls {
         if(await exists(join(directory,'execution')))throw new Error('secretary_question_original_missing');
         const template=await regular(join(directory,'template.json'),128*1024),plan=await regular(join(directory,'input-plan.json'),128*1024),selected=parseSecretaryPlan(plan);
         if(selected.question!==body.question)throw new Error('secretary_question_id_changed');
-        const request:Question={schemaVersion:1,kind:'tongxu-workbench-question',source:f.source.id,item:f.source.item,store:f.source.store,requestId:body.requestId,question:body.question,templateSha256:hash(template),planSha256:hash(plan),createdAt:new Date().toISOString()};
-        original=this.validateOriginal(f,directory,request,template,plan);this.saveRegistration(original);
+        const pending=await this.pendingQuestion(f,body.question);
+        if(pending)original=pending;
+        else{const recoveredAt=new Date().toISOString(),request:Question={schemaVersion:1,kind:'tongxu-workbench-question',source:f.source.id,item:f.source.item,store:f.source.store,requestId:body.requestId,question:body.question,templateSha256:hash(template),planSha256:hash(plan),createdAt:recoveredAt,registrationRecoveredAt:recoveredAt};
+          original=this.validateOriginal(f,directory,request,template,plan);this.saveRegistration(original);}
       }
       else{
         // An unresolved identical question cannot be evaded by another UI nonce
         // or a newly selected template. A known completed question may be asked
         // again deliberately; retries keep their original request ID.
-        let pending:Registration|undefined;
-        for(const q of (await this.questions(f)).filter(q=>q.request.question===body.question)){const state=await this.view(f,q);if(state.active||['registered_not_sent','submitted_or_unknown'].includes(state.phase)){pending=await this.original(f,q.directory);break;}}
+        const pending=await this.pendingQuestion(f,body.question);
         if(pending)original=pending;
         else{
           if((await this.questions(f)).length>=4096)throw new Error('secretary_question_history_limit');await ensure(directory);
           // Resolve the configured installed CLI for this new question only.
           // Re-entry reads the original question before ever probing again.
-          if(await exists(join(directory,'template.json'))||await exists(join(directory,'execution')))throw new Error('secretary_registration_incomplete');
-          const plan=Buffer.from(canonical(await selectSecretaryRuntime({...f.plan,question:body.question},true)));
-          const request:Question={schemaVersion:1,kind:'tongxu-workbench-question',source:f.source.id,item:f.source.item,store:f.source.store,requestId:body.requestId,question:body.question,templateSha256:hash(f.template),planSha256:hash(plan),createdAt:new Date().toISOString()};
-          original={directory,request,template:f.template,plan};this.saveRegistration(original);
+          if(await exists(join(directory,'execution')))throw new Error('secretary_registration_incomplete');
+          const template=await exists(join(directory,'template.json'))?await regular(join(directory,'template.json'),128*1024):f.template;
+          const plan=Buffer.from(canonical(await selectSecretaryRuntime({...parseSecretaryPlan(template),question:body.question},true)));
+          const request:Question={schemaVersion:1,kind:'tongxu-workbench-question',source:f.source.id,item:f.source.item,store:f.source.store,requestId:body.requestId,question:body.question,templateSha256:hash(template),planSha256:hash(plan),createdAt:new Date().toISOString()};
+          original=this.validateOriginal(f,directory,request,template,plan);this.saveRegistration(original);
         }
       }
       await this.restoreRegistration(original);
