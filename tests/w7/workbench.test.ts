@@ -9,10 +9,11 @@ import { runReception } from '../../src/receiver.js';
 import { parseWorkbenchPlan, receptionStage, startWorkbench } from '../../src/workbench.js';
 import { publication } from '../../src/publisher.js';
 import { hash } from '../../src/snapshot.js';
+import {nativeReceptionFixture} from './native-reception-fixture.js';
 
 async function fixture(t: test.TestContext, nativeShapedFixture = false) {
   const f = await setup(t);
-  if (nativeShapedFixture) await writeFile(f.path, JSON.stringify({ ...f.plan, executionKind: 'native_capture' }));
+  if (nativeShapedFixture) {await nativeReceptionFixture(f.plan.claudeExecutable,f.trace);await writeFile(f.path, JSON.stringify({ ...f.plan, executionKind: 'native_capture' }));}
   const result = await runReception(f.path);
   const p = { schemaVersion: 1, kind: 'tongxu-local-workbench', title: '明确测试夹具', goal: '测试现有队列的只读呈现，不是真实模型或产品接收。', sources: [{ id: 'selected', title: '固定测试任务', store: f.store, item: f.item }] };
   const path = join(f.root, 'workbench.json'); await writeFile(path, JSON.stringify(p));

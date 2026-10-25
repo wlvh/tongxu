@@ -126,10 +126,7 @@ export async function workbenchState(p: WorkbenchPlan) {
 }
 async function workbenchReport(p: WorkbenchPlan, source: string, operation: string) {
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
-  const q = await QueueStore.observe(s.store, [s.item], [operation]), o = q.operations.find((o: Row) => o.item === s.item && o.id === operation), j = o?.result?.receiver?.judgment;
-  if (o?.invalidOutput !== undefined) return { source,operation,judgmentId:null,verdict:'INVALID_RESULT',report:o.invalidOutput,reportSha256:hash(o.invalidOutput), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}),stage:receptionStage(o),nativeExecution:o.nativeExecution,invalidResult:o.result.receiver.invalidResult,findings:[],productionActionAllowed:false };
-  if (!j) throw new Error('report_not_found');
-  return { source, operation, judgmentId: j.judgmentId, verdict: j.verdict, report: j.report, reportSha256: hash(j.report), ...(o.result.receiver.subject?{subject:o.result.receiver.subject,subjectSha256:o.result.receiver.subjectSha256}:{}), stage: receptionStage(o), nativeExecution: o.nativeExecution, findings: j.findings, productionActionAllowed: false };
+  return {source,...await QueueStore.observeReceptionReport(s.store,s.item,operation)};
 }
 export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity) {
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');

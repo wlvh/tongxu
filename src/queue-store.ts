@@ -152,6 +152,26 @@ export class QueueStore {
     const q = await this.connect(directory, true);
     try { return q.status(receiverMetadataFor,invalidOutputFor,collaborationFor); } finally { q.close(); }
   }
+  /** Shared page/secretary reader. Operation identity is checked before any
+   * original text is returned; the captured judgment is never rewritten. */
+  static async observeReceptionReport(directory:string,itemId:string,operation:string){
+    const q=await this.connect(directory,true);
+    try{q.db.exec('BEGIN');const selected=q.db.prepare('SELECT item FROM operations WHERE id=?').get(operation) as Row|undefined;if(selected?.item!==itemId)throw new Error('report_not_found');const {op,result,receiver}=q.receiverOperation(operation);
+      const item=q.item(itemId),packet=q.packet(op.packet),e=q.packetEvidence(packet),r=q.currentReceiverResult(op,result)?.receiver,j=receiver?.judgment;
+      const invalid=receiver?.invalidResult,report=invalid?q.blob(invalid.finalTextSha256).toString():j?.report;if(typeof report!=='string')throw new Error('report_not_found');
+      const material=parse(packet,'summary'),sources=(e.manifest.rounds??[]).flatMap((round:any)=>(round.sources??[]).map((s:any)=>({id:s.id,url:s.url,bodySha256:s.bodyHash,observedAt:round.finishedAt??round.startedAt})));
+      return JSON.parse(JSON.stringify({operation,judgmentId:invalid?null:j.judgmentId,verdict:invalid?'INVALID_RESULT':j.verdict,report,reportSha256:hash(report),findings:invalid?[]:j.findings,stage:invalid?'returned_invalid':r.currentMaterialMatches===false?'historical_result':'returned',nativeExecution:q.receiverMetadata(receiver),...(invalid?{invalidResult:invalid}:{}),...(receiver?.subject?{subject:receiver.subject,subjectSha256:receiver.subjectSha256}:{}),
+        originalCandidate:e.manifest.candidate,scope:e.context.scope,arrangement:e.context.arrangement,packet:op.packet,currentPacket:item.current_packet,fingerprint:packet.fingerprint,manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,inputSha256:receiver?.inputSha256,bindingHash:receiver?.bindingHash,materialMatchedAtReturn:r?.materialMatchedAtReturn,currentMaterialMatches:r?.currentMaterialMatches,
+        supplement:material.supplement?{previousPacket:material.supplement.previousPacket,previousOperation:material.supplement.previousOperation,source:material.supplement.source,reason:material.supplement.reason,material:material.supplement.material}:null,sourceReferences:sources,productionActionAllowed:false}));
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  static async observeTaskEventSource(directory:string,itemId:string){
+    const q=await this.connect(directory,true);
+    try{q.db.exec('BEGIN');const item=q.item(itemId),candidate=parse(item,'candidate'),events=new EventRecords(q.db,fn=>fn(),directory),profile=events.configuration();
+      if(candidate.kind==='development-task'||profile.repository.toLowerCase()!==candidate.repository.toLowerCase()||!profile.prs.includes(candidate.pr))throw new Error('secretary_source_task_not_registered');
+      return {candidate,profile,recordedSource:events.status().subjects.find(s=>s.pr===candidate.pr),applicability:q.itemStatus(item).eventSource,currentPacket:item.current_packet};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   static async observeMessageReport(directory:string,item:string,run:string,message:string){
     const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.collaborationView().messageReport(item,run,message);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
