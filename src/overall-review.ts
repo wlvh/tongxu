@@ -1,3 +1,4 @@
+import {cliVersion} from './cli-capabilities.js';
 import { writeFile,readFile,mkdir } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -56,7 +57,7 @@ async function unstartedProof(stage:string,executable:string){
   const names=['launch.json','process.json','exit.json','executable.json','expected-requests.json','stdout.ndjson','stdin.ndjson','stderr.txt','capture-status.json'],originals:Record<string,Buffer>={};let size=0;
   for(const name of names){const bytes=await regular(join(stage,name),1024*1024);size+=bytes.length;if(size>4*1024*1024)throw new Error('overall_unstarted_capture_limit');originals[name]=bytes;}
   const json=(name:string)=>JSON.parse(originals[name]!.toString()),launch=json('launch.json'),process=json('process.json'),exit=json('exit.json'),identity=json('executable.json');
-  if(!Number.isSafeInteger(process.pid)||process.pid<=0||processState(process.pid)!=='ended'||exit.code!==0||exit.signal!==null||launch.command!==executable||identity.path!==executable||identity.version!=='codex-cli 0.163.0-alpha.10.2'||launch.cwd!==join(stage,'workspace'))throw new Error('overall_native_execution_started_or_unknown');
+  if(!Number.isSafeInteger(process.pid)||process.pid<=0||processState(process.pid)!=='ended'||exit.code!==0||exit.signal!==null||launch.command!==executable||identity.path!==executable||!cliVersion(identity.version,'codex')||launch.cwd!==join(stage,'workspace'))throw new Error('overall_native_execution_started_or_unknown');
   await checkCapture(stage);
   const frames=(bytes:Buffer)=>{if(!bytes.length)return [];if(bytes.at(-1)!==10)throw new Error('overall_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(bytes).trim().split('\n').map(x=>JSON.parse(x));};
   const sent=frames(originals['stdin.ndjson']!),received=frames(originals['stdout.ndjson']!),contract=json('expected-requests.json'),methods=['initialize','initialized','account/read','account/rateLimits/read','config/read','thread/start'];

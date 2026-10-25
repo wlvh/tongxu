@@ -14,6 +14,7 @@
 - [影子接收：持久材料、控制、前置与原操作恢复](docs/w3_shadow_queue.md)
 - [已有 Codex 的无模型隔离自检](docs/w4_native_inspection.md)
 - [Codex 原结果：导入、追加、重放和交接输入](docs/codex_result_adapter.md)
+- [官方CLI升级后的能力核验与原结果保留](docs/cli_capabilities.md)：按实际协议和权限接入，版本号不作为新运行白名单。
 - [真实只读协作：两轮、Claude 接收与 Codex 综合](docs/local_readonly_relay.md)
 - [受控修复：限定写权、固定测试和新候选再审](docs/controlled_repair.md)
 - [本机组合：固定来源、统一入口与接收前边界](docs/local_reception_integration.md)

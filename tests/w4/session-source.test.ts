@@ -13,8 +13,10 @@ test('actual readonly child observes only the specified session; old creation ve
 test('missing original or wrong session keeps full read failure and never starts a replacement',async t=>{
   for(const mode of ['missing','wrong-thread']){const f=await fixture(t,mode),o=await readExactCodexSession(f.spec,join(f.root,'read'));assert.equal(o.metadata,null);assert.ok(o.gap);assert.equal(o.modelRequestsSent,0);assert.ok(o.originals['stdout.ndjson']!.length);assert.ok(!o.originals['stdin.ndjson']!.toString().includes('thread/start'));assert.equal(requireSessionObservation(o,f.spec).gap,o.gap);}
 });
-test('changed executable or reused output fails before a new session read',async t=>{
-  const f=await fixture(t);await assert.rejects(readExactCodexSession({...f.spec,executableSha256:'0'.repeat(64)},join(f.root,'wrong-executable')),/executable_changed/);
+test('historical setup fingerprint does not pin a new read; selected identity is recorded and output is never reused',async t=>{
+  const f=await fixture(t),spec={...f.spec,executableSha256:'0'.repeat(64)},selected=await readExactCodexSession(spec,join(f.root,'new-selection'));
+  assert.equal(selected.reader.sha256,f.spec.executableSha256);assert.equal(selected.spec.executableSha256,spec.executableSha256);assert.equal(selected.modelRequestsSent,0);
+  assert.equal((await replaySessionRead(spec,selected.directory)).reader.sha256,selected.reader.sha256);
   await readExactCodexSession(f.spec,join(f.root,'original'));await assert.rejects(readExactCodexSession(f.spec,join(f.root,'original')));
 });
 test('first exact thread lookup discovers unknown session and workspace; known expectations still match strictly',async t=>{

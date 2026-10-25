@@ -1,3 +1,4 @@
+import {cliVersion,capturedExecutableMatches} from './cli-capabilities.js';
 import { mkdir } from 'node:fs/promises';
 import { join,isAbsolute,resolve } from 'node:path';
 import { canonical } from './comparison.js';
@@ -30,8 +31,8 @@ function metadataOf(result:Row,spec:SessionReadSpec){
 export async function readExactCodexSession(spec:SessionReadSpec,directory:string):Promise<SessionObservation>{
   spec=parseSessionReadSpec(Buffer.from(canonical(spec)));await newStage(directory);
   save(join(directory,'read-spec.json'),spec);
-  if(hash(await regular(spec.executable,512*1024*1024))!==spec.executableSha256)throw new Error('session_reader_executable_changed');
-  const reader=await executable(spec.executable,'codex-cli 0.163.0-alpha.10.2');if(reader.sha256!==spec.executableSha256)throw new Error('session_reader_executable_changed');save(join(directory,'executable.json'),reader);
+
+  const reader=await executable(spec.executable,{tool:'codex',methods:['initialize','thread/read']},spec.executionKind);if(!capturedExecutableMatches(reader,spec.executable,spec.executableSha256))throw new Error('session_reader_executable_changed');save(join(directory,'executable.json'),reader);
   for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])if(process.env[key])throw new Error('api_billing_override_present');
   const cwd=join(directory,'reader-workspace');await mkdir(cwd,{mode:0o700});
   const args=readerArgs(spec);
@@ -43,7 +44,7 @@ export async function readExactCodexSession(spec:SessionReadSpec,directory:strin
     metadata=metadataOf(await rpc.request('thread/read',{threadId:spec.threadId,includeTurns:false}),spec);
   }catch(e){gap=e instanceof Error?e.message:'native_session_read_unknown';}
   finally{await rpc.close();}
-  try{await checkCapture(directory);if(rpc.failure||rpc.exit?.code!==0||rpc.events.some(e=>e.method==='turn/started'||e.method==='item/tool/call'))throw new Error('session_reader_capture_or_boundary_failed');if(hash(await regular(spec.executable,512*1024*1024))!==spec.executableSha256)throw new Error('session_reader_executable_changed');}
+  try{await checkCapture(directory);if(rpc.failure||rpc.exit?.code!==0||rpc.events.some(e=>e.method==='turn/started'||e.method==='item/tool/call'))throw new Error('session_reader_capture_or_boundary_failed');}
   catch(e){metadata=null;gap=e instanceof Error?e.message:'session_reader_capture_unknown';}
   const originals:Record<string,Buffer>={};for(const name of ['read-spec.json','executable.json','launch.json','process.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json'])originals[name]=await regular(join(directory,name),16*1024*1024);
   if(!rpc.failure&&rpc.exit?.code===0)try{const checked=await replaySessionRead(spec,directory);metadata=checked.metadata;gap=checked.gap;}catch(e){metadata=null;gap=e instanceof Error?e.message:'session_reader_transcript_unknown';}
@@ -60,7 +61,7 @@ export async function replaySessionRead(spec:SessionReadSpec,directory:string):P
   const originals:Record<string,Buffer>={};for(const name of ['read-spec.json','executable.json','launch.json','process.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json'])originals[name]=await regular(join(directory,name),16*1024*1024);
   const decode=(name:string)=>JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(originals[name]!)),lines=(name:string)=>{const raw=originals[name]!;if(!raw.length||raw.at(-1)!==10)throw new Error('session_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(raw).trim().split('\n').map(x=>JSON.parse(x));};
   const reader=decode('executable.json'),launch=decode('launch.json'),exit=decode('exit.json'),cwd=join(directory,'reader-workspace');
-  if(canonical(decode('read-spec.json'))!==canonical(spec)||reader.sha256!==spec.executableSha256||reader.path!==spec.executable||reader.realpath!==spec.executable||reader.version!=='codex-cli 0.163.0-alpha.10.2'||launch.command!==spec.executable||launch.cwd!==cwd||canonical(launch.args)!==canonical(readerArgs(spec))||exit.code!==0||exit.signal!==null||!Number.isFinite(Date.parse(exit.at)))throw new Error('session_original_reader_contract_mismatch');
+  if(canonical(decode('read-spec.json'))!==canonical(spec)||!capturedExecutableMatches(reader,spec.executable,spec.executableSha256)||reader.path!==spec.executable||reader.realpath!==spec.executable||!cliVersion(reader.version,'codex')||launch.command!==spec.executable||launch.cwd!==cwd||canonical(launch.args)!==canonical(readerArgs(spec))||exit.code!==0||exit.signal!==null||!Number.isFinite(Date.parse(exit.at)))throw new Error('session_original_reader_contract_mismatch');
   const sent=lines('stdin.ndjson'),received=lines('stdout.ndjson'),initial=[{id:1,method:'initialize',params:{clientInfo:{name:'tongxu-exact-session-reader',version:'0.1.0'},capabilities:{experimentalApi:true}}},{method:'initialized',params:{}}];
   const current=[...initial,{id:2,method:'thread/read',params:{threadId:spec.threadId,includeTurns:false}}],legacy=[...initial,{id:2,method:'config/read',params:{includeLayers:false,cwd}},{id:3,method:'thread/read',params:{threadId:spec.threadId,includeTurns:false}}],legacyRead=canonical(sent)===canonical(legacy);
   if(canonical(sent)!==canonical(current)&&!legacyRead||received.some((m:Row)=>m.method==='turn/started'||m.method==='item/tool/call'||m.method&&m.id!==undefined))throw new Error('session_original_read_boundary_changed');

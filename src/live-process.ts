@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
+import {cliVersion,probeCliCapabilities,type CliRequirement} from './cli-capabilities.js';
 
 export const save = (path: string, value: unknown) => {
   const temporary = path + '.' + randomUUID() + '.tmp';
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); renameSync(temporary, path);
 };
-export async function executable(path: string, expected: string | readonly string[]) {
+export async function executable(path: string, requirement: CliRequirement, executionKind:'fixture'|'native_capture'='native_capture') {
   if (!isAbsolute(path)) throw new Error('executable_must_be_absolute');
   const actual = await realpath(path), info = await stat(actual);
   if (!info.isFile() || !(info.mode & 0o111)) throw new Error('invalid_executable');
@@ -19,8 +20,12 @@ export async function executable(path: string, expected: string | readonly strin
     p.stdout.on('data', b => { text += b; }); p.stderr.resume(); p.once('error', reject);
     p.once('close', code => { clearTimeout(timer); code === 0 ? resolve(text.trim()) : reject(new Error('version_failed')); });
   });
-  if (!(typeof expected === 'string' ? version === expected : expected.includes(version))) throw new Error('executor_version_mismatch');
-  return { path, realpath: actual, version, sha256: hash(await readFile(actual)) };
+  const sha256=hash(await readFile(actual));
+  cliVersion(version,requirement.tool);
+  const capabilities=await probeCliCapabilities(path,requirement,executionKind);
+  if('initialization'in capabilities&&capabilities.initialization.reportedVersion!==cliVersion(version,'claude'))throw new Error('executor_changed_during_capability_check');
+  if(await realpath(path)!==actual||hash(await readFile(actual))!==sha256)throw new Error('executor_changed_during_capability_check');
+  return {path,realpath:actual,version,sha256,selection:'configured-current-v1' as const,capabilities};
 }
 
 /** A new owned process only. Raw bytes are durable before interpretation. Never retries. */

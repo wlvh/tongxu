@@ -1,20 +1,26 @@
 import { canonical } from './comparison.js';
+import {cliVersion,claudeConversation} from './cli-capabilities.js';
 
 type Row=Record<string,any>;
-export type MessageClaudeVersion='2.1.233'|'2.1.304';
-export const messageClaudeExecutables=['2.1.233 (Claude Code)','2.1.304 (Claude Code)'] as const;
+export type MessageClaudeVersion=string;
+export type MessageClaudeContract='legacy-stream-v1'|'composed-command-v1';
+export const messageClaudeRequirements=claudeConversation;
 export function messageClaudeVersion(identity:string):MessageClaudeVersion {
-  if(identity==='2.1.233 (Claude Code)')return '2.1.233';
-  if(identity==='2.1.304 (Claude Code)')return '2.1.304';
-  throw new Error('message_claude_unsupported_version');
+  return cliVersion(identity,'claude');
+}
+/** Only historical captures/explicit fixtures select the old wire contract.
+ * Installed CLIs are admitted by the probe and use the checked stream contract. */
+export function messageClaudeContract(identity:any):MessageClaudeContract{
+  if(identity?.selection==='configured-current-v1'&&identity.capabilities?.source!=='explicit_fixture')return 'composed-command-v1';
+  return identity.version==='2.1.233 (Claude Code)'?'legacy-stream-v1':'composed-command-v1';
 }
 export function checkMessageClaudeInit(init:Row,session:string,version:MessageClaudeVersion){
   if(init.type!=='system'||init.subtype!=='init'||init.session_id!==session||init.claude_code_version!==version||init.permissionMode!=='dontAsk'||init.apiKeySource!=='none'||!Array.isArray(init.tools)||init.tools.length||!Array.isArray(init.mcp_servers)||init.mcp_servers.length)throw new Error('message_claude_role_boundary_not_applied');
 }
 /** 304's official stream-input protocol supports verbatim composed messages.
  * Do not send that new field to historical 233, or infer support by semver. */
-export function messageClaudeInput(version:MessageClaudeVersion,session:string,uuid:string,text:string){
-  return {type:'user',session_id:session,parent_tool_use_id:null,uuid,...(version==='2.1.304'?{client_composed:true}:{}),message:{role:'user',content:text}};
+export function messageClaudeInput(version:MessageClaudeVersion,session:string,uuid:string,text:string,contract:MessageClaudeContract=version==='2.1.233'?'legacy-stream-v1':'composed-command-v1'){
+  return {type:'user',session_id:session,parent_tool_use_id:null,uuid,...(contract==='composed-command-v1'?{client_composed:true}:{}),message:{role:'user',content:text}};
 }
 export function checkMessageClaudeReceipt(events:Row[],session:string,uuid:string,text:string){
   const echoes=events.filter(e=>e.type==='user'),results=events.filter(e=>e.type==='result');
@@ -23,10 +29,10 @@ export function checkMessageClaudeReceipt(events:Row[],session:string,uuid:strin
 /** Every reply uses its original input UUID. 304 adds lifecycle completion,
  * explicit consumed user UUIDs and native child/tool denial summaries; these
  * are checked in addition to the shared final-message and terminal contract. */
-export function messageClaudeFinal(events:Row[],session:string,version:MessageClaudeVersion,uuid:string){
+export function messageClaudeFinal(events:Row[],session:string,version:MessageClaudeVersion,uuid:string,contract:MessageClaudeContract=version==='2.1.233'?'legacy-stream-v1':'composed-command-v1'){
   const results=events.filter(e=>e.type==='result'),r=results[0];
   if(!r||results.length!==1||r.session_id!==session||r.subtype!=='success'||r.is_error!==false||r.terminal_reason!=='completed'||r.stop_reason!=='end_turn'||r.api_error_status!=null||typeof r.result!=='string'||!r.result.trim()||events.some(e=>e.parent_tool_use_id!=null||e.aborted===true||e.type==='assistant'&&e.session_id!==session||Array.isArray(e.message?.content)&&e.message.content.some((x:Row)=>x.type==='tool_use')))throw new Error('message_claude_final_not_complete');
-  if(version==='2.1.304'){
+  if(contract==='composed-command-v1'){
     // 304 emits a new init for each composed input in the SAME session.
     // Check each command's boundary; neither a global one-init assumption nor
     // accepting arbitrary repeated init messages matches that protocol.

@@ -79,8 +79,8 @@ test('investment stop prevents model dispatch and explicit reopening can continu
   const f = await fixture(t); f.q.control('scope', 'investment', 'stopped', 'fixture:stop'); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /new_investment_stopped/); assert.equal((await f.logs()).length, 0);
   f.q.control('scope', 'investment', 'open', 'fixture:resume'); const r = await runSecretary(f.secretaryPlan, f.output); assert.equal(r.status, 'completed'); assert.equal((await f.logs()).filter(x => x.kind === 'model-input').length, 1);
 });
-test('wrong native version and unavailable ordinary quota prevent a model turn', async t => {
-  for (const mode of ['version', 'quota']) { const f = await fixture(t, mode); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /version_mismatch|ordinary_usage_unavailable/); assert.equal((await f.logs()).filter(x => x.kind === 'model-input').length, 0); }
+test('inconsistent reported CLI identity and unavailable ordinary quota prevent a model turn', async t => {
+  for (const mode of ['version', 'quota']) { const f = await fixture(t, mode); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /native_root_identity_mismatch|ordinary_usage_unavailable/); assert.equal((await f.logs()).filter(x => x.kind === 'model-input').length, 0); }
 });
 test('a stop arriving during the last native usage check is observed before turn/start', async t => {
   const f = await fixture(t, 'late-stop'); await assert.rejects(runSecretary(f.secretaryPlan, f.output), /new_investment_stopped/); assert.equal((await f.logs()).filter(x => x.kind === 'model-input').length, 0);

@@ -9,21 +9,29 @@ export const RESULT_BYTES = 16 * 1024 * 1024;
 const sha = /^[0-9a-f]{64}$/, commit = /^[0-9a-f]{40}$/;
 const object = (x: any): x is Record<string, any> => x !== null && typeof x === 'object' && !Array.isArray(x);
 const text = (x: any, max = 256): x is string => typeof x === 'string' && x.length > 0 && x.length <= max && !/[\x00-\x1f]/.test(x);
-// Exact versions whose consumed notification schemas were compared and retained in
-// docs/protocol/*. Do not accept a version range or relabel a captured stream.
+// Historical wire contracts remain exact. New executions bind their observed
+// thread version to the checked thread/turn contract, not to a release list.
 const protocols = {
   'codex-app-server/0.159.2': { cliVersion: '0.159.2', turnRootId: false },
   'codex-app-server/0.163.0-alpha.10.2': { cliVersion: '0.163.0-alpha.10.2', turnRootId: true }
 } as const;
 export type ResultBinding = {
-  schemaVersion: 1; protocol: keyof typeof protocols; sourceKind: 'fixture' | 'native_capture';
+  schemaVersion: 1; protocol: keyof typeof protocols|'codex-app-server/thread-turn-v1'; runtimeVersion?:string; sourceKind: 'fixture' | 'native_capture';
   role: 'reviewer' | 'verifier_fact' | 'secretary' | 'issue_owner' | 'acceptance' | 'protocol_probe'; run: string; sessionId: string; threadId: string;
   turnIds: string[]; workspace: string; scopeSource: string; arrangementSource: string;
   inputManifestSha256: string; promptSha256: string;
   candidate: { repository: string; pr: number | null; H: string; B: string; target: string; kind?: 'github-pr' | 'local-git' | 'development-task'; taskId?: string; sourceSha256?: string };
 };
+export function resultCliVersion(b:ResultBinding){
+  const value=b.protocol==='codex-app-server/thread-turn-v1'?b.runtimeVersion:protocols[b.protocol]?.cliVersion;
+  if(!text(value,128)||/\s/.test(value))throw new Error('invalid_result_runtime_version');return value;
+}
+export function currentCodexProtocol(version:string):Pick<ResultBinding,'protocol'|'runtimeVersion'>{
+  if(!text(version,128)||/\s/.test(version))throw new Error('codex_runtime_version_missing');
+  return {protocol:'codex-app-server/thread-turn-v1',runtimeVersion:version};
+}
 export function validateBinding(x: any): ResultBinding {
-  if (!object(x) || x.schemaVersion !== 1 || typeof x.protocol !== 'string' || !Object.hasOwn(protocols, x.protocol) || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'secretary', 'issue_owner', 'acceptance', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
+  if (!object(x) || x.schemaVersion !== 1 || typeof x.protocol !== 'string' || !(Object.hasOwn(protocols, x.protocol)||x.protocol==='codex-app-server/thread-turn-v1'&&text(x.runtimeVersion,128)&&! /\s/.test(x.runtimeVersion)) || !['fixture', 'native_capture'].includes(x.sourceKind) || !['reviewer', 'verifier_fact', 'secretary', 'issue_owner', 'acceptance', 'protocol_probe'].includes(x.role)) throw new Error('invalid_result_binding');
   // An owned run is also the original operation's absolute directory. Nested
   // queue evidence can exceed an ID's length without changing its identity.
   if (['sessionId', 'threadId'].some(k => !text(x[k])) || !text(x.run,4096) || x.run.length>256&&(!isAbsolute(x.run)||resolve(x.run)!==x.run) || !text(x.workspace, 4096) || !isAbsolute(x.workspace) || resolve(x.workspace) !== x.workspace || !text(x.scopeSource, 2048) || !text(x.arrangementSource, 2048) || !sha.test(x.inputManifestSha256) || !sha.test(x.promptSha256)) throw new Error('incomplete_result_binding');
@@ -39,7 +47,7 @@ export function parseCodexResult(bytes: Buffer, binding: ResultBinding, reconcil
   if(Object.keys(sequence).some(k=>k!=='allowInterruptedPredecessors')||sequence.allowInterruptedPredecessors!==undefined&&typeof sequence.allowInterruptedPredecessors!=='boolean')throw new Error('invalid_result_sequence_policy');
   validateBinding(binding);
   if (new Set(reconciled.map(x => JSON.stringify(x.request?.id))).size !== reconciled.length || reconciled.some(x => x.request?.method !== 'item/tool/call' || x.response?.id !== x.request.id || typeof x.response?.result?.success !== 'boolean' || !Array.isArray(x.response.result.contentItems))) throw new Error('invalid_tool_reconciliation');
-  const protocol = protocols[binding.protocol];
+  const protocol = binding.protocol==='codex-app-server/thread-turn-v1'?{cliVersion:resultCliVersion(binding),turnRootId:true}:protocols[binding.protocol];
   if (bytes.length > RESULT_BYTES) throw new Error('result_input_limit');
   const gaps = new Set<string>(), turns: TurnState[] = binding.turnIds.map(id => ({ id, started: false, terminal: null, final: null, errors: [] }));
   const starts = new Map<string, unknown>(), completions = new Map<string, unknown>(), items = new Map<string, any>();

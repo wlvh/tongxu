@@ -4,7 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt } from './role-prompts.js';
-import { save } from './live-process.js';
+import { save,executable } from './live-process.js';
+import {codexConversation} from './cli-capabilities.js';
 import { exists, regular } from './repair-workspace.js';
 import { BoundedCodexSession, readRepairSession, secretarySchema } from './repair-native.js';
 import { verifySecretaryCapture, verifyUnstartedSecretaryCapture } from './secretary-capture.js';
@@ -25,6 +26,7 @@ export type SecretaryPlan = {
   scopeFollowupReports?:true;
   queueActions?:EventControlRef;
   codexExecutable: string; codexSha256: string; prompts: FileRef[]; question: string;
+  runtimeSelection?:{policy:'configured-current-v1';configuredSha256:string;observedVersion:string;observedRealpath:string};
   scopeSource: string; arrangementSource: string; disabledMcpServers: string[]; allowedInstructionSources: FileRef[];
   billing: { mode: 'existing_subscription_only'; evidence: string; evidenceSha256: string; observedAt: string; ordinaryUsageRequired: true };
   timeoutMs: number; executionKind: 'fixture' | 'native_capture';
@@ -44,7 +46,47 @@ export function parseSecretaryPlan(bytes: Buffer): SecretaryPlan {
   for (const ref of [...p.prompts, ...p.allowedInstructionSources]) if (!ref || !digest.test(ref.sha256) || typeof ref.path !== 'string') throw new Error('secretary_prompt_binding_missing');
   for (const path of [p.store, p.codexExecutable, ...p.prompts.map((r: FileRef) => r.path), ...p.allowedInstructionSources.map((r: FileRef) => r.path)]) if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path) throw new Error('secretary_noncanonical_path');
   if (p.billing?.mode !== 'existing_subscription_only' || p.billing.ordinaryUsageRequired !== true || !digest.test(p.billing.evidenceSha256) || !Number.isFinite(Date.parse(p.billing.observedAt))) throw new Error('secretary_billing_boundary_missing');
+  if(p.runtimeSelection&&(!exactKeys(p.runtimeSelection,['policy','configuredSha256','observedVersion','observedRealpath'])||p.runtimeSelection.policy!=='configured-current-v1'||!digest.test(p.runtimeSelection.configuredSha256)||typeof p.runtimeSelection.observedVersion!=='string'||p.runtimeSelection.observedRealpath!==p.codexExecutable))throw new Error('secretary_runtime_selection_invalid');
   return p;
+}
+export async function selectSecretaryRuntime(p:SecretaryPlan,registrationOnly=false):Promise<SecretaryPlan>{
+  const state=await observeTask(p.store,p.item,p.candidate);
+  if(state.controls.some((c:{kind:string;stopped:boolean})=>c.kind==='investment'&&c.stopped)){
+    if(registrationOnly)return p;
+    throw new Error('new_investment_stopped');
+  }
+  if(p.runtimeSelection)return p; // already frozen for this specific question
+  const identity=await executable(p.codexExecutable,codexConversation,p.executionKind);
+  return {...p,codexSha256:identity.sha256,runtimeSelection:{policy:'configured-current-v1',configuredSha256:p.codexSha256,observedVersion:identity.version,observedRealpath:identity.realpath}};
+}
+function checkSelectedPlan(source:SecretaryPlan,selected:SecretaryPlan){
+  if(source.runtimeSelection){if(canonical(source)!==canonical(selected))throw new Error('secretary_plan_changed');return;}
+  if(!selected.runtimeSelection||selected.runtimeSelection.configuredSha256!==source.codexSha256||canonical({...source,codexSha256:selected.codexSha256,runtimeSelection:selected.runtimeSelection})!==canonical(selected))throw new Error('secretary_runtime_selection_invalid');
+}
+async function recordedSecretaryPlan(original:Buffer,output:string){
+  const selection=join(output,'runtime-selection.json'),sourcePath=join(output,'source-plan.json'),planPath=join(output,'plan.json');
+  if(await exists(selection)){
+    const record=JSON.parse((await regular(selection,4*1024*1024)).toString());
+    if(!exactKeys(record,['schemaVersion','kind','source','selected'])||record.schemaVersion!==1||record.kind!=='tongxu-secretary-runtime-selection'||!exactKeys(record.source,['sha256','base64'])||!exactKeys(record.selected,['sha256','base64']))throw new Error('secretary_runtime_selection_invalid');
+    const decode=(part:any)=>{if(typeof part.base64!=='string'||!(/^[a-f0-9]{64}$/).test(part.sha256))throw new Error('secretary_runtime_selection_invalid');const bytes=Buffer.from(part.base64,'base64');if(bytes.toString('base64')!==part.base64||hash(bytes)!==part.sha256)throw new Error('secretary_runtime_selection_invalid');return bytes;};
+    const source=decode(record.source),selected=decode(record.selected);
+    if(!source.equals(original))throw new Error('secretary_plan_changed');
+    checkSelectedPlan(parseSecretaryPlan(source),parseSecretaryPlan(selected));
+    for(const [path,bytes] of [[sourcePath,source],[planPath,selected]] as const)if(await exists(path)&&!bytes.equals(await regular(path)))throw new Error('secretary_plan_changed');
+    return selected;
+  }
+  // Read old captures exactly as recorded. A missing half of an old, non-atomic
+  // selection is not permission to repeat an unknown execution.
+  if(await exists(sourcePath)){
+    if(!original.equals(await regular(sourcePath)))throw new Error('secretary_plan_changed');
+    const selected=await regular(planPath);checkSelectedPlan(parseSecretaryPlan(original),parseSecretaryPlan(selected));return selected;
+  }
+  if(await exists(planPath)){const selected=await regular(planPath);if(!original.equals(selected))throw new Error('secretary_plan_changed');return selected;}
+  return null;
+}
+async function preserveSelectedFile(path:string,bytes:Buffer){
+  try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}
+  catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(!bytes.equals(await regular(path)))throw new Error('secretary_plan_changed');}
 }
 const specs=(p:SecretaryPlan)=>selectedSecretaryTools(!!p.taskControls,p.deliveryOutcomes===true,p.deliveryReports===true,!!p.workbench,p.scopeFollowupReports===true,!!p.queueActions);
 const loadControls=async(p:SecretaryPlan)=>{if(!p.taskControls)return undefined;const controls=await TaskControls.load(p.taskControls.path,p.taskControls.sha256,[{id:p.taskControls.source,store:p.store,item:p.item}]);if(controls.manifest().contacts.some(c=>c.executionKind!==p.executionKind))throw new Error('secretary_contact_execution_kind_mismatch');return controls;};
@@ -92,13 +134,23 @@ function verifyFrozenSecretaryInputs(p:SecretaryPlan,frozen:any){
     else if(frozen.system!==suppliedSystem)throw new Error('secretary_frozen_inputs_changed');
 }
 export async function runSecretary(planPath: string, output: string) {
-  const planBytes = await regular(planPath), p = parseSecretaryPlan(planBytes);
+  const originalPlanBytes = await regular(planPath), originalPlan = parseSecretaryPlan(originalPlanBytes);
   if (!await exists(output)) await privateDirectory(output, true); else await privateDirectory(output, false);
   return lock(output, async () => {
     if(await exists(join(output,'closed-unstarted.json')))throw new Error('secretary_original_closed_unstarted');
     const savedPlan = join(output, 'plan.json'), savedInputs = join(output, 'inputs.json'), native = join(output, 'codex-secretary');
-    if (await exists(savedPlan)) { if (!planBytes.equals(await regular(savedPlan))) throw new Error('secretary_plan_changed'); }
-    else await writeFile(savedPlan, planBytes, { flag: 'wx', mode: 0o600 });
+    let planBytes=await recordedSecretaryPlan(originalPlanBytes,output);
+    if(!planBytes){
+      if(await exists(savedInputs)||await exists(native)||await exists(join(output,'operation.json')))throw new Error('secretary_original_selection_missing');
+      planBytes=Buffer.from(canonical(await selectSecretaryRuntime(originalPlan)));
+      // One atomic authoritative record precedes both recoverable projections.
+      save(join(output,'runtime-selection.json'),{schemaVersion:1,kind:'tongxu-secretary-runtime-selection',source:{sha256:hash(originalPlanBytes),base64:originalPlanBytes.toString('base64')},selected:{sha256:hash(planBytes),base64:planBytes.toString('base64')}});
+    }
+    if(await exists(join(output,'runtime-selection.json')))await preserveSelectedFile(join(output,'source-plan.json'),originalPlanBytes);
+    // The sent bytes must use the same property ordering as the saved plan;
+    // otherwise a subsequent read could reconstruct a different prompt.
+    const p=parseSecretaryPlan(planBytes);
+    await preserveSelectedFile(savedPlan,planBytes);
     if (!await exists(savedInputs)) {
       if (await exists(native)) throw new Error('secretary_original_inputs_missing');
       save(savedInputs, await inputs(p));
@@ -135,11 +187,11 @@ export async function runSecretary(planPath: string, output: string) {
 /** Verify a saved answer from its original capture. This read cannot create a
  * directory, acquire an execution lock, write a result, or start a model. */
 export async function readSecretaryResult(planPath:string,output:string){
-  const raw=await regular(planPath),p=parseSecretaryPlan(raw);await privateDirectory(output,false);
-  if(!raw.equals(await regular(join(output,'plan.json'))))throw new Error('secretary_plan_changed');
+  const raw=await regular(planPath);await privateDirectory(output,false);
+  const saved=await recordedSecretaryPlan(raw,output);if(!saved)throw new Error('secretary_original_plan_missing');const p=parseSecretaryPlan(saved);
   const bytes=await regular(join(output,'inputs.json')),frozen=JSON.parse(bytes.toString());verifyFrozenSecretaryInputs(p,frozen);
   const intent=JSON.parse((await regular(join(output,'operation.json'))).toString());
-  if(intent.planSha256!==hash(raw)||intent.inputSha256!==hash(bytes))throw new Error('secretary_operation_binding_changed');
+  if(intent.planSha256!==hash(saved)||intent.inputSha256!==hash(bytes))throw new Error('secretary_operation_binding_changed');
   return final(output,p,hash(bytes),frozen,true);
 }
 
