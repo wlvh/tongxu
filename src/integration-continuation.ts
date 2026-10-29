@@ -7,10 +7,10 @@ import {regular,exists,processState} from './repair-workspace.js';
 import {integrationRecipe,type IntegrationMaterial} from './integration-producer.js';
 import {readIntegrationGit,integrationGitCaptureSha as stepHash} from './integration-git.js';
 import {verifyObjectSource} from './integration-objects.js';
-import {requireNodeRuntime} from './workbench-launch.js';
+import {requireNodeRuntime} from './node-runtime.js';
 
 export const integrationContinuationProtocol='ended-fixed-prefix-v1';
-export const integrationRuntimeNames=['integration','integration-store','integration-contract','integration-producer','integration-git','integration-objects','integration-continuation','queue-store','authority-store','workbench-launch'];
+export const integrationRuntimeNames=['integration','integration-store','integration-contract','integration-producer','integration-git','integration-objects','integration-continuation','queue-store','authority-store','node-runtime'];
 export async function integrationRuntimeHashes(){return Object.fromEntries(await Promise.all(integrationRuntimeNames.map(async n=>[n,hash(await readFile(new URL('./'+n+'.js',import.meta.url)))])));}
 const encoded=(x:unknown)=>Buffer.from(canonical(x));
 type StepResult=Awaited<ReturnType<typeof readIntegrationGit>>;

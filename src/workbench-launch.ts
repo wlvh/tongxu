@@ -12,25 +12,6 @@ const exactKeys=(v:any,keys:string[])=>v&&typeof v==='object'&&!Array.isArray(v)
 const isAuthorityDigest=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const safeRelativePath=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<512&&!/[\\\x00-\x1f]/.test(v)&&v.split('/').every(x=>x&&x!=='.'&&x!=='..');
 const canonical=(v:any):string=>JSON.stringify(v===null||typeof v!=='object'?v:Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])));
-// Keep this check in the trusted bootstrap: it uses only Node built-ins and
-// cannot import an unchecked application helper before checking its bytes.
-export const minimumNodeVersion='24.0.0';
-export function supportedNodeVersion(version:unknown){
-  if(typeof version!=='string'||version.length>128)return false;
-  const match=/^v?(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9._-]+)?$/.exec(version);
-  return !!match&&match.slice(1,4).every(n=>Number.isSafeInteger(Number(n)))&&Number(match[1])>=24;
-}
-export async function requireNodeRuntime(){
-  if(!supportedNodeVersion(process.version))throw new Error('node_minimum_version_24_0_0_required');
-  let db:import('node:sqlite').DatabaseSync|undefined;
-  try{
-    const {DatabaseSync}=await import('node:sqlite');db=new DatabaseSync(':memory:');
-    db.exec('CREATE TABLE runtime_probe(value INTEGER NOT NULL) STRICT; BEGIN IMMEDIATE; INSERT INTO runtime_probe VALUES (1)');
-    if(db.isTransaction!==true||db.prepare('SELECT value FROM runtime_probe').get()?.value!==1)throw new Error('capability');
-    db.exec('ROLLBACK');if(Boolean(db.isTransaction)||db.prepare('SELECT count(*) AS n FROM runtime_probe').get()?.n!==0)throw new Error('capability');
-  }catch{throw new Error('node_sqlite_capability_unavailable');}finally{db?.close();}
-  return {nodeVersion:process.version,nodeExecutable:process.execPath,minimumNodeVersion};
-}
 async function regular(path:string,limit:number){
   if(await realpath(path)!==path)throw new Error('workbench_runtime_link_not_supported');const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);
   try{const before=await file.stat();if(!before.isFile()||before.nlink!==1||before.size>limit)throw new Error('workbench_runtime_file_invalid');const bytes=await file.readFile(),after=await file.stat();if(bytes.length!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs)throw new Error('workbench_runtime_file_changed_during_read');return bytes;}finally{await file.close();}
@@ -46,7 +27,6 @@ async function runtimeFiles(root:string){
 export async function inspectWorkbenchRuntime(raw:Buffer){
   const p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw)) as WorkbenchRuntime;
   if(raw.length>256*1024||!exactKeys(p,['schemaVersion','kind','sourceDirectory','sourceHead','nodeVersion','plan','files'])||p.schemaVersion!==1||p.kind!=='tongxu-current-workbench'||typeof p.sourceDirectory!=='string'||!isAbsolute(p.sourceDirectory)||resolve(p.sourceDirectory)!==p.sourceDirectory||!(/^[a-f0-9]{40}$/).test(p.sourceHead)||typeof p.nodeVersion!=='string'||!/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$/.test(p.nodeVersion)||!exactKeys(p.plan,['path','sha256'])||typeof p.plan.path!=='string'||!isAbsolute(p.plan.path)||resolve(p.plan.path)!==p.plan.path||!isAuthorityDigest(p.plan.sha256)||!Array.isArray(p.files)||p.files.length>1024||p.files.some(f=>!exactKeys(f,['path','sha256'])||!safeRelativePath(f.path)||!isAuthorityDigest(f.sha256)))throw new Error('workbench_runtime_manifest_invalid');
-  const node=await requireNodeRuntime();
   if(await realpath(p.sourceDirectory)!==p.sourceDirectory)throw new Error('workbench_runtime_directory_changed');
   const files=await runtimeFiles(p.sourceDirectory);if(canonical(p.files.map(f=>f.path).sort())!==canonical(files))throw new Error('workbench_runtime_file_set_changed');
   for(const f of p.files)if(hash(await regular(join(p.sourceDirectory,f.path),4*1024*1024))!==f.sha256)throw new Error('workbench_runtime_build_changed');
@@ -54,6 +34,11 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   const options={timeout:5000,maxBuffer:1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}};
   const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','package.json','package-lock.json','tsconfig.json'],options);
   if(head.stdout.trim()!==p.sourceHead||status.stdout.trim())throw new Error('workbench_runtime_source_changed');
+  // Load only this bootstrap's own pure runtime helper after all selected
+  // artifacts are verified. It must match the selected build's helper bytes.
+  const helper=new URL('./node-runtime.js',import.meta.url),expected=p.files.find(f=>f.path==='dist/src/node-runtime.js');
+  if(!expected||hash(await regular(fileURLToPath(helper),256*1024))!==expected.sha256)throw new Error('workbench_node_helper_changed');
+  const node=await (await import(helper.href)).requireNodeRuntime();
   const identity:WorkbenchRuntimeIdentity={sourceHead:p.sourceHead,...node,buildNodeVersion:p.nodeVersion,planSha256:p.plan.sha256,runtimeFilesSha256:hash(canonical(p.files.slice().sort((a,b)=>a.path.localeCompare(b.path)))),verifiedAt:new Date().toISOString()};return {manifest:p,identity};
 }
 /** Installation helper: freeze one already built and tested composition. This
@@ -67,7 +52,7 @@ export async function prepareWorkbenchRuntime(sourceDirectory:string,planPath:st
 /** Install a normal Mac entry without freezing a dependency executable. The
  * source bootstrap and manifest remain fixed application artifacts. */
 export async function renderWorkbenchLauncher(runtimePath:string){
-  const raw=await regular(runtimePath,256*1024),{manifest}=await inspectWorkbenchRuntime(raw);
+  const raw=await regular(runtimePath,256*1024),{manifest,identity}=await inspectWorkbenchRuntime(raw);
   const entry=join(manifest.sourceDirectory,'dist/src/workbench-launch.js'),entryHash=hash(await regular(entry,4*1024*1024));
   const quote=(value:string)=>"'"+value.replaceAll("'","'\\''")+"'";
   // Check and load the application in ONE Node process. No second exec of a
@@ -118,7 +103,7 @@ for tx_candidate in "\${tx_candidates[@]}"; do
     if [[ -e "$tx_launch_state/entered" ]]; then exit "$tx_status"; fi
   fi
 done
-print -u2 -- "同序需要 Node.js ${minimumNodeVersion} 或更新版本，并具备 node:sqlite 事务能力。请安装到 PATH，或用 TONGXU_NODE 指定现有程序。"
+print -u2 -- "同序需要 Node.js ${identity.minimumNodeVersion} 或更新版本，并具备 node:sqlite 事务能力。请安装到 PATH，或用 TONGXU_NODE 指定现有程序。"
 exit 1
 `;
 }
