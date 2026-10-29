@@ -46,7 +46,15 @@ test('normal launcher discovers current Node; changed binary and path keep the s
  const before=await readFile(runtime),launch=(selected:string|undefined)=>spawnSync('/bin/zsh',[entry,'--no-open'],{encoding:'utf8',timeout:15000,env:{...process.env,PATH:root+':/usr/bin:/bin',TONGXU_NODE:selected}});
  for(const selected of [undefined,wrapper,other]){const result=launch(selected);assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).runtime.nodeVersion,process.version);assert.equal(JSON.parse(result.stdout).runtime.buildNodeVersion,'v24.0.0');}
  await writeFile(wrapper,script+'# ordinary update at the same path\n',{mode:0o700});assert.equal(launch(undefined).status,0);assert.deepEqual(await readFile(runtime),before);
- const bad=join(root,'unsupported-node');await writeFile(bad,'#!/bin/sh\nexit 1\n',{mode:0o700});const refused=launch(bad);assert.equal(refused.status,1);assert.match(refused.stderr,/24\.0\.0/);assert.equal(refused.stdout,'');
+ const bad=join(root,'unsupported-node');await writeFile(bad,'#!/bin/sh\nexit 78\n',{mode:0o700});const refused=launch(bad);assert.equal(refused.status,1);assert.match(refused.stderr,/24\.0\.0/);assert.equal(refused.stdout,'');
+ const older=join(root,'older'),later=join(root,'later');await mkdir(older);await mkdir(later);await cp(bad,join(older,'node'));await cp(wrapper,join(later,'node'));
+ const throughPath=spawnSync('/bin/zsh',[entry,'--no-open'],{encoding:'utf8',timeout:15000,env:{...process.env,PATH:older+':'+later+':/usr/bin:/bin',TONGXU_NODE:undefined}});assert.equal(throughPath.status,0,throughPath.stderr);assert.equal(JSON.parse(throughPath.stdout).runtime.nodeVersion,process.version);
+ // Model a host without any global fallback installation, changing only the
+ // test environment's fallback locations, not the selection/check algorithm.
+ const isolated=join(root,'isolated-START.command'),generated=await readFile(entry,'utf8'),withoutFallbacks=generated.replace(/  tx_candidates\+=\(\/opt\/homebrew\/bin\/node[^\n]+\)/,'  tx_candidates+=()');assert.notEqual(withoutFallbacks,generated);await writeFile(isolated,withoutFallbacks,{mode:0o700});await cp(bad,join(later,'node'));
+ const allOld=spawnSync('/bin/zsh',[isolated,'--no-open'],{encoding:'utf8',timeout:15000,env:{...process.env,PATH:older+':'+later+':/usr/bin:/bin',TONGXU_NODE:undefined}});assert.equal(allOld.status,1);assert.match(allOld.stderr,/24\.0\.0/);assert.equal(allOld.stdout,'');
+ const replacing=join(root,'replacing-node'),marker=join(root,'unexpected-second-node-call');await writeFile(replacing,'#!/bin/sh\n{\n/bin/cat > "$0" <<\'NEXT\'\n#!/bin/sh\n/usr/bin/touch '+quote(marker)+'\nexit 99\nNEXT\nexec '+quote(process.execPath)+' "$@"\n}\n',{mode:0o700});
+ const once=launch(replacing);assert.equal(once.status,0,once.stderr);assert.equal(JSON.parse(once.stdout).runtime.nodeVersion,process.version);await assert.rejects(access(marker),{code:'ENOENT'});
  assert.doesNotMatch(await readFile(entry,'utf8'),/runtime\/node\/|tx_check_file "\$tx_node"/);
 });
 

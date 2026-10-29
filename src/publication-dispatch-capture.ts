@@ -19,6 +19,9 @@ export async function readPublicationDispatchCapture(p:PublicationPlan,prepared:
   const args=['api','--hostname','github.com','--method','POST','--include','-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28','--input','-',prepared.endpoint];
   if(!capturedGhExecutableMatches(request,p.ghExecutable,p.ghSha256)||request.method!=='POST'||request.endpoint!==prepared.endpoint||canonical(request.args)!==canonical(args)||request.bodySha256!==hash(requestBytes)||!input.equals(requestBytes))throw new Error('publication_original_dispatch_changed');
   const processBytes=await read('process.json',true),exitBytes=await read('exit.json',true),intent=await read('submission-intent.json',true),submitted=await read('submitted.json',true);await read('dispatch-error.json',true);
+  // Preserve the uncertain invocation; recovery may read the remote original
+  // but this ended-possible capture never authorizes resending that POST.
+  await read('executable-changed.json',true);
   await read('stdout.http');await read('stderr.txt');
   for(const bytes of [intent,submitted])if(bytes){const v=JSON.parse(bytes.toString());if(v.bodySha256!==hash(requestBytes)||v.bytes!==requestBytes.length||!Number.isFinite(Date.parse(v.at)))throw new Error('publication_original_submission_changed');}
   let observedPid:number|null=null;

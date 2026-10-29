@@ -70,7 +70,10 @@ export async function renderWorkbenchLauncher(runtimePath:string){
   const raw=await regular(runtimePath,256*1024),{manifest}=await inspectWorkbenchRuntime(raw);
   const entry=join(manifest.sourceDirectory,'dist/src/workbench-launch.js'),entryHash=hash(await regular(entry,4*1024*1024));
   const quote=(value:string)=>"'"+value.replaceAll("'","'\\''")+"'";
-  const probe=`if(Number(process.versions.node.split('.')[0])<24)process.exit(1);const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(':memory:');if(typeof db.isTransaction!=='boolean')process.exit(1);db.close();`;
+  // Check and load the application in ONE Node process. No second exec of a
+  // possibly retargeted entry is needed and no Node fingerprint is pinned.
+  // Keep the outer syntax readable by older Node so it can reject with 78.
+  const bootstrap=`var major=parseInt(process.versions.node,10);if(!(major>=24))process.exit(78);try{var Sqlite=require('node:sqlite').DatabaseSync;var db=new Sqlite(':memory:');db.exec('CREATE TABLE probe(value INTEGER) STRICT; BEGIN IMMEDIATE; INSERT INTO probe VALUES (1)');if(db.isTransaction!==true||db.prepare('SELECT value FROM probe').get().value!==1)throw Error('sqlite');db.exec('ROLLBACK');if(db.isTransaction!==false)throw Error('sqlite');db.close();}catch(error){process.exit(78);}process.on('exit',function(code){if(code===78)process.exitCode=1;});var entry=process.argv[1];if(require('node:crypto').createHash('sha256').update(require('node:fs').readFileSync(entry)).digest('hex')!==${JSON.stringify(entryHash)}){console.error('workbench_bootstrap_changed');process.exit(1);}Function('url','return import(url)')(require('node:url').pathToFileURL(entry).href).catch(function(error){console.error(error.message);process.exitCode=1;});`;
   return `#!/bin/zsh
 set -eu
 if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != "--no-open" ]]; }; then
@@ -89,27 +92,31 @@ tx_entry=${quote(entry)}
 tx_runtime=${quote(runtimePath)}
 tx_check_file "$tx_entry" ${quote(entryHash)}
 tx_check_file "$tx_runtime" ${quote(hash(raw))}
+typeset -aU tx_candidates
 tx_candidates=()
 if [[ -n "\${TONGXU_NODE:-}" ]]; then
   tx_candidates=("$TONGXU_NODE")
 else
-  tx_path_node="$(command -v node 2>/dev/null || true)"
-  tx_candidates=("$tx_path_node" /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node")
-fi
-tx_node=''
-for tx_candidate in "\${tx_candidates[@]}"; do
-  if [[ -n "$tx_candidate" && -x "$tx_candidate" ]] && "$tx_candidate" -e ${quote(probe)} >/dev/null 2>&1; then
-    tx_node="$tx_candidate"
-    break
-  fi
-done
-if [[ -z "$tx_node" ]]; then
-  print -u2 -- "同序需要 Node.js ${minimumNodeVersion} 或更新版本，并具备 node:sqlite 事务能力。请安装到 PATH，或用 TONGXU_NODE 指定现有程序。"
-  exit 1
+  for tx_directory in "\${path[@]}"; do
+    tx_candidates+=("\${tx_directory:-.}/node")
+  done
+  tx_candidates+=(/opt/homebrew/bin/node /usr/local/bin/node "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node")
 fi
 tx_args=(--runtime "$tx_runtime")
 if (( $# == 0 )); then tx_args+=(--open); fi
-exec "$tx_node" "$tx_entry" "\${tx_args[@]}"
+for tx_candidate in "\${tx_candidates[@]}"; do
+  if [[ -n "$tx_candidate" && -x "$tx_candidate" ]]; then
+    if "$tx_candidate" -e ${quote(bootstrap)} "$tx_entry" "\${tx_args[@]}"; then
+      exit 0
+    else
+      tx_status=$?
+    fi
+    # Only a refusal before application loading can try the next candidate.
+    if (( tx_status != 78 )); then exit "$tx_status"; fi
+  fi
+done
+print -u2 -- "同序需要 Node.js ${minimumNodeVersion} 或更新版本，并具备 node:sqlite 事务能力。请安装到 PATH，或用 TONGXU_NODE 指定现有程序。"
+exit 1
 `;
 }
 export async function launchWorkbench(runtimePath:string,openBrowser=false){

@@ -78,6 +78,7 @@ export class PublicationHttp {
     }finally{accepting=false;}
     await result;
     if (failure) throw new Error(failure);
+    try{assertGhExecutableUnchanged(selected);}catch(e){save(join(dir,'executable-changed.json'),{reason:'gh_executable_changed_during_operation',phase:'after_process_exit',inputMayHaveBeenSubmitted,remoteAcceptanceVerified:false});throw e;}
     const raw = await readFile(join(dir, 'stdout.http'));
     let parsed: ReturnType<typeof parseGh>, value: any;
     try { parsed = parseGh(raw.toString()); value = JSON.parse(parsed.body); } catch { throw new Error('publication_http_response_unknown'); }

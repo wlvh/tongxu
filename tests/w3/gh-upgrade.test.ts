@@ -51,3 +51,16 @@ test('publication keeps exact POST input and no-resend capture across a gh upgra
  assert.equal(intent,false);assert.deepEqual(await readFile(f.trace),before);assert.ok(!(await readdir(pending)).includes('process.json'));
  await assert.rejects(f.http().request('POST','repos/fixture/upgrade/pulls/1/merge',payload,{intent(){},started(){}}),/endpoint_denied/);
 });
+test('a gh replacement during the last GET or POST keeps raw evidence and cannot verify or resend the result',async t=>{
+ for(const method of ['GET','POST'] as const){
+  const f=await fixture(t),code=f.code('99.0.0')+'\nfs.appendFileSync(process.argv[1],"\\n// changed during API call\\n");\n';await writeFile(f.target,code,{mode:0o700});
+  const payload={body:'explicit uncertain fixture'},input=Buffer.from(JSON.stringify(payload));await assert.rejects(f.http().request(method,method==='GET'?readEndpoint:endpoint,method==='POST'?payload:undefined,method==='POST'?{intent(){},started(){}}:undefined),/changed_during_operation/);
+  const directories=(await readdir(f.root)).filter(n=>n.startsWith('http-'));assert.equal(directories.length,1);const directory=join(f.root,directories[0]!);
+  assert.equal(JSON.parse(await readFile(join(directory,'exit.json'),'utf8')).code,0);assert.equal(JSON.parse(await readFile(join(directory,'executable-changed.json'),'utf8')).remoteAcceptanceVerified,false);assert.ok((await readFile(join(directory,'stdout.http'))).length>0);
+  const before=await readFile(f.trace);assert.equal(before.toString().trim().split('\n').length,1);
+  if(method==='POST'){const captured=await readPublicationDispatchCapture({ghExecutable:f.executable,ghSha256:f.configured} as PublicationPlan,{directory,endpoint},input);assert.equal(captured.phase,'ended_possible');assert.ok(captured.originals.has('executable-changed.json'));}
+  assert.deepEqual(await readFile(f.trace),before);
+ }
+ const f=await fixture(t);await writeFile(f.target,f.code('99.0.0')+`\nif(fs.readFileSync(${JSON.stringify(f.trace)},'utf8').trim().split('\\n').length===5)fs.appendFileSync(process.argv[1],'\\n// changed on last source read\\n');\n`,{mode:0o700});
+ await assert.rejects(observeRemoteCandidate({ghExecutable:f.executable,ghSha256:f.configured,repositoryId:17} as ObservedCandidateRequest,{repository:'fixture/upgrade',pr:1,H:'a'.repeat(40),B:'b'.repeat(40),T:'c'.repeat(40),targetRef:'main'} as ObservedCandidateBinding,f.root),/changed_during_operation/);assert.equal((await readFile(f.trace,'utf8')).trim().split('\n').length,5);
+});

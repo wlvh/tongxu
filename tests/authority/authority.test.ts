@@ -152,6 +152,10 @@ test('bounded provider reader captures exact commands; failed, partial, changed 
   const metadata="if(process.argv.includes('--version')){console.log('gh version 99.0.0 (explicit fixture)');process.exit(0)}if(process.argv.includes('--help')){console.log('--hostname --method --include --input --header --raw-field');process.exit(0)};";
   await writeFile(script,content.replace('const args=',metadata+'const args='));const upgraded=await readOwnerSource(p,sha,raw.id,join(f.root,'bounded-upgraded'));assert.equal(upgraded.authorId,101);assert.equal(upgraded.executorId,202);assert.equal(upgraded.executionKind,'fixture');
   const selected=JSON.parse(await readFile(join(f.root,'bounded-upgraded/executable.json'),'utf8'));assert.equal(selected.configuredSha256,p.ghSha256);assert.notEqual(selected.sha256,p.ghSha256);
+  const changedDuring=content+"\nif(process.argv.includes('graphql'))(await import('node:fs')).appendFileSync(process.argv[1],'\\n// changed during last owner read\\n');";await writeFile(script,changedDuring);
+  await assert.rejects(readOwnerSource({...p,ghSha256:hash(changedDuring)},sha,raw.id,join(f.root,'bounded-last-read-changed')),/changed_during_operation/);
+  assert.equal(JSON.parse(await readFile(join(f.root,'bounded-last-read-changed/comment-editor-executable-changed.json'),'utf8')).observationIssued,false);
+  await assert.rejects(readFile(join(f.root,'bounded-last-read-changed/observation.json')),{code:'ENOENT'});
   const failing=`#!${process.execPath}\nprocess.stdout.write('{}');process.exit(3);`;await writeFile(script,failing);await assert.rejects(readOwnerSource({...p,ghSha256:hash(failing)},sha,raw.id,join(f.root,'bounded-failure')),/source_unavailable/);
   const exit=JSON.parse(await readFile(join(f.root,'bounded-failure/comment-exit.json'),'utf8'));assert.equal(exit.exit,3);
   const partial=`#!${process.execPath}\nprocess.stdout.write('{"data":');`;await writeFile(script,partial);await assert.rejects(readOwnerSource({...p,ghSha256:hash(partial)},sha,raw.id,join(f.root,'bounded-partial')),SyntaxError);

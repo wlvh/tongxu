@@ -26,8 +26,9 @@ export async function selectGhExecutable(path:string,configuredSha256:string):Pr
   assertGhExecutableUnchanged(selected);return selected;
 }
 export function assertGhExecutableUnchanged(selected:GhExecutableSelection){
-  const s=lstatSync(selected.realpath);
-  if(!s.isFile()||s.nlink!==1||s.size>128*1024*1024||realpathSync(selected.configuredPath)!==selected.realpath||hash(readFileSync(selected.realpath))!==selected.sha256)throw new Error('gh_executable_changed_during_operation');
+  try{const s=lstatSync(selected.realpath);
+    if(!s.isFile()||s.nlink!==1||s.size>128*1024*1024||realpathSync(selected.configuredPath)!==selected.realpath||hash(readFileSync(selected.realpath))!==selected.sha256)throw new Error('changed');
+  }catch{throw new Error('gh_executable_changed_during_operation');}
 }
 /** Historical dispatch validation never probes or executes today's gh. */
 export function capturedGhExecutableMatches(request:any,path:string,configuredSha256:string){
