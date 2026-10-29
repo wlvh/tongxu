@@ -1,3 +1,4 @@
+import {SecretaryTools} from '../../src/secretary-tools.js';
 import {BoundedCodexSession} from '../../src/repair-native.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -184,6 +185,16 @@ test('an upgrade after metadata but before model send can be explicitly closed o
   const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=await readdir(native),originals=await Promise.all(names.filter(n=>n.endsWith('.json')||n.endsWith('.ndjson')||n.endsWith('.txt')).map(async name=>({name,bytes:await readFile(join(native,name))})));
   assert.equal(names.some(n=>n==='inputs.json'||n.startsWith('turn-')),false);assert.equal(JSON.parse(await readFile(join(native,'capture-failure.json'),'utf8')).reason,'external_executable_changed_during_operation');assert.doesNotMatch(await readFile(join(native,'stdin.ndjson'),'utf8'),/turn\/start/);
   await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const stdout=await readFile(join(native,'stdout.ndjson')),capture=await readFile(join(native,'capture-status.json')),corrupt=Buffer.concat([stdout,Buffer.from(JSON.stringify({id:'unexpected-tool',method:'item/tool/call',params:{turnId:null}})+'\n')]),status=JSON.parse(capture.toString());status.files['stdout.ndjson']=hash(corrupt);await writeFile(join(native,'stdout.ndjson'),corrupt);await writeFile(join(native,'capture-status.json'),JSON.stringify(status));
+  assert.equal((await f.post('close-unstarted',{requestId})).status,503);await writeFile(join(native,'stdout.ndjson'),stdout);await writeFile(join(native,'capture-status.json'),capture);
   assert.equal((await f.post('close-unstarted',{requestId})).status,200);for(const original of originals)assert.deepEqual(await readFile(join(native,original.name)),original.bytes);
   await f.post('ask',{requestId:'explicit-next-after-metadata',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-next-after-metadata'&&q.phase==='completed'));assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+});
+
+
+test('an unsolicited tool with null turn before the first input never reaches the secretary backend',async t=>{
+  const f=await fixture(t,'normal',false,async f=>{const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replace("if(m.method==='account/rateLimits/read'){", "if(m.method==='account/rateLimits/read'&&m.id===6)emit({id:'premature-tool',method:'item/tool/call',params:{threadId:thread.id,turnId:null,callId:'premature-tool',tool:'tongxu_task_status',namespace:null,arguments:{}}});if(m.method==='account/rateLimits/read'){") );});
+  const call=SecretaryTools.prototype.call;let backendCalls=0;SecretaryTools.prototype.call=async function(...args){backendCalls++;return call.apply(this,args);};t.after(()=>{SecretaryTools.prototype.call=call;});
+  const requestId='null-turn-tool';await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(backendCalls,0);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);const trace=await readFile(f.trace);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,503);await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),trace);assert.equal(backendCalls,0);
 });

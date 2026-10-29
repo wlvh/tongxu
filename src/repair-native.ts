@@ -180,7 +180,7 @@ export class BoundedCodexSession {
       // Wait for our already-submitted turn, never adopt an ID from the tool.
       if (this.pendingTurn) await this.pendingTurn;
       const p = m.params;
-      if (!o.gate || this.boundaryFailure || !p || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
+      if (!o.gate || this.boundaryFailure || !p || !this.activeTurn || !this.binding?.turnIds.includes(this.activeTurn) || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
       assertToolTurnOpen(this.rpc.events, m);
       if (this.toolHost) {
         const started = dynamicToolStart(this.rpc.events, m);
@@ -199,7 +199,7 @@ export class BoundedCodexSession {
           }
         }
       }
-      const result = await o.gate.call({ tool: p.tool, arguments: p.arguments, callId: p.callId },()=>{if(this.closed||this.boundaryFailure||this.activeTurn!==p.turnId)throw new Error('native_tool_request_after_terminal');assertToolTurnOpen(this.rpc.events,m);});
+      const result = await o.gate.call({ tool: p.tool, arguments: p.arguments, callId: p.callId },()=>{if(this.closed||this.boundaryFailure||!this.activeTurn||!this.binding?.turnIds.includes(this.activeTurn)||this.activeTurn!==p.turnId)throw new Error('native_tool_request_after_terminal');assertToolTurnOpen(this.rpc.events,m);});
       const response = { id: m.id, result };
       this.pairs.push({ request: m, response }); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
       this.contract.push(response); save(join(o.directory, 'expected-requests.json'), this.contract); return result;
