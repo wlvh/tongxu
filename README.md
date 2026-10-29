@@ -67,6 +67,8 @@ node --test dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js
 
 ## 本机工作台
 
+正常启动可先检查GitHub连接、选择当前身份可访问的仓库，然后查看Issues、PR及完整正文；原本机任务保留在历史工作台。见[GitHub项目入口](docs/github_project_entry.md)。
+
 使用 [本机工作台配置](docs/local_workbench.md) 选定已有队列、任务和成果批次后运行：
 
 ```bash

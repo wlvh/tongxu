@@ -13,6 +13,9 @@
   <aside class="sidebar">
     <div class="brand"><span class="mark" aria-hidden="true">同</span><div><strong>同序</strong><small>本机工作台</small></div></div>
     <nav aria-label="工作区">
+      <button data-view="projects" hidden><span aria-hidden="true">⌂</span>GitHub 项目</button>
+      <button data-view="github" hidden><span aria-hidden="true">≡</span>Issues 与 PR</button>
+      <button data-view="local-history" hidden><span aria-hidden="true">↶</span>本机历史工作台</button>
       <button data-view="overview" aria-current="page"><span aria-hidden="true">◫</span>总览</button>
       <button data-view="tasks"><span aria-hidden="true">≡</span>任务与报告</button>
       <button data-view="goals" hidden><span aria-hidden="true">◎</span>目标与边界</button>
@@ -29,7 +32,7 @@
   <div class="shell">
     <header class="topbar"><div><span class="eyebrow">工作现场</span><span id="observed">尚未读取</span></div><div class="actions"><button id="theme" class="quiet" aria-label="切换明暗主题">明暗</button><button id="refresh" class="refresh">刷新记录 <span aria-hidden="true">↻</span></button></div></header>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-    <main id="content" tabindex="-1" aria-live="polite"><div class="loading">正在读取本机记录…</div></main>
+    <main id="content" tabindex="-1" aria-live="polite"><div class="loading">正在打开工作台…</div></main>
     <footer><p id="runtime-version" hidden></p><span id="observation-boundary">来源是本机保存的运行记录。本次查看不会重新核对 GitHub，也不会启动模型。各队列分别观测。</span></footer>
   </div>
   <dialog id="report-dialog" aria-labelledby="report-title"><div class="dialog-head"><div><span class="eyebrow">原始报告</span><h2 id="report-title">完整报告</h2></div><button id="close-report" class="quiet" aria-label="关闭完整报告">关闭 ×</button></div><p id="report-meta" class="report-meta"></p><pre id="report-body" tabindex="0" role="region" aria-label="完整报告正文"></pre><details id="report-original" hidden><summary>查看完整传输原文（含消息引用）</summary><pre id="report-raw" tabindex="0" role="region" aria-label="完整传输原文"></pre></details></dialog>
