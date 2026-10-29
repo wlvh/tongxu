@@ -3,7 +3,7 @@ function taskSourceLabel(t) { if(t.candidate.kind !== 'development-task')return 
 const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0,controlRefresh=null;
-let entryInfo=null;
+let entryInfo=null,githubDetailEpoch=null;
 const gh={account:null,projects:[],page:0,hasNext:false,loading:false,error:null,checkedAt:null,filter:'',selected:null,epoch:0,listRequest:0,issues:null,pulls:null};
 const pendingControls=new Set();
 const pendingScopeControls=new Set();
@@ -554,18 +554,19 @@ const githubError=e=>githubErrors[e?.message]||'暂时无法读取 GitHub，请�
 const githubView=()=>view==='projects'||view==='github';
 function githubLink(label,url){const a=el('a',label,'github-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
 async function githubApi(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+key},cache:'no-store'}),value=await response.json();if(!response.ok){const e=new Error(value.error||'github_service_unavailable');e.retryAfterSeconds=value.retryAfterSeconds;throw e;}return value;}
-function resetGithubIdentity(error){gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
+function dismissGithubDetail(){if(githubDetailEpoch!==null){githubDetailEpoch=null;reportNonce++;if($('report-dialog').open)$('report-dialog').close();}}
+function resetGithubIdentity(error){dismissGithubDetail();gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
 function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
 async function loadGithubProjects(more=false){
   if(gh.loading)return;const request=++gh.listRequest,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
   try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id:''));if(request!==gh.listRequest)return;
-    if(gh.account&&gh.account.id!==data.connection.account.id){gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
+    if(gh.account&&gh.account.id!==data.connection.account.id){dismissGithubDetail();gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
     gh.account=data.connection.account;gh.projects=more?[...new Map([...gh.projects,...data.repositories].map(r=>[r.id,r])).values()]:data.repositories;gh.page=page;gh.hasNext=data.hasNext;gh.checkedAt=data.connection.checkedAt;
   }catch(error){if(request!==gh.listRequest)return;if(!handleGithubError(error))gh.error=error;}
   finally{if(request===gh.listRequest)gh.loading=false;if(githubView())render();}
 }
 function chooseGithubProject(repo){
-  gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');
+  dismissGithubDetail();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');
 }
 async function loadGithubItems(kind,more=false){
   const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
@@ -616,10 +617,10 @@ function selectedGithubView(){
   page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
 }
 async function openGithubItem(kind,item){
-  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-dialog').showModal();
+  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-dialog').showModal();
   try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(nonce!==reportNonce||epoch!==gh.epoch||!$('report-dialog').open)return;
     $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
-  }catch(error){if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
+  }catch(error){if(nonce!==reportNonce||epoch!==gh.epoch||gh.selected?.id!==repo.id||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
 }
 function renderGithub(){
   document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode('GitHub 项目入口'),el('p','按当前身份读取项目。原执行和报告保留在本机历史工作台。'));
@@ -678,7 +679,7 @@ async function openMessageReport(t,run,m){
   try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+(r.nativeSessionResumed?' · 准确续接原会话 ':' · 会话 ')+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { void enterView(b.dataset.view); }; });
-$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
+$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;githubDetailEpoch=null;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
 $('refresh').onclick = refresh;
 document.querySelector('.skip').onclick = e => { e.preventDefault(); $('content').focus(); $('content').scrollIntoView(); };
 let initial = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'; try { initial = localStorage.getItem('tongxu-view-theme') || initial; } catch {}; document.documentElement.dataset.theme = initial === 'dark' ? 'dark' : 'light';
