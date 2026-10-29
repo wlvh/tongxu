@@ -549,7 +549,7 @@ function secretaryView(){
 }
 
 
-const githubErrors={github_not_signed_in:'GitHub 登录已失效。请在本机终端完成 gh auth login，再点击重新检查。',github_cli_missing:'未找到 GitHub CLI（gh）。请先安装官方 GitHub CLI 并登录，再点击重新检查。',github_cli_entry_invalid:'配置的 GitHub 程序入口不可用，请核对本机入口设置。',github_cli_capabilities_unavailable:'当前 GitHub CLI 未提供所需读取能力，请更新后重试。',github_connection_unavailable:'暂时无法连接 GitHub。请检查网络和本机 GitHub 登录状态后重试。',github_rate_limited:'GitHub 暂时限制了请求频率，请稍后重试。',github_access_denied:'当前 GitHub 身份没有读取这项内容的权限。',github_repository_unavailable:'这个项目已不可访问，可能被移除或权限发生变化。请重新选择项目。',github_account_changed:'GitHub 登录身份已变化，请重新检查并选择项目。',github_project_not_selected:'项目选择已失效，请从项目列表重新进入。',github_cli_changed_during_read:'GitHub CLI 在读取过程中更新了，请重试本次读取。',github_response_invalid:'GitHub 返回的内容无法完整核对，请重试。',github_page_limit:'已达到本次读取的页数上限，当前列表尚未完整。',github_reader_closed:'本机入口已经停止，请重新启动。',viewer_key_required:'本机访问钥匙已失效，请使用本次启动打开的新页面。'};
+const githubErrors={github_not_signed_in:'GitHub 登录已失效。请在本机终端完成 gh auth login，再点击重新检查。',github_cli_missing:'未找到 GitHub CLI（gh）。请先安装官方 GitHub CLI 并登录，再点击重新检查。',github_cli_entry_invalid:'配置的 GitHub 程序入口不可用，请核对本机入口设置。',github_cli_capabilities_unavailable:'当前 GitHub CLI 未提供所需读取能力，请更新后重试。',github_connection_unavailable:'暂时无法连接 GitHub。请检查网络和本机 GitHub 登录状态后重试。',github_rate_limited:'GitHub 暂时限制了请求频率，请稍后重试。',github_access_denied:'当前 GitHub 身份没有读取这项内容的权限。',github_repository_unavailable:'这个项目已不可访问，可能被移除或权限发生变化。请重新选择项目。',github_account_changed:'GitHub 登录身份已变化，请重新检查并选择项目。',github_project_not_selected:'项目选择已失效，请从项目列表重新进入。',github_cli_changed_during_read:'GitHub CLI 在读取过程中更新了，请重试本次读取。',github_response_invalid:'GitHub 返回的内容无法完整核对，请重试。',github_page_limit:'已达到本次读取的页数上限，当前列表尚未完整。',github_page_not_discovered:'分页位置已失效，请重新读取项目列表。',github_read_superseded:'当前身份已重新核对，请重新选择项目。',github_reader_closed:'本机入口已经停止，请重新启动。',viewer_key_required:'本机访问钥匙已失效，请使用本次启动打开的新页面。'};
 const githubError=e=>githubErrors[e?.message]||'暂时无法读取 GitHub，请稍后重试。';
 const githubView=()=>view==='projects'||view==='github';
 function githubLink(label,url){const a=el('a',label,'github-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
@@ -558,7 +558,7 @@ function resetGithubIdentity(error){gh.epoch++;gh.listRequest++;gh.account=null;
 function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
 async function loadGithubProjects(more=false){
   if(gh.loading)return;const request=++gh.listRequest,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
-  try{const data=await githubApi('/api/github/projects?page='+page);if(request!==gh.listRequest)return;
+  try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id:''));if(request!==gh.listRequest)return;
     if(gh.account&&gh.account.id!==data.connection.account.id){gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
     gh.account=data.connection.account;gh.projects=more?[...new Map([...gh.projects,...data.repositories].map(r=>[r.id,r])).values()]:data.repositories;gh.page=page;gh.hasNext=data.hasNext;gh.checkedAt=data.connection.checkedAt;
   }catch(error){if(request!==gh.listRequest)return;if(!handleGithubError(error))gh.error=error;}

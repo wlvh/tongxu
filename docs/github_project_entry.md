@@ -2,7 +2,7 @@
 
 正常启动同序后，先检查本机现有GitHub身份，再显示该身份可访问的仓库。这里的项目指GitHub仓库，不是GitHub Projects看板。点击项目进入Issues与PR看板，可以按开放、关闭或全部筛选、分页、阅读完整正文或打开GitHub原条目。
 
-项目列表每页50个，条目每页30个，界面明确显示已加载数量和后续页。项目筛选只检索已加载列表，不声称搜索了尚未加载的全部仓库。GitHub的Issues接口也会返回PR；独立Issues列表排除这些记录，有后续页时保留加载入口，不把某一页为空说成仓库没有Issues。
+项目列表每页50个，条目每页30个，界面明确显示已加载数量和后续页。项目筛选只检索已加载列表，不声称搜索了尚未加载的全部仓库。Issues与PR使用各自的连接读取，分页位置来自GitHub返回的游标；空页和后续页分别展示。
 
 ## 使用与配置
 
@@ -15,14 +15,14 @@ GitHub读取沿用本机gh认证。查找PATH中的gh及现有常见稳定入口
 ## 读取边界与运行寿命
 
 - 本机访问仍要求127.0.0.1、正确Host/Origin和本次随机访问钥匙。
-- 新接口只接受GET。远端端点由程序构造，只读取当前用户、可访问仓库、所选仓库、Issues和PR；不接受页面传来的任意URL或shell。
-- 仓库选择绑定GitHub数值ID和当前用户ID。切换账户使旧选择失效，读取前后重新核身份；返回较迟的旧项目请求不能覆盖新选择。
+- 本机新接口只接受GET。远端使用固定GraphQL只读query（HTTP POST传输），在同一次认证请求里取得viewer身份和相应仓库/条目；没有mutation，不接受页面传来的查询文本、任意URL或shell。
+- 仓库选择绑定GitHub数值ID和当前用户ID。切换账户使旧选择失效，每份项目数据与身份来自同一次查询，避免分别读取身份时账号在中间变化；返回较迟的旧项目请求不能覆盖或撤销新选择。
 - 列表和详情直接展示GitHub读取结果，正文按文本处理，不执行HTML或报告指令。详情链接由已核仓库名、类型和编号构造。
 - 看板不克隆仓库，不调用模型，不导入候选，不授予写入、合并或费用权限。开发执行仍按原任务流程处理。
-- 关闭本机进程取消未完成的GitHub读取，不启动后台刷新。每次打开浏览器入口会重新核GitHub；旧访问钥匙不能用于下一次启动。
+- 关闭本机进程取消未完成的GitHub读取，包括CLI版本与能力探测子进程，不启动后台刷新。每次打开浏览器入口会重新核GitHub；旧访问钥匙不能用于下一次启动。
 
 ## 验证
 
 针对性测试覆盖分页、Issues/PR区分、完整正文、错误身份、任意路径拒绝、账号切换、读取中身份改变、权限/频率/格式失败、取消、历史数据延迟加载，以及前端迟到响应与部分失败。实际试用另行记录登录身份下的项目、Issues/PR和正文；测试程序数据不作为真实GitHub证据。原工作台和秘书读取回归按影响范围复用。
 
-官方接口依据：[可访问仓库](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user)、[仓库Issues](https://docs.github.com/en/rest/issues/issues#list-repository-issues)、[仓库PR](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests)。
+官方接口依据：[GraphQL查询与viewer](https://docs.github.com/en/graphql/reference/queries)、[可访问仓库](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user)、[仓库Issues](https://docs.github.com/en/rest/issues/issues#list-repository-issues)、[仓库PR](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests)。

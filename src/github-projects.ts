@@ -8,7 +8,8 @@ import type {Response} from './contract.js';
 
 type Row=Record<string,any>;
 type Account={id:number;login:string};
-export type GitHubProjectReader={get:(endpoint:string,signal:AbortSignal)=>Promise<Response>};
+type ProjectQuery='projects'|'issues'|'pulls'|'issue'|'pull';
+export type GitHubProjectReader={query:(operation:ProjectQuery,variables:Row,signal:AbortSignal)=>Promise<Response>};
 export type GitHubReaderFactory=(signal:AbortSignal)=>Promise<GitHubProjectReader>;
 export class GitHubProjectError extends Error{
   constructor(code:string,readonly retryAfterSeconds?:number){super(code);}
@@ -19,11 +20,18 @@ const bounded=(v:unknown,max:number):v is string=>typeof v==='string'&&v.length<
 const timestamp=(v:unknown)=>typeof v==='string'&&Number.isFinite(Date.parse(v));
 const now=()=>new Date().toISOString();
 const fail=(code='github_response_invalid'):never=>{throw new GitHubProjectError(code);};
-function allowed(endpoint:string){
-  if(endpoint==='user'||/^user\/repos\?affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=50&page=[1-9]\d{0,3}$/.test(endpoint)||/^repositories\/[1-9]\d*$/.test(endpoint))return;
-  if(/^repos\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*\/(issues|pulls)(?:\/[1-9]\d*|\?state=(?:open|closed|all)&sort=updated&direction=desc&per_page=30&page=[1-9]\d{0,3})$/.test(endpoint))return;
-  fail('github_read_endpoint_denied');
-}
+const repoFields='id:databaseId nodeId:id full_name:nameWithOwner description private:isPrivate archived:isArchived defaultBranchRef{name} updated_at:updatedAt';
+const itemFields='id:databaseId number title state updated_at:updatedAt author{login} labels(first:50){nodes{name}}';
+const pullFields='draft:isDraft merged_at:mergedAt headRefName baseRefName';
+const pageFields='pageInfo{hasNextPage endCursor}';
+const viewer='account:viewer{id:databaseId login}';
+const queries={
+ projects:`query TongxuProjects($after:String){account:viewer{id:databaseId login projects:repositories(first:50,after:$after,affiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${repoFields}} ${pageFields}}}}`,
+ issues:`query TongxuIssues($id:ID!,$after:String,$states:[IssueState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:issues(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields}} ${pageFields}}}}}`,
+ pulls:`query TongxuPulls($id:ID!,$after:String,$states:[PullRequestState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:pullRequests(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields} ${pullFields}} ${pageFields}}}}}`,
+ issue:`query TongxuIssue($id:ID!,$number:Int!){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:issue(number:$number){${itemFields} body comments{totalCount}}}}}`,
+ pull:`query TongxuPull($id:ID!,$number:Int!){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:pullRequest(number:$number){${itemFields} ${pullFields} body comments{totalCount}}}}}`
+};
 /** Uses the existing CLI account. No login, token extraction, shell command,
  * remote mutation, model request or fixed CLI release is part of this reader. */
 export const currentGitHubReader:GitHubReaderFactory=async signal=>{
@@ -34,18 +42,23 @@ export const currentGitHubReader:GitHubReaderFactory=async signal=>{
   for(const candidate of [...new Set(candidates)]){try{await access(candidate,constants.X_OK);path=candidate;break;}catch{}}
   if(!path)fail('github_cli_missing');
   let selected:Awaited<ReturnType<typeof selectGhExecutable>>;
-  try{selected=await selectGhExecutable(path!,'0'.repeat(64));}catch{fail('github_cli_capabilities_unavailable');}
+  try{selected=await selectGhExecutable(path!,'0'.repeat(64),signal);}catch{fail(signal.aborted?'github_read_cancelled':'github_cli_capabilities_unavailable');}
   if(signal.aborted)fail('github_read_cancelled');
-  return {get:async(endpoint,signal)=>{
-    allowed(endpoint);assertGhExecutableUnchanged(selected);
+  return {query:async(operation,variables,signal)=>{
+    if(!Object.hasOwn(queries,operation))fail('github_read_endpoint_denied');
+    assertGhExecutableUnchanged(selected);
     const env:NodeJS.ProcessEnv={...process.env,GH_HOST:'github.com',GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'};delete env.GH_DEBUG;delete env.GH_FORCE_TTY;
-    const args=['api','--hostname','github.com','--method','GET','--include','-H','Accept: application/vnd.github+json',endpoint];
+    const args=['api','--hostname','github.com','--method','POST','--include','-H','Accept: application/vnd.github+json','graphql','--input','-'];
+    // GraphQL uses POST for a fixed query document; no mutation text or
+    // arbitrary endpoint/operation is accepted from the browser or a report.
     const raw=await new Promise<string>((resolve,reject)=>{
-      execFile(selected.realpath,args,{env,signal,timeout:20000,maxBuffer:8*1024*1024},(error,stdout,stderr)=>{
-        if(signal.aborted){reject(new GitHubProjectError('github_read_cancelled'));return;}
-        if(error&&!/^HTTP\/\S+\s+\d+/.test(stdout)){reject(new GitHubProjectError((error as any).code==='ENOENT'?'github_cli_missing':/gh auth login|not logged|authentication required/i.test(stderr)?'github_not_signed_in':'github_connection_unavailable'));return;}
-        resolve(stdout);
+      let ended=false,result:{error:Error|null;stdout:string}|undefined;
+      const finish=()=>{if(!ended||!result)return;result.error?reject(result.error):resolve(result.stdout);};
+      const child=execFile(selected.realpath,args,{env,signal,killSignal:'SIGKILL',timeout:20000,maxBuffer:8*1024*1024},(error,stdout,stderr)=>{
+        const problem=signal.aborted?new GitHubProjectError('github_read_cancelled'):error&&!/^HTTP\/\S+\s+\d+/.test(stdout)?new GitHubProjectError((error as any).code==='ENOENT'?'github_cli_missing':/gh auth login|not logged|authentication required/i.test(stderr)?'github_not_signed_in':'github_connection_unavailable'):null;
+        result={error:problem,stdout};finish();
       });
+      child.once('close',()=>{ended=true;finish();});child.stdin?.on('error',()=>{});child.stdin?.end(JSON.stringify({query:queries[operation],variables}));
     });
     try{assertGhExecutableUnchanged(selected);}catch{fail('github_cli_changed_during_read');}
     try{return parseGh(raw);}catch{return fail();}
@@ -59,16 +72,25 @@ function decode(r:Response):any{
   if(r.status===403)fail('github_access_denied');
   if(r.status===404)fail('github_repository_unavailable');
   if(r.status!==200)fail('github_service_unavailable');
-  try{return JSON.parse(r.body);}catch{fail();}
+  let value:any;try{value=JSON.parse(r.body);}catch{return fail();}
+  if(value?.errors?.length){
+    const types=value.errors.map((e:Row)=>e.type);
+    fail(types.includes('RATE_LIMITED')?'github_rate_limited':types.includes('FORBIDDEN')?'github_access_denied':types.includes('NOT_FOUND')?'github_repository_unavailable':'github_response_invalid');
+  }
+  if(!value?.data||typeof value.data!=='object')fail();return value.data;
+
 }
 function account(value:Row):Account{
   if(!positive(value?.id)||!bounded(value.login,128)||!value.login)fail();return {id:value.id,login:value.login};
 }
 function repository(v:Row){
-  if(!positive(v?.id)||!name.test(v.full_name??'')||typeof v.private!=='boolean'||typeof v.archived!=='boolean'||!(v.description===null||bounded(v.description,16384))||!(v.default_branch===null||bounded(v.default_branch,256))||!timestamp(v.updated_at))fail();
-  return {id:v.id,fullName:v.full_name as string,description:v.description??'',private:v.private,archived:v.archived,defaultBranch:v.default_branch??null,updatedAt:v.updated_at as string,url:'https://github.com/'+v.full_name};
+  if(v===null)fail('github_repository_unavailable');
+  v={...v,default_branch:v?.defaultBranchRef?.name??null};
+  if(!positive(v?.id)||!bounded(v.nodeId,512)||!v.nodeId||!name.test(v.full_name??'')||typeof v.private!=='boolean'||typeof v.archived!=='boolean'||!(v.description===null||bounded(v.description,16384))||!(v.default_branch===null||bounded(v.default_branch,256))||!timestamp(v.updated_at))fail();
+  return {id:v.id,nodeId:v.nodeId as string,fullName:v.full_name as string,description:v.description??'',private:v.private,archived:v.archived,defaultBranch:v.default_branch??null,updatedAt:v.updated_at as string,url:'https://github.com/'+v.full_name};
 }
 function entry(v:Row,repo:string,kind:'issues'|'pulls',full=false){
+  v={...v,state:v?.state==='MERGED'?'closed':v?.state?.toLowerCase(),user:v?.author,labels:v?.labels?.nodes,head:{ref:v?.headRefName},base:{ref:v?.baseRefName},comments:v?.comments?.totalCount};
   if(!positive(v?.number)||!bounded(v.title,4096)||!['open','closed'].includes(v.state)||!timestamp(v.updated_at)||!(v.body==null||bounded(v.body,1024*1024))||!positive(v.id))fail();
   if(kind==='issues'&&v.pull_request)fail('github_item_kind_changed');
   if(kind==='pulls'&&(typeof v.draft!=='boolean'||!(v.merged_at===null||timestamp(v.merged_at))||!bounded(v.head?.ref,512)||!bounded(v.base?.ref,512)))fail();
@@ -84,49 +106,63 @@ function queryKeys(url:URL,keys:string[]){const actual=[...url.searchParams.keys
  * authority, creates an execution plan or replaces the original task ledger. */
 export class GitHubProjects{
   private identity:Account|null=null;
-  private repositories=new Map<number,string>();
+  private repositories=new Map<number,ReturnType<typeof repository>>();
+  private projectCursors=new Map<number,string|null>([[1,null]]);
+  private itemCursors=new Map<string,Map<number,string|null>>();
   private epoch=0;
   private closed=false;
   private controllers=new Set<AbortController>();
   private reads=new Set<Promise<unknown>>();
   constructor(private reader:GitHubReaderFactory=currentGitHubReader){}
-  private changed(){this.identity=null;this.repositories.clear();this.epoch++;}
+  private changed(){this.identity=null;this.repositories.clear();this.projectCursors=new Map([[1,null]]);this.itemCursors.clear();this.epoch++;}
   async read(url:URL):Promise<unknown>{
     if(this.closed)fail('github_reader_closed');
-    const controller=new AbortController();this.controllers.add(controller);
-    const promise=this.readCurrent(url,controller.signal);this.reads.add(promise);
-    try{return await promise;}catch(e){if(e instanceof GitHubProjectError&&['github_not_signed_in','github_account_changed'].includes(e.message))this.changed();throw e;}
-    finally{this.reads.delete(promise);this.controllers.delete(controller);}
+    const controller=new AbortController(),epoch=this.epoch;this.controllers.add(controller);
+    const promise=this.readCurrent(url,controller.signal,epoch);this.reads.add(promise);
+    try{return await promise;}catch(e){
+      // An ended old-account request cannot invalidate a newly discovered one.
+      if(epoch===this.epoch&&e instanceof GitHubProjectError&&['github_not_signed_in','github_account_changed'].includes(e.message))this.changed();throw e;
+    }finally{this.reads.delete(promise);this.controllers.delete(controller);}
   }
-  private async readCurrent(url:URL,signal:AbortSignal){
+  private async readCurrent(url:URL,signal:AbortSignal,epoch:number){
     const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)\/(issues|pulls)(?:\/([1-9]\d*))?$/.exec(url.pathname);
     if(!list&&!match)fail('github_route_not_found');
-    queryKeys(url,list?['page']:match![3]?['account']:['account','page','state']);
+    queryKeys(url,list?['page','account']:match![3]?['account']:['account','page','state']);
     const page=queryNumber(url,'page',1);if(page>1000)fail('github_page_limit');
-    const expected=list?null:queryNumber(url,'account'),repoId=match?Number(match[1]):null,kind=match?.[2] as 'issues'|'pulls'|undefined,state=url.searchParams.get('state')??'open';
+    const expected=list&&page===1?null:queryNumber(url,'account'),repoId=match?Number(match[1]):null,kind=match?.[2] as 'issues'|'pulls'|undefined,state=url.searchParams.get('state')??'open';
     if(!['open','closed','all'].includes(state))fail('github_query_invalid');
-    if(!list&&(!positive(repoId)||!this.identity||this.identity.id!==expected||!this.repositories.has(repoId)))fail('github_project_not_selected');
-    const reader=await this.reader(signal),get=async(path:string)=>{if(signal.aborted)fail('github_read_cancelled');allowed(path);const r=await reader.get(path,signal);return {response:r,value:decode(r)};};
-    const before=account((await get('user')).value);
-    if(expected!==null&&before.id!==expected)fail('github_account_changed');
-    if(this.identity?.id!==before.id){this.changed();this.identity=before;}
-    const epoch=this.epoch;
-    let result:Row,newRepositories:ReturnType<typeof repository>[]=[];
-    if(list){
-      const r=await get(`user/repos?affiliation=owner,collaborator,organization_member&sort=updated&direction=desc&per_page=50&page=${page}`);
-      if(!Array.isArray(r.value)||r.value.length>50)fail();newRepositories=r.value.map(repository);
-      result={repositories:newRepositories,page,hasNext:/rel="next"/.test(r.response.headers.link??'')};
-    }else{
-      const repo=repository((await get('repositories/'+repoId)).value);if(repo.id!==repoId)fail('github_repository_identity_changed');
-      const path=`repos/${repo.fullName}/${kind}`+(match![3]?'/'+match![3]:`?state=${state}&sort=updated&direction=desc&per_page=30&page=${page}`),r=await get(path);
-      if(match![3]){const item=entry(r.value,repo.fullName,kind!,true);if(item.number!==Number(match![3]))fail();result={repository:repo,kind,item};}
-      else {if(!Array.isArray(r.value)||r.value.length>30)fail();const rows=kind==='issues'?r.value.filter((x:Row)=>!x.pull_request):r.value;result={repository:repo,kind,state,page,items:rows.map((x:Row)=>entry(x,repo.fullName,kind!)),hasNext:/rel="next"/.test(r.response.headers.link??''),pageMayExcludePullRequests:kind==='issues'};}
+    if(expected!==null&&this.identity?.id!==expected)fail('github_project_not_selected');
+    const selected=repoId?this.repositories.get(repoId):undefined;
+    if(!list&&(!positive(repoId)||!selected))fail('github_project_not_selected');
+    const group=list?'projects':`${repoId}:${kind}:${state}`;
+    const cursors=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,string|null>([[1,null]]);
+    if(!match?.[3]&&!cursors.has(page))fail('github_page_not_discovered');
+    const number=match?.[3]?Number(match[3]):null;if(number!==null&&(!positive(number)||number>2147483647))fail('github_query_invalid');
+    const operation:ProjectQuery=list?'projects':number!==null?(kind==='issues'?'issue':'pull'):kind!;
+    const variables=list?{after:cursors.get(page)}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursors.get(page),states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
+    const reader=await this.reader(signal);if(signal.aborted)fail('github_read_cancelled');
+    const data=decode(await reader.query(operation,variables,signal)),observed=account(data.account);
+    // Viewer identity and all returned data share this ONE authenticated query.
+    if(expected!==null&&observed.id!==expected)fail('github_account_changed');
+    if(epoch!==this.epoch&&this.identity?.id!==observed.id)fail('github_read_superseded');
+    let result:Row,connection:any,newRepositories:ReturnType<typeof repository>[]=[];
+    if(list){connection=data.account.projects;if(!Array.isArray(connection?.nodes)||connection.nodes.length>50)fail();newRepositories=connection.nodes.map(repository);result={repositories:newRepositories,page};}
+    else{
+      const repo=repository(data.repository);if(repo.id!==repoId||repo.nodeId!==selected!.nodeId)fail('github_repository_identity_changed');
+      if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
+      else{connection=data.repository.items;if(!Array.isArray(connection?.nodes)||connection.nodes.length>30)fail();result={repository:repo,kind,state,page,items:connection.nodes.map((x:Row)=>entry(x,repo.fullName,kind!))};}
     }
-    const after=account((await get('user')).value);
+    if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;}
     if(signal.aborted)fail('github_read_cancelled');
-    if(before.id!==after.id||epoch!==this.epoch||this.identity?.id!==after.id)fail('github_account_changed');
-    for(const repo of newRepositories)this.repositories.set(repo.id,repo.fullName);
-    return {connection:{status:'connected',account:after,checkedAt:now()},...result,source:'github_live_read',readOnly:true,modelInputs:0};
+    if(this.identity?.id!==observed.id){this.changed();this.identity=observed;}
+    if(list)for(const repo of newRepositories)this.repositories.set(repo.id,repo);
+    if(connection){
+      const destination=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,string|null>([[1,null]]);
+      if(page===1)for(const key of destination.keys())if(key>1)destination.delete(key);
+      if(connection.pageInfo.hasNextPage)destination.set(page+1,connection.pageInfo.endCursor);
+      if(!list)this.itemCursors.set(group,destination);
+    }
+    return {connection:{status:'connected',account:observed,checkedAt:now()},...result,source:'github_live_read',readOnly:true,modelInputs:0};
   }
   async close(){this.closed=true;for(const c of this.controllers)c.abort();await Promise.allSettled([...this.reads]);}
 }
