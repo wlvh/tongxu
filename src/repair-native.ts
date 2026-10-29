@@ -254,14 +254,15 @@ export class BoundedCodexSession {
     await this.o.gate?.check();
     const usage = await this.request('account/rateLimits/read', {}); if (usage.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
     await this.o.beforeTurn?.();
+    if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
+    this.o.beforeSendSync?.();
+    assertExternalExecutable(this.selectedExecutable);
+    // From this final synchronous gate through intent and send there is no await.
     const index = this.inputs.length + 1;
     this.inputs.push({ input, subjectCandidate: candidate, schema });
     save(join(this.o.directory, 'inputs.json'), this.inputs);
     this.binding.promptSha256 = hash(JSON.stringify({ system: this.o.system, inputs: this.inputs }));
     save(join(this.o.directory, `turn-${index}-intent.json`), { subjectCandidate: candidate, inputSha256: hash(input), status: 'send_registered' });
-    if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
-    this.o.beforeSendSync?.();
-    assertExternalExecutable(this.selectedExecutable);
     this.pendingTurn = this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: schema });
     let response;
     try { response = await this.pendingTurn; } finally { this.pendingTurn = null; }

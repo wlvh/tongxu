@@ -40,7 +40,15 @@ export async function verifyUnstartedSecretaryCapture(directory:string,p:Secreta
   for(const name of names){const b=await regular(join(directory,name),1024*1024);size+=b.length;if(size>4*1024*1024)throw new Error('secretary_unstarted_capture_limit');originals[name]=b;}
   const json=(n:string)=>JSON.parse(originals[n]!.toString()),proc=json('process.json'),exit=json('exit.json'),binding=json('binding.json');
   if(!Number.isSafeInteger(proc.pid)||proc.pid<=0||processState(proc.pid)!=='ended'||exit.code!==0||exit.signal!==null)throw new Error('secretary_original_execution_active_or_unknown');
-  await checkCapture(directory);verifyLaunch(json('launch.json'),json('executable.json'),directory,p);
+  // Only this narrowly proved zero-input path may inspect an otherwise intact
+  // stream rejected solely because the configured executable changed at exit.
+  // The failure remains on disk; all exact metadata/frame checks below still run.
+  try{await checkCapture(directory);}catch(error){
+    const failure=await regular(join(directory,'capture-failure.json'),4096),status=json('capture-status.json');originals['capture-failure.json']=failure;
+    if(JSON.parse(failure.toString()).reason!=='external_executable_changed_during_operation'||status.status!=='failed'||status.failure!=='external_executable_changed_during_operation')throw error;
+    for(const name of ['stdin.ndjson','stdout.ndjson','stderr.txt'])if(hash(originals[name]!)!==status.files?.[name])throw new Error('secretary_unstarted_capture_changed');
+  }
+  verifyLaunch(json('launch.json'),json('executable.json'),directory,p);
   if((await readdir(directory)).some(n=>n==='inputs.json'||n==='completed.json'||n.startsWith('turn-')||n==='native-tool-transports.json')||await exists(join(output,'queries'))&&!((await readdir(join(output,'queries'))).length===0))throw new Error('secretary_original_model_input_registered');
   const frames=(b:Buffer)=>{if(!b.length||b.at(-1)!==10)throw new Error('secretary_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(b).trim().split('\n').map(x=>JSON.parse(x));};
   const sent=frames(originals['stdin.ndjson']!),received=frames(originals['stdout.ndjson']!),prefix=metadataRequests(directory,p,frozen),cwd=join(directory,'workspace');

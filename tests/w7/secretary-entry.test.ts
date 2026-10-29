@@ -175,3 +175,15 @@ test('a CLI change after model input retains the original uncertain attempt and 
   await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
   const before=await readFile(f.trace);await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),before);assert.equal((await f.post('close-unstarted',{requestId})).status,503);
 });
+
+
+test('an upgrade after metadata but before model send can be explicitly closed only from complete zero-input originals',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),start=BoundedCodexSession.start,requestId='upgrade-after-metadata',question='升级后保留原问题再明确重开。';let replaced=false;
+  BoundedCodexSession.start=async options=>{const session=await start(options);if(options.role==='secretary'&&!replaced){replaced=true;const next=join(f.fixtureRoot,'codex-next-after-metadata');await writeFile(next,(await readFile(f.p.codexExecutable,'utf8')).replaceAll('0.163.0-alpha.10.2','99.9.2'),{mode:0o700});await unlink(f.p.codexExecutable);await symlink(next,f.p.codexExecutable);}return session;};t.after(()=>{BoundedCodexSession.start=start;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=await readdir(native),originals=await Promise.all(names.filter(n=>n.endsWith('.json')||n.endsWith('.ndjson')||n.endsWith('.txt')).map(async name=>({name,bytes:await readFile(join(native,name))})));
+  assert.equal(names.some(n=>n==='inputs.json'||n.startsWith('turn-')),false);assert.equal(JSON.parse(await readFile(join(native,'capture-failure.json'),'utf8')).reason,'external_executable_changed_during_operation');assert.doesNotMatch(await readFile(join(native,'stdin.ndjson'),'utf8'),/turn\/start/);
+  await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);for(const original of originals)assert.deepEqual(await readFile(join(native,original.name)),original.bytes);
+  await f.post('ask',{requestId:'explicit-next-after-metadata',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-next-after-metadata'&&q.phase==='completed'));assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+});
