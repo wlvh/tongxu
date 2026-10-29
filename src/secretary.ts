@@ -1,3 +1,4 @@
+import {selectExternalExecutable} from './external-executable.js';
 import { writeFile } from 'node:fs/promises';
 import { join, isAbsolute, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -52,7 +53,7 @@ export function parseSecretaryPlan(bytes: Buffer): SecretaryPlan {
   for (const ref of [...p.prompts, ...p.allowedInstructionSources]) if (!ref || !digest.test(ref.sha256) || typeof ref.path !== 'string') throw new Error('secretary_prompt_binding_missing');
   for (const path of [p.store, p.codexExecutable, ...p.prompts.map((r: FileRef) => r.path), ...p.allowedInstructionSources.map((r: FileRef) => r.path)]) if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path) throw new Error('secretary_noncanonical_path');
   if (p.billing?.mode !== 'existing_subscription_only' || p.billing.ordinaryUsageRequired !== true || !digest.test(p.billing.evidenceSha256) || !Number.isFinite(Date.parse(p.billing.observedAt))) throw new Error('secretary_billing_boundary_missing');
-  if(p.runtimeSelection&&(!exactKeys(p.runtimeSelection,['policy','configuredSha256','observedVersion','observedRealpath'])||p.runtimeSelection.policy!=='configured-current-v1'||!digest.test(p.runtimeSelection.configuredSha256)||typeof p.runtimeSelection.observedVersion!=='string'||p.runtimeSelection.observedRealpath!==p.codexExecutable))throw new Error('secretary_runtime_selection_invalid');
+  if(p.runtimeSelection&&(!exactKeys(p.runtimeSelection,['policy','configuredSha256','observedVersion','observedRealpath'])||p.runtimeSelection.policy!=='configured-current-v1'||!digest.test(p.runtimeSelection.configuredSha256)||typeof p.runtimeSelection.observedVersion!=='string'||typeof p.runtimeSelection.observedRealpath!=='string'||!isAbsolute(p.runtimeSelection.observedRealpath)||resolve(p.runtimeSelection.observedRealpath)!==p.runtimeSelection.observedRealpath))throw new Error('secretary_runtime_selection_invalid');
   return p;
 }
 export async function selectSecretaryRuntime(p:SecretaryPlan,registrationOnly=false):Promise<SecretaryPlan>{
@@ -104,9 +105,10 @@ async function inputs(p: SecretaryPlan) {
     const bytes = await regular(ref.path); if (hash(bytes) !== ref.sha256) throw new Error('secretary_instruction_source_changed');
     if (p.prompts.includes(ref)) prompts.push(new TextDecoder('utf8', { fatal: true }).decode(bytes));
   }
-  // The already installed official macOS 0.163 package is about 250 MB.
-  // Keep a finite binary bound without applying a document-sized limit to it.
-  if (hash(await regular(p.billing.evidence)) !== p.billing.evidenceSha256 || hash(await regular(p.codexExecutable, 512 * 1024 * 1024)) !== p.codexSha256) throw new Error('secretary_runtime_or_billing_changed');
+  // The current question already owns a specific observation. A stable entry
+  // may upgrade between questions, but must not rebind this registered input.
+  const selected=selectExternalExecutable(p.codexExecutable);
+  if (hash(await regular(p.billing.evidence)) !== p.billing.evidenceSha256 || selected.sha256 !== p.codexSha256 || p.runtimeSelection&&selected.realpath!==p.runtimeSelection.observedRealpath) throw new Error('secretary_runtime_or_billing_changed');
   const promptAssembly=await assembleRolePrompt('secretary',prompts.join('\n\n'));requireIssuedRolePrompt(promptAssembly,'secretary');
   const controls=await loadControls(p),workbench=p.workbench?await SecretaryWorkbench.load(p.workbench,p.store,p.item):undefined,queueActions=await loadQueueActions(p);
   return { system: promptAssembly.system,promptAssembly, promptParts: p.prompts.map((ref, i) => ({ sha256: ref.sha256, text: prompts[i] })), question: p.question, candidate: p.candidate, toolSpecs: specs(p),...(workbench?{workbench:workbench.manifest()}:{}),...(controls?{taskControls:controls.manifest()}:{}),...(queueActions?{queueActions:queueActions.manifest()}:{}), scopeSource: p.scopeSource, arrangementSource: p.arrangementSource };

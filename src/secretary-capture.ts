@@ -1,3 +1,4 @@
+import {capturedExternalExecutable} from './external-executable.js';
 import {cliVersion} from './cli-capabilities.js';
 import {resultCliVersion} from './codex-results.js';
 import { join } from 'node:path';
@@ -25,7 +26,9 @@ function verifyLaunch(launch:any,executable:any,directory:string,p:SecretaryPlan
   const args = disabledFeatures.flatMap(name => ['-c', `features.${name}=${name === 'code_mode_host'}`]);
   for (const name of p.disabledMcpServers) args.push('-c', `mcp_servers.${name}.enabled=false`);
   args.push('-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'model_provider="openai"', '-c', 'service_tier="default"', 'app-server', '--listen', 'stdio://');
-  if (launch.command !== p.codexExecutable || launch.cwd !== join(directory,'workspace') || !equal(launch.args, args) || executable.path !== p.codexExecutable || executable.sha256 !== p.codexSha256 || !cliVersion(executable.version,'codex') || p.runtimeSelection&&executable.version!==p.runtimeSelection.observedVersion) throw new Error('secretary_launch_boundary_mismatch');
+  if(Boolean(executable.externalSelection)!==Boolean(launch.executableSelection))throw new Error('secretary_actual_launch_selection_mismatch');
+  if(executable.externalSelection&&(!capturedExternalExecutable(executable.externalSelection,p.codexExecutable)||executable.externalSelection.sha256!==executable.sha256||executable.externalSelection.realpath!==executable.realpath||!equal(launch.executableSelection,executable.externalSelection)))throw new Error('secretary_actual_launch_selection_mismatch');
+  if (launch.command !== p.codexExecutable || launch.cwd !== join(directory,'workspace') || !equal(launch.args, args) || executable.path !== p.codexExecutable || executable.realpath !== (p.runtimeSelection?.observedRealpath??p.codexExecutable) || executable.sha256 !== p.codexSha256 || !cliVersion(executable.version,'codex') || p.runtimeSelection&&executable.version!==p.runtimeSelection.observedVersion) throw new Error('secretary_launch_boundary_mismatch');
 }
 
 /** Called under the original secretary controller lock. An ended metadata

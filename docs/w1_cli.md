@@ -4,7 +4,7 @@
 
 ## 运行
 
-需要 Node 24+、Git，以及已经可用的 gh 身份和网络。安装只含 TypeScript / Node 类型开发依赖，无运行时依赖：
+需要 Node 24.0.0或更新版本、Git，以及已经可用的 gh 身份和网络。Acorn是运行时解析依赖；TypeScript和Node类型声明用于构建。最低要求见[外部依赖规则](runtime_compatibility.md)，不限定精确发布版本：
 
 ```sh
 npm install --ignore-scripts --package-lock=false

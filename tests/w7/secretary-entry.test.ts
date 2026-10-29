@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,readdir,unlink,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,readdir,unlink,mkdir,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {secretaryFixture} from '../w4/secretary-fixture.js';
 import {hash} from '../../src/snapshot.js';
@@ -13,6 +13,8 @@ import {save} from '../../src/live-process.js';
 import {secretaryEntryFixture as fixture} from './secretary-entry-fixture.js';
 
 async function waitFor(f:Awaited<ReturnType<typeof fixture>>,condition:(s:any)=>boolean){const until=Date.now()+12000;let state;while(Date.now()<until){state=await f.get();if(condition(state))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('fixture_workbench_question_timeout:'+JSON.stringify(state));}
+
+async function stableEntry(f:Awaited<ReturnType<typeof secretaryFixture>>){const entry=join(f.root,'current-codex');await symlink(f.p.codexExecutable,entry);f.p.codexExecutable=entry;await writeFile(f.secretaryPlan,JSON.stringify(f.p));}
 
 test('interrupted web registration then CLI upgrade preserves the selected request, permits explicit closure and a new request',async t=>{
   const f=await fixture(t),requestId='interrupted-registration',question='原组合任务做成了什么，现在还需要处理什么？',directory=join(f.root,hash(requestId));
@@ -59,7 +61,7 @@ test('legacy recovery cannot start a second identical unresolved question and te
 });
 
 test('a CLI update after installation uses the same normal entry without editing its template; old answers survive another update',async t=>{
-  const f=await fixture(t),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
+  const f=await fixture(t,'normal',false,stableEntry),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
   const templateBefore=await readFile(f.secretaryPlan),catalogBefore=await readFile(f.catalogPath);
   const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','99.7.0'));
   assert.notEqual(hash(await readFile(f.p.codexExecutable)),f.p.codexSha256);
@@ -119,10 +121,12 @@ test('same workbench composes secretary, direct queue receipt and foreground tic
 });
 
 test('ended metadata-only stop closes explicitly, preserves every original and allows a new question attempt',async t=>{
-  const f=await fixture(t,'late-stop-once'),requestId='zero-input',question='核对这个原任务的当前记录';
+  const f=await fixture(t,'late-stop-once',false,stableEntry),requestId='zero-input',question='核对这个原任务的当前记录';
+  const installed=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,installed.replaceAll('0.163.0-alpha.10.2','99.8.0'));
   await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
   const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=(await readdir(native,{withFileTypes:true})).filter(n=>n.isFile()).map(n=>n.name),originals=await Promise.all(names.map(n=>readFile(join(native,n))));
   assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  await writeFile(f.p.codexExecutable,installed.replaceAll('0.163.0-alpha.10.2','100.0.0'));
   assert.equal((await f.post('close-unstarted',{requestId})).status,200);assert.equal((await f.post('close-unstarted',{requestId})).status,200);
   assert.equal((await f.get()).secretaries[0].questions[0].phase,'closed_unstarted');
   const receipt=JSON.parse((await readFile(join(output,'closed-unstarted.json'))).toString());assert.equal(receipt.proof.metadataOnly,true);assert.equal(receipt.proof.modelInputs,0);
