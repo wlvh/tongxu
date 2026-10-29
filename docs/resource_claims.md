@@ -1,3 +1,5 @@
+> 当前外部依赖规则：[最低要求与实际能力](runtime_compatibility.md)。旧程序摘要和版本路径只作历史来源；兼容升级按当前能力核查，已发送操作及权限仍按原记录处理。下文历史验证记录不改写。
+
 继续原 #5/#6/#8 的原资源账本认领与未知恢复缺口（G03）。前置固定为 G01 [Draft PR32](https://github.com/wlvh/tongxu/pull/32) / 1513baadf3f22a525f641a0576c35ad7bdbe5137（代码 c02fbce 已获限定独立 PASS，1513 仅文档澄清）；分支 feat/w3-resource-claims，target feat/w3-owner-authority。合并协议（G02）已读原要求和官方接口并保存准备材料；先补它与执行器共同需要的原账本门，避免各自发明资源余额。
 
 RL01 产品仅适配原账本：固定 provider/资源引用、请求幂等键、原认领 ID、原操作/候选/角色/授权引用和原始响应。已有 QueueStore events/blobs 保存关联，不另造额度、余额、退款或调度队列。本人授权、执行身份可用、资源实际可用分别记录，任何一项不能替代其余两项。

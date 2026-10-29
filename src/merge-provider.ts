@@ -1,3 +1,4 @@
+import {selectExternalExecutable,assertExternalExecutable,capturedExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import { readFile, realpath, lstat, writeFile } from 'node:fs/promises';
 import { isAbsolute, resolve, join } from 'node:path';
 import { canonical } from './comparison.js';
@@ -30,7 +31,7 @@ export type MergeReply = {
       repositoryIds: number[]; targetRefs: string[]; merge: boolean; bypass: false;
       synchronousHeadCondition: boolean; sourceReference: string | null };
 };
-export type MergeObservation = { profileSha256: string; inputSha256: string; reply: MergeReply; raw: Buffer; directory: string; capturedAt: string };
+export type MergeObservation = { executableSelection?:ExternalExecutable; profileSha256: string; inputSha256: string; reply: MergeReply; raw: Buffer; directory: string; capturedAt: string };
 const observations = new WeakSet<object>();
 
 export function parseMergeProfile(raw: Buffer): MergeProfile {
@@ -95,18 +96,20 @@ export function mergeWire(x: MergeObservation): MergeWire {
 export function mergeCommand(b: ManagedMergeBinding, command: MergeCommand['command'], read: Partial<MergeRead> | null = null): MergeCommand {
   return { protocol:'tongxu-managed-merge-v1', command, binding:b, read: read ? { kind:read.kind!,page:read.page??1,commit:read.commit??null,tip:read.tip??null,...(read.reviewer!==undefined?{reviewer:read.reviewer}:{}) } : null };
 }
-export async function callMergeProvider(profile: MergeProfile, command: MergeCommand, directory: string, beforeDispatch?: (directory:string)=>void): Promise<MergeObservation> {
+export async function callMergeProvider(profile: MergeProfile, command: MergeCommand, directory: string, beforeDispatch?: (directory:string)=>void,expected?:ExternalExecutable): Promise<MergeObservation> {
   const p = parseMergeProfile(Buffer.from(canonical(profile))), c = parseMergeCommand(JSON.parse(canonical(command)),p);
   if (c.command === 'merge' && !beforeDispatch) throw new Error('persisted_managed_merge_gate_required');
   await privateDirectory(directory,true);
-  const exe = await realpath(p.executable), stat = await lstat(exe);
-  if (exe!==p.executable || !stat.isFile() || !(stat.mode&0o111) || hash(await readFile(exe))!==p.executableSha256) throw new Error('managed_publisher_executable_changed');
+  const selected=expected??selectExternalExecutable(p.executable);
+  if(selected.configuredPath!==p.executable)throw new Error('provider_executable_selection_mismatch');
+  assertExternalExecutable(selected);
+  await writeFile(join(directory,'executable.json'),canonical(selected),{flag:'wx',mode:0o600});
   const input = canonical(c)+'\n'; await writeFile(join(directory,'fixed-input.json'),input,{flag:'wx',mode:0o600});
   // No personal credentials are inherited. The configured publisher must obtain
   // its own bounded identity; absence never falls back to a personal CLI.
   const env: NodeJS.ProcessEnv = {PATH:'/usr/bin:/bin',LANG:'C.UTF-8',TMPDIR:directory};
-  beforeDispatch?.(directory);
-  const live = new LiveProcess(directory,exe,['--tongxu-managed-merge-v1'],directory,env);
+  assertExternalExecutable(selected);beforeDispatch?.(directory);
+  const live = new LiveProcess(directory,p.executable,['--tongxu-managed-merge-v1'],directory,env,undefined,selected);
   let timer:ReturnType<typeof setTimeout>|undefined;
   try {
     live.writeText(input);
@@ -115,7 +118,7 @@ export async function callMergeProvider(profile: MergeProfile, command: MergeCom
     await checkCapture(directory);
     if (live.events.length!==1) throw new Error('managed_publisher_one_reply_required');
     const raw = await readFile(join(directory,'stdout.ndjson')), reply = parseReply(raw,p,c);
-    const observation = Object.freeze({profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,raw:Buffer.from(raw),directory,capturedAt:new Date().toISOString()});
+    const observation = Object.freeze({executableSelection:Object.freeze({...selected}),profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,raw:Buffer.from(raw),directory,capturedAt:new Date().toISOString()});
     observations.add(observation); return observation;
   } finally { if(timer)clearTimeout(timer); await live.close(); }
 }
@@ -125,7 +128,8 @@ export async function readMergeProviderCapture(p:MergeProfile,c:MergeCommand,dir
   const input=JSON.parse((await regular(join(directory,'fixed-input.json'),128*1024)).toString());
   const launch=JSON.parse((await regular(join(directory,'launch.json'),16384)).toString()),exit=JSON.parse((await regular(join(directory,'exit.json'),4096)).toString());
   if(canonical(input)!==canonical(c)||launch.command!==p.executable||canonical(launch.args)!==canonical(['--tongxu-managed-merge-v1'])||launch.cwd!==directory||exit.code!==0||exit.signal!==null)throw new Error('original_managed_publisher_capture_incomplete');
+  if(launch.executableSelection!==undefined&&!capturedExternalExecutable(launch.executableSelection,p.executable))throw new Error('original_managed_publisher_selection_invalid');
   await checkCapture(directory);const raw=await regular(join(directory,'stdout.ndjson'),4*1024*1024);
   if(raw.toString().trim().split('\n').length!==1)throw new Error('managed_publisher_one_reply_required');
-  const reply=parseReply(raw,p,c),value=Object.freeze({profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,raw,directory,capturedAt:new Date().toISOString()});observations.add(value);return value;
+  const reply=parseReply(raw,p,c),value=Object.freeze({...(launch.executableSelection?{executableSelection:launch.executableSelection}:{}),profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,raw,directory,capturedAt:new Date().toISOString()});observations.add(value);return value;
 }

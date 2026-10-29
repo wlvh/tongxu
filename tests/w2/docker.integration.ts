@@ -19,8 +19,9 @@ async function setup(t: test.TestContext) {
   const runtime = await DockerRuntime.prepare(config, join(root, 'runtime'));
   return { root, work, resultDirectory, runtime };
 }
-test('trusted Docker configuration rejects mutable images, remote endpoints and extra privileges', () => {
-  for (const v of [{ ...config, image: 'latest' }, { ...config, endpoint: 'tcp://remote:2375' }, { ...config, privileged: true }, { ...config, client: 'docker' }]) assert.throws(() => parseDockerConfig(v), /invalid_docker_executor/);
+test('trusted Docker configuration accepts local image aliases and rejects remote endpoints and extra privileges', () => {
+  assert.equal(parseDockerConfig({...config,image:'tongxu-runtime:current'}).image,'tongxu-runtime:current');
+  for (const v of [{ ...config, endpoint: 'tcp://remote:2375' }, { ...config, privileged: true }, { ...config, client: 'docker' }]) assert.throws(() => parseDockerConfig(v), /invalid_docker_executor/);
 });
 test('real Docker isolates host files, inherited tokens, listener, root and explicit dependency cache', { timeout: 30_000 }, async t => {
   const f = await setup(t), sentinel = join(f.root, 'host-only'), dependencies = join(f.root, 'node_modules');

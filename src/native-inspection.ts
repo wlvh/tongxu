@@ -1,3 +1,4 @@
+import {selectExternalExecutable,assertExternalExecutable} from './external-executable.js';
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { access, chmod, lstat, readFile, realpath, rename, writeFile } from 'node:fs/promises';
@@ -25,21 +26,19 @@ export function parseNativeArgs(args: string[]): NativeOptions {
 
 export async function inspectNative(o: NativeOptions): Promise<{ exit: number; report: Record<string, any> }> {
   if (process.platform !== 'linux') throw new Error('native_inspection_requires_verified_linux_bubblewrap');
-  const stat = await lstat(o.codex);
-  if (!stat.isFile() || stat.isSymbolicLink() || await realpath(o.codex) !== o.codex) throw new Error('invalid_native_executable');
-  await access(o.codex, constants.X_OK);
+  const selected=selectExternalExecutable(o.codex);
   await privateDirectory(o.output, true);
-  const report: Record<string, any> = { schemaVersion: 1, kind: 'tongxu-native-inspection', id: randomUUID(), startedAt: new Date().toISOString(), status: 'preparing', executableHash: await binaryHash(o.codex), requests: [], observations: {}, gaps: [], capabilities: { isolatedMetadata: 'not_tested', modelTurns: 'not_tested', authentication: 'not_checked', cost: 'not_checked', secretaryControl: 'disabled', independentReceiver: 'unavailable', productionActionAllowed: false }, limitations: ['no_model_turn_started', 'no_host_credentials_or_existing_session_access', 'read_only_sandbox_does_not_prove_shell_tool_restriction', 'no_claude_runtime_test', 'no_two_turn_or_final_model_result_test', 'only_this_linux_native_version_observed'], artifacts: [] };
+  const report: Record<string, any> = { schemaVersion: 1, kind: 'tongxu-native-inspection', id: randomUUID(), startedAt: new Date().toISOString(), status: 'preparing', executableSelection:selected,executableHash:selected.sha256, requests: [], observations: {}, gaps: [], capabilities: { isolatedMetadata: 'not_tested', modelTurns: 'not_tested', authentication: 'not_checked', cost: 'not_checked', secretaryControl: 'disabled', independentReceiver: 'unavailable', productionActionAllowed: false }, limitations: ['no_model_turn_started', 'no_host_credentials_or_existing_session_access', 'read_only_sandbox_does_not_prove_shell_tool_restriction', 'no_claude_runtime_test', 'no_two_turn_or_final_model_result_test', 'only_this_linux_native_version_observed'], artifacts: [] };
   const save = async () => { const path = join(o.output, '.report-new'); await writeFile(path, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 }); await rename(path, join(o.output, 'native-inspection.json')); };
   await save();
   // A private passwd supplies the home lookup without changing HOME/CODEX_HOME or
   // exposing the caller's real home/configuration/credentials to the native process.
   const passwd = join(o.output, 'inspection.passwd'); await writeFile(passwd, `inspection:x:${process.getuid!()}:${process.getgid!()}::/native-home:/bin/sh\n`, { flag: 'wx', mode: 0o600 });
-  const prefix = ['--die-with-parent', '--unshare-net', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--new-session', '--clearenv', '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64', '--ro-bind', passwd, '/etc/passwd', '--ro-bind', o.codex, '/native/codex', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/native-home', '--dir', '/native-workspace', '--setenv', 'PATH', '/usr/bin:/bin', '--chdir', '/native-workspace', '/native/codex'];
+  const prefix = ['--die-with-parent', '--unshare-net', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--new-session', '--clearenv', '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64', '--ro-bind', passwd, '/etc/passwd', '--ro-bind', selected.realpath, '/native/codex', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/native-home', '--dir', '/native-workspace', '--setenv', 'PATH', '/usr/bin:/bin', '--chdir', '/native-workspace', '/native/codex'];
   let rpc: InspectionRpc | undefined;
   const rawNames = ['version.stdout', 'version.stderr', 'native.stdin', 'native.stdout', 'native.stderr', 'native-events.json'];
   try {
-    report.status = 'running'; report.phase = 'version'; await save();
+    assertExternalExecutable(selected);report.status = 'running'; report.phase = 'version'; await save();
     const versionPaths = { stdout: join(o.output, 'version.stdout'), stderr: join(o.output, 'version.stderr') };
     const version = await captureVersion(prefix, versionPaths, async pid => { report.versionProcess = { pid, status: 'running_or_unknown' }; await save(); });
     report.versionProcess = { ...report.versionProcess, status: 'exited', ...version }; report.gaps.push(...version.gaps); await save();

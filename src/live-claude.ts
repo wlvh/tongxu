@@ -48,7 +48,7 @@ export async function runClaude(o: { executionKind?:'fixture'|'native_capture'; 
   // and first input submission. A gate/commit failure preserves that capture
   // as unknown and closes only our own process; it never permits a resend.
   let started:LiveProcess|undefined;
-  const start=()=>{o.beforeDispatch?.();started=new LiveProcess(o.directory,o.executable,args,o.directory,{...process.env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});if(stream)started.send(messageClaudeInput(version,session,inputUuid!,o.input,contract));else started.writeText(o.input);return started;};
+  const start=()=>{o.beforeDispatch?.();started=new LiveProcess(o.directory,o.executable,args,o.directory,{...process.env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'},undefined,identity.externalSelection);if(stream)started.send(messageClaudeInput(version,session,inputUuid!,o.input,contract));else started.writeText(o.input);return started;};
   let child:LiveProcess;try{child=o.dispatchGate?o.dispatchGate(start):start();}catch(e){await started?.close();throw e;}
   try {
     const init = await child.waitFor(m => m.type === 'system' && m.subtype === 'init', 30_000);

@@ -1,3 +1,4 @@
+import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import { mkdir, readFile, realpath, stat,writeFile } from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import { join, dirname, resolve } from 'node:path';
@@ -20,6 +21,7 @@ export type NativeOptions = {
   executable: string; directory: string; operation: string; candidate: Candidate;
   role: 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
+  expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   persistent?: boolean;
@@ -74,6 +76,7 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
 // One native transport and capture contract, with separate, fixed role tools.
 export class BoundedCodexSession {
   private rpc!: LiveProcess;
+  private selectedExecutable!:ExternalExecutable;
   private binding!: ResultBinding;
   private inputs: any[] = [];
   private pairs: ReconciledToolCall[] = [];
@@ -149,10 +152,14 @@ export class BoundedCodexSession {
       try{process.kill(source.pid,0);throw new Error('native_original_process_still_exists');}catch(e:any){if(e.code!=='ESRCH')throw e;}
       this.previous=source;this.inputs=structuredClone(source.inputs);
     }
+    for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
+    const identity = await executable(o.executable, {...codexConversation,methods:[...codexConversation.methods!,...(o.persistent?['thread/read','thread/resume','turn/steer','turn/interrupt']:[])]},o.executionKind);
+    const expected=o.expectedExecutable;
+    if(expected&&(identity.sha256!==expected.sha256||expected.realpath!==undefined&&identity.realpath!==expected.realpath||expected.version!==undefined&&identity.version!==expected.version))throw new Error('native_registered_executable_changed');
+    this.selectedExecutable=identity.externalSelection;
     await newStage(o.directory);
     if(this.previous)save(join(o.directory,'resume-source.json'),{directory:o.resumeFrom,sourceSha256:this.previous.sourceSha256});
-    for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
-    const identity = await executable(o.executable, {...codexConversation,methods:[...codexConversation.methods!,...(o.persistent?['thread/read','thread/resume','turn/steer','turn/interrupt']:[])]},o.executionKind); save(join(o.directory, 'executable.json'), identity);
+    save(join(o.directory, 'executable.json'), identity);
     if(this.previous&&identity.path!==this.previous.identity.path)throw new Error('native_resume_executable_changed');
     if (o.gate && o.executionKind === 'native_capture') {
       // This supported Mac CLI resolves its host from the same installed package.
@@ -173,7 +180,7 @@ export class BoundedCodexSession {
       // Wait for our already-submitted turn, never adopt an ID from the tool.
       if (this.pendingTurn) await this.pendingTurn;
       const p = m.params;
-      if (!o.gate || this.boundaryFailure || !p || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
+      if (!o.gate || this.boundaryFailure || !p || !this.activeTurn || !this.binding?.turnIds.includes(this.activeTurn) || p.threadId !== this.binding?.threadId || p.turnId !== this.activeTurn || p.namespace != null || !this.toolSpecs.some(x => x.name === p.tool)) throw new Error('dynamic_tool_identity_or_permission_mismatch');
       assertToolTurnOpen(this.rpc.events, m);
       if (this.toolHost) {
         const started = dynamicToolStart(this.rpc.events, m);
@@ -192,11 +199,11 @@ export class BoundedCodexSession {
           }
         }
       }
-      const result = await o.gate.call({ tool: p.tool, arguments: p.arguments, callId: p.callId },()=>{if(this.closed||this.boundaryFailure||this.activeTurn!==p.turnId)throw new Error('native_tool_request_after_terminal');assertToolTurnOpen(this.rpc.events,m);});
+      const result = await o.gate.call({ tool: p.tool, arguments: p.arguments, callId: p.callId },()=>{if(this.closed||this.boundaryFailure||!this.activeTurn||!this.binding?.turnIds.includes(this.activeTurn)||this.activeTurn!==p.turnId)throw new Error('native_tool_request_after_terminal');assertToolTurnOpen(this.rpc.events,m);});
       const response = { id: m.id, result };
       this.pairs.push({ request: m, response }); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
       this.contract.push(response); save(join(o.directory, 'expected-requests.json'), this.contract); return result;
-    });
+    },identity.externalSelection);
     try {
       await this.request('initialize', { clientInfo: { name: o.readonlyMessage?'tongxu-owned-readonly-message':o.role === 'secretary' ? (o.secretaryContacts||o.secretaryQueueActions)?'tongxu-task-secretary':'tongxu-readonly-secretary' : 'tongxu-controlled-repair', version: '0.1.0' }, capabilities: { experimentalApi: true } });
       const notification = { method: 'initialized', params: {} }; this.contract.push(notification); save(join(o.directory, 'expected-requests.json'), this.contract); this.rpc.send(notification);
@@ -247,13 +254,15 @@ export class BoundedCodexSession {
     await this.o.gate?.check();
     const usage = await this.request('account/rateLimits/read', {}); if (usage.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
     await this.o.beforeTurn?.();
+    if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
+    this.o.beforeSendSync?.();
+    assertExternalExecutable(this.selectedExecutable);
+    // From this final synchronous gate through intent and send there is no await.
     const index = this.inputs.length + 1;
     this.inputs.push({ input, subjectCandidate: candidate, schema });
     save(join(this.o.directory, 'inputs.json'), this.inputs);
     this.binding.promptSha256 = hash(JSON.stringify({ system: this.o.system, inputs: this.inputs }));
     save(join(this.o.directory, `turn-${index}-intent.json`), { subjectCandidate: candidate, inputSha256: hash(input), status: 'send_registered' });
-    if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
-    this.o.beforeSendSync?.();
     this.pendingTurn = this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: schema });
     let response;
     try { response = await this.pendingTurn; } finally { this.pendingTurn = null; }

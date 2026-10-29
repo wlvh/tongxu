@@ -2,7 +2,7 @@
 
 W3 将一个固定候选的 W1 原始包和 W2 隔离验证结果导入私有 SQLite，保存材料、精确前置、三类控制及可恢复的本地评估。Node 24 内置 SQLite 是唯一新增运行能力，无数据库服务。当前只有 `shadow`；不是完整 G1 受管接收，不能批准、发布检查、合并、调用模型或接管外部运行。
 
-先按 [W1](w1_cli.md) 采集、按 [W2](w2_verification.md) 验证**同一固定候选**。不能用更新后的 PR 采集包配旧验证报告。构建 `npm ci --ignore-scripts && npm run build` 后执行：
+先按 [W1](w1_cli.md) 采集、按 [W2](w2_verification.md) 验证**同一固定候选**。不能用更新后的 PR 采集包配旧验证报告。构建 `npm install --ignore-scripts --package-lock=false && npm run build` 后执行：
 
 ```bash
 node dist/src/cli.js queue init --store /absolute/private/tongxu-queue-new --repo OWNER/REPO --seats 2

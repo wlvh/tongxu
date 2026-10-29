@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, realpath, lstat } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { authorityTime, exactKeys, isAuthorityDigest, parseAuthorityProfile, type AuthorityProfile } from './authority-contract.js';
+import {selectGhExecutable,assertGhExecutableUnchanged} from './gh-executable.js';
 
 export type OwnerObservation = {
   profileSha256:string; proposalSha256:string; commentId:number; sourceNodeId:string; issue:number; repository:string;
@@ -67,24 +68,25 @@ export async function readOwnerSource(profile:AuthorityProfile,proposalSha256:st
   if(!isAuthorityDigest(proposalSha256)||!Number.isSafeInteger(commentId)||commentId<=0)throw new Error('github_owner_read_identity_invalid');
   if(!isAbsolute(evidenceDirectory))throw new Error('owner_evidence_directory_must_be_absolute');
   await privateDirectory(evidenceDirectory,true);
-  const binary=await realpath(profile.ghExecutable),stat=await lstat(binary);
-  if(!stat.isFile()||hash(await readFile(binary))!==profile.ghSha256)throw new Error('authority_cli_changed');
+  const selected=await selectGhExecutable(profile.ghExecutable,profile.ghSha256),binary=selected.realpath;
   const profileSha256=hash(canonical(profile));
   await writeFile(join(evidenceDirectory,'profile.json'),canonical(profile),{flag:'wx',mode:0o600});
+  await writeFile(join(evidenceDirectory,'executable.json'),canonical(selected),{flag:'wx',mode:0o600});
   const run=async(name:string,args:string[])=>{
     // Resolve/hash again at each boundary; the executable is trusted operator
     // configuration, not a role-provided command or a path copied from a report.
-    if(await realpath(profile.ghExecutable)!==binary||hash(await readFile(binary))!==profile.ghSha256)throw new Error('authority_cli_changed');
-    await writeFile(join(evidenceDirectory,name+'-request.json'),JSON.stringify({executable:binary,args,startedAt:new Date().toISOString(),readOnly:true}),{flag:'wx',mode:0o600});
+    assertGhExecutableUnchanged(selected);
+    await writeFile(join(evidenceDirectory,name+'-request.json'),JSON.stringify({executable:binary,executableSelection:selected,args,startedAt:new Date().toISOString(),readOnly:true}),{flag:'wx',mode:0o600});
     let stdout=Buffer.alloc(0),stderr=Buffer.alloc(0),exit:unknown=0,signal:unknown=null;
     try{const r=await exec(binary,args,{timeout:30000,maxBuffer:4*1024*1024,encoding:'buffer',cwd:evidenceDirectory});stdout=r.stdout;stderr=r.stderr;}
     catch(e:any){stdout=Buffer.from(e.stdout??'');stderr=Buffer.from(e.stderr??'');exit=e.code??null;signal=e.signal??null;}
     await writeFile(join(evidenceDirectory,name+'-stdout.json'),stdout,{flag:'wx',mode:0o600});
     await writeFile(join(evidenceDirectory,name+'-stderr.txt'),stderr,{flag:'wx',mode:0o600});
     await writeFile(join(evidenceDirectory,name+'-exit.json'),JSON.stringify({exit,signal,finishedAt:new Date().toISOString()}),{flag:'wx',mode:0o600});
-    if(exit!==0||signal)throw new Error('owner_original_source_unavailable');return stdout;
+    if(exit!==0||signal)throw new Error('owner_original_source_unavailable');
+    try{assertGhExecutableUnchanged(selected);}catch(e){await writeFile(join(evidenceDirectory,name+'-executable-changed.json'),canonical({reason:'gh_executable_changed_during_operation',phase:'after_process_exit',observationIssued:false}),{flag:'wx',mode:0o600});throw e;}return stdout;
   };
-  const commentRaw=await run('comment',['api','--hostname','github.com','--method','GET','-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28',`repos/${profile.repository}/issues/comments/${commentId}`]);
+  const commentRaw=await run('comment',['api','--hostname','github.com','--method','GET','-H','Accept: application/vnd.github+json',`repos/${profile.repository}/issues/comments/${commentId}`]);
   const c=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(commentRaw));
   if(c.id!==commentId||typeof c.node_id!=='string'||!/^[-_A-Za-z0-9=]{1,256}$/.test(c.node_id))throw new Error('owner_comment_node_invalid');
   const graphRaw=await run('comment-editor',['api','--hostname','github.com','graphql','-f','query='+ownerCommentQuery,'-f','id='+c.node_id]);

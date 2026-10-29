@@ -1,3 +1,4 @@
+import {selectExternalExecutable} from './external-executable.js';
 import { join } from 'node:path';
 import { canonical } from './comparison.js';
 import { hash,privateDirectory } from './snapshot.js';
@@ -127,8 +128,8 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
 
 export async function inspectMergePreflight(p:MergeProfile,b:ManagedMergeBinding,directory:string):Promise<MergePreflight>{
   await privateDirectory(directory,true);
-  const records:MergeReadRecord[]=[];
-  const capture=async(c:MergeCommand)=>{const observation=await callMergeProvider(p,c,join(directory,String(records.length).padStart(3,'0')));records.push({command:c,observation});return observation;};
+  const records:MergeReadRecord[]=[],selected=selectExternalExecutable(p.executable);
+  const capture=async(c:MergeCommand)=>{const observation=await callMergeProvider(p,c,join(directory,String(records.length).padStart(3,'0')),undefined,selected);records.push({command:c,observation});return observation;};
   await capture(mergeCommand(b,'capabilities'));
   for(const kind of ['target','repository','pr','branch'] as const)await capture(mergeCommand(b,'read',{kind}));
   for(const kind of ['rules','checks','statuses','reviews'] as const){for(let page=1;page<=10;page++){const r=await capture(mergeCommand(b,'read',{kind,page}));if(r.reply.result.kind!=='http'||!r.reply.result.nextPage)break;}}

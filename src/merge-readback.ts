@@ -1,3 +1,4 @@
+import {selectExternalExecutable} from './external-executable.js';
 import { join } from 'node:path';
 import { canonical } from './comparison.js';
 import { hash,privateDirectory } from './snapshot.js';
@@ -20,8 +21,8 @@ export function evaluateMergeReadback(p:MergeProfile,b:ManagedMergeBinding,recor
 }
 export async function inspectMergeReadback(p:MergeProfile,b:ManagedMergeBinding,directory:string,response?:MergeWire):Promise<MergeReadback>{
   await privateDirectory(directory,true);
-  const records:MergeReadRecord[]=[];
-  const capture=async(c:ReturnType<typeof mergeCommand>)=>{const observation=await callMergeProvider(p,c,join(directory,String(records.length).padStart(3,'0')));records.push({command:c,observation});return observation;};
+  const records:MergeReadRecord[]=[],selected=selectExternalExecutable(p.executable);
+  const capture=async(c:ReturnType<typeof mergeCommand>)=>{const observation=await callMergeProvider(p,c,join(directory,String(records.length).padStart(3,'0')),undefined,selected);records.push({command:c,observation});return observation;};
   await capture(mergeCommand(b,'read',{kind:'target'}));
   const pr=await capture(mergeCommand(b,'read',{kind:'pr'}));let commit:string|null=null;
   try{const w=mergeWire(pr),v=JSON.parse(w.body.toString());if(w.status===200&&v.merged===true&&shaPattern.test(v.merge_commit_sha??''))commit=v.merge_commit_sha;}catch{}
