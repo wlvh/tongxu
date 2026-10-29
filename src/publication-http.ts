@@ -7,6 +7,7 @@ import { hash, privateDirectory } from './snapshot.js';
 import { parseGh } from './transport.js';
 import { save } from './live-process.js';
 import {publicationProcessIdentity,type PublicationProcessIdentity} from './publication-process.js';
+import {selectGhExecutable,assertGhExecutableUnchanged,type GhExecutableSelection} from './gh-executable.js';
 
 export type HttpReply = { status: number; value: any; directory: string; body: Buffer; headers:Record<string,string> };
 export type DispatchHooks = { intent(directory: string): void; started(pid: number,identity:PublicationProcessIdentity|null): void; dispatch?(directory:string,effect:()=>void):void };
@@ -16,6 +17,8 @@ export async function ordinaryFile(path: string, limit: number): Promise<Buffer>
   return readFile(path);
 }
 export class PublicationHttp {
+  private selected?:GhExecutableSelection;
+  get executableSelection(){return this.selected?{...this.selected}:undefined;}
   constructor(readonly directory: string, private executable: string, private executableHash: string, private repository: string, private pr: number, private H: string, private target: string, private readOnly = false, private existingGitHubAuth = true) {}
   private allowed(method: string, endpoint: string) {
     if(this.readOnly&&method!=='GET')throw new Error('readonly_source_mutation_denied');
@@ -28,13 +31,14 @@ export class PublicationHttp {
   async request(method: 'GET' | 'POST', endpoint: string, payload?: any, hooks?: DispatchHooks): Promise<HttpReply> {
     this.allowed(method, endpoint);
     if (method === 'POST' && (!hooks || !payload)) throw new Error('publication_dispatch_hooks_required');
-    if (hash(await ordinaryFile(this.executable, 128 * 1024 * 1024)) !== this.executableHash) throw new Error('publication_gh_changed');
+    const selected=this.selected??=await selectGhExecutable(this.executable,this.executableHash);
+    assertGhExecutableUnchanged(selected);
     const dir = join(this.directory, `http-${randomUUID()}`); await privateDirectory(dir, true);
     const args = ['api', '--hostname', 'github.com', '--method', method, '--include', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', ...(payload ? ['--input', '-'] : []), endpoint];
     const input = payload ? Buffer.from(JSON.stringify(payload)) : Buffer.alloc(0);
     writeFileSync(join(dir, 'stdin.json'), input, { flag: 'wx', mode: 0o600 });
     for (const name of ['stdout.http', 'stderr.txt']) writeFileSync(join(dir, name), '', { flag: 'wx', mode: 0o600 });
-    save(join(dir, 'request.json'), { command: this.executable, executableHash: this.executableHash, args, method, endpoint, bodySha256: hash(input), preparedAt: new Date().toISOString() });
+    save(join(dir, 'request.json'), { command: this.executable, executableHash: selected.sha256, executableSelection:selected, args, method, endpoint, bodySha256: hash(input), preparedAt: new Date().toISOString() });
     const env: NodeJS.ProcessEnv = { ...(this.readOnly?{PATH:'/usr/bin:/bin',HOME:this.existingGitHubAuth?process.env.HOME:dir,GH_CONFIG_DIR:this.existingGitHubAuth?process.env.GH_CONFIG_DIR:dir,GH_TOKEN:this.existingGitHubAuth?process.env.GH_TOKEN:undefined,GITHUB_TOKEN:this.existingGitHubAuth?process.env.GITHUB_TOKEN:undefined}:process.env), GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', PAGER: 'cat' };
     delete env.GH_DEBUG; delete env.GH_FORCE_TTY;
     let failure:string|null=null,result:Promise<void>|undefined,stop=()=>{},invoked=false,accepting=true,spawnAttempted=false,inputMayHaveBeenSubmitted=false;
@@ -42,6 +46,7 @@ export class PublicationHttp {
     // process creation and input submission. There is no await in this effect.
     const send=()=>{
       if(!accepting||invoked)throw new Error('publication_dispatch_effect_not_current');invoked=true;
+      assertGhExecutableUnchanged(selected);
       hooks?.intent(dir);
       spawnAttempted=true;
       const child=spawn(this.executable,args,{cwd:dir,env,detached:true,stdio:['pipe','pipe','pipe']});

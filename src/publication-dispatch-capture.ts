@@ -4,6 +4,7 @@ import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import type {PublicationPlan} from './publication-contract.js';
 import {requirePublicationExit,requirePublicationProcessEnded,type PublicationProcessIdentity,type PublicationProcessRecord} from './publication-process.js';
+import {capturedGhExecutableMatches} from './gh-executable.js';
 
 type Row=Record<string,any>;
 export type PublicationDispatchCapture={directory:string;preparedSha256:string;phase:'ended_possible';observedPid:number|null;processIdentity?:PublicationProcessIdentity;originals:Map<string,Buffer>;digest:string};
@@ -16,7 +17,7 @@ export async function readPublicationDispatchCapture(p:PublicationPlan,prepared:
   const read=async(name:string,optional=false)=>{try{const b=await regular(join(directory,name),8*1024*1024);originals.set(name,b);return b;}catch(e){if(optional&&(e as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw e;}};
   const request=JSON.parse((await read('request.json'))!.toString()),input=(await read('stdin.json'))!;
   const args=['api','--hostname','github.com','--method','POST','--include','-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28','--input','-',prepared.endpoint];
-  if(request.command!==p.ghExecutable||request.executableHash!==p.ghSha256||request.method!=='POST'||request.endpoint!==prepared.endpoint||canonical(request.args)!==canonical(args)||request.bodySha256!==hash(requestBytes)||!input.equals(requestBytes))throw new Error('publication_original_dispatch_changed');
+  if(!capturedGhExecutableMatches(request,p.ghExecutable,p.ghSha256)||request.method!=='POST'||request.endpoint!==prepared.endpoint||canonical(request.args)!==canonical(args)||request.bodySha256!==hash(requestBytes)||!input.equals(requestBytes))throw new Error('publication_original_dispatch_changed');
   const processBytes=await read('process.json',true),exitBytes=await read('exit.json',true),intent=await read('submission-intent.json',true),submitted=await read('submitted.json',true);await read('dispatch-error.json',true);
   await read('stdout.http');await read('stderr.txt');
   for(const bytes of [intent,submitted])if(bytes){const v=JSON.parse(bytes.toString());if(v.bodySha256!==hash(requestBytes)||v.bytes!==requestBytes.length||!Number.isFinite(Date.parse(v.at)))throw new Error('publication_original_submission_changed');}

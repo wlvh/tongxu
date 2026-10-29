@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, realpath, lstat } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { canonical } from './comparison.js';
 import { authorityTime, exactKeys, isAuthorityDigest, parseAuthorityProfile, type AuthorityProfile } from './authority-contract.js';
+import {selectGhExecutable,assertGhExecutableUnchanged} from './gh-executable.js';
 
 export type OwnerObservation = {
   profileSha256:string; proposalSha256:string; commentId:number; sourceNodeId:string; issue:number; repository:string;
@@ -67,15 +68,15 @@ export async function readOwnerSource(profile:AuthorityProfile,proposalSha256:st
   if(!isAuthorityDigest(proposalSha256)||!Number.isSafeInteger(commentId)||commentId<=0)throw new Error('github_owner_read_identity_invalid');
   if(!isAbsolute(evidenceDirectory))throw new Error('owner_evidence_directory_must_be_absolute');
   await privateDirectory(evidenceDirectory,true);
-  const binary=await realpath(profile.ghExecutable),stat=await lstat(binary);
-  if(!stat.isFile()||hash(await readFile(binary))!==profile.ghSha256)throw new Error('authority_cli_changed');
+  const selected=await selectGhExecutable(profile.ghExecutable,profile.ghSha256),binary=selected.realpath;
   const profileSha256=hash(canonical(profile));
   await writeFile(join(evidenceDirectory,'profile.json'),canonical(profile),{flag:'wx',mode:0o600});
+  await writeFile(join(evidenceDirectory,'executable.json'),canonical(selected),{flag:'wx',mode:0o600});
   const run=async(name:string,args:string[])=>{
     // Resolve/hash again at each boundary; the executable is trusted operator
     // configuration, not a role-provided command or a path copied from a report.
-    if(await realpath(profile.ghExecutable)!==binary||hash(await readFile(binary))!==profile.ghSha256)throw new Error('authority_cli_changed');
-    await writeFile(join(evidenceDirectory,name+'-request.json'),JSON.stringify({executable:binary,args,startedAt:new Date().toISOString(),readOnly:true}),{flag:'wx',mode:0o600});
+    assertGhExecutableUnchanged(selected);
+    await writeFile(join(evidenceDirectory,name+'-request.json'),JSON.stringify({executable:binary,executableSelection:selected,args,startedAt:new Date().toISOString(),readOnly:true}),{flag:'wx',mode:0o600});
     let stdout=Buffer.alloc(0),stderr=Buffer.alloc(0),exit:unknown=0,signal:unknown=null;
     try{const r=await exec(binary,args,{timeout:30000,maxBuffer:4*1024*1024,encoding:'buffer',cwd:evidenceDirectory});stdout=r.stdout;stderr=r.stderr;}
     catch(e:any){stdout=Buffer.from(e.stdout??'');stderr=Buffer.from(e.stderr??'');exit=e.code??null;signal=e.signal??null;}

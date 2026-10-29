@@ -148,7 +148,10 @@ test('bounded provider reader captures exact commands; failed, partial, changed 
   await writeFile(script,content,{mode:0o700});const p={...profile,ghExecutable:script,ghSha256:hash(content)};
   const good=await readOwnerSource(p,sha,raw.id,join(f.root,'bounded-good'));assert.equal(good.executionKind,'fixture');assert.equal(good.commentId,raw.id);
   const command=JSON.parse(await readFile(join(f.root,'bounded-good/comment-editor-request.json'),'utf8'));assert.ok(command.args.every((a:string)=>!a.includes('mutation')));assert.equal(command.readOnly,true);
-  await writeFile(script,content+'\n// changed');await assert.rejects(readOwnerSource(p,sha,raw.id,join(f.root,'bounded-changed')),/cli_changed/);
+  await writeFile(script,content+'\n// changed');await assert.rejects(readOwnerSource(p,sha,raw.id,join(f.root,'bounded-changed')),/gh_current_capabilities_unavailable/);
+  const metadata="if(process.argv.includes('--version')){console.log('gh version 99.0.0 (explicit fixture)');process.exit(0)}if(process.argv.includes('--help')){console.log('--hostname --method --include --input --header --raw-field');process.exit(0)};";
+  await writeFile(script,content.replace('const args=',metadata+'const args='));const upgraded=await readOwnerSource(p,sha,raw.id,join(f.root,'bounded-upgraded'));assert.equal(upgraded.authorId,101);assert.equal(upgraded.executorId,202);assert.equal(upgraded.executionKind,'fixture');
+  const selected=JSON.parse(await readFile(join(f.root,'bounded-upgraded/executable.json'),'utf8'));assert.equal(selected.configuredSha256,p.ghSha256);assert.notEqual(selected.sha256,p.ghSha256);
   const failing=`#!${process.execPath}\nprocess.stdout.write('{}');process.exit(3);`;await writeFile(script,failing);await assert.rejects(readOwnerSource({...p,ghSha256:hash(failing)},sha,raw.id,join(f.root,'bounded-failure')),/source_unavailable/);
   const exit=JSON.parse(await readFile(join(f.root,'bounded-failure/comment-exit.json'),'utf8'));assert.equal(exit.exit,3);
   const partial=`#!${process.execPath}\nprocess.stdout.write('{"data":');`;await writeFile(script,partial);await assert.rejects(readOwnerSource({...p,ghSha256:hash(partial)},sha,raw.id,join(f.root,'bounded-partial')),SyntaxError);
