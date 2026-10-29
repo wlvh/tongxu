@@ -7,7 +7,7 @@ import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
 import type { Candidate } from './live-codex.js';
-import ts from 'typescript';
+import {parse} from 'acorn';
 
 const exec = promisify(execFile);
 export const safeEnv = { PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1' };
@@ -139,28 +139,32 @@ export async function releaseWorkspace(workspace: string, lease: Lease, outcome:
 
 export function validateClampExpression(source: string) {
   if (Buffer.byteLength(source) > 16 * 1024) throw new Error('expression_source_limit');
-  const file = ts.createSourceFile('clamp.mjs', source, ts.ScriptTarget.ES2023, true, ts.ScriptKind.JS);
-  if ((file as any).parseDiagnostics?.length || file.statements.length !== 1) throw new Error('pure_expression_module_required');
-  const fn = file.statements[0]!;
-  if (!ts.isFunctionDeclaration(fn) || fn.name?.text !== 'clamp' || fn.modifiers?.length !== 1 || fn.modifiers[0]!.kind !== ts.SyntaxKind.ExportKeyword || fn.asteriskToken || fn.type || fn.typeParameters?.length || fn.parameters.length !== 3 || fn.parameters.some(p => !ts.isIdentifier(p.name) || p.initializer || p.dotDotDotToken || p.type || p.questionToken) || fn.body?.statements.length !== 1) throw new Error('pure_clamp_signature_required');
-  const parameters = new Set(fn.parameters.map(p => (p.name as ts.Identifier).text));
-  if (parameters.size !== 3 || parameters.has('Math')) throw new Error('invalid_clamp_parameters');
-  const statement = fn.body.statements[0]!;
-  if (!ts.isReturnStatement(statement) || !statement.expression) throw new Error('single_return_required');
-  const operators = new Set([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken, ts.SyntaxKind.PercentToken, ts.SyntaxKind.AsteriskAsteriskToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken]);
-  let nodes = 0;
-  const expression = (n: ts.Expression, depth = 0): boolean => {
-    if (++nodes > 500 || depth > 40) return false;
-    if (ts.isNumericLiteral(n)) return Number.isFinite(Number(n.text));
-    if (ts.isIdentifier(n)) return parameters.has(n.text);
-    if (ts.isParenthesizedExpression(n)) return expression(n.expression, depth + 1);
-    if (ts.isPrefixUnaryExpression(n)) return [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.ExclamationToken].includes(n.operator) && expression(n.operand, depth + 1);
-    if (ts.isBinaryExpression(n)) return operators.has(n.operatorToken.kind) && expression(n.left, depth + 1) && expression(n.right, depth + 1);
-    if (ts.isConditionalExpression(n)) return expression(n.condition, depth + 1) && expression(n.whenTrue, depth + 1) && expression(n.whenFalse, depth + 1);
-    if (ts.isCallExpression(n)) return !n.typeArguments?.length && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression) && n.expression.expression.text === 'Math' && ['min', 'max'].includes(n.expression.name.text) && n.arguments.length > 0 && n.arguments.length <= 16 && n.arguments.every(a => expression(a, depth + 1));
+  // The compiler is a build tool; runtime validation uses the ESTree parser
+  // contract. New syntax is rejected unless this explicit allowlist handles it.
+  let file:any;
+  try{file=parse(source,{ecmaVersion:'latest',sourceType:'module',preserveParens:true});}
+  catch{throw new Error('pure_expression_module_required');}
+  if(file?.type!=='Program'||file.body?.length!==1)throw new Error('pure_expression_module_required');
+  const exported=file.body[0],fn=exported.declaration;
+  if(exported.type!=='ExportNamedDeclaration'||exported.source||exported.specifiers?.length||fn?.type!=='FunctionDeclaration'||fn.id?.name!=='clamp'||fn.async||fn.generator||fn.params?.length!==3||fn.params.some((p:any)=>p.type!=='Identifier')||fn.body?.type!=='BlockStatement'||fn.body.body?.length!==1)throw new Error('pure_clamp_signature_required');
+  const parameters=new Set(fn.params.map((p:any)=>p.name));
+  if(parameters.size!==3||parameters.has('Math'))throw new Error('invalid_clamp_parameters');
+  const statement=fn.body.body[0];
+  if(statement.type!=='ReturnStatement'||!statement.argument)throw new Error('single_return_required');
+  const operators=new Set(['+','-','*','/','%','**','<','<=','>','>=','===','!==','&&','||']);
+  let nodes=0;
+  const expression=(n:any,depth=0):boolean=>{
+    if(!n||++nodes>500||depth>40)return false;
+    if(n.type==='Literal')return typeof n.value==='number'&&Number.isFinite(n.value);
+    if(n.type==='Identifier')return parameters.has(n.name);
+    if(n.type==='ParenthesizedExpression')return expression(n.expression,depth+1);
+    if(n.type==='UnaryExpression')return n.prefix===true&&['+','-','!'].includes(n.operator)&&expression(n.argument,depth+1);
+    if(n.type==='BinaryExpression'||n.type==='LogicalExpression')return operators.has(n.operator)&&expression(n.left,depth+1)&&expression(n.right,depth+1);
+    if(n.type==='ConditionalExpression')return expression(n.test,depth+1)&&expression(n.consequent,depth+1)&&expression(n.alternate,depth+1);
+    if(n.type==='CallExpression')return !n.optional&&n.callee?.type==='MemberExpression'&&!n.callee.computed&&!n.callee.optional&&n.callee.object?.type==='Identifier'&&n.callee.object.name==='Math'&&n.callee.property?.type==='Identifier'&&['min','max'].includes(n.callee.property.name)&&Array.isArray(n.arguments)&&n.arguments.length>0&&n.arguments.length<=16&&n.arguments.every((a:any)=>expression(a,depth+1));
     return false;
   };
-  if (!expression(statement.expression)) throw new Error('expression_capability_not_allowed');
+  if(!expression(statement.argument))throw new Error('expression_capability_not_allowed');
   return { kind: 'clamp-expression-v1', accepted: true, sourceSha256: hash(source), nodes };
 }
 

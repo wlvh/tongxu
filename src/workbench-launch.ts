@@ -32,7 +32,7 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   for(const f of p.files)if(hash(await regular(join(p.sourceDirectory,f.path),4*1024*1024))!==f.sha256)throw new Error('workbench_runtime_build_changed');
   const plan=await regular(p.plan.path,256*1024);if(hash(plan)!==p.plan.sha256)throw new Error('workbench_runtime_plan_changed');
   const options={timeout:5000,maxBuffer:1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}};
-  const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','package.json','package-lock.json','tsconfig.json'],options);
+  const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','package.json','tsconfig.json'],options);
   if(head.stdout.trim()!==p.sourceHead||status.stdout.trim())throw new Error('workbench_runtime_source_changed');
   // Load only this bootstrap's own pure runtime helper after all selected
   // artifacts are verified. It must match the selected build's helper bytes.

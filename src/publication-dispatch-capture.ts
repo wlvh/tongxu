@@ -17,7 +17,8 @@ export async function readPublicationDispatchCapture(p:PublicationPlan,prepared:
   const read=async(name:string,optional=false)=>{try{const b=await regular(join(directory,name),8*1024*1024);originals.set(name,b);return b;}catch(e){if(optional&&(e as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw e;}};
   const request=JSON.parse((await read('request.json'))!.toString()),input=(await read('stdin.json'))!;
   const args=['api','--hostname','github.com','--method','POST','--include','-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28','--input','-',prepared.endpoint];
-  if(!capturedGhExecutableMatches(request,p.ghExecutable,p.ghSha256)||request.method!=='POST'||request.endpoint!==prepared.endpoint||canonical(request.args)!==canonical(args)||request.bodySha256!==hash(requestBytes)||!input.equals(requestBytes))throw new Error('publication_original_dispatch_changed');
+  const currentArgs=args.filter((_,i)=>i!==8&&i!==9);
+  if(!capturedGhExecutableMatches(request,p.ghExecutable,p.ghSha256)||request.method!=='POST'||request.endpoint!==prepared.endpoint||(canonical(request.args)!==canonical(args)&&canonical(request.args)!==canonical(currentArgs))||request.bodySha256!==hash(requestBytes)||!input.equals(requestBytes))throw new Error('publication_original_dispatch_changed');
   const processBytes=await read('process.json',true),exitBytes=await read('exit.json',true),intent=await read('submission-intent.json',true),submitted=await read('submitted.json',true);await read('dispatch-error.json',true);
   // Preserve the uncertain invocation; recovery may read the remote original
   // but this ended-possible capture never authorizes resending that POST.

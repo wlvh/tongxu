@@ -34,7 +34,7 @@ export class PublicationHttp {
     const selected=this.selected??=await selectGhExecutable(this.executable,this.executableHash);
     assertGhExecutableUnchanged(selected);
     const dir = join(this.directory, `http-${randomUUID()}`); await privateDirectory(dir, true);
-    const args = ['api', '--hostname', 'github.com', '--method', method, '--include', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', ...(payload ? ['--input', '-'] : []), endpoint];
+    const args = ['api', '--hostname', 'github.com', '--method', method, '--include', '-H', 'Accept: application/vnd.github+json', ...(payload ? ['--input', '-'] : []), endpoint];
     const input = payload ? Buffer.from(JSON.stringify(payload)) : Buffer.alloc(0);
     writeFileSync(join(dir, 'stdin.json'), input, { flag: 'wx', mode: 0o600 });
     for (const name of ['stdout.http', 'stderr.txt']) writeFileSync(join(dir, name), '', { flag: 'wx', mode: 0o600 });
@@ -49,7 +49,7 @@ export class PublicationHttp {
       assertGhExecutableUnchanged(selected);
       hooks?.intent(dir);
       spawnAttempted=true;
-      const child=spawn(this.executable,args,{cwd:dir,env,detached:true,stdio:['pipe','pipe','pipe']});
+      const child=spawn(selected.realpath,args,{cwd:dir,env,detached:true,stdio:['pipe','pipe','pipe']});
       stop=()=>{if(child.pid)try{process.kill(-child.pid,'SIGKILL');}catch{}};
       let size=0;
       const capture=(name:string,b:Buffer)=>{size+=b.length;if(size>8*1024*1024){failure='publication_http_output_limit';stop();return;}appendFileSync(join(dir,name),b);};

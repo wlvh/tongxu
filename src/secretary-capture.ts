@@ -25,7 +25,7 @@ function verifyLaunch(launch:any,executable:any,directory:string,p:SecretaryPlan
   const args = disabledFeatures.flatMap(name => ['-c', `features.${name}=${name === 'code_mode_host'}`]);
   for (const name of p.disabledMcpServers) args.push('-c', `mcp_servers.${name}.enabled=false`);
   args.push('-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'model_provider="openai"', '-c', 'service_tier="default"', 'app-server', '--listen', 'stdio://');
-  if (launch.command !== p.codexExecutable || launch.cwd !== join(directory,'workspace') || !equal(launch.args, args) || executable.path !== p.codexExecutable || executable.realpath !== p.codexExecutable || executable.sha256 !== p.codexSha256 || !cliVersion(executable.version,'codex') || p.runtimeSelection&&executable.version!==p.runtimeSelection.observedVersion) throw new Error('secretary_launch_boundary_mismatch');
+  if (launch.command !== p.codexExecutable || launch.cwd !== join(directory,'workspace') || !equal(launch.args, args) || executable.path !== p.codexExecutable || executable.sha256 !== p.codexSha256 || !cliVersion(executable.version,'codex') || p.runtimeSelection&&executable.version!==p.runtimeSelection.observedVersion) throw new Error('secretary_launch_boundary_mismatch');
 }
 
 /** Called under the original secretary controller lock. An ended metadata

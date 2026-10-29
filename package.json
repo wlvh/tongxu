@@ -50,9 +50,10 @@
     "test:integration-member": "npm run build && node --test dist/tests/integration-member/*.test.js"
   },
   "dependencies": {
-    "typescript": "^5.9.3"
+    "acorn": ">=8.15.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0"
+    "@types/node": ">=24.19.2",
+    "typescript": ">=5.9.3"
   }
 }

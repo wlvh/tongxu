@@ -196,7 +196,7 @@ export class BoundedCodexSession {
       const response = { id: m.id, result };
       this.pairs.push({ request: m, response }); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
       this.contract.push(response); save(join(o.directory, 'expected-requests.json'), this.contract); return result;
-    });
+    },identity.externalSelection);
     try {
       await this.request('initialize', { clientInfo: { name: o.readonlyMessage?'tongxu-owned-readonly-message':o.role === 'secretary' ? (o.secretaryContacts||o.secretaryQueueActions)?'tongxu-task-secretary':'tongxu-readonly-secretary' : 'tongxu-controlled-repair', version: '0.1.0' }, capabilities: { experimentalApi: true } });
       const notification = { method: 'initialized', params: {} }; this.contract.push(notification); save(join(o.directory, 'expected-requests.json'), this.contract); this.rpc.send(notification);

@@ -86,7 +86,7 @@ export async function readOwnerSource(profile:AuthorityProfile,proposalSha256:st
     if(exit!==0||signal)throw new Error('owner_original_source_unavailable');
     try{assertGhExecutableUnchanged(selected);}catch(e){await writeFile(join(evidenceDirectory,name+'-executable-changed.json'),canonical({reason:'gh_executable_changed_during_operation',phase:'after_process_exit',observationIssued:false}),{flag:'wx',mode:0o600});throw e;}return stdout;
   };
-  const commentRaw=await run('comment',['api','--hostname','github.com','--method','GET','-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28',`repos/${profile.repository}/issues/comments/${commentId}`]);
+  const commentRaw=await run('comment',['api','--hostname','github.com','--method','GET','-H','Accept: application/vnd.github+json',`repos/${profile.repository}/issues/comments/${commentId}`]);
   const c=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(commentRaw));
   if(c.id!==commentId||typeof c.node_id!=='string'||!/^[-_A-Za-z0-9=]{1,256}$/.test(c.node_id))throw new Error('owner_comment_node_invalid');
   const graphRaw=await run('comment-editor',['api','--hostname','github.com','graphql','-f','query='+ownerCommentQuery,'-f','id='+c.node_id]);

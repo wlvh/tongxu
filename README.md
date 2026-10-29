@@ -39,7 +39,7 @@
 ## 只读 PR 交接
 
 ```bash
-npm ci --ignore-scripts
+npm install --ignore-scripts --package-lock=false
 npm run build
 node dist/src/cli.js collect --repo wlvh/tongxu --pr 12 --output /absolute/private/tongxu-pr12-new
 ```
@@ -61,7 +61,7 @@ npm run test:docker -- /absolute/private/docker-config.json
 node --test dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js
 ```
 
-配置必须指向已核的本地 Docker socket、现有程序和固定镜像 ID，完整格式见 [Docker 入口](docs/docker_verification.md)。无需再建虚拟机，也不嵌套 bubblewrap。`npm test` 继续保留原 Linux/bubblewrap 专属路线；`npm run test:mac` 提供不含 Docker 的 Mac 适用检查。
+配置必须指向已核的本地 Docker socket、现有程序和已有本地镜像名称或标签（每次运行记录实际镜像ID），完整格式见 [Docker 入口](docs/docker_verification.md)。无需再建虚拟机，也不嵌套 bubblewrap。`npm test` 继续保留原 Linux/bubblewrap 专属路线；`npm run test:mac` 提供不含 Docker 的 Mac 适用检查。
 
 `relay-cli` 的一次入口可完成真实 Codex 两轮、程序交给 Claude 并返回 Codex 综合。受管工程修复、队列审核返工和成员修复已有后续入口，保存实际修改、固定测试、新候选与独立再审；最初的纯函数样例仍保留。已有完整操作优先回读，不为展示组合重复调用模型。受治理重新组合的新测试授权、原实现者可靠续做、最小显式责任交接及完整会话控制仍须逐段验收，不能将已有单条链扩称为全部验收。
 

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
+import {selectExternalExecutable,assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import {cliVersion,probeCliCapabilities,type CliRequirement} from './cli-capabilities.js';
 
 export const save = (path: string, value: unknown) => {
@@ -12,20 +13,20 @@ export const save = (path: string, value: unknown) => {
 };
 export async function executable(path: string, requirement: CliRequirement, executionKind:'fixture'|'native_capture'='native_capture') {
   if (!isAbsolute(path)) throw new Error('executable_must_be_absolute');
-  const actual = await realpath(path), info = await stat(actual);
+  const selected=selectExternalExecutable(path),actual=selected.realpath,info=await stat(actual);
   if (!info.isFile() || !(info.mode & 0o111)) throw new Error('invalid_executable');
   const version = await new Promise<string>((resolve, reject) => {
-    const p = spawn(path, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }); let text = '';
+    const p = spawn(actual, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }); let text = '';
     const timer = setTimeout(() => { p.kill(); reject(new Error('version_timeout')); }, 10_000);
     p.stdout.on('data', b => { text += b; }); p.stderr.resume(); p.once('error', reject);
     p.once('close', code => { clearTimeout(timer); code === 0 ? resolve(text.trim()) : reject(new Error('version_failed')); });
   });
   const sha256=hash(await readFile(actual));
   cliVersion(version,requirement.tool);
-  const capabilities=await probeCliCapabilities(path,requirement,executionKind);
+  const capabilities=await probeCliCapabilities(actual,requirement,executionKind);
   if('initialization'in capabilities&&capabilities.initialization.reportedVersion!==cliVersion(version,'claude'))throw new Error('executor_changed_during_capability_check');
-  if(await realpath(path)!==actual||hash(await readFile(actual))!==sha256)throw new Error('executor_changed_during_capability_check');
-  return {path,realpath:actual,version,sha256,selection:'configured-current-v1' as const,capabilities};
+  assertExternalExecutable(selected);
+  return {path,realpath:actual,version,sha256,externalSelection:selected,selection:'configured-current-v1' as const,capabilities};
 }
 
 /** A new owned process only. Raw bytes are durable before interpretation. Never retries. */
@@ -42,13 +43,17 @@ export class LiveProcess {
   private closing = false;
   private replies = new Map<string, { request: string; response: unknown }>();
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>) {
+  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable) {
+    const selected=expected??selectExternalExecutable(command);
+    if(selected.configuredPath!==command)throw new Error('external_executable_selection_mismatch');
+    assertExternalExecutable(selected);
     for (const name of ['stdout.ndjson', 'stderr.txt', 'stdin.ndjson']) writeFileSync(join(directory, name), '', { flag: 'wx', mode: 0o600 });
-    save(join(directory, 'launch.json'), { command, args, cwd, startedAt: new Date().toISOString(), status: 'launch_registered' });
-    this.process = spawn(command, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    save(join(directory, 'launch.json'), { command, executableSelection:selected, args, cwd, startedAt: new Date().toISOString(), status: 'launch_registered' });
+    this.process = spawn(selected.realpath, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     save(join(directory, 'process.json'), { pid: this.process.pid, status: 'spawn_attempted' });
     this.closed = new Promise(resolve => this.process.once('close', (code, signal) => {
       this.exit = { code, signal }; save(join(directory, 'exit.json'), { code, signal, at: new Date().toISOString() });
+      try{assertExternalExecutable(selected);}catch{this.fail('external_executable_changed_during_operation');}
       if (this.partial.toString().trim()) this.fail('incomplete_output_frame');
       save(join(directory, 'capture-status.json'), { status: this.failure ? 'failed' : 'complete', failure: this.failure,
         files: Object.fromEntries(['stdout.ndjson', 'stderr.txt', 'stdin.ndjson'].map(name => [name, hash(readFileSync(join(directory, name)))])) });
