@@ -1,6 +1,7 @@
+import {BoundedCodexSession} from '../../src/repair-native.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,readdir,unlink,mkdir,symlink} from 'node:fs/promises';
+import {readFile,writeFile,readdir,unlink,mkdir,symlink,appendFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {secretaryFixture} from '../w4/secretary-fixture.js';
 import {hash} from '../../src/snapshot.js';
@@ -74,6 +75,7 @@ test('a CLI update after installation uses the same normal entry without editing
   await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','100.0.0'));
   assert.equal((await f.post('ask',{requestId,question})).status,202);
   const again=await f.get();assert.equal(again.secretaries[0].questions[0].phase,'completed');
+  const full=await(await fetch(f.u.origin+'/api/secretary-report/selected/'+requestId,{headers:f.headers})).json() as any;assert.equal(full.phase,'completed');assert.equal(full.result.report,JSON.parse(resultBefore.toString()).report);
   assert.deepEqual(await readFile(f.trace),traceBefore);assert.deepEqual(await readFile(join(directory,'execution/result.json')),resultBefore);
   assert.deepEqual(await readFile(f.secretaryPlan),templateBefore);assert.deepEqual(await readFile(f.catalogPath),catalogBefore);
 });
@@ -150,4 +152,26 @@ test('metadata closure rejects live, partial, incomplete, model-intent and tool 
   const raw=await read('stdout.ndjson'),tool=Buffer.concat([raw,Buffer.from(JSON.stringify({id:'unexpected',method:'item/tool/call',params:{}})+'\n')]),updated=JSON.parse(status.toString());updated.files['stdout.ndjson']=hash(tool);await writeFile(join(native,'capture-status.json'),JSON.stringify(updated));
   try{await altered('stdout.ndjson',tool,/protocol_unknown/);}finally{await writeFile(join(native,'capture-status.json'),status);}
   assert.equal((await closeUnstartedSecretary(output)).closed,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+});
+
+
+test('retargeting the stable entry after input checks cannot rebind a registered question or send its model input',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),start=BoundedCodexSession.start,question='核对入口升级时的原问题。',requestId='upgrade-at-native-start';let replaced=false;
+  BoundedCodexSession.start=async options=>{
+    if(options.role==='secretary'&&!replaced){replaced=true;const next=join(f.fixtureRoot,'codex-new-install');await writeFile(next,(await readFile(f.p.codexExecutable,'utf8')).replaceAll('0.163.0-alpha.10.2','99.9.1'),{mode:0o700});await unlink(f.p.codexExecutable);await symlink(next,f.p.codexExecutable);}
+    return start(options);
+  };t.after(()=>{BoundedCodexSession.start=start;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
+  assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const path=join(f.root,hash(requestId),'input-plan.json'),original=await readFile(path),outcome=JSON.parse(await readFile(join(f.root,hash(requestId),'execution/outcome.json'),'utf8'));assert.equal(outcome.reason,'native_registered_executable_changed');
+  await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(path),original);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);await f.post('ask',{requestId:'explicit-after-upgrade',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-after-upgrade'&&q.phase==='completed'));
+  const reply=await(await fetch(f.u.origin+'/api/secretary-report/selected/explicit-after-upgrade',{headers:f.headers})).json() as any;assert.equal(reply.phase,'completed');assert.ok(reply.result.report.length);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);assert.deepEqual(await readFile(path),original);
+});
+
+test('a CLI change after model input retains the original uncertain attempt and never resends it',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),turn=BoundedCodexSession.prototype.turn,requestId='upgrade-after-input',question='保留已发出的原输入。';let replaced=false;
+  BoundedCodexSession.prototype.turn=async function(...args){const result=await turn.apply(this,args);if(this.o.role==='secretary'&&!replaced){replaced=true;await appendFile(f.p.codexExecutable,'\n// compatible update after input was already sent\n');}return result;};t.after(()=>{BoundedCodexSession.prototype.turn=turn;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+  const before=await readFile(f.trace);await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),before);assert.equal((await f.post('close-unstarted',{requestId})).status,503);
 });

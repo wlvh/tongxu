@@ -1,3 +1,4 @@
+import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import { mkdir, readFile, realpath, stat,writeFile } from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import { join, dirname, resolve } from 'node:path';
@@ -20,6 +21,7 @@ export type NativeOptions = {
   executable: string; directory: string; operation: string; candidate: Candidate;
   role: 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
+  expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
   persistent?: boolean;
@@ -74,6 +76,7 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
 // One native transport and capture contract, with separate, fixed role tools.
 export class BoundedCodexSession {
   private rpc!: LiveProcess;
+  private selectedExecutable!:ExternalExecutable;
   private binding!: ResultBinding;
   private inputs: any[] = [];
   private pairs: ReconciledToolCall[] = [];
@@ -149,10 +152,14 @@ export class BoundedCodexSession {
       try{process.kill(source.pid,0);throw new Error('native_original_process_still_exists');}catch(e:any){if(e.code!=='ESRCH')throw e;}
       this.previous=source;this.inputs=structuredClone(source.inputs);
     }
+    for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
+    const identity = await executable(o.executable, {...codexConversation,methods:[...codexConversation.methods!,...(o.persistent?['thread/read','thread/resume','turn/steer','turn/interrupt']:[])]},o.executionKind);
+    const expected=o.expectedExecutable;
+    if(expected&&(identity.sha256!==expected.sha256||expected.realpath!==undefined&&identity.realpath!==expected.realpath||expected.version!==undefined&&identity.version!==expected.version))throw new Error('native_registered_executable_changed');
+    this.selectedExecutable=identity.externalSelection;
     await newStage(o.directory);
     if(this.previous)save(join(o.directory,'resume-source.json'),{directory:o.resumeFrom,sourceSha256:this.previous.sourceSha256});
-    for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) if (process.env[key]) throw new Error('api_billing_override_present');
-    const identity = await executable(o.executable, {...codexConversation,methods:[...codexConversation.methods!,...(o.persistent?['thread/read','thread/resume','turn/steer','turn/interrupt']:[])]},o.executionKind); save(join(o.directory, 'executable.json'), identity);
+    save(join(o.directory, 'executable.json'), identity);
     if(this.previous&&identity.path!==this.previous.identity.path)throw new Error('native_resume_executable_changed');
     if (o.gate && o.executionKind === 'native_capture') {
       // This supported Mac CLI resolves its host from the same installed package.
@@ -254,6 +261,7 @@ export class BoundedCodexSession {
     save(join(this.o.directory, `turn-${index}-intent.json`), { subjectCandidate: candidate, inputSha256: hash(input), status: 'send_registered' });
     if (await exists(join(this.o.operation, 'revoked.json'))) throw new Error('repair_revoked');
     this.o.beforeSendSync?.();
+    assertExternalExecutable(this.selectedExecutable);
     this.pendingTurn = this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high', outputSchema: schema });
     let response;
     try { response = await this.pendingTurn; } finally { this.pendingTurn = null; }
