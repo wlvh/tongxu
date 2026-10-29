@@ -25,7 +25,7 @@ const url=(path:string)=>new URL('http://127.0.0.1'+path);
 test('current account discovers paginated accessible projects; Issues exclude PRs and detail returns the complete original body',async()=>{
   const f=fixture(),client=new GitHubProjects(f.factory);f.replies.set('projects',{body:{data:{account:{id:7,login:'fixture-user',projects:{nodes:[repo()],pageInfo:{hasNextPage:true,endCursor:'next-page'}}}}}});
   const list=await client.read(url('/api/github/projects')) as any;assert.equal(list.connection.account.id,7);assert.equal(list.hasNext,true);assert.equal(list.repositories[0].url,'https://github.com/fixture/one');
-  await client.read(url('/api/github/projects?page=2&account=7'));const items=await client.read(url('/api/github/repositories/1/issues?account=7')) as any;assert.deepEqual(items.items.map((x:any)=>x.number),[9]);assert.equal(items.readOnly,true);assert.equal(items.modelInputs,0);
+  await client.read(url('/api/github/projects?page=2&account=7&cursor='+encodeURIComponent(list.nextCursor)));const items=await client.read(url('/api/github/repositories/1/issues?account=7')) as any;assert.deepEqual(items.items.map((x:any)=>x.number),[9]);assert.equal(items.readOnly,true);assert.equal(items.modelInputs,0);
   const pulls=await client.read(url('/api/github/repositories/1/pulls?account=7&state=all')) as any;assert.equal(pulls.items[0].draft,true);assert.equal(pulls.items[0].url,'https://github.com/fixture/one/pull/65');
   const detail=await client.read(url('/api/github/repositories/1/issues/9?account=7')) as any;assert.equal(detail.item.body,issue().body);assert.equal(f.calls.every(x=>['projects','issues','pulls','issue','pull'].includes(x.operation)),true);await client.close();
 });
@@ -80,4 +80,21 @@ for(const phase of ['version','help'])test('shutdown during gh '+phase+' capabil
   for(let i=0;i<200;i++){try{rows=(await readFile(trace,'utf8')).trim().split('\n').map(x=>JSON.parse(x));if(rows.some(x=>x.phase===phase))break;}catch{}await new Promise(r=>setTimeout(r,10));}
   assert.equal(rows.some(x=>x.phase===phase),true);const start=Date.now();await client.close();await refused;assert.ok(Date.now()-start<3000);const final=(await readFile(trace,'utf8')).trim().split('\n').map(x=>JSON.parse(x));assert.deepEqual(final.map(x=>x.phase),phase==='version'?['version']:['version','help']);
   for(const row of final)assert.throws(()=>process.kill(row.pid,0),(error:any)=>error.code==='ESRCH');
+});
+
+
+test('two browser traversals continue from their own returned position even after another first-page refresh',async()=>{
+  let starts=0;const afters:any[]=[];const factory:GitHubReaderFactory=async()=>({query:async(op,variables)=>{
+    assert.equal(op,'projects');afters.push(variables.after);const first=variables.after===null,which=first?++starts:variables.after==='cursor-a'?2:3;
+    return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:{account:{id:7,login:'fixture',projects:{nodes:[repo(which,'fixture/repo'+which)],pageInfo:{hasNextPage:first,endCursor:first?(which===1?'cursor-a':'cursor-b'):null}}}}})};
+  }});
+  const client=new GitHubProjects(factory);const a=await client.read(url('/api/github/projects')) as any;await client.read(url('/api/github/projects'));
+  const continued=await client.read(url('/api/github/projects?page=2&account=7&cursor='+encodeURIComponent(a.nextCursor))) as any;assert.equal(afters.at(-1),'cursor-a');assert.equal(continued.repositories[0].id,2);assert.equal(a.repositories[0].id,1);await client.close();
+});
+
+
+test('pagination rejects guessed and cross-list cursors instead of silently using another view position',async()=>{
+  const f=fixture(),client=new GitHubProjects(f.factory);f.replies.set('projects',{body:{data:{account:{id:7,login:'fixture',projects:{nodes:[repo()],pageInfo:{hasNextPage:true,endCursor:'project-position'}}}}}});await client.read(url('/api/github/projects'));
+  const before=f.calls.length;for(const path of ['/api/github/projects?page=2&account=7','/api/github/projects?page=2&account=7&cursor=guessed','/api/github/projects?cursor=project-position','/api/github/repositories/1/issues?account=7&page=2&cursor=project-position'])await assert.rejects(client.read(url(path)),/page_not_discovered/);assert.equal(f.calls.length,before);
+  await client.read(url('/api/github/projects?page=2&account=7&cursor=project-position'));assert.equal(f.calls.at(-1)!.variables.after,'project-position');await client.close();
 });

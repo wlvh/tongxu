@@ -11,8 +11,14 @@ async function page(){
   class Element{
     [key:string]:any;children:any[]=[];attributes=new Map<string,string>();dataset:Record<string,string>={};open=false;textContent='';
     constructor(readonly tag:string){}
-    append(...nodes:any[]){this.children.push(...nodes);}
-    replaceChildren(...nodes:any[]){this.children=nodes;}
+    append(...children:any[]){this.children.push(...children);}
+    contains(node:any):boolean{return this===node||this.children.some(c=>c?.contains?.(node));}
+    replaceChildren(...children:any[]){if(this.children.some(c=>c?.contains?.(document.activeElement)))document.activeElement=null;this.children=children;}
+    get id(){return this.elementId;}
+    set id(value:string){this.elementId=value;nodes.set(value,this);}
+    focus(){document.activeElement=this;}
+    setSelectionRange(start:number,end:number){this.selectionStart=start;this.selectionEnd=end;}
+
     get firstChild(){return this.children[0];}
     setAttribute(k:string,v:string){this.attributes.set(k,v);}
     removeAttribute(k:string){this.attributes.delete(k);}
@@ -20,11 +26,11 @@ async function page(){
     close(){this.open=false;}
   }
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
-  const document={getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
+  const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
   const context=createContext({location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
-  const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));return {calls,run,state,nodes};
+  const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,run,state,nodes,document,findFilter};
 }
 const data=(id:number,kind:string,number:number)=>({repository:{id,fullName:'fixture/repo'+id,description:'Fixture repository',private:true,archived:false,url:'https://github.com/fixture/repo'+id},kind,items:[{number,title:'repo'+id,labels:[],state:'open',updatedAt:'2026-10-30T00:00:00Z',author:'fixture',url:'https://github.com/fixture/repo'+id+'/issues/'+number}],page:1,hasNext:false,connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'}});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
@@ -53,4 +59,27 @@ test('a stale detail dialog error cannot erase the new account after a successfu
   const recheck=p.run('loadGithubProjects()');p.calls[3]!.resolve({connection:{account:{id:8,login:'new-account'},checkedAt:'2026-10-30T00:00:01Z'},repositories:[{id:3,fullName:'new-account/private',description:'new',private:true,archived:false,updatedAt:'2026-10-30T00:00:00Z',url:'https://github.com/new-account/private'}],page:1,hasNext:false});await recheck;
   assert.equal(p.nodes.get('report-dialog')!.open,false);p.calls[2]!.reject(new Error('github_account_changed'));await detail;
   assert.equal(p.state().account.id,8);assert.equal(p.state().projects[0].id,3);assert.equal(p.state().error,null);assert.equal(p.run('view'),'projects');
+});
+
+
+test('an old project response does not replace the project filter while the user is typing',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});void enterView('projects')");const input=p.findFilter();input.value='repo';input.oninput();input.focus();input.setSelectionRange(2,2);
+  p.calls[0]!.resolve(data(1,'issues',9));p.calls[1]!.resolve(data(1,'pulls',65));await flush();assert.equal(p.findFilter(),input);assert.equal(p.document.activeElement,input);assert.equal(input.selectionStart,2);
+});
+
+test('project discovery preserves typed filter and caret when its asynchronous result arrives',async()=>{
+  const p=await page();p.run("view='projects';render()");const pending=p.run('loadGithubProjects()'),input=p.findFilter();input.value='repo';input.oninput();input.focus();input.setSelectionRange(1,3);
+  p.calls[0]!.resolve({connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'},repositories:[],page:1,hasNext:false,nextCursor:null});await pending;
+  assert.equal(p.document.activeElement,p.findFilter());assert.equal(p.findFilter().value,'repo');assert.equal(p.findFilter().selectionStart,1);assert.equal(p.findFilter().selectionEnd,3);
+});
+
+test('retry after startup metadata failure retries the GitHub entry instead of silently loading legacy state',async()=>{
+  const p=await page();p.run("entryInfo=null;view='overview';api=fakeRead");const first=p.run('startEntry()');assert.equal(p.calls[0]!.path,'/api/entry');p.calls[0]!.reject(new Error('temporary_unavailable'));await first;
+  const retry=p.run('refresh()');assert.equal(p.calls[1]!.path,'/api/entry');p.calls[1]!.resolve({githubProjects:true,hasLocalSources:true,runtime:null});await flush();assert.equal(p.calls[2]!.path,'/api/github/projects?page=1');p.calls[2]!.resolve({connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'},repositories:[],page:1,hasNext:false,nextCursor:null});await retry;assert.equal(p.run('view'),'projects');assert.equal(p.calls.some(c=>c.path==='/api/state'),false);
+});
+
+
+test('each project and item load-more request carries the cursor returned to that view',async()=>{
+  const p=await page();p.run("view='projects';gh.page=1;gh.hasNext=true;gh.nextCursor='projects/cursor A'");const projects=p.run('loadGithubProjects(true)');assert.match(p.calls[0]!.path,/cursor=projects%2Fcursor%20A$/);p.calls[0]!.resolve({connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'},repositories:[],page:2,hasNext:false,nextCursor:null});await projects;
+  p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");p.calls[1]!.resolve({...data(1,'issues',9),hasNext:true,nextCursor:'issues/cursor A'});p.calls[2]!.resolve(data(1,'pulls',65));await flush();const items=p.run("loadGithubItems('issues',true)");assert.match(p.calls[3]!.path,/cursor=issues%2Fcursor%20A$/);p.calls[3]!.resolve({...data(1,'issues',10),page:2,hasNext:false,nextCursor:null});await items;assert.deepEqual(p.state().issues.items.map((x:any)=>x.number),[9,10]);
 });

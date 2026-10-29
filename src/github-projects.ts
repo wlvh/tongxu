@@ -107,14 +107,14 @@ function queryKeys(url:URL,keys:string[]){const actual=[...url.searchParams.keys
 export class GitHubProjects{
   private identity:Account|null=null;
   private repositories=new Map<number,ReturnType<typeof repository>>();
-  private projectCursors=new Map<number,string|null>([[1,null]]);
-  private itemCursors=new Map<string,Map<number,string|null>>();
+  private projectCursors=new Map<number,Set<string>>();
+  private itemCursors=new Map<string,Map<number,Set<string>>>();
   private epoch=0;
   private closed=false;
   private controllers=new Set<AbortController>();
   private reads=new Set<Promise<unknown>>();
   constructor(private reader:GitHubReaderFactory=currentGitHubReader){}
-  private changed(){this.identity=null;this.repositories.clear();this.projectCursors=new Map([[1,null]]);this.itemCursors.clear();this.epoch++;}
+  private changed(){this.identity=null;this.repositories.clear();this.projectCursors=new Map();this.itemCursors.clear();this.epoch++;}
   async read(url:URL):Promise<unknown>{
     if(this.closed)fail('github_reader_closed');
     const controller=new AbortController(),epoch=this.epoch;this.controllers.add(controller);
@@ -127,7 +127,7 @@ export class GitHubProjects{
   private async readCurrent(url:URL,signal:AbortSignal,epoch:number){
     const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)\/(issues|pulls)(?:\/([1-9]\d*))?$/.exec(url.pathname);
     if(!list&&!match)fail('github_route_not_found');
-    queryKeys(url,list?['page','account']:match![3]?['account']:['account','page','state']);
+    queryKeys(url,list?['page','account','cursor']:match![3]?['account']:['account','page','state','cursor']);
     const page=queryNumber(url,'page',1);if(page>1000)fail('github_page_limit');
     const expected=list&&page===1?null:queryNumber(url,'account'),repoId=match?Number(match[1]):null,kind=match?.[2] as 'issues'|'pulls'|undefined,state=url.searchParams.get('state')??'open';
     if(!['open','closed','all'].includes(state))fail('github_query_invalid');
@@ -135,11 +135,12 @@ export class GitHubProjects{
     const selected=repoId?this.repositories.get(repoId):undefined;
     if(!list&&(!positive(repoId)||!selected))fail('github_project_not_selected');
     const group=list?'projects':`${repoId}:${kind}:${state}`;
-    const cursors=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,string|null>([[1,null]]);
-    if(!match?.[3]&&!cursors.has(page))fail('github_page_not_discovered');
+    const cursors=list?this.projectCursors:this.itemCursors.get(group);
+    const cursor=url.searchParams.get('cursor');
+    if(page===1&&cursor!==null||page>1&&(!bounded(cursor,2048)||!cursor||!cursors?.get(page)?.has(cursor)))fail('github_page_not_discovered');
     const number=match?.[3]?Number(match[3]):null;if(number!==null&&(!positive(number)||number>2147483647))fail('github_query_invalid');
     const operation:ProjectQuery=list?'projects':number!==null?(kind==='issues'?'issue':'pull'):kind!;
-    const variables=list?{after:cursors.get(page)}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursors.get(page),states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
+    const variables=list?{after:cursor}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursor,states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
     const reader=await this.reader(signal);if(signal.aborted)fail('github_read_cancelled');
     const data=decode(await reader.query(operation,variables,signal)),observed=account(data.account);
     // Viewer identity and all returned data share this ONE authenticated query.
@@ -152,14 +153,19 @@ export class GitHubProjects{
       if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
       else{connection=data.repository.items;if(!Array.isArray(connection?.nodes)||connection.nodes.length>30)fail();result={repository:repo,kind,state,page,items:connection.nodes.map((x:Row)=>entry(x,repo.fullName,kind!))};}
     }
-    if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;}
+    if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;result.nextCursor=info.hasNextPage?info.endCursor:null;}
     if(signal.aborted)fail('github_read_cancelled');
     if(this.identity?.id!==observed.id){this.changed();this.identity=observed;}
     if(list)for(const repo of newRepositories)this.repositories.set(repo.id,repo);
     if(connection){
-      const destination=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,string|null>([[1,null]]);
-      if(page===1)for(const key of destination.keys())if(key>1)destination.delete(key);
-      if(connection.pageInfo.hasNextPage)destination.set(page+1,connection.pageInfo.endCursor);
+      const destination=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,Set<string>>();
+      // Each view sends its own returned position. Another first-page read
+      // must not replace it. Bound retention; expired positions fail explicitly.
+      if(connection.pageInfo.hasNextPage){
+        const positions=destination.get(page+1)??new Set<string>();positions.add(connection.pageInfo.endCursor);
+        while(positions.size>64)positions.delete(positions.values().next().value!);
+        destination.set(page+1,positions);
+      }
       if(!list)this.itemCursors.set(group,destination);
     }
     return {connection:{status:'connected',account:observed,checkedAt:now()},...result,source:'github_live_read',readOnly:true,modelInputs:0};
