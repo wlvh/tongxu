@@ -595,6 +595,7 @@ async function loadGithubProjects(more=false){
   finally{if(request===gh.listRequest)gh.loading=false;if(githubView())render();}
 }
 function clearProjectView(){
+  if(typeof chatRefresh!=='undefined'&&chatRefresh!==null){clearTimeout(chatRefresh);chatRefresh=null;}
   state=null;selected=null;reportNonce++;githubDetailEpoch=null;if($('report-dialog').open)$('report-dialog').close();
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
 }
@@ -669,7 +670,7 @@ async function enterView(next){
   if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
   if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
   if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
-  view=next;if(!state)await refresh();else render();
+  view=next;if(entryInfo?.githubProjects&&next==='secretary'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadProjectChat();return;}if(!state)await refresh();else render();
 }
 async function startEntry(){
   const notify=projectNotifier();
@@ -680,6 +681,7 @@ async function startEntry(){
 }
 
 function render() {
+  if(entryInfo?.githubProjects&&view==='secretary'&&gh.selected){renderProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){renderGithub();return;}
   if (!state) return;
   document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'本机原任务'),el('p',gh.selected?'只显示本项目的任务、报告和操作。切换项目不取消已经发出的执行。':'查看原执行和完整报告。'));
@@ -701,6 +703,7 @@ function render() {
 }
 async function refresh() {
   if(entryInfo===null){await startEntry();return;}
+  if(entryInfo?.githubProjects&&view==='secretary'){await loadProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){if(view==='projects')await loadGithubProjects();else await Promise.all([loadGithubItems('issues'),loadGithubItems('pulls')]);return;}
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
   const epoch=gh.epoch,projectId=gh.selected?.id,current=()=>!entryInfo?.githubProjects||epoch===gh.epoch&&projectId===gh.selected?.id;

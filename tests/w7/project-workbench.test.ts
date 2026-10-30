@@ -11,7 +11,7 @@ import {hash} from '../../src/snapshot.js';
 
 function github(){
   let account={id:7,login:'fixture'};
-  const repositories=['fixture/reception','fixture/other','fixture/empty'].map((full_name,index)=>({id:index+1,nodeId:'R_'+(index+1),full_name,description:'Explicit fixture',private:true,archived:false,defaultBranchRef:{name:'main'},updated_at:'2026-10-30T00:00:00Z'}));
+  const repositories=['fixture/reception','fixture/other','fixture/empty'].map((full_name,index)=>({id:index+1,nodeId:'R_'+(index+1),full_name,description:'Explicit fixture',private:true,archived:false,defaultBranchRef:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:'2026-10-30T00:00:00Z'}));
   let unavailable=false;const factory:GitHubReaderFactory=async()=>({query:async(op,variables)=>{assert.ok(['projects','project'].includes(op));return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:repositories,pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:unavailable?null:repositories.find(r=>r.nodeId===variables.id)}})};}});
   return {factory,removeAccess:()=>{unavailable=true;},changeAccount:()=>{account={id:8,login:'new-account'};}};
 }

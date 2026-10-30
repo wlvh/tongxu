@@ -1,3 +1,5 @@
+import {ProjectChat} from './project-chat.js';
+import {validateProjectChatConfig,type ProjectChatConfig} from './project-chat-contract.js';
 import {GitHubProjects,GitHubProjectError,type GitHubReaderFactory} from './github-projects.js';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -37,6 +39,7 @@ export type WorkbenchPlan = {
   secretary?:{path:string;sha256:string};
   returnControls?:{path:string;sha256:string};
   githubProjects?:true;
+  projectSecretary?:ProjectChatConfig;
 };
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && !!v.trim() && v.length <= max && !v.includes('\0');
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
@@ -49,6 +52,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'deliveryExecutions')&&(!p.ownerControls?.length||!exactKeys(p.deliveryExecutions,['path','sha256'])||!messagePath(p.deliveryExecutions.path)||!isAuthorityDigest(p.deliveryExecutions.sha256)))throw new Error('invalid_workbench_delivery_executions');
   if(Object.hasOwn(p,'organization')&&(!exactKeys(p.organization,['path','sha256'])||!messagePath(p.organization.path)||!isAuthorityDigest(p.organization.sha256)))throw new Error('invalid_workbench_organization');
   if(Object.hasOwn(p,'githubProjects')&&p.githubProjects!==true)throw new Error('invalid_workbench_github_projects');
+  if(p.projectSecretary!==undefined){if(!p.githubProjects)throw new Error('project_chat_requires_github');validateProjectChatConfig(p.projectSecretary);}
   const ids = new Set(), tasks = new Set();
   for (const s of p.sources) {
     if (!s || typeof s.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(s.id) || !text(s.title, 100) || !/^[a-f0-9]{64}$/.test(s.item) || typeof s.store !== 'string' || !isAbsolute(s.store) || resolve(s.store) !== s.store || ids.has(s.id) || tasks.has(s.store + ':' + s.item)) throw new Error('invalid_workbench_source');
@@ -58,7 +62,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'ownerControls')&&(!Array.isArray(p.ownerControls)||!p.ownerControls.length||p.ownerControls.length>8||new Set(p.ownerControls).size!==p.ownerControls.length||p.ownerControls.some((id:unknown)=>!ids.has(id))))throw new Error('invalid_workbench_owner_controls');
   if(Object.hasOwn(p,'overallReviews'))validateOverallSelections(p.overallReviews,[...ids] as string[]);
   if(Object.hasOwn(p,'eventPolling'))validateEventPolling(p.eventPolling,p.sources);
-  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}),...(p.returnControls?{returnControls:p.returnControls}:{}),...(p.githubProjects?{githubProjects:true as const}:{}) };
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}),...(p.returnControls?{returnControls:p.returnControls}:{}),...(p.githubProjects?{githubProjects:true as const}:{}),...(p.projectSecretary?{projectSecretary:p.projectSecretary}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -181,9 +185,26 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     }
     return {plan,allowed,selectedSourcesUnknown,project:{account:selection.account,repository:selection.repository,unresolvedSourceCount}};
   };
+  const verifyProject=async(scope:ReturnType<GitHubProjects['selection']>)=>{if(closing)throw new Error('workbench_closing');await github!.confirmSelection(scope.account.id,scope.repository.id);github!.assertSelection(scope);};
+  let projectChat:Promise<ProjectChat>|undefined;
+  const openProjectChat=()=>{
+    if(!p.projectSecretary||!github)throw new Error('project_chat_not_configured');
+    return projectChat??=ProjectChat.open(p.projectSecretary,async(scope,tool,args)=>{
+      if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('project_chat_tool_arguments_invalid');
+      if(tool==='tongxu_project_info'){if(!exactKeys(args,[]))throw new Error('project_chat_tool_arguments_invalid');await verifyProject(scope);return github!.selection(scope.account.id,scope.repository.id);}
+      if(tool==='tongxu_project_items'||tool==='tongxu_project_item'){
+        const detail=tool==='tongxu_project_item';if(Object.keys(args).some(k=>!(detail?['kind','number']:['kind','state','page','cursor']).includes(k))||!['issues','pulls'].includes(args.kind)||detail&&(!Number.isSafeInteger(args.number)||args.number<1))throw new Error('project_chat_tool_arguments_invalid');
+        const path='/api/github/repositories/'+scope.repository.id+'/'+args.kind+(detail?'/'+args.number:'');const url=new URL('http://127.0.0.1'+path);url.searchParams.set('account',String(scope.account.id));if(!detail)for(const key of ['state','page','cursor'])if(args[key]!==undefined)url.searchParams.set(key,String(args[key]));return github!.read(url);
+      }
+      const context=await projectPlan(scope);
+      if(tool==='tongxu_project_tasks'){if(!exactKeys(args,[]))throw new Error('project_chat_tool_arguments_invalid');return {...await workbenchState(context.plan),project:context.project};}
+      if(tool==='tongxu_project_report'){if(!exactKeys(args,['source','operation'])||typeof args.source!=='string'||typeof args.operation!=='string')throw new Error('project_chat_tool_arguments_invalid');return workbenchReport(context.plan,args.source,args.operation);}
+      throw new Error('project_chat_tool_not_allowed');
+    },verifyProject).catch(error=>{projectChat=undefined;throw error;});
+  };
   const initial=p.githubProjects?null:await openLocal(p);
   const assets = new Map<string, { type: string; bytes: Buffer }>();
-  for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
+  for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/project-chat.js','project-chat.js','text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   function reply(res: ServerResponse, status: number, type: string, data: string | Buffer) {
     res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" }); res.end(data);
   }
@@ -200,7 +221,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname==='/api/entry'||url.pathname.startsWith('/api/github/')){
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
         if(req.method!=='GET'){json(res,405,{error:'github_read_only'});return;}
-        if(url.pathname==='/api/entry'){if(url.search){json(res,400,{error:'query_not_supported'});return;}json(res,200,{githubProjects:!!github,hasLocalSources:p.sources.length>0,runtime:runtimeIdentity??null});return;}
+        if(url.pathname==='/api/entry'){if(url.search){json(res,400,{error:'query_not_supported'});return;}json(res,200,{githubProjects:!!github,hasLocalSources:p.sources.length>0,projectSecretary:!!p.projectSecretary,runtime:runtimeIdentity??null});return;}
         if(!github){json(res,404,{error:'github_projects_not_enabled'});return;}
         json(res,200,await github.read(url));return;
       }
@@ -208,7 +229,29 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if (url.search&&!/^\/api\/judgment-feedback-report\/[a-z0-9-]{1,64}$/.test(url.pathname)) { json(res, 400, { error: 'query_not_supported' }); return; }
       const asset=assets.get(url.pathname);if(req.method==='GET'&&asset){reply(res,200,asset.type,asset.bytes);return;}
       if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
+      // Stopping an already owned request is cleanup, not new investment. It
+      // remains available when GitHub or the login connection is unavailable.
+      if(url.pathname==='/api/project-secretary/stop'&&req.method==='POST'){
+        if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'project_chat_stop_invalid'});return;}chunks.push(Buffer.from(chunk));}
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');
+        const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId));return;
+      }
       const selection=github?await github.confirmSelection(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project'])):null;
+      if(url.pathname.startsWith('/api/project-secretary')){
+        if(!selection)throw new Error('project_chat_requires_github');
+        if(!p.projectSecretary){if(req.method!=='GET')throw new Error('project_chat_not_configured');json(res,200,{available:false,reason:'project_chat_not_configured',conversations:[],newModelInputs:0});return;}
+        const chat=await openProjectChat(),conversation=/^\/api\/project-secretary\/conversations\/([0-9a-f-]{36})$/.exec(url.pathname);
+        if(req.method==='GET'){
+          if(url.pathname==='/api/project-secretary')json(res,200,await chat.list(selection));
+          else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
+        }
+        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
+        if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
+        const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
+        if(url.pathname.endsWith('/ask'))json(res,202,await chat.begin(selection,body));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
+      }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
       if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
@@ -278,5 +321,5 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   host = '127.0.0.1:' + address.port;
   const {controls,ownerControls,organization,overall,deliveryControls,secretary,returns,queueActions,polling}=initial??{};
   polling?.start();
-  return { url: 'http://' + host + '/#' + token,mode:github?'github_projects':controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':returns?'bounded_return_work':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{closing=true;const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await github?.close();await Promise.allSettled([...locals.values()].map(async entry=>{const {returns,controls,polling,secretary,scopeFollowups,deliveryExecution,overall}=await entry.value.catch(()=>null)??{};await Promise.allSettled([returns?.drain(),controls?.drain(),polling?.drain(),secretary?.drain(),scopeFollowups?.drain(),deliveryExecution?.drain(),overall?.drain()]);}));await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:github?'github_projects':controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':returns?'bounded_return_work':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{closing=true;const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await Promise.allSettled([github?.close(),projectChat?.then(chat=>chat.drain())]);await Promise.allSettled([...locals.values()].map(async entry=>{const {returns,controls,polling,secretary,scopeFollowups,deliveryExecution,overall}=await entry.value.catch(()=>null)??{};await Promise.allSettled([returns?.drain(),controls?.drain(),polling?.drain(),secretary?.drain(),scopeFollowups?.drain(),deliveryExecution?.drain(),overall?.drain()]);}));await closed;} };
 }

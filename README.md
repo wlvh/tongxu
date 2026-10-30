@@ -67,7 +67,7 @@ node --test dist/tests/w4/codex-results.test.js dist/tests/w5/*.test.js
 
 ## 本机工作台
 
-正常启动检查GitHub连接并选择仓库后，整个工作台围绕该项目显示Issues、PR、原任务、完整报告、协作和秘书。切换项目同步切换工作范围，原件保留；无关联任务时显示真实空状态。见[GitHub项目入口](docs/github_project_entry.md)。
+正常启动检查GitHub连接并选择仓库后，整个工作台围绕该项目显示Issues、PR、原任务、完整报告、协作和秘书。切换项目同步切换工作范围，原件保留；无关联任务时显示真实空状态。见[GitHub项目入口](docs/github_project_entry.md)。项目秘书支持直接提问、继续追问和保存完整对话，无需先登记开发任务，见[项目秘书对话](docs/project_secretary_chat.md)。
 
 使用 [本机工作台配置](docs/local_workbench.md) 选定已有队列、任务和成果批次后运行：
 

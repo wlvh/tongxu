@@ -7,7 +7,7 @@ import {GitHubProjects,GitHubProjectError,currentGitHubReader,type GitHubReaderF
 import {startWorkbench,parseWorkbenchPlan} from '../../src/workbench.js';
 
 const updated='2026-10-30T00:00:00Z';
-const repo=(id=1,full_name='fixture/one')=>({id,nodeId:'R_'+id,full_name,description:'Explicit test repository',private:true,archived:false,defaultBranchRef:{name:'main'},updated_at:updated});
+const repo=(id=1,full_name='fixture/one')=>({id,nodeId:'R_'+id,full_name,description:'Explicit test repository',private:true,archived:false,defaultBranchRef:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:updated});
 const issue=(number=9)=>({id:number+100,number,title:'Original <script> text',state:'OPEN',body:'Complete original body\n<script>not executed</script>',author:{login:'fixture-user'},labels:{nodes:[{name:'needs review'}]},updated_at:updated,comments:{totalCount:2}});
 const pr=(number=65)=>({...issue(number),title:'Draft change',draft:true,headRefName:'feature',baseRefName:'main',merged_at:null});
 function fixture(){

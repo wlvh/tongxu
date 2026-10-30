@@ -20,7 +20,7 @@ const bounded=(v:unknown,max:number):v is string=>typeof v==='string'&&v.length<
 const timestamp=(v:unknown)=>typeof v==='string'&&Number.isFinite(Date.parse(v));
 const now=()=>new Date().toISOString();
 const fail=(code='github_response_invalid'):never=>{throw new GitHubProjectError(code);};
-const repoFields='id:databaseId nodeId:id full_name:nameWithOwner description private:isPrivate archived:isArchived defaultBranchRef{name} updated_at:updatedAt';
+const repoFields='id:databaseId nodeId:id full_name:nameWithOwner description private:isPrivate archived:isArchived defaultBranchRef{name target{...on Commit{oid}}} updated_at:updatedAt';
 const itemFields='id:databaseId number title state updated_at:updatedAt author{login} labels(first:50){nodes{name}}';
 const pullFields='draft:isDraft merged_at:mergedAt headRefName baseRefName';
 const pageFields='pageInfo{hasNextPage endCursor}';
@@ -87,8 +87,9 @@ function account(value:Row):Account{
 function repository(v:Row){
   if(v===null)fail('github_repository_unavailable');
   v={...v,default_branch:v?.defaultBranchRef?.name??null};
+  const defaultHead=v.defaultBranchRef?.target?.oid??null;if(v.defaultBranchRef!==null&&!/^[a-f0-9]{40}$/.test(defaultHead??''))fail();
   if(!positive(v?.id)||!bounded(v.nodeId,512)||!v.nodeId||!name.test(v.full_name??'')||typeof v.private!=='boolean'||typeof v.archived!=='boolean'||!(v.description===null||bounded(v.description,16384))||!(v.default_branch===null||bounded(v.default_branch,256))||!timestamp(v.updated_at))fail();
-  return {id:v.id,nodeId:v.nodeId as string,fullName:v.full_name as string,description:v.description??'',private:v.private,archived:v.archived,defaultBranch:v.default_branch??null,updatedAt:v.updated_at as string,url:'https://github.com/'+v.full_name};
+  return {id:v.id,nodeId:v.nodeId as string,fullName:v.full_name as string,description:v.description??'',private:v.private,archived:v.archived,defaultBranch:v.default_branch??null,defaultHead,updatedAt:v.updated_at as string,url:'https://github.com/'+v.full_name};
 }
 function entry(v:Row,repo:string,kind:'issues'|'pulls',full=false){
   v={...v,state:v?.state==='MERGED'?'closed':v?.state?.toLowerCase(),user:v?.author,labels:v?.labels?.nodes,head:{ref:v?.headRefName},base:{ref:v?.baseRefName},comments:v?.comments?.totalCount};
