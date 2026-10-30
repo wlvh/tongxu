@@ -3,6 +3,8 @@ function taskSourceLabel(t) { if(t.candidate.kind !== 'development-task')return 
 const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0,controlRefresh=null;
+let entryInfo=null,githubDetailEpoch=null,entryLoading=false;
+const gh={account:null,projects:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,checkedAt:null,filter:'',selected:null,epoch:0,listRequest:0,issues:null,pulls:null};
 const pendingControls=new Set();
 const pendingScopeControls=new Set();
 const pendingOutcomes=new Set(),outcomeDrafts=new Map(),outcomeComments=new Map();
@@ -13,7 +15,7 @@ const pendingOverall=new Set();
 const pendingReturnWork=new Set();
 const outcomeLabels={accepted:'接受成果',rejected:'退回处理',needs_evidence:'补充证据',stopped:'停止后续投入'};
 const taskControlPhases={not_registered:'尚未登记',queued:'已登记，待处理',prepared:'已准备，待发送',waiting:'等待前置',active_or_unknown:'正在执行或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'未发送请求已撤回',interrupted:'已观察到中断，原请求未完成',interrupted_closed:'中断结果已保留，原请求已结束'};
-const readableReason=value=>({secretary_runtime_or_billing_changed:'本次登记使用的程序或费用依据已变化，原请求尚未发送。可核查未发送并关闭，再提交新请求；原选择不会被替换。',secretary_question_id_changed:'原问题或登记文件不一致，不能覆盖原请求。请核对已有记录。',secretary_registration_incomplete:'原登记材料不完整，保留现场等待核对。',task_choice_option_not_allowed:'原A选择了未登记的联系，未启动其他角色；原回复保留。',task_choice_request_invalid:'原联系请求与固定范围不匹配，未按报告扩大执行。',task_choice_request_not_structured:'原A的联系请求格式尚未核实，原回答保留，未继续派发。',task_choice_original_request_changed:'原联系输入已变化，不能用同一请求替换原任务。',original_task_result_or_resources_unresolved:'原任务回答或资源结果仍待核实。',original_contact_result_or_resources_unresolved:'所选角色的原回答或资源结果仍待核实。',original_return_result_or_resources_unresolved:'返回原A的综合结果或资源结果仍待核实。',task_control_server_closing:'入口已关闭，不再启动后续角色。',baseline_contents_invalid:'请完整填写三类基线原文，每类不超过6000字。',baseline_not_selected:'这份基线不属于当前选定范围。',overall_workbench_request_is_fixed:'此请求已绑定原基线和材料，不能换成另一份输入。',overall_workbench_history_limit:'原任务已达到64条不同复盘准备记录；已有记录继续保留，同材料可查回。',overall_original_pending_or_unknown:'原复盘已经发送或仍待核实；先查回原运行，不能另起替代任务。',overall_prepared_file_changed:'已固定的复盘输入文件发生变化，原记录保留，等待核清。',owner_authority_not_enabled:'该原任务尚未配置可独立核对的本人来源。已有任务与报告可查；需要本人来源的采用、委托和执行确认尚未开放。',delivery_execution_no_registered_run_to_close:'这只是已保存的验证提案，原验证器尚未登记运行；没有可关闭的原运行，也未记作已撤回。',delivery_workbench_execution_history_limit:'本批已达到64条执行准备历史；此次未新增，原记录及运行仍保留。',delivery_preparation_batch_limit:'该成员已有8个当前成果批次；此次未新增，已有批次仍可查回和明确修订。',delivery_execution_current_material_required:'当前批次或证据已变化，请保留草稿并核对新的准确材料。',delivery_execution_profile_no_longer_selected:'此原能力已不在当前受信配置中；可以查回原记录，不能据旧配置发起新输入。',verified_owner_decision_missing:'这份准确动作尚未核到本人来源，未启动执行。',delivery_validation_authority_binding_mismatch:'原验证授权不匹配准确候选或测试动作。',delivery_preparation_history_limit:'本入口已达到64条所选历史的容量；此次未新增，已有成果和原决定仍可查回。',delivery_preparation_current_adoption_required:'目标采用与所选任务范围不一致，先核原目标和任务后续。',delivery_preparation_source_not_selected:'该来源不在本入口已选任务内。',delivery_preparation_member_not_selected:'成员不在已选任务及其原记录后续工作中。',delivery_member_current_material_mismatch:'成员材料已经变化，草稿保留；核当前候选后重新准备。',delivery_previous_version_changed:'这批成果已有新版本，旧草稿不能覆盖后来版本。',delivery_preparation_form_invalid:'成果草稿字段不完整或含不受支持的内容。',task_scope_original_work_not_ended:'原负责人仍有未完成或状态未核清的工作；先核原运行，或撤回已确认未发送的请求。',task_scope_original_operation_not_ended:'原任务还有未结束的操作，后续工作等待核清。',task_scope_original_source_changed:'原任务材料已改变，请重新核对当前材料后准备。',task_scope_new_adopted_scope_required:'需要与本次后续工作匹配的当前新目标采用记录。',task_scope_task_not_selected:'这项工作不在本入口的已选任务及其明确后续工作内。',task_scope_workbench_closing:'入口正在关闭，未登记新的执行。',owner_control_revision_changed:'此停止或恢复项已被其他操作更新，请刷新后重新准备准确请求。',fresh_original_held_resource_claim_required:'原资源当前未确认占用。先查回原申请；供应方明确拒绝时，可按原 ID 显式重试。',native_resume_scope_or_capture_changed:'原会话的范围或捕获引用不再匹配，本次未改用新会话。',native_resume_original_resources_unsettled:'原运行的资源结果仍待核实，暂不开始新输入。',native_resume_history_changed_or_active:'原生会话历史变化或仍在运行，不能据旧记录续接。',native_resume_original_process_or_binding_changed:'原进程或原会话绑定尚未核清，不能续接。',overall_native_execution_started_or_unknown:'已有模型输入或原捕获尚未核清，不能按未发送任务关闭。',overall_native_process_active_or_unknown:'原执行进程仍在运行或状态未知，先查原运行。',overall_exact_resource_set_required:'复盘的资源引用与原授权不一致，修正配置后可继续原请求。',overall_original_action_is_fixed:'该授权已绑定原复盘请求，不能换成另一份计划。',overall_selected_plan_changed:'启动时选定的复盘清单已变化，本次没有改用新清单。',coordination_exact_previous_revision_required:'组织安排已被另一入口更新，请刷新后核对。',coordination_task_candidate_or_material_changed:'任务候选或材料已更新，需要按当前证据重新登记安排。',local_scope_control_revision_changed:'控制状态已被其它入口更新，请核对刷新后的修订。',local_scope_control_scope_changed:'范围定义已改变，旧配置不能继续操作。',local_scope_control_adopted_version_changed:'本人已采用新的范围版本，旧范围记录不能继续操作。',verified_owner_stop_requires_verified_resume:'这是已验证的本人停止，必须按原来源恢复。',new_investment_stopped:'本范围已停止新增投入。',owner_action_stopped:'原本人控制已停止该动作。',task_controller_history_bound:'原诊断历史已达到上限，需保留历史后由负责人处理。',task_execution_incomplete:'原执行未取得完整结果，请核对原运行。',task_prepared_file_changed:'已准备的输入文件发生变化，原请求保留并等待核实。',task_or_candidate_packet_changed:'任务、候选或观察方式已更新，这条关联仅作历史保留。',task_link_staged_selected_changes:'选定文件的暂存内容已变化。',task_link_selected_mode_changed:'选定文件的所有者执行位已变化。',task_control_candidate_changed:'任务材料已变化，请核对后更新联系请求。',task_original_execution_active_or_unknown:'原执行已开始或尚未查清，不能当作未发送请求撤回。',task_original_resource_investment_must_be_resolved:'原资源投入仍须核实，不能直接撤回。',task_request_not_queued:'请求尚未登记，没有可撤回的待办。',task_request_cancelled:'该请求已撤回，原记录保留。',task_original_responsibility_pending:'原负责人还有未完成或未知的执行，后续请求等待。'}[value]||value);
+const readableReason=value=>({workbench_project_sources_changed:'本项目的任务归属已变化，请保留原记录并重新打开入口。',workbench_project_sources_unknown:'本项目部分任务归属尚未核清，暂未执行这次操作。',secretary_runtime_or_billing_changed:'本次登记使用的程序或费用依据已变化，原请求尚未发送。可核查未发送并关闭，再提交新请求；原选择不会被替换。',secretary_question_id_changed:'原问题或登记文件不一致，不能覆盖原请求。请核对已有记录。',secretary_registration_incomplete:'原登记材料不完整，保留现场等待核对。',task_choice_option_not_allowed:'原A选择了未登记的联系，未启动其他角色；原回复保留。',task_choice_request_invalid:'原联系请求与固定范围不匹配，未按报告扩大执行。',task_choice_request_not_structured:'原A的联系请求格式尚未核实，原回答保留，未继续派发。',task_choice_original_request_changed:'原联系输入已变化，不能用同一请求替换原任务。',original_task_result_or_resources_unresolved:'原任务回答或资源结果仍待核实。',original_contact_result_or_resources_unresolved:'所选角色的原回答或资源结果仍待核实。',original_return_result_or_resources_unresolved:'返回原A的综合结果或资源结果仍待核实。',task_control_server_closing:'入口已关闭，不再启动后续角色。',baseline_contents_invalid:'请完整填写三类基线原文，每类不超过6000字。',baseline_not_selected:'这份基线不属于当前选定范围。',overall_workbench_request_is_fixed:'此请求已绑定原基线和材料，不能换成另一份输入。',overall_workbench_history_limit:'原任务已达到64条不同复盘准备记录；已有记录继续保留，同材料可查回。',overall_original_pending_or_unknown:'原复盘已经发送或仍待核实；先查回原运行，不能另起替代任务。',overall_prepared_file_changed:'已固定的复盘输入文件发生变化，原记录保留，等待核清。',owner_authority_not_enabled:'该原任务尚未配置可独立核对的本人来源。已有任务与报告可查；需要本人来源的采用、委托和执行确认尚未开放。',delivery_execution_no_registered_run_to_close:'这只是已保存的验证提案，原验证器尚未登记运行；没有可关闭的原运行，也未记作已撤回。',delivery_workbench_execution_history_limit:'本批已达到64条执行准备历史；此次未新增，原记录及运行仍保留。',delivery_preparation_batch_limit:'该成员已有8个当前成果批次；此次未新增，已有批次仍可查回和明确修订。',delivery_execution_current_material_required:'当前批次或证据已变化，请保留草稿并核对新的准确材料。',delivery_execution_profile_no_longer_selected:'此原能力已不在当前受信配置中；可以查回原记录，不能据旧配置发起新输入。',verified_owner_decision_missing:'这份准确动作尚未核到本人来源，未启动执行。',delivery_validation_authority_binding_mismatch:'原验证授权不匹配准确候选或测试动作。',delivery_preparation_history_limit:'本入口已达到64条所选历史的容量；此次未新增，已有成果和原决定仍可查回。',delivery_preparation_current_adoption_required:'目标采用与所选任务范围不一致，先核原目标和任务后续。',delivery_preparation_source_not_selected:'该来源不在本入口已选任务内。',delivery_preparation_member_not_selected:'成员不在已选任务及其原记录后续工作中。',delivery_member_current_material_mismatch:'成员材料已经变化，草稿保留；核当前候选后重新准备。',delivery_previous_version_changed:'这批成果已有新版本，旧草稿不能覆盖后来版本。',delivery_preparation_form_invalid:'成果草稿字段不完整或含不受支持的内容。',task_scope_original_work_not_ended:'原负责人仍有未完成或状态未核清的工作；先核原运行，或撤回已确认未发送的请求。',task_scope_original_operation_not_ended:'原任务还有未结束的操作，后续工作等待核清。',task_scope_original_source_changed:'原任务材料已改变，请重新核对当前材料后准备。',task_scope_new_adopted_scope_required:'需要与本次后续工作匹配的当前新目标采用记录。',task_scope_task_not_selected:'这项工作不在本入口的已选任务及其明确后续工作内。',task_scope_workbench_closing:'入口正在关闭，未登记新的执行。',owner_control_revision_changed:'此停止或恢复项已被其他操作更新，请刷新后重新准备准确请求。',fresh_original_held_resource_claim_required:'原资源当前未确认占用。先查回原申请；供应方明确拒绝时，可按原 ID 显式重试。',native_resume_scope_or_capture_changed:'原会话的范围或捕获引用不再匹配，本次未改用新会话。',native_resume_original_resources_unsettled:'原运行的资源结果仍待核实，暂不开始新输入。',native_resume_history_changed_or_active:'原生会话历史变化或仍在运行，不能据旧记录续接。',native_resume_original_process_or_binding_changed:'原进程或原会话绑定尚未核清，不能续接。',overall_native_execution_started_or_unknown:'已有模型输入或原捕获尚未核清，不能按未发送任务关闭。',overall_native_process_active_or_unknown:'原执行进程仍在运行或状态未知，先查原运行。',overall_exact_resource_set_required:'复盘的资源引用与原授权不一致，修正配置后可继续原请求。',overall_original_action_is_fixed:'该授权已绑定原复盘请求，不能换成另一份计划。',overall_selected_plan_changed:'启动时选定的复盘清单已变化，本次没有改用新清单。',coordination_exact_previous_revision_required:'组织安排已被另一入口更新，请刷新后核对。',coordination_task_candidate_or_material_changed:'任务候选或材料已更新，需要按当前证据重新登记安排。',local_scope_control_revision_changed:'控制状态已被其它入口更新，请核对刷新后的修订。',local_scope_control_scope_changed:'范围定义已改变，旧配置不能继续操作。',local_scope_control_adopted_version_changed:'本人已采用新的范围版本，旧范围记录不能继续操作。',verified_owner_stop_requires_verified_resume:'这是已验证的本人停止，必须按原来源恢复。',new_investment_stopped:'本范围已停止新增投入。',owner_action_stopped:'原本人控制已停止该动作。',task_controller_history_bound:'原诊断历史已达到上限，需保留历史后由负责人处理。',task_execution_incomplete:'原执行未取得完整结果，请核对原运行。',task_prepared_file_changed:'已准备的输入文件发生变化，原请求保留并等待核实。',task_or_candidate_packet_changed:'任务、候选或观察方式已更新，这条关联仅作历史保留。',task_link_staged_selected_changes:'选定文件的暂存内容已变化。',task_link_selected_mode_changed:'选定文件的所有者执行位已变化。',task_control_candidate_changed:'任务材料已变化，请核对后更新联系请求。',task_original_execution_active_or_unknown:'原执行已开始或尚未查清，不能当作未发送请求撤回。',task_original_resource_investment_must_be_resolved:'原资源投入仍须核实，不能直接撤回。',task_request_not_queued:'请求尚未登记，没有可撤回的待办。',task_request_cancelled:'该请求已撤回，原记录保留。',task_original_responsibility_pending:'原负责人还有未完成或未知的执行，后续请求等待。'}[value]||value);
 const stages = { local_inspection_pending: ['本地材料待核', 'wait'], not_dispatched: ['尚未派发接收', 'neutral'], preparing: ['接收准备中', 'wait'], submitted_or_unknown: ['已登记发送，结果待核', 'wait'], historical_result: ['历史判断，当前不适用', 'neutral'], returned: ['报告已返回', ''], returned_invalid: ['执行已结束，判断无效', 'wait'], closed_unresolved: ['原结果未解决', 'wait'] };
 const verdicts = { ACCEPT_WITHIN_SCOPE: '限定范围内接受', RETURN_FOR_WORK: '退回处理', INSUFFICIENT_EVIDENCE: '证据不足', INVALID_RESULT: '原输出无效，未形成接收判断' };
 const eventNames = { receiver_reserved: '接收准备已登记', receiver_dispatch_registered: '原发送已登记', receiver_judgment_recorded: '完整接收判断已保存', receiver_closed_unresolved: '原操作保留未解决结果', receiver_invalid_result_recorded: '原执行已结束，完整输出无效', receiver_correction_registered: '一次有界结果纠正已登记', pair_registered: '两个任务与阶段安排已固定', pair_independent_inspection: '下游已核对独立本地材料', pair_shared_waiting: '共享接收等待上游判断', pair_shared_consumed: '下游已返回上游结果的消费引用' };
@@ -41,16 +43,29 @@ function statusOf(task) {
   if (o.stage === 'returned') return [verdicts[o.judgment?.verdict] || '未知判断', o.judgment?.verdict === 'ACCEPT_WITHIN_SCOPE' ? '' : 'wait'];
   return stages[o.stage] || ['阶段待核', 'wait'];
 }
+// A page owns its project context; another tab or a late reply cannot replace
+// it. Original requests keep their own scope even when the user switches away.
+async function workspaceFetch(path,options={}){
+  if(!entryInfo?.githubProjects||path==='/api/entry')return fetch(path,options);
+  const project=gh.selected,account=gh.account,epoch=gh.epoch;
+  if(!project||!account)throw new Error('github_project_not_selected');
+  const current=()=>epoch===gh.epoch&&gh.selected?.id===project.id&&gh.account?.id===account.id;
+  const check=()=>{if(!current())throw new Error('workbench_project_changed');};
+  const response=await fetch(path,{...options,headers:{...options.headers,'X-Tongxu-Project':String(project.id),'X-Tongxu-Account':String(account.id)}});check();
+  return {ok:response.ok,status:response.status,json:async()=>{const value=await response.json();check();if(!response.ok&&handleGithubError(new Error(value.error||'')))render();return value;}};
+}
 async function api(path) {
-  const response = await fetch(path, { headers: { Authorization: 'Bearer ' + key }, cache: 'no-store' });
+  const response = await workspaceFetch(path, { headers: { Authorization: 'Bearer ' + key }, cache: 'no-store' });
   if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || '读取失败'); }
   return response.json();
 }
-function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
+function projectNotifier(){const epoch=gh.epoch;return text=>{if(!entryInfo?.githubProjects||gh.epoch===epoch)notice(text);};}
+function notice(text) { if(text.includes('workbench_project_changed'))return;$('notice').textContent = text; $('notice').hidden = !text; }
 async function taskControl(id,action){
+  const notify=projectNotifier();
   if(pendingControls.has(id))return;pendingControls.add(id);render();
-  try{const response=await fetch('/api/task-control/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),result=await response.json();if(!response.ok){const message=readableReason(result.error||'操作未完成')+(result.diagnosticRecorded===false?' 本次诊断未保存：'+readableReason(result.diagnosticError)+'；历史记录不代表这次返回。':'');await refresh();throw new Error(message);}await refresh();notice(action==='start'?'已核对原请求；登记、实际送达和完整回复请以下方原记录为准。':action==='close-interrupted'?'原中断结果已保留；后续请求可由原负责人按原授权继续，当前请求仍未完成。':'未发送待办已撤回。原记录保留；这不表示终止了已执行进程。');}
-  catch(e){notice('操作未完成：'+readableReason(e.message));}
+  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),result=await response.json();if(!response.ok){const message=readableReason(result.error||'操作未完成')+(result.diagnosticRecorded===false?' 本次诊断未保存：'+readableReason(result.diagnosticError)+'；历史记录不代表这次返回。':'');await refresh();throw new Error(message);}await refresh();notify(action==='start'?'已核对原请求；登记、实际送达和完整回复请以下方原记录为准。':action==='close-interrupted'?'原中断结果已保留；后续请求可由原负责人按原授权继续，当前请求仍未完成。':'未发送待办已撤回。原记录保留；这不表示终止了已执行进程。');}
+  catch(e){notify('操作未完成：'+readableReason(e.message));}
   finally{pendingControls.delete(id);render();}
 }
 function contactControls(t){
@@ -64,9 +79,10 @@ async function openTaskContactReport(c){
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原联系报告尚不可读：'+readableReason(e.message);}
 }
 async function controlNative(c,option){
+  const notify=projectNotifier();
   const n=c.nativeControl;if(!n?.currentTurnActive||pendingControls.has(c.id))return;pendingControls.add(c.id);render();
-  try{const response=await fetch('/api/task-control/'+encodeURIComponent(c.id)+'/native',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({option:option.id,threadId:n.threadId,sessionId:n.sessionId,turnId:n.turnId}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'会话操作未完成');await refresh();notice(result.duplicate?'已读取原控制记录，没有再次发送。':option.action==='interrupt'?'中断请求已确认。是否终止和原结果以下方捕获记录为准。':'补充问题已发送到所示轮次；完整回复还须确认实际处理了该补充。');}
-  catch(e){await refresh();notice('会话控制未完成：'+readableReason(e.message));}finally{pendingControls.delete(c.id);render();}
+  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(c.id)+'/native',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({option:option.id,threadId:n.threadId,sessionId:n.sessionId,turnId:n.turnId}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'会话操作未完成');await refresh();notify(result.duplicate?'已读取原控制记录，没有再次发送。':option.action==='interrupt'?'中断请求已确认。是否终止和原结果以下方捕获记录为准。':'补充问题已发送到所示轮次；完整回复还须确认实际处理了该补充。');}
+  catch(e){await refresh();notify('会话控制未完成：'+readableReason(e.message));}finally{pendingControls.delete(c.id);render();}
 }
 function nativeControlPanel(c,investmentStopped,send=controlNative){
   if(!c.nativeControl&&!(c.nativeControlHistory||[]).length)return null;const box=el('div',null,'note-card'),n=c.nativeControl;
@@ -76,15 +92,17 @@ function nativeControlPanel(c,investmentStopped,send=controlNative){
   for(const h of c.nativeControlHistory||[])box.append(el('p',(h.request.action==='interrupt'?'中断':'补充')+' · '+(h.acknowledged?'执行器已确认':'发送已登记，回执待核')+' · '+(h.turnTerminationVerified?'该轮终态已核实':'终态尚未核实'),'small'));
   return box;
 }
-async function setScopeControl(c,value){if(pendingScopeControls.has(c.id))return;pendingScopeControls.add(c.id);render();try{const response=await fetch('/api/scope-control/'+encodeURIComponent(c.id)+'/'+value,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({revision:c.revision}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'范围控制未完成');await refresh();notice(result.duplicate?'已读回原控制回执；当前状态以下方最新记录为准。':'本机控制已登记并读回。已发操作、权限与资源记录继续保留。');}catch(e){await refresh();notice('控制未改变：'+readableReason(e.message));}finally{pendingScopeControls.delete(c.id);render();}}
+async function setScopeControl(c,value){
+  const notify=projectNotifier();if(pendingScopeControls.has(c.id))return;pendingScopeControls.add(c.id);render();try{const response=await workspaceFetch('/api/scope-control/'+encodeURIComponent(c.id)+'/'+value,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({revision:c.revision}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'范围控制未完成');await refresh();notify(result.duplicate?'已读回原控制回执；当前状态以下方最新记录为准。':'本机控制已登记并读回。已发操作、权限与资源记录继续保留。');}catch(e){await refresh();notify('控制未改变：'+readableReason(e.message));}finally{pendingScopeControls.delete(c.id);render();}}
 function scopeControlPanel(t){const entries=(state.scopeControls||[]).filter(c=>c.source===t.id);if(!entries.length)return null;const panel=el('section',null,'note-card');append(panel,el('h3','本范围的停止与恢复'),el('p','影响本范围的相关任务。恢复只解除本机停止，原授权、用量和资源仍逐项检查；不终止已经发出的执行。','small'));for(const c of entries){const row=el('div',null,'report-row'),left=el('div');append(left,el('strong',c.title),el('p',c.available?'范围 '+c.scopeId+' / '+c.scopeVersion+' · 修订 '+c.revision:'范围来源待核','small'));if(!c.available)left.append(el('p',readableReason(c.reason),'small'));else{append(left,el('p',c.verifiedOwnerStop?'原记录为已验证本人停止，需按原来源恢复。':c.recorded?(c.state==='stopped'?'本机已登记停止。':'本机已登记开放，原权限仍须成立。'):'尚未登记本机停止；不等于获得额外权限。','small'));const buttons=el('div',null,'actions'),stop=el('button','停止','outline'),resume=el('button','恢复','quiet');stop.type=resume.type='button';stop.disabled=c.state==='stopped'||pendingScopeControls.has(c.id);resume.disabled=c.state!=='stopped'||c.verifiedOwnerStop||pendingScopeControls.has(c.id);stop.onclick=()=>setScopeControl(c,'stopped');resume.onclick=()=>setScopeControl(c,'open');append(buttons,stop,resume);row.append(buttons);}row.prepend(left);panel.append(row);}return panel;}
 function intro(title, description, badge) { return append(el('section', null, 'intro'), append(el('div'), el('span', '同序 / 原始记录', 'eyebrow'), el('h1', title), el('p', description)), badge ? pill(badge, 'neutral') : null); }
 const organizationModes={parallel:'并行推进',stage_serial:'按阶段串行',unified_owner:'统一负责人'};
 const organizationStages={investigate:'调查',implement:'实施',receive:'接收',publish:'发布',enable:'启用'};
 async function applyOrganization(group,choice){
+  const notify=projectNotifier();
   if(pendingOrganization.has(group.id))return;pendingOrganization.add(group.id);render();
-  try{const response=await fetch('/api/organization/'+encodeURIComponent(group.id)+'/apply',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({choice:choice.id,expectedPrevious:group.expectedPrevious}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'组织安排未登记');await refresh();notice(result.duplicate?'已读回原安排；没有重新登记，也没有启动任务。':'安排已登记到原任务记录。实际派发、写权交接和共享前置仍须满足，不会因登记而自动获得权限。');}
-  catch(e){await refresh();notice('组织安排未改变：'+readableReason(e.message));}finally{pendingOrganization.delete(group.id);render();}
+  try{const response=await workspaceFetch('/api/organization/'+encodeURIComponent(group.id)+'/apply',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({choice:choice.id,expectedPrevious:group.expectedPrevious}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'组织安排未登记');await refresh();notify(result.duplicate?'已读回原安排；没有重新登记，也没有启动任务。':'安排已登记到原任务记录。实际派发、写权交接和共享前置仍须满足，不会因登记而自动获得权限。');}
+  catch(e){await refresh();notify('组织安排未改变：'+readableReason(e.message));}finally{pendingOrganization.delete(group.id);render();}
 }
 function organizationView(){
   const page=append(el('div'),intro('组织方式','为明确选择的任务安排并行、阶段串行或统一负责人。复用原协调记录，保留旧安排和原执行。'));
@@ -109,9 +127,10 @@ const overallBaselineDrafts=new Map(),overallGrantChoices=new Map();
 const overallPhases={not_prepared:'尚未准备',prepared_not_sent:'材料已准备，尚未派发',submitted_or_unknown:'原发送已登记，执行或结果待核',confirmed_unstarted:'已核清未向模型发任务，原记录保留',review_recorded:'完整复盘已保存'};
 const materialLabels={acceptedBaseline:'上一接受基线',cumulativeChanges:'累计变化',currentBehavior:'当前行为',currentDocuments:'当前文档'};
 async function overallAction(entry,action){
+  const notify=projectNotifier();
   if(pendingOverall.has(entry.id))return;pendingOverall.add(entry.id);render();
-  try{const response=await fetch('/api/overall-review/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(action==='run'&&entry.preparedFromBaseline&&overallGrantChoices.has(entry.id)?{authorization:overallGrantChoices.get(entry.id)}:{}),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'复盘操作未完成');await refresh();notice(action==='run'?'已交给原复盘执行器。请看实际进度和完整结果；请求被接收还不代表模型完成。':action==='prepare'?'正在核对四类材料；准备操作不会派发模型。':action==='reconcile'?'正在查原运行和原结果，不重发未知输入。':'正在检查原启动记录；只会关闭已证实没有向模型发出任务的那一次；初始化进程也必须已结束。');}
-  catch(e){notice('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/overall-review/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(action==='run'&&entry.preparedFromBaseline&&overallGrantChoices.has(entry.id)?{authorization:overallGrantChoices.get(entry.id)}:{}),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'复盘操作未完成');await refresh();notify(action==='run'?'已交给原复盘执行器。请看实际进度和完整结果；请求被接收还不代表模型完成。':action==='prepare'?'正在核对四类材料；准备操作不会派发模型。':action==='reconcile'?'正在查原运行和原结果，不重发未知输入。':'正在检查原启动记录；只会关闭已证实没有向模型发出任务的那一次；初始化进程也必须已结束。');}
+  catch(e){notify('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
 }
 function overallBaselinePreparation(entry){
  if(!entry.canPrepareFromBaseline)return null;
@@ -120,7 +139,7 @@ function overallBaselinePreparation(entry){
  if(!entry.baselineChoices.length){const button=el('button','到目标与边界准备基线','outline');button.type='button';button.onclick=()=>{view='goals';render();$('content').focus({preventScroll:true});};append(panel,el('p','当前没有已记录接受的基线。','small'),button);return panel;}
  const d=overallBaselineDrafts.get(entry.id)||{requestId:'overall-'+crypto.randomUUID(),baseline:entry.baselineChoices.at(-1).proposalSha256};overallBaselineDrafts.set(entry.id,d);const form=el('form',null,'outcome-form'),label=el('label','使用哪份已记录接受的基线'),select=el('select');for(const c of entry.baselineChoices){const option=el('option',date(c.createdAt)+' · '+c.proposalSha256.slice(0,12));option.value=c.proposalSha256;select.append(option);}select.value=d.baseline;select.onchange=()=>d.baseline=select.value;label.append(select);form.append(label);
  const read=el('button','核对所选基线全文','quiet');read.type='button';read.onclick=()=>openOwnerBaseline({source:entry.source},{proposalSha256:d.baseline});form.append(read);const submit=el('button','准备这次基线复盘','outline');submit.type='submit';submit.disabled=pendingOverall.has(entry.id)||!entry.current||!entry.baselineChoices.some(c=>c.proposalSha256===d.baseline);form.append(submit);
- form.onsubmit=async e=>{e.preventDefault();if(pendingOverall.has(entry.id))return;pendingOverall.add(entry.id);render();try{const response=await fetch('/api/overall-baseline/'+entry.id+'/prepare',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(d),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);overallBaselineDrafts.delete(entry.id);await refresh();notice(r.duplicate?'同一基线与固定材料已有原复盘请求，已查回；没有另起或重发模型。':'基线复盘请求和三类原文已固定；没有启动模型。请在新请求核对准确执行授权。');}catch(error){notice('基线复盘准备未完成：'+readableReason(error.message));}finally{pendingOverall.delete(entry.id);render();}};panel.append(form);return panel;
+ form.onsubmit=async e=>{const notify=projectNotifier();e.preventDefault();if(pendingOverall.has(entry.id))return;pendingOverall.add(entry.id);render();try{const response=await workspaceFetch('/api/overall-baseline/'+entry.id+'/prepare',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(d),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);overallBaselineDrafts.delete(entry.id);await refresh();notify(r.duplicate?'同一基线与固定材料已有原复盘请求，已查回；没有另起或重发模型。':'基线复盘请求和三类原文已固定；没有启动模型。请在新请求核对准确执行授权。');}catch(error){notify('基线复盘准备未完成：'+readableReason(error.message));}finally{pendingOverall.delete(entry.id);render();}};panel.append(form);return panel;
 }
 function overallPreparedAuthority(entry){
  if(!entry.preparedFromBaseline)return {panel:null,chosen:null};const owner=entry.owner;if(!owner?.available)return {panel:el('p','本次准确授权来源尚不可读，原结果可继续查回。','small'),chosen:null};
@@ -163,16 +182,17 @@ function judgmentFeedbackView(){
 }
 async function openJudgmentFeedback(task,judgment,feedback){
  const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看原判断与反馈记录';$('report-dialog').showModal();
- try{const response=await fetch('/api/judgment-feedback-report/'+task.id+'?judgment='+encodeURIComponent(judgment.judgmentId)+'&feedback='+encodeURIComponent(feedback.id),{headers:{Authorization:'Bearer '+key},cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);if(nonce!==reportNonce)return;$('report-meta').textContent='原判断 '+r.original.judgmentId+' · '+r.feedback.coverageWindow+' · 反馈原件已核摘要；不是新的正确性判断或权限';$('report-body').textContent=r.report;$('report-raw').textContent=JSON.stringify({original:r.original,feedback:r.feedback},null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='原反馈尚不可读';$('report-body').textContent=readableReason(e.message);}}
+ try{const response=await workspaceFetch('/api/judgment-feedback-report/'+task.id+'?judgment='+encodeURIComponent(judgment.judgmentId)+'&feedback='+encodeURIComponent(feedback.id),{headers:{Authorization:'Bearer '+key},cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);if(nonce!==reportNonce)return;$('report-meta').textContent='原判断 '+r.original.judgmentId+' · '+r.feedback.coverageWindow+' · 反馈原件已核摘要；不是新的正确性判断或权限';$('report-body').textContent=r.report;$('report-raw').textContent=JSON.stringify({original:r.original,feedback:r.feedback},null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='原反馈尚不可读';$('report-body').textContent=readableReason(e.message);}}
 }
 async function openOverallReport(entry){
   const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 完整复盘';$('report-meta').textContent='读取原报告…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
   try{const r=await api('/api/overall-report/'+entry.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确测试输出':'原生执行捕获')+' · '+r.verdict+' · '+(r.current?'当前材料':'历史材料')+' · 原文 SHA256 '+r.reportSha256+' · 不代表本人接受成果';$('report-body').textContent=r.report;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原复盘无法读取：'+readableReason(e.message);}
 }
 async function ownerAction(entry,action,body){
+  const notify=projectNotifier();
   if(pendingOwner.has(entry.source))return;pendingOwner.add(entry.source);
-  try{const response=await fetch('/api/owner-control/'+entry.source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'本人决定未完成');await refresh();notice(action==='prepare'?'请求已保存。核对完整内容后，仍需从原本人来源确认；没有自动授予权限。':r.duplicate?'已查回原决定，没有重复执行。':r.executionKind==='fixture'?'明确测试来源已记录，不能作为本人采用。':'原本人来源与准确请求已核对，决定已保存。');}
-  catch(e){notice('操作未完成：'+readableReason(e.message));}finally{pendingOwner.delete(entry.source);render();}
+  try{const response=await workspaceFetch('/api/owner-control/'+entry.source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'本人决定未完成');await refresh();notify(action==='prepare'?'请求已保存。核对完整内容后，仍需从原本人来源确认；没有自动授予权限。':r.duplicate?'已查回原决定，没有重复执行。':r.executionKind==='fixture'?'明确测试来源已记录，不能作为本人采用。':'原本人来源与准确请求已核对，决定已保存。');}
+  catch(e){notify('操作未完成：'+readableReason(e.message));}finally{pendingOwner.delete(entry.source);render();}
 }
 const baselineLabels={goals:'目标与边界',rules:'规则与限制',capabilities:'已经具备的能力及其证据'};
 function baselinePreparationPanel(entry){
@@ -199,9 +219,10 @@ function ownerRequests(entry,kind,send=ownerAction){
   }return box;
 }
 async function scopeFollowupAction(source,action,body){
+  const notify=projectNotifier();
   if(pendingFollowups.has(source))return;pendingFollowups.add(source);render();
-  try{const response=await fetch('/api/scope-followup/'+source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'接续操作未完成');await refresh();notice(action==='observe'?'原已选路径的新观察已保存。旧材料和报告保留，草稿需要明确采用新观察后再准备。':action==='prepare'?'后续工作已准备，原任务和报告保留。发送仍需准确权限与既有用量条件。':action==='owner-apply'?'原来源已核对；实际执行另看原任务状态。':'请求已交给原控制入口；登记、实际发送和完整结果分别显示。');}
-  catch(e){await refresh();notice('接续未完成：'+readableReason(e.message));}finally{pendingFollowups.delete(source);render();}
+  try{const response=await workspaceFetch('/api/scope-followup/'+source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'接续操作未完成');await refresh();notify(action==='observe'?'原已选路径的新观察已保存。旧材料和报告保留，草稿需要明确采用新观察后再准备。':action==='prepare'?'后续工作已准备，原任务和报告保留。发送仍需准确权限与既有用量条件。':action==='owner-apply'?'原来源已核对；实际执行另看原任务状态。':'请求已交给原控制入口；登记、实际发送和完整结果分别显示。');}
+  catch(e){await refresh();notify('接续未完成：'+readableReason(e.message));}finally{pendingFollowups.delete(source);render();}
 }
 async function openScopeFollowupReport(source,f){
   const nonce=++reportNonce;$('report-title').textContent='后续工作 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -259,18 +280,20 @@ async function openAssessmentReport(entry,assessment){
   try{const r=await api('/api/delivery-report/'+entry.id+'/'+encodeURIComponent(assessment.id));if(nonce!==reportNonce||!$('report-dialog').open)return;const result=r.result,j=result.report;$('report-meta').textContent=(result.executionKind==='fixture'?'明确进程夹具，非真实模型':'原模型捕获')+' · 会话 '+result.sessionId+' · 输入证据 '+r.inputEvidenceSha256+' · 判断不代表本人接受';$('report-body').textContent=j?[j.report,...j.coverage.map(c=>'场景 '+c.scenario+'：'+({pass:'判断通过',reject:'判断退回',needs_evidence:'判断需补证据'}[c.verdict]||c.verdict)+'\n方法：'+c.method+'\n依据：'+c.reason+'\n原件：'+c.evidence.join('、')),'限制：\n'+j.limitations.join('\n')].join('\n\n'):'原最终输出已保存，但格式无效，未形成可用领域判断。\n'+readableReason(result.invalidReason);$('report-raw').textContent=r.rawFinal;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原判断无法读取：'+readableReason(e.message);}
 }
 async function deliveryAction(entry,action,body){
+  const notify=projectNotifier();
   if(pendingOutcomes.has(entry.id))return;pendingOutcomes.add(entry.id);render();
-  try{const response=await fetch('/api/delivery/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'成果决定未完成');await refresh();notice(action==='prepare'?'固定决定请求已保存；尚未代表本人采用。请核对下方的原来源确认内容。':result.duplicate?'已读回原决定，未再次读取远端来源。':result.executionKind==='fixture'?'隔离示例来源已核对并保存；不代表真实本人决定。':'本人原来源已核对，决定和原证据已保存。');}
-  catch(e){await refresh();const text={delivery_outcome_evidence_changed:'证据已更新，请核对新的结果后重新准备决定。',delivery_outcome_previous_changed:'已有较新的决定，请先核对原记录。',delivery_outcome_current_batch_required:'本批版本、材料或采用范围已变化，旧请求不能继续。',shared_account_is_not_owner_confirmation:'当前来源与执行者是同一身份，不能作为独立本人确认。'}[e.message]||readableReason(e.message);notice('决定未改变：'+text);}finally{pendingOutcomes.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/delivery/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'成果决定未完成');await refresh();notify(action==='prepare'?'固定决定请求已保存；尚未代表本人采用。请核对下方的原来源确认内容。':result.duplicate?'已读回原决定，未再次读取远端来源。':result.executionKind==='fixture'?'隔离示例来源已核对并保存；不代表真实本人决定。':'本人原来源已核对，决定和原证据已保存。');}
+  catch(e){await refresh();const text={delivery_outcome_evidence_changed:'证据已更新，请核对新的结果后重新准备决定。',delivery_outcome_previous_changed:'已有较新的决定，请先核对原记录。',delivery_outcome_current_batch_required:'本批版本、材料或采用范围已变化，旧请求不能继续。',shared_account_is_not_owner_confirmation:'当前来源与执行者是同一身份，不能作为独立本人确认。'}[e.message]||readableReason(e.message);notify('决定未改变：'+text);}finally{pendingOutcomes.delete(entry.id);render();}
 }
 const pendingBatchPreparation=new Set(),batchDrafts=new Map();
 const batchMember=m=>({source:m.source,packet:m.packet,fingerprint:m.fingerprint});
 const batchEligible=m=>m.current&&m.ownerAvailable&&m.currentScope?.kind==='adopt_scope'&&m.currentScope.scopeVersion===m.scope.version&&m.currentAdoption;
 function batchDraft(m){return {requestId:'batch-'+crypto.randomUUID(),anchor:m.source,title:'',issue:m.issue,previous:null,adoption:m.currentAdoption,members:[batchMember(m)],scenarios:[{id:'scenario-1',title:'',expected:'',sources:[m.source]}]};}
 async function registerBatch(group,d){
+  const notify=projectNotifier();
   if(pendingBatchPreparation.has(group.source))return;pendingBatchPreparation.add(group.source);render();
-  try{const {anchor,...body}=d,response=await fetch('/api/delivery-preparation/'+anchor+'/register',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_preparation_failed');await refresh();batchDrafts.delete(group.source);notice(r.duplicate?'已查回同一批固定材料，没有重复登记或执行。':'成果材料已固定并加入下方原成果记录；尚未运行测试、调用模型或取得本人接受。');}
-  catch(e){await refresh();notice('成果准备未完成：'+readableReason(e.message));}finally{pendingBatchPreparation.delete(group.source);render();}
+  try{const {anchor,...body}=d,response=await workspaceFetch('/api/delivery-preparation/'+anchor+'/register',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_preparation_failed');await refresh();batchDrafts.delete(group.source);notify(r.duplicate?'已查回同一批固定材料，没有重复登记或执行。':'成果材料已固定并加入下方原成果记录；尚未运行测试、调用模型或取得本人接受。');}
+  catch(e){await refresh();notify('成果准备未完成：'+readableReason(e.message));}finally{pendingBatchPreparation.delete(group.source);render();}
 }
 function batchPreparationView(){
   const out=el('section');for(const group of state.deliveryPreparation||[]){const box=append(el('section',null,'panel delivery-card'),el('h2','从当前任务准备一批成果'),el('p','只选择本入口原任务及其明确后续工作。目标和非目标来自准确采用记录；准备固定材料，验证、独立判断和本人接受另行记录。','small'));out.append(box);
@@ -291,8 +314,9 @@ function prepareBatchRevision(entry){const b=entry.batch,group=(state.deliveryPr
 
 const pendingDeliveryWork=new Set(),deliveryWorkDrafts=new Map(),deliveryWorkGrants=new Map();
 async function deliveryWorkAction(entry,action,body){
+  const notify=projectNotifier();
  if(pendingDeliveryWork.has(entry.id))return;pendingDeliveryWork.add(entry.id);render();
- try{const response=await fetch('/api/delivery-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_execution_failed');await refresh();if(action==='prepare')deliveryWorkDrafts.delete(entry.id+':'+body.profile);notice(action==='prepare'?'准确执行请求已准备，尚未测试或发送模型；核对原来源授权后再执行。':action==='owner-apply'?'本次准确授权来源已核对；实际执行另看原运行记录。':'请求已交原执行器，正在核原任务或运行结果；登记不等于完成。');}catch(e){await refresh();notice('成果执行未完成：'+readableReason(e.message));}finally{pendingDeliveryWork.delete(entry.id);render();}
+ try{const response=await workspaceFetch('/api/delivery-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_execution_failed');await refresh();if(action==='prepare')deliveryWorkDrafts.delete(entry.id+':'+body.profile);notify(action==='prepare'?'准确执行请求已准备，尚未测试或发送模型；核对原来源授权后再执行。':action==='owner-apply'?'本次准确授权来源已核对；实际执行另看原运行记录。':'请求已交原执行器，正在核原任务或运行结果；登记不等于完成。');}catch(e){await refresh();notify('成果执行未完成：'+readableReason(e.message));}finally{pendingDeliveryWork.delete(entry.id);render();}
 }
 async function openDeliveryWorkReport(entry,r){
  const nonce=++reportNonce;$('report-title').textContent='成果核验 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -353,7 +377,7 @@ function card(t) {
 }
 function ownerOverview(){
   const owners=state.ownerControls||[],deliveries=state.deliveries||[];if(!owners.length&&!deliveries.length)return null;
-  const section=el('section'),grid=el('div',null,'task-grid');append(section,append(el('div',null,'section-title'),el('h2','本批目标与成果'),el('span','采用、验证和控制分别记录')),grid);
+  const section=el('section'),grid=el('div',null,'task-grid');append(section,append(el('div',null,'section-title'),el('h2',state.project?'本项目目标与成果':'本批目标与成果'),el('span','采用、验证和控制分别记录')),grid);
   const open=(label,next)=>{const button=el('button',label,'outline');button.type='button';button.onclick=()=>{view=next;render();$('content').focus({preventScroll:true});};return button;},groups=new Map();
   for(const o of owners){if(!o.available){grid.append(append(el('div',null,'note-card'),el('h3',state.tasks.find(t=>t.id===o.source)?.title||o.source),el('p','本人记录当前不可读：'+readableReason(o.reason)),open('查看目标来源','goals')));continue;}
     // Equal labels from different local sources do not imply equal decisions.
@@ -376,12 +400,14 @@ function ownerOverview(){
   }return section;
 }
 function overview() {
+  if(state.project&&!state.tasks.length){const page=append(el('div'),intro(state.project.repository.fullName,'当前项目的任务、报告、协作与秘书。')),box=append(el('section',null,'panel'),el('h2','这个项目尚无已关联的同序任务'),el('p',state.project.unresolvedSourceCount?'部分本机来源尚无法核实，不能据此断定历史任务为空。':'GitHub 的 Issues 和 PR 可以查看；同序执行产生的任务和报告会保留在对应项目中。'),el('p','不会显示其他项目的任务或测试样例，也不会因选择项目自动创建执行。','small')),button=el('button','查看本项目 Issues 与 PR','outline');button.onclick=()=>{void enterView('github');};box.append(button);page.append(box);return page;}
+
   const valid = state.tasks.filter(t => t.available), allOps = valid.flatMap(t => t.operations), current = allOps.filter(o => o.currentPacket && o.stage === 'returned'), waiting = allOps.filter(o => !['returned', 'historical_result'].includes(o.stage) && (o.currentPacket || o.stage !== 'returned_invalid'));
   const messages=valid.flatMap(t=>(t.collaboration?.messages||[]).filter(r=>r.available&&r.current&&!(t.developmentTask?.inbox||[]).some(i=>i.run===r.run&&i.phase==='interrupted_closed')).flatMap(r=>r.messages)),replies=messages.filter(m=>m.state==='Reply').length,pending=messages.filter(m=>m.state!=='Reply'&&!m.continuedIn).length;
   const inboxPending=valid.reduce((count,t)=>{const represented=new Set((t.collaboration?.messages||[]).filter(r=>r.available&&r.current).flatMap(r=>r.messages.map(m=>r.run+':'+m.id)));return count+(t.developmentTask?.inbox||[]).filter(r=>!['returned','cancelled','interrupted_closed'].includes(r.phase)&&!represented.has(r.run+':'+r.id)).length;},0);
   const scopeTasks=[...new Map((state.scopeFollowups||[]).flatMap(s=>(s.followups||[]).map(f=>[JSON.stringify([f.owner?.recordSourceId||s.source,f.task]),f]))).values()],scopeReturned=scopeTasks.filter(f=>f.inbox.find(r=>r.id===f.ownerRequest)?.phase==='returned').length,scopePending=scopeTasks.filter(f=>!['returned','cancelled','interrupted_closed'].includes(f.inbox.find(r=>r.id===f.ownerRequest)?.phase)).length;
   const overall=state.overallReviews||[],overallReturned=overall.filter(r=>r.available&&r.current&&r.phase==='review_recorded').length,overallPending=overall.filter(r=>!r.available||r.active||r.derivedPreparationProblem||r.phase!=='review_recorded'||r.resources.some(x=>!x.settled)).length;
-  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?'所选原队列 · 只读':'所选原队列 · 受控入口'),ownerOverview(), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies+overallReturned, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+' · 复盘 '+overallReturned+'，不代表批准'), metric(waiting.length+pending+inboxPending+overallPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending+' · 复盘 '+overallPending),scopeTasks.length?metric(scopeTasks.length,'新目标后续工作',scopeReturned+' 份完整回复 · '+scopePending+' 项待核'):null), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
+  const n = el('div'); append(n, intro(state.title, state.goal, state.mode==='read_only'?state.project?'当前项目 · 只读':'所选原队列 · 只读':state.project?'当前项目 · 受控入口':'所选原队列 · 受控入口'),ownerOverview(), append(el('section', null, 'metrics'), metric(state.tasks.length, '已连接任务', valid.length + ' 项当前可读取'), metric(current.length+replies+overallReturned, '已返回的报告', '接收 '+current.length+' · 协作回复 '+replies+' · 复盘 '+overallReturned+'，不代表批准'), metric(waiting.length+pending+inboxPending+overallPending, '待核 / 尚未完成', '接收 '+waiting.length+' · 消息 '+pending+' · 其他负责人待办 '+inboxPending+' · 复盘 '+overallPending),scopeTasks.length?metric(scopeTasks.length,'新目标后续工作',scopeReturned+' 份完整回复 · '+scopePending+' 项待核'):null), append(el('div', null, 'section-title'), el('h2', '当前任务'), el('span', '选择任务查看完整报告')));
   const cards = el('section', null, 'task-grid'); state.tasks.forEach(t => cards.append(card(t))); n.append(cards);
   append(n, append(el('section', null, 'note-card'), el('h3', '结论与限制，一起保留'), el('p', '每份报告对应原候选与原操作。旧判断、首次失败、等待和恢复不会因为后来通过而消失。发布记录中的 pending 也不自动表示仍有模型在运行。')));
   const recent = state.events.slice(-4).reverse(); if (recent.length) append(n, append(el('div', null, 'section-title'), el('h2', '最近协作'), el('span', '来自原队列事件')), timeline(recent));
@@ -423,6 +449,7 @@ function collaborationView(t) {
   });return n;
 }
 function taskView() {
+  if(!state.tasks.length)return append(el('div'),intro('任务与完整报告',state.project?.unresolvedSourceCount?'本机来源归属尚未核清，暂未列出任务和报告。':'当前项目尚无已关联的同序任务和报告。'),el('p','可先查看本项目的 Issues 与 PR；其他项目的历史记录不会混入这里。','empty'));
   if (!selected || !state.tasks.some(t => t.id === selected)) selected = state.tasks[0].id;
   const n = el('div'); n.append(intro('任务与完整报告', '查看准确候选、接收状态及报告原文。来源不可用时会明确显示缺口。'));
   const layout = el('div', null, 'task-layout'), picker = el('div', null, 'task-picker');
@@ -468,14 +495,16 @@ function timeline(events) {
 const secretaryDrafts=new Map(),pendingSecretary=new Set(),pendingQueueActions=new Map();
 const questionPhases={registered_not_sent:'问题已保存，尚未确认送出',submitted_or_unknown:'已有原捕获，结果仍待核实',completed:'完整回答已核实',closed_unstarted:'已核未发送并关闭'};
 async function askSecretary(source,requestId,question){
+  const notify=projectNotifier();
   if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
-  try{const r=await fetch('/api/secretary/'+encodeURIComponent(source)+'/ask',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,question}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'问题未登记');const draft=secretaryDrafts.get(source);if(draft&&draft.question===question)draft.id=v.requestId;await refresh();notice('已保存并核对原问题。是否已经发送、是否取得完整回答，以下方原记录为准。');}
-  catch(e){await refresh();notice('提问尚未完成：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/ask',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,question}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'问题未登记');const draft=secretaryDrafts.get(source);if(draft&&draft.question===question)draft.id=v.requestId;await refresh();notify('已保存并核对原问题。是否已经发送、是否取得完整回答，以下方原记录为准。');}
+  catch(e){await refresh();notify('提问尚未完成：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
 }
 async function closeSecretaryQuestion(source,id){
+  const notify=projectNotifier();
   if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
-  try{const r=await fetch('/api/secretary/'+encodeURIComponent(source)+'/close-unstarted',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'原执行仍需核查');const draft=secretaryDrafts.get(source);if(draft?.id===id)draft.id=crypto.randomUUID();await refresh();notice('已核实未发送并保留原问题。现在可提交一个新请求；不会重发已关闭的原请求。');}
-  catch(e){notice('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/close-unstarted',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'原执行仍需核查');const draft=secretaryDrafts.get(source);if(draft?.id===id)draft.id=crypto.randomUUID();await refresh();notify('已核实未发送并保留原问题。现在可提交一个新请求；不会重发已关闭的原请求。');}
+  catch(e){notify('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
 }
 async function openSecretaryReport(source,q){
   const nonce=++reportNonce;$('report-title').textContent='工作秘书 · 完整回答';$('report-meta').textContent='读取原捕获…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -483,14 +512,16 @@ async function openSecretaryReport(source,q){
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原回答仍待核实：'+readableReason(e.message);}
 }
 async function runQueueAction(id){
+  const notify=projectNotifier();
   const prior=pendingQueueActions.get(id);if(prior?.active)return;const request=prior||{id:crypto.randomUUID(),active:false};request.active=true;pendingQueueActions.set(id,request);render();
-  try{const r=await fetch('/api/queue-action/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:request.id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'队列动作未完成');pendingQueueActions.delete(id);await refresh();notice(v.record?.effect==='local_queue_preference_applied'?'原获准队列偏好已保存；这不表示任务已经执行。':'核查提醒已登记；这不表示接收者已经收到或完成模型任务。');}
-  catch(e){request.active=false;await refresh();notice('队列动作仍待核对：'+readableReason(e.message));}finally{render();}
+  try{const r=await workspaceFetch('/api/queue-action/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:request.id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'队列动作未完成');pendingQueueActions.delete(id);await refresh();notify(v.record?.effect==='local_queue_preference_applied'?'原获准队列偏好已保存；这不表示任务已经执行。':'核查提醒已登记；这不表示接收者已经收到或完成模型任务。');}
+  catch(e){request.active=false;await refresh();notify('队列动作仍待核对：'+readableReason(e.message));}finally{render();}
 }
 async function returnWorkAction(entry,action){
+  const notify=projectNotifier();
   if(pendingReturnWork.has(entry.id))return;pendingReturnWork.add(entry.id);render();
-  try{const response=await fetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(entry.preparation?{selectionSha256:entry.preparation.selectionSha256}:{}),cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notice(action==='start'?'已按所选原退回固定本次计划并交给原执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
-  catch(e){notice('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(entry.preparation?{selectionSha256:entry.preparation.selectionSha256}:{}),cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notify(action==='start'?'已按所选原退回固定本次计划并交给原执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
+  catch(e){notify('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
 }
 async function openReturnReport(entry){
   const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 原退回与完整结果';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -539,6 +570,9 @@ function secretaryView(){
       append(row,body,buttons);section.append(row);
     }n.append(section);
   }
+  return appendSecretaryFollowups(n);
+}
+function appendSecretaryFollowups(n){
   if(state.queueActions?.length){const section=append(el('section',null,'note-card'),el('h2','直接跟进原任务'),el('p','与秘书使用同一动作和原回执。提醒只请求核查，队列偏好仅改变已获准的安排。','small'));
     for(const a of state.queueActions){const row=el('div',null,'report-row'),body=append(el('div'),el('strong',a.title),el('p',a.available?(a.executionKind==='fixture'?'明确测试夹具 · ':'')+((a.receipts||[]).length?'已有 '+a.receipts.length+' 条原回执':'尚未登记此动作'):readableReason(a.reason),'small')),button=el('button',a.kind==='hint'?'登记核查提醒':'应用获准偏好','outline');button.disabled=!a.available||pendingQueueActions.get(a.id)?.active;button.onclick=()=>runQueueAction(a.id);append(row,body,button);section.append(row);for(const receipt of (a.receipts||[]).slice(0,3))section.append(el('p',date(receipt.recordedAt)+' · '+(receipt.effect==='local_queue_preference_applied'?'原队列偏好已生效':'提醒已登记，未据此派发任务')+' · 回执 '+receipt.eventId,'small'));}n.append(section);
   }
@@ -546,8 +580,117 @@ function secretaryView(){
   return n;
 }
 
+
+const githubErrors={github_not_signed_in:'GitHub 登录已失效。请在本机终端完成 gh auth login，再点击重新检查。',github_cli_missing:'未找到 GitHub CLI（gh）。请先安装官方 GitHub CLI 并登录，再点击重新检查。',github_cli_entry_invalid:'配置的 GitHub 程序入口不可用，请核对本机入口设置。',github_cli_capabilities_unavailable:'当前 GitHub CLI 未提供所需读取能力，请更新后重试。',github_connection_unavailable:'暂时无法连接 GitHub。请检查网络和本机 GitHub 登录状态后重试。',github_rate_limited:'GitHub 暂时限制了请求频率，请稍后重试。',github_access_denied:'当前 GitHub 身份没有读取这项内容的权限。',github_repository_unavailable:'这个项目已不可访问，可能被移除或权限发生变化。请重新选择项目。',github_account_changed:'GitHub 登录身份已变化，请重新检查并选择项目。',github_project_not_selected:'项目选择已失效，请从项目列表重新进入。',github_cli_changed_during_read:'GitHub CLI 在读取过程中更新了，请重试本次读取。',github_response_invalid:'GitHub 返回的内容无法完整核对，请重试。',github_page_limit:'已达到本次读取的页数上限，当前列表尚未完整。',github_page_not_discovered:'分页位置已失效，请重新读取项目列表。',github_read_superseded:'当前身份已重新核对，请重新选择项目。',github_reader_closed:'本机入口已经停止，请重新启动。',viewer_key_required:'本机访问钥匙已失效，请使用本次启动打开的新页面。'};
+const githubError=e=>githubErrors[e?.message]||'暂时无法读取 GitHub，请稍后重试。';
+const githubView=()=>view==='projects'||view==='github';
+function githubLink(label,url){const a=el('a',label,'github-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
+async function githubApi(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+key},cache:'no-store'}),value=await response.json();if(!response.ok){const e=new Error(value.error||'github_service_unavailable');e.retryAfterSeconds=value.retryAfterSeconds;throw e;}return value;}
+function dismissGithubDetail(){if(githubDetailEpoch!==null){githubDetailEpoch=null;reportNonce++;if($('report-dialog').open)$('report-dialog').close();}}
+function resetGithubIdentity(error){clearProjectView();gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.nextCursor=null;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
+function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected','github_project_selection_changed','github_repository_unavailable'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
+async function loadGithubProjects(more=false){
+  if(gh.loading)return;const request=++gh.listRequest,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
+  try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id+'&cursor='+encodeURIComponent(gh.nextCursor):''));if(request!==gh.listRequest)return;
+    if(gh.account&&gh.account.id!==data.connection.account.id){clearProjectView();gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
+    gh.account=data.connection.account;gh.projects=more?[...new Map([...gh.projects,...data.repositories].map(r=>[r.id,r])).values()]:data.repositories;gh.page=page;gh.hasNext=data.hasNext;gh.nextCursor=data.nextCursor??null;gh.checkedAt=data.connection.checkedAt;
+  }catch(error){if(request!==gh.listRequest)return;if(!handleGithubError(error))gh.error=error;}
+  finally{if(request===gh.listRequest)gh.loading=false;if(githubView())render();}
+}
+function clearProjectView(){
+  if(typeof chatRefresh!=='undefined'&&chatRefresh!==null){clearTimeout(chatRefresh);chatRefresh=null;}
+  state=null;selected=null;reportNonce++;githubDetailEpoch=null;if($('report-dialog').open)$('report-dialog').close();
+  if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
+}
+function chooseGithubProject(repo){
+  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');
+}
+async function loadGithubItems(kind,more=false){
+  const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
+  const request=++pane.request,page=more?pane.page+1:1;pane.loading=true;pane.error=null;if(view==='github'&&gh.selected?.id===repo.id)render();
+  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'?account='+account.id+'&state='+pane.state+'&page='+page+(more?'&cursor='+encodeURIComponent(pane.nextCursor):''));
+    if(epoch!==gh.epoch||request!==pane.request||gh.selected?.id!==repo.id)return;
+    gh.selected=data.repository;pane.items=more?[...new Map([...pane.items,...data.items].map(item=>[item.number,item])).values()]:data.items;pane.page=page;pane.hasNext=data.hasNext;pane.nextCursor=data.nextCursor??null;pane.checkedAt=data.connection.checkedAt;
+  }catch(error){if(epoch!==gh.epoch||request!==pane.request)return;if(handleGithubError(error))render();else pane.error=error;}
+  finally{pane.loading=false;if(epoch===gh.epoch&&request===pane.request&&view==='github'&&gh.selected?.id===repo.id)render();}
+}
+function githubProjectCards(container){
+  container.replaceChildren();const q=gh.filter.trim().toLocaleLowerCase(),rows=gh.projects.filter(r=>(r.fullName+' '+r.description).toLocaleLowerCase().includes(q));
+  for(const r of rows){const button=el('button',null,'task-card github-project-card');button.type='button';button.setAttribute('aria-label','进入项目 '+r.fullName);const top=append(el('div',null,'card-top'),pill(r.private?'私有':'公开','neutral'));if(r.archived)top.append(pill('已归档','wait'));append(button,top,el('h3',r.fullName),el('p',r.description||'暂无项目说明','sub'),append(el('div',null,'card-bottom'),el('span','更新于 '+date(r.updatedAt)),el('span','进入项目 →')));button.onclick=()=>chooseGithubProject(r);container.append(button);}
+  if(!rows.length&&!gh.loading)container.append(el('p',gh.projects.length?'已加载的项目中没有匹配项；可以修改筛选或继续加载。':gh.error?'尚未取得项目列表。':'当前 GitHub 身份没有返回可访问的项目。','empty'));
+}
+function projectsView(){
+  const page=append(el('div'),intro('选择 GitHub 项目','选择仓库后，任务、报告、协作和秘书都围绕这个项目；Issues 与 PR 从 GitHub 读取。'));
+  const connection=append(el('section',null,'github-connection panel'),el('div',null,'github-connection-info')),info=connection.firstChild;
+  append(info,el('h2',gh.loading&&!gh.account?'正在检查 GitHub…':gh.account?'已连接 · '+gh.account.login:'GitHub 连接待确认'),el('p',gh.checkedAt?'最近成功读取：'+date(gh.checkedAt):'使用本机现有 GitHub CLI 登录，不需要在网页填写密钥。','small'));
+  const retry=el('button',gh.loading?'正在读取…':'重新检查 GitHub','outline');retry.disabled=gh.loading;retry.onclick=()=>loadGithubProjects();connection.append(retry);page.append(connection);
+  if(gh.error)page.append(append(el('div',null,'github-error'),el('strong',githubError(gh.error)),el('p',gh.projects.length?'下方保留上次成功读取的项目，尚未重新核实。':'未把读取失败当作空项目列表。','small')));
+  const controls=append(el('div',null,'github-filter'),el('label','筛选已加载的项目'));const input=el('input');input.type='search';input.id='github-project-filter';input.placeholder='仓库名称或说明';input.value=gh.filter;input.setAttribute('aria-label','筛选已加载的项目');controls.firstChild.append(input);controls.append(el('p','已加载 '+gh.projects.length+' 个项目'+(gh.hasNext?' · 还有更多项目':'')+' · 按 GitHub 最近更新时间排列','small'));page.append(controls);
+  const cards=el('div',null,'task-grid github-project-grid');input.oninput=()=>{gh.filter=input.value;githubProjectCards(cards);};githubProjectCards(cards);page.append(cards);
+  if(gh.hasNext){const more=el('button',gh.loading?'正在加载…':'加载更多项目','outline');more.disabled=gh.loading;more.onclick=()=>loadGithubProjects(true);page.append(more);}
+  if(gh.loading&&!gh.projects.length)page.append(el('p','正在读取当前身份与可访问的仓库…','loading'));
+  return page;
+}
+function githubItemsPanel(kind){
+  const pane=gh[kind],label=kind==='issues'?'Issues':'PR',panel=el('section',null,'panel github-items');if(!pane)return panel;
+  const top=append(el('div',null,'panel-head'),el('h2',label),pill(pane.items.length+' 条已加载','neutral'));panel.append(top);
+  const filter=el('label',label+' 状态','github-state-filter'),select=el('select');select.setAttribute('aria-label',label+' 状态');for(const [value,text] of [['open','开放'],['closed',kind==='pulls'?'已关闭或合并':'已关闭'],['all','全部']]){const o=el('option',text);o.value=value;select.append(o);}select.value=pane.state;select.disabled=pane.loading;
+  select.onchange=()=>{pane.state=select.value;pane.items=[];pane.page=0;pane.nextCursor=null;pane.hasNext=false;void loadGithubItems(kind);};filter.append(select);panel.append(filter);
+  if(pane.error){const box=append(el('div',null,'github-error'),el('p',githubError(pane.error)),el('p',pane.items.length?'下方是上次成功读取的内容。':'这部分读取失败，不能据此判断没有条目。','small'));const retry=el('button','重试读取 '+label,'outline');retry.onclick=()=>loadGithubItems(kind);box.append(retry);panel.append(box);}
+  if(pane.checkedAt)panel.append(el('p','GitHub 最近成功读取：'+date(pane.checkedAt),'small'));
+  for(const item of pane.items){const row=el('article',null,'github-item'),status=kind==='pulls'?(item.merged?'已合并':item.state==='closed'?'已关闭':item.draft?'草稿':'开放'):item.state==='open'?'开放':'已关闭';
+    const title=el('button','#'+item.number+' '+item.title,'github-item-title');title.onclick=()=>openGithubItem(kind,item);append(row,append(el('div',null,'label-line'),pill(status,item.state==='open'?'neutral':'wait'),el('span',item.author||'作者未知','small')),title);
+    if(item.head)row.append(el('p',item.head+' → '+item.base,'small'));if(item.labels.length)row.append(el('p',item.labels.join(' · '),'small'));row.append(el('p','更新于 '+date(item.updatedAt),'small'));row.append(githubLink('在 GitHub 打开',item.url));panel.append(row);
+  }
+  if(pane.loading)panel.append(el('p','正在从 GitHub 读取 '+label+'…','loading'));
+  else if(!pane.items.length&&!pane.error)panel.append(el('p',pane.hasNext?'当前页没有独立 '+label+'，还有后续页面可读取。':'当前筛选下没有 '+label+'。','empty'));
+  if(pane.hasNext){const more=el('button',pane.loading?'正在加载…':'加载更多 '+label,'outline');more.disabled=pane.loading;more.onclick=()=>loadGithubItems(kind,true);panel.append(more);}
+  return panel;
+}
+function selectedGithubView(){
+  if(!gh.selected)return projectsView();
+  const page=append(el('div'),intro(gh.selected.fullName,gh.selected.description||'当前项目的 Issues 与 PR；任务、报告和秘书可从左侧进入。',gh.selected.private?'私有项目':'公开项目')),actions=el('div',null,'actions github-project-actions'),back=el('button','切换项目','outline');back.onclick=()=>{void enterView('projects');};append(actions,back,githubLink('打开 GitHub 仓库',gh.selected.url));page.append(actions);
+  if(gh.selected.archived)page.append(el('p','这个仓库已归档，仍可查看已有条目。','github-error'));
+  page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
+}
+async function openGithubItem(kind,item){
+  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-dialog').showModal();
+  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(nonce!==reportNonce||epoch!==gh.epoch||!$('report-dialog').open)return;
+    $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
+  }catch(error){if(nonce!==reportNonce||epoch!==gh.epoch||gh.selected?.id!==repo.id||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
+}
+function renderGithub(){
+  const focused=document.activeElement,filterSelection=view==='projects'&&focused?.id==='github-project-filter'?{start:focused.selectionStart,end:focused.selectionEnd}:null;
+  document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'选择项目'),el('p',gh.selected?'任务、报告和秘书均使用当前项目。切换只改变查看范围，不取消已发出的执行。':'选择一个项目开始；已有记录保留在各自项目中。'));
+  $('access-mode').textContent='GitHub 只读';$('access-description').textContent='项目选择决定工作范围；实际执行仍按原任务与权限。浏览不会启动模型。';$('observed').textContent=gh.account?(gh.selected?gh.selected.fullName+' · ':'')+'GitHub · '+gh.account.login:'正在检查 GitHub';$('observation-boundary').textContent='Issues 与 PR 来自 GitHub；项目任务和报告来自各自原记录。选择和查看不启动模型。';
+  const runtime=entryInfo?.runtime;$('runtime-version').hidden=!runtime;if(runtime)$('runtime-version').textContent='本次运行版本 '+runtime.sourceHead.slice(0,12);
+  document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=b.dataset.view==='local-history'||(b.dataset.view!=='projects'&&!gh.selected);if(b.dataset.view==='github')b.disabled=!gh.selected;if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  $('content').replaceChildren(view==='github'?selectedGithubView():projectsView());if(filterSelection){const input=$('github-project-filter');input.focus({preventScroll:true});input.setSelectionRange(filterSelection.start,filterSelection.end);}$('refresh').disabled=gh.loading||(view==='github'&&(gh.issues?.loading||gh.pulls?.loading));
+}
+async function enterView(next){
+  const notify=projectNotifier();
+  if(next==='local-history')next='overview';
+  if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
+  if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
+  if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
+  view=next;if(entryInfo?.githubProjects&&next==='secretary'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadProjectChat();return;}if(!state)await refresh();else render();
+}
+async function startEntry(){
+  const notify=projectNotifier();
+  if(entryLoading)return;entryLoading=true;$('refresh').disabled=true;
+  try{entryInfo=await api('/api/entry');if(entryInfo.githubProjects){view='projects';render();await loadGithubProjects();}else await refresh();}
+  catch(error){notify('无法打开当前入口。'+(error.message==='viewer_key_required'?'请使用本次启动生成的新页面。':'请检查本机服务后重试。'));$('content').replaceChildren(el('p','入口信息尚未读取。','empty'));}
+  finally{entryLoading=false;$('refresh').disabled=false;}
+}
+
 function render() {
+  if(entryInfo?.githubProjects&&view==='secretary'&&gh.selected){renderProjectChat();return;}
+  if(entryInfo?.githubProjects&&githubView()){renderGithub();return;}
   if (!state) return;
+  document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'本机原任务'),el('p',gh.selected?'只显示本项目的任务、报告和操作。切换项目不取消已经发出的执行。':'查看原执行和完整报告。'));
+  for(const name of ['overview','tasks','events'])document.querySelector('[data-view="'+name+'"]').hidden=false;
+  for(const name of ['projects','github'])document.querySelector('[data-view="'+name+'"]').hidden=!entryInfo?.githubProjects;
+  document.querySelector('[data-view="github"]').disabled=!gh.selected;document.querySelector('[data-view="local-history"]').hidden=true;
   $('runtime-version').hidden=!state.runtime;if(state.runtime)$('runtime-version').textContent='本次运行版本 '+state.runtime.sourceHead.slice(0,12)+' · 配置 '+state.runtime.planSha256.slice(0,12)+' · 已匹配固定源码、构建与配置记录';
   const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length||state.deliveryPreparation?.length?'成果准备与决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null,state.secretaries?.length?'秘书提问':null,state.queueActions?.length?'获准跟进':null,state.sourcePolling?.length?'来源补查':null,state.returnWork?.length?'退回处理':null].filter(Boolean);
   $('access-mode').textContent=state.mode==='read_only'?'只读':'受控入口';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':'已配置：'+abilities.join('、')+'。实际动作按原范围、权限与资源执行；页面钥匙不代替本人签署。';
@@ -558,17 +701,22 @@ function render() {
   document.querySelector('[data-view="retrospective"]').hidden=!state.tasks.some(t=>t.available)&&!state.overallReviews?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+  if(entryInfo?.githubProjects&&gh.selected)document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=b.dataset.view==='local-history';});
   $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():view==='secretary'?secretaryView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
+  if(entryInfo===null){await startEntry();return;}
+  if(entryInfo?.githubProjects&&view==='secretary'){await loadProjectChat();return;}
+  if(entryInfo?.githubProjects&&githubView()){if(view==='projects')await loadGithubProjects();else await Promise.all([loadGithubItems('issues'),loadGithubItems('pulls')]);return;}
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
+  const epoch=gh.epoch,projectId=gh.selected?.id,current=()=>!entryInfo?.githubProjects||epoch===gh.epoch&&projectId===gh.selected?.id;
   $('refresh').disabled = true;
   try {
     if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('viewer_key_required');
-    state = await api('/api/state'); const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = '本机读取 · ' + date(at);
-    notice(state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
-  } catch (e) { notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
-  finally { $('refresh').disabled = false;if((state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive)))controlRefresh=setTimeout(refresh,2000); }
+    const snapshot = await api('/api/state');if(!current())return;state=snapshot; const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = (gh.selected?gh.selected.fullName+' · ':'')+'本机读取 · ' + date(at||new Date().toISOString());
+    notice(state.project?.unresolvedSourceCount?'有 '+state.project.unresolvedSourceCount+' 项本机来源归属尚未核清；未混入本项目。'+(state.project.controlsDeferred?'相关操作暂缓，来源恢复后刷新即可继续。':''):state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
+  } catch (e) { if(!current())return;notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
+  finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
 }
 async function openReport(t, o) {
   const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; $('report-dialog').showModal();
@@ -579,10 +727,10 @@ async function openMessageReport(t,run,m){
   const nonce=++reportNonce;$('report-title').textContent=t.title+' · 完整消息';$('report-meta').textContent='读取原消息…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
   try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+(r.nativeSessionResumed?' · 准确续接原会话 ':' · 会话 ')+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
-document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { view = b.dataset.view; render(); }; });
-$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
+document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { void enterView(b.dataset.view); }; });
+$('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;githubDetailEpoch=null;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
 $('refresh').onclick = refresh;
 document.querySelector('.skip').onclick = e => { e.preventDefault(); $('content').focus(); $('content').scrollIntoView(); };
 let initial = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'; try { initial = localStorage.getItem('tongxu-view-theme') || initial; } catch {}; document.documentElement.dataset.theme = initial === 'dark' ? 'dark' : 'light';
 $('theme').onclick = () => { const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = theme; try { localStorage.setItem('tongxu-view-theme', theme); } catch {} };
-void refresh();
+void startEntry();

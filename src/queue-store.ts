@@ -152,6 +152,16 @@ export class QueueStore {
     const q = await this.connect(directory, true);
     try { return q.status(receiverMetadataFor,invalidOutputFor,collaborationFor); } finally { q.close(); }
   }
+  /** Read only the original queue/task repository binding. Project selection
+   * must not initialize executors or inspect every other task's reports. */
+  static async observeWorkbenchRepository(directory:string,items:readonly string[]){
+    const q=await this.connect(directory,true);
+    try{q.db.exec('BEGIN');const repository=(q.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value;
+      if(typeof repository!=='string'||!repoPattern.test(repository))throw new Error('workbench_repository_unknown');
+      for(const id of items){const candidate=parse(q.item(id),'candidate');if(candidate.repository?.toLowerCase()!==repository.toLowerCase())throw new Error('workbench_repository_mismatch');}
+      return repository.toLowerCase() as string;
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
   /** Shared page/secretary reader. Operation identity is checked before any
    * original text is returned; the captured judgment is never rewritten. */
   static async observeReceptionReport(directory:string,itemId:string,operation:string){

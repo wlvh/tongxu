@@ -33,9 +33,9 @@ function arrangement(p:CoordinationPlan){const {revision,previous,authorityInten
  * launched and no writing responsibility or grant is inferred from this UI. */
 export class OrganizationControls{
   private constructor(private frozen:Frozen[],readonly catalogSha256:string){}
-  static async load(path:string,sha256:string,sources:Source[]){
+  static async load(path:string,sha256:string,sources:Source[],selectedSources?:ReadonlySet<string>){
     const raw=await regular(path,64*1024);if(hash(raw)!==sha256)throw new Error('organization_catalog_changed');const p=parse(raw),groups:Frozen[]=[],identities=new Set<string>();
-    for(const g of p.groups){const selected=g.sources.map(id=>{const s=sources.find(s=>s.id===id);if(!s)throw new Error('organization_source_not_selected');return structuredClone(s);});if(new Set(selected.map(s=>s.store)).size!==1||new Set(selected.map(s=>s.item)).size!==selected.length)throw new Error('organization_one_original_queue_required');
+    for(const g of p.groups){if(selectedSources&&!g.sources.every(id=>selectedSources.has(id)))continue;const selected=g.sources.map(id=>{const s=sources.find(s=>s.id===id);if(!s)throw new Error('organization_source_not_selected');return structuredClone(s);});if(new Set(selected.map(s=>s.store)).size!==1||new Set(selected.map(s=>s.item)).size!==selected.length)throw new Error('organization_one_original_queue_required');
       const choices:Frozen['choices']=[],modes=new Set();let name:string|undefined;
       for(const c of g.choices){const bytes=await regular(c.plan.path,256*1024);if(hash(bytes)!==c.plan.sha256)throw new Error('organization_template_changed');const plan=parseCoordinationPlan(bytes);
         if(plan.previous!==null||plan.authorityIntent!==null||name&&name!==plan.name||modes.has(plan.mode)||canonical(plan.tasks.map(t=>t.item).sort())!==canonical(selected.map(s=>s.item).sort()))throw new Error('organization_template_scope_invalid');name=plan.name;modes.add(plan.mode);choices.push({choice:structuredClone(c),plan});
