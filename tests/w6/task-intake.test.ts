@@ -163,3 +163,11 @@ test('native-impact dangling-link counterexample: an existing broken link is not
   const f=await fixture(t),p={...f.definition,id:'dangling',paths:['dangling.js']};await symlink(join(f.root,'missing-target'),join(p.workspace,'dangling.js'));await assert.rejects(observeTaskWorkspace(p),/task_selected_symlink/);
   await symlink(join(f.root,'missing-directory'),join(p.workspace,'linked-dir'));await assert.rejects(observeTaskWorkspace({...p,paths:['linked-dir/absent.js']}),/task_selected_symlink/);
 });
+
+
+test('a verified authentication cancellation can close explicitly, then the same owner handles a new question without rewriting or resending the old one',async t=>{
+ const f=await fixture(t,'304-auth-failure'),request=f.request('auth-failed');request.participant={...request.participant,tool:'claude',executable:f.claude,aiModel:{model:'sonnet',effort:'xhigh'}};f.q.taskInbox().enqueue(raw(request));const first=await prepareTaskOwner(f.store,f.a.item,request.id),result=await runMessages(f.store,first.plan);assert.equal(result.messages[0]!.state,'Interrupted');const directory=result.runtimes[0]!.started.directory,oldBytes=await readFile(join(directory,'stdout.ndjson'));
+ f.q.taskInbox().closeInterrupted(f.a.item,request.id,'Explicit fixture owner login restored, close failed original',hash(canonical(request)));assert.equal(f.q.taskInbox().status(f.a.item)[0]!.phase,'interrupted_closed');
+ await writeFile(f.claude,(await readFile(f.claude,'utf8')).replace('mode="304-auth-failure"','mode="304"'));
+ const next={...request,id:'after-login-new-question',question:'这是后续新问题，请核对保留的失败记录和当前材料。'};f.q.taskInbox().enqueue(raw(next));const selected=await prepareTaskOwner(f.store,f.a.item,next.id),completed=await runMessages(f.store,selected.plan);assert.equal(completed.completed,true,JSON.stringify(completed.problems));assert.equal(completed.newModelRequests,1);assert.deepEqual(await readFile(join(directory,'stdout.ndjson')),oldBytes);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,2);const before=await readFile(f.trace);assert.equal((await runMessages(f.store,first.plan,true)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+});

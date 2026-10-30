@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { hash } from './snapshot.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { canonical } from './comparison.js';
-import { messageClaudeRequirements,messageClaudeVersion,messageClaudeContract,messageClaudeInput,checkMessageClaudeInit,checkMessageClaudeReceipt,messageClaudeFinal } from './message-claude.js';
+import { messageClaudeRequirements,claudeExecutionFailure,messageClaudeVersion,messageClaudeContract,messageClaudeInput,checkMessageClaudeInit,checkMessageClaudeReceipt,messageClaudeFinal } from './message-claude.js';
 
 const exec = promisify(execFile);
 function finalResult(events: any[],identity:any) {
@@ -57,7 +57,7 @@ export async function runClaude(o: {aiModel?:AIModelChoice; executionKind?:'fixt
     const init = await child.waitFor(m => m.type === 'system' && m.subtype === 'init', 30_000);
     save(join(o.directory, 'init.json'), init);if(o.aiModel)save(join(o.directory,'model-selection-observation.json'),claudeSelectionObservation(init,o.aiModel));checkClaudeSelected(init,identity,o.aiModel);
     if(stream)checkMessageClaudeInit(init,session,version);else if (!init.session_id || init.claude_code_version !== messageClaudeVersion(identity.version) || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || !Array.isArray(init.tools) || init.tools.length || !Array.isArray(init.mcp_servers) || init.mcp_servers.length) throw new Error('claude_role_boundary_not_applied');
-    await child.waitFor(m => m.type === 'result' && m.session_id === init.session_id, o.timeoutMs);
+    const terminal=await child.waitFor(m => m.type === 'result' && m.session_id === init.session_id, o.timeoutMs);const failure=claudeExecutionFailure(terminal);if(failure){save(join(o.directory,'provider-failure.json'),{reason:failure,apiStatus:terminal.api_error_status??null,inputSubmitted:true,automaticResend:false});throw new Error(failure);}
     if(stream)await child.waitFor(m=>m.type==='command_lifecycle'&&m.command_uuid===inputUuid&&m.state==='completed',o.timeoutMs);else await Promise.race([child.closed, new Promise<void>((_, reject) => { const t = setTimeout(() => reject(new Error('claude_exit_timeout')), 30_000); child.closed.then(() => clearTimeout(t)); })]);
   } finally { await child.close(); }
   if (child.failure || child.exit?.code !== 0) throw new Error('claude_final_result_unavailable');
@@ -79,6 +79,7 @@ export async function readClaudeExecution(directory: string) {
   if (launch.args.indexOf('--system-prompt') < 0 || typeof system !== 'string' || !launch.args.includes('--safe-mode')) throw new Error('stage_launch_boundary_missing');
   const identity=JSON.parse(await readFile(join(directory,'executable.json'),'utf8')),wire=await readFile(join(directory,'stdin.ndjson')),isStream=launch.args.includes('--input-format'),decoded=isStream?streamFinal(events,wire,launch,identity):null,{init,result}=decoded??finalResult(events,identity),protocol=identity.selection==='configured-current-v1'?(isStream?'claude-stream-json/command-v1':'claude-text/legacy-v1'):(isStream?'claude-stream-json/2.1.304':'claude-text/2.1.233');
   if(isStream!==(messageClaudeContract(identity)==='composed-command-v1'))throw new Error('claude_original_stream_input_changed');
+  checkClaudeSelected(init,identity,choiceFromArgs(launch.args));
   if(canonical(launch.args)!==canonical(claudeExecutionArgs(system,protocol,init.session_id,choiceFromArgs(launch.args))))throw new Error('stage_launch_boundary_changed');
   return { kind: 'claude-execution-receipt',protocol,wireInputSha256:hash(wire),...(decoded?{inputUuid:decoded.inputUuid}:{}), sessionId: init.session_id, model: init.model, finalText: result.result, inputSha256: decoded?hash(decoded.logicalInput):hash(wire), systemPromptSha256: hash(system), rawSha256: hash(raw), processExit: exit, recoveredFromOriginalBytes: true };
 }

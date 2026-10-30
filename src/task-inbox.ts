@@ -86,7 +86,7 @@ export class TaskInbox {
   closeInterrupted(task:string,id:string,source:string,expectedRequestSha256:string){return this.transaction(()=>{
     const f=this.entry(task,id);if(f.queued.requestSha256!==expectedRequestSha256||!source.trim()||source.length>2048)throw new Error('task_control_original_request_changed');
     const old=f.events.find(e=>e.kind==='task_inbox_interrupted_closed'&&e.data.id===id);if(old)return {...old.data,duplicate:true};
-    if(!f.selected||!f.request.nativeControls)throw new Error('task_original_interruption_required');const s=this.messages(f.selected.run).state;
+    if(!f.selected)throw new Error('task_original_interruption_required');const s=this.messages(f.selected.run).state;if(!f.request.nativeControls&&s.messages[0]?.interruption?.source!=='claude-authentication-cancellation-v1')throw new Error('task_original_interruption_required');
     if(s.messages.length!==1||s.messages[0].state!=='Interrupted'||s.runtimes.filter((r:Row)=>r.started).length!==1||s.runtimes.some((r:Row)=>r.started&&r.captureVerification?.proof.successfulCapture!==true)||s.resourcesSettled===false)throw new Error('task_original_interruption_or_resources_unresolved');
     const value={id,run:f.selected.run,source,originalRunCompleted:false,originalRetained:true,newModelRequests:0,interruption:s.messages[0].interruption,captures:s.runtimes.filter((r:Row)=>r.started).map((r:Row)=>({participant:r.participant,originals:r.ended.originals,proof:r.captureVerification.proof}))};this.event(task,'interrupted_closed',value);return {...value,duplicate:false};
   });}
