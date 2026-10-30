@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,rm,realpath,symlink,appendFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,dirname} from 'node:path';
 import {hash} from '../../src/snapshot.js';
 import {selectExternalExecutable,assertExternalExecutable} from '../../src/external-executable.js';
 import {selectGhExecutable,assertGhExecutableUnchanged} from '../../src/gh-executable.js';
@@ -49,4 +49,10 @@ test('runtime parser enforces the original pure expression boundary independentl
   for(const expression of ['Math.min(high,Math.max(low,value))','value<low?low:value>high?high:value','(value + low) ** 2 / high','value && low || high','!value ? -low : +high'])assert.equal(validateClampExpression(module(expression)).accepted,true);
   for(const expression of ['process.exit()','Math["min"](low,value)','Math.min?.(low,value)','Math.min(...value)','value.constructor','value=high','value++','(()=>value)()','import("fs")','new Function("return 1")()','value,high','1n','/x/','"text"','Infinity','Math.random()','Math.min()'])assert.throws(()=>validateClampExpression(module(expression)),Error,expression);
   for(const source of ['export async function clamp(v,l,h){return v;}','export function* clamp(v,l,h){return v;}','export function clamp(v,l,h=1){return v;}','export function clamp(v,...l){return v;}','export function clamp(Math,l,h){return Math.min(l,h);}',module('value')+'\nprocess.exit();',module('value')+'\nexport const x=1;','export function clamp(v,l,h){let x=v;return x;}'])assert.throws(()=>validateClampExpression(source));
+});
+
+
+test('Claude desktop updates resolve the current installed entry without pinning an old version directory',async t=>{
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-claude-desktop-')));t.after(()=>rm(root,{recursive:true,force:true}));
+ const old=join(root,'Claude/claude-code/1.0.0/old/claude.app/Contents/MacOS/claude'),current=join(root,'Claude/claude-code/99.7.0/new/claude.app/Contents/MacOS/claude');await mkdir(dirname(old),{recursive:true});await writeFile(old,'#!/bin/sh\nexit 0\n',{mode:0o700});const before=selectExternalExecutable(old);await mkdir(dirname(current),{recursive:true});await writeFile(current,'#!/bin/sh\n# new installed version\nexit 0\n',{mode:0o700});await rm(join(root,'Claude/claude-code/1.0.0'),{recursive:true});const after=selectExternalExecutable(old);assert.equal(after.realpath,current);assert.notEqual(after.sha256,before.sha256);assert.throws(()=>assertExternalExecutable(before),/changed_during_operation/);
 });

@@ -8,7 +8,7 @@ const chatError=e=>({project_chat_not_configured:'本机尚未配置项目秘书
 function chooseProjectConversation(id){const data=chatData();if(!data)return;data.userSelected=true;data.conversationId=id;data.selectionVersion++;data.messages=[];data.error=null;render();void loadProjectChat();}
 async function loadProjectChat(){
   const data=chatData(),epoch=gh.epoch;if(!data)return;if(data.loading){data.reloadRequested=true;return;}const selection=data.selectionVersion;data.loading=true;data.reloadRequested=false;data.error=null;render();
-  try{const result=await api('/api/project-secretary');if(epoch!==gh.epoch)return;Object.assign(data,{available:result.available,ready:true,conversations:result.conversations||[],busy:result.busy||[],executionKind:result.executionKind});if(!result.available){data.error=chatError(result.reason);return;}
+  try{const result=await api('/api/project-secretary');if(epoch!==gh.epoch)return;Object.assign(data,{available:result.available,ready:true,conversations:result.conversations||[],busy:result.busy||[],executionKind:result.executionKind,aiChoice:result.aiChoice??null});if(!result.available){data.error=chatError(result.reason);return;}
     if(selection!==data.selectionVersion)return;
     if(!data.initialLoaded){if(!data.userSelected&&!data.composing&&!chatDraft(data).question)data.conversationId=data.conversations[0]?.id??data.conversationId;data.initialLoaded=true;}
     if(!data.conversationId)data.conversationId=crypto.randomUUID();
@@ -30,7 +30,7 @@ function renderProjectChat(){
     renderGithub();root=el('div',null,'project-chat');root.id='project-chat-root';root.dataset.chat=identity;
     root.append(intro('工作秘书','围绕 '+gh.selected.fullName+' 提问、梳理Issues与PR，并查看这个项目已有的任务和报告。'));
     const toolbar=el('div',null,'chat-toolbar'),label=el('label','对话历史'),select=el('select');select.id='project-chat-history';select.setAttribute('aria-label','对话历史');select.onchange=()=>chooseProjectConversation(select.value);label.append(select);
-    const fresh=el('button','新对话','outline');fresh.type='button';fresh.onclick=()=>chooseProjectConversation(crypto.randomUUID());append(toolbar,label,fresh);root.append(toolbar);
+    const fresh=el('button','新对话','outline');fresh.type='button';fresh.onclick=()=>chooseProjectConversation(crypto.randomUUID());append(toolbar,label,fresh);root.append(toolbar);const selectedAI=el('p',null,'small');selectedAI.id='project-chat-ai';root.append(selectedAI);
     const info=el('p',null,'chat-notice');info.id='project-chat-notice';info.setAttribute('role','status');root.append(info);
     const lines=el('section',null,'chat-lines');lines.id='project-chat-lines';lines.setAttribute('aria-label','对话消息');lines.tabIndex=0;root.append(lines);
     const form=el('form',null,'chat-composer'),prompt=el('label','向项目秘书提问'),input=el('textarea');input.id='project-chat-input';input.rows=4;input.maxLength=8192;input.placeholder='例如：这个项目目前有哪些待处理的Issue？';input.value=draft.question;prompt.htmlFor=input.id;
@@ -45,6 +45,7 @@ function renderProjectChat(){
       else{answer.append(el('p',m.active?'正在读取资料并回答…':chatError(m.problem||'project_chat_execution_incomplete'),'small'));if(m.owned){const stop=el('button','停止本轮','outline');stop.type='button';stop.onclick=()=>stopProjectChat(m.id);answer.append(stop);}}
       lines.append(answer);
     }if(!data.messages.length)lines.append(el('p','可以直接提问，不需要先登记开发任务。','empty'));lines.dataset.messages=signature;if(followBottom)lines.scrollTop=lines.scrollHeight;}
+  if($('project-chat-ai'))$('project-chat-ai').textContent=data.aiChoice?'新问题的选择：'+(data.aiChoice.tool==='claude'?'Claude':'Codex')+' · '+data.aiChoice.model+' · '+(data.aiChoice.effort||'工具默认强度')+'。可在“AI 与角色设置”修改。':'新问题沿用原执行配置；可在“AI 与角色设置”选择模型和推理强度。';
   const input=$('project-chat-input');if(input.value!==draft.question&&document.activeElement!==input)input.value=draft.question;input.disabled=data.submitting||data.ready&&!data.available;$('project-chat-send').disabled=!data.ready||!data.available||data.loading||data.submitting||data.busy.length>0;$('project-chat-send').textContent=data.submitting?'正在提交…':'发送';
   $('access-mode').textContent='项目秘书 · 只读';$('access-description').textContent='对话只属于当前项目。不会因聊天自动授予写入、发布或合并权限。';$('observed').textContent=gh.selected.fullName+' · 项目对话';$('refresh').disabled=data.loading;
 }

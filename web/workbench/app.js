@@ -673,7 +673,7 @@ async function enterView(next){
   if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
   if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
   if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
-  view=next;if(entryInfo?.githubProjects&&next==='secretary'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadProjectChat();return;}if(!state)await refresh();else render();
+  view=next;if(entryInfo?.githubProjects&&next==='ai-settings'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadAISettings();return;}if(entryInfo?.githubProjects&&next==='secretary'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadProjectChat();return;}if(!state)await refresh();else render();
 }
 async function startEntry(){
   const notify=projectNotifier();
@@ -684,6 +684,7 @@ async function startEntry(){
 }
 
 function render() {
+  if(entryInfo?.githubProjects&&view==='ai-settings'&&gh.selected){renderAISettings();return;}
   if(entryInfo?.githubProjects&&view==='secretary'&&gh.selected){renderProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){renderGithub();return;}
   if (!state) return;
@@ -705,6 +706,7 @@ function render() {
   $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():view==='secretary'?secretaryView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
+  if(entryInfo?.githubProjects&&view==='ai-settings'){await loadAISettings();return;}
   if(entryInfo===null){await startEntry();return;}
   if(entryInfo?.githubProjects&&view==='secretary'){await loadProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){if(view==='projects')await loadGithubProjects();else await Promise.all([loadGithubItems('issues'),loadGithubItems('pulls')]);return;}

@@ -1,4 +1,6 @@
 import {ProjectChat} from './project-chat.js';
+import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig} from './ai-settings.js';
+import type {inspectAIProvider} from './ai-catalog.js';
 import {validateProjectChatConfig,type ProjectChatConfig} from './project-chat-contract.js';
 import {GitHubProjects,GitHubProjectError,type GitHubReaderFactory} from './github-projects.js';
 import { readFile } from 'node:fs/promises';
@@ -40,6 +42,7 @@ export type WorkbenchPlan = {
   returnControls?:{path:string;sha256:string};
   githubProjects?:true;
   projectSecretary?:ProjectChatConfig;
+  aiSettings?:AISettingsConfig;
 };
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && !!v.trim() && v.length <= max && !v.includes('\0');
 export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
@@ -53,6 +56,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'organization')&&(!exactKeys(p.organization,['path','sha256'])||!messagePath(p.organization.path)||!isAuthorityDigest(p.organization.sha256)))throw new Error('invalid_workbench_organization');
   if(Object.hasOwn(p,'githubProjects')&&p.githubProjects!==true)throw new Error('invalid_workbench_github_projects');
   if(p.projectSecretary!==undefined){if(!p.githubProjects)throw new Error('project_chat_requires_github');validateProjectChatConfig(p.projectSecretary);}
+  if(p.aiSettings!==undefined){if(!p.githubProjects)throw new Error('ai_settings_requires_github');validateAISettingsConfig(p.aiSettings);}
   const ids = new Set(), tasks = new Set();
   for (const s of p.sources) {
     if (!s || typeof s.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(s.id) || !text(s.title, 100) || !/^[a-f0-9]{64}$/.test(s.item) || typeof s.store !== 'string' || !isAbsolute(s.store) || resolve(s.store) !== s.store || ids.has(s.id) || tasks.has(s.store + ':' + s.item)) throw new Error('invalid_workbench_source');
@@ -62,7 +66,7 @@ export function parseWorkbenchPlan(bytes: Buffer): WorkbenchPlan {
   if(Object.hasOwn(p,'ownerControls')&&(!Array.isArray(p.ownerControls)||!p.ownerControls.length||p.ownerControls.length>8||new Set(p.ownerControls).size!==p.ownerControls.length||p.ownerControls.some((id:unknown)=>!ids.has(id))))throw new Error('invalid_workbench_owner_controls');
   if(Object.hasOwn(p,'overallReviews'))validateOverallSelections(p.overallReviews,[...ids] as string[]);
   if(Object.hasOwn(p,'eventPolling'))validateEventPolling(p.eventPolling,p.sources);
-  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}),...(p.returnControls?{returnControls:p.returnControls}:{}),...(p.githubProjects?{githubProjects:true as const}:{}),...(p.projectSecretary?{projectSecretary:p.projectSecretary}:{}) };
+  return { schemaVersion: 1, kind: p.kind, title: p.title, goal: p.goal, sources: p.sources.map((s: Row) => ({ id: s.id, title: s.title, store: s.store, item: s.item })),...(p.controls?{controls:p.controls}:{}),...(p.deliveries?{deliveries:p.deliveries}:{}),...(p.deliveryExecutions?{deliveryExecutions:p.deliveryExecutions}:{}),...(p.ownerControls?{ownerControls:p.ownerControls}:{}),...(p.organization?{organization:p.organization}:{}),...(p.overallReviews?{overallReviews:p.overallReviews}:{}),...(p.eventControls?{eventControls:p.eventControls}:{}),...(p.eventPolling?{eventPolling:p.eventPolling}:{}),...(p.secretary?{secretary:p.secretary}:{}),...(p.returnControls?{returnControls:p.returnControls}:{}),...(p.githubProjects?{githubProjects:true as const}:{}),...(p.projectSecretary?{projectSecretary:p.projectSecretary}:{}),...(p.aiSettings?{aiSettings:p.aiSettings}:{}) };
 }
 export function receptionStage(o: Row) {
   const r = o.result?.receiver;
@@ -135,10 +139,11 @@ async function workbenchReport(p: WorkbenchPlan, source: string, operation: stri
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
   return {source,...await QueueStore.observeReceptionReport(s.store,s.item,operation)};
 }
-export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory}) {
+export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider}) {
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const github=p.githubProjects?new GitHubProjects(dependencies?.githubReader):null;
+  const ai=p.aiSettings?await AISettings.open(p.aiSettings,dependencies?.aiProbe):null;
   let closing=false,host='';
   const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>)=>{
     // Catalogue hashes still cover the original complete files. Only entries
@@ -204,7 +209,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   };
   const initial=p.githubProjects?null:await openLocal(p);
   const assets = new Map<string, { type: string; bytes: Buffer }>();
-  for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/project-chat.js','project-chat.js','text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
+  for (const [path, name, type] of [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/project-chat.js','project-chat.js','text/javascript'], ['/ai-settings.js','ai-settings.js','text/javascript'], ['/app.css', 'app.css', 'text/css'], ['/favicon.svg', 'favicon.svg', 'image/svg+xml']]) assets.set(path!, { type: type! + '; charset=utf-8', bytes: await readFile(new URL('../../web/workbench/' + name!, import.meta.url)) });
   function reply(res: ServerResponse, status: number, type: string, data: string | Buffer) {
     res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" }); res.end(data);
   }
@@ -221,7 +226,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname==='/api/entry'||url.pathname.startsWith('/api/github/')){
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
         if(req.method!=='GET'){json(res,405,{error:'github_read_only'});return;}
-        if(url.pathname==='/api/entry'){if(url.search){json(res,400,{error:'query_not_supported'});return;}json(res,200,{githubProjects:!!github,hasLocalSources:p.sources.length>0,projectSecretary:!!p.projectSecretary,runtime:runtimeIdentity??null});return;}
+        if(url.pathname==='/api/entry'){if(url.search){json(res,400,{error:'query_not_supported'});return;}json(res,200,{githubProjects:!!github,hasLocalSources:p.sources.length>0,projectSecretary:!!p.projectSecretary,aiSettings:!!p.aiSettings,runtime:runtimeIdentity??null});return;}
         if(!github){json(res,404,{error:'github_projects_not_enabled'});return;}
         json(res,200,await github.read(url));return;
       }
@@ -238,19 +243,29 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId));return;
       }
       const selection=github?await github.confirmSelection(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project'])):null;
+      const withAI=<T>(fn:()=>T)=>ai&&selection?withAIPreferences(ai.snapshot(selection),fn):fn();
+      if(url.pathname.startsWith('/api/ai-settings')){
+        if(!ai||!selection)throw new Error('ai_settings_not_configured');
+        if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
+        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
+        if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
+        const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>8192){json(res,413,{error:'ai_settings_request_invalid'});return;}chunks.push(Buffer.from(chunk));}
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
+        if(url.pathname.endsWith('/scan')){if(!exactKeys(body,[]))throw new Error('ai_settings_request_invalid');const result=await ai.scan(selection);await verifyProject(selection);json(res,200,result);}else json(res,200,await ai.change(selection,body));return;
+      }
       if(url.pathname.startsWith('/api/project-secretary')){
         if(!selection)throw new Error('project_chat_requires_github');
         if(!p.projectSecretary){if(req.method!=='GET')throw new Error('project_chat_not_configured');json(res,200,{available:false,reason:'project_chat_not_configured',conversations:[],newModelInputs:0});return;}
         const chat=await openProjectChat(),conversation=/^\/api\/project-secretary\/conversations\/([0-9a-f-]{36})$/.exec(url.pathname);
         if(req.method==='GET'){
-          if(url.pathname==='/api/project-secretary')json(res,200,await chat.list(selection));
+          if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
         if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
-        if(url.pathname.endsWith('/ask'))json(res,202,await chat.begin(selection,body));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
+        if(url.pathname.endsWith('/ask'))json(res,202,await withAI(()=>chat.begin(selection,body)));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
       }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
@@ -278,22 +293,22 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation||deliveryWork?98304:delivery||secretaryAction?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
         if(selection){await github!.confirmSelection(selection.account.id,selection.repository.id);github!.assertSelection(selection);}
-        if(returnAction){json(res,202,await returns!.begin(returnAction[1]!,returnAction[2]!,body));return;}
-        if(secretaryAction){if(secretaryAction[2]==='ask')json(res,202,await secretary!.begin(secretaryAction[1]!,body));else{if(!exactKeys(body,['requestId']))throw new Error('secretary_question_invalid');json(res,200,await secretary!.closeUnstarted(secretaryAction[1]!,body.requestId));}return;}
+        if(returnAction){json(res,202,await withAI(()=>returns!.begin(returnAction[1]!,returnAction[2]!,body)));return;}
+        if(secretaryAction){if(secretaryAction[2]==='ask')json(res,202,await withAI(()=>secretary!.begin(secretaryAction[1]!,body)));else{if(!exactKeys(body,['requestId']))throw new Error('secretary_question_invalid');json(res,200,await secretary!.closeUnstarted(secretaryAction[1]!,body.requestId));}return;}
         if(queueAction){if(!exactKeys(body,['requestId']))throw new Error('event_control_request_id_invalid');json(res,200,await queueActions!.execute(queueAction[1]!,body.requestId));return;}
         if(delivery){json(res,200,delivery[2]==='prepare'?await deliveryControls!.prepare(delivery[1]!,body):await deliveryControls!.apply(delivery[1]!,body));return;}
-        if(deliveryWork){const id=deliveryWork[1]!,action=deliveryWork[2]!;if(action==='prepare')json(res,200,await deliveryExecution!.prepare(id,body));else if(action==='owner-apply')json(res,200,await deliveryExecution!.applyOwner(id,body));else json(res,202,await deliveryExecution!.begin(id,action as 'run'|'reconcile'|'close-unstarted',body));return;}
+        if(deliveryWork){const id=deliveryWork[1]!,action=deliveryWork[2]!;if(action==='prepare')json(res,200,await deliveryExecution!.prepare(id,body));else if(action==='owner-apply')json(res,200,await deliveryExecution!.applyOwner(id,body));else json(res,202,await withAI(()=>deliveryExecution!.begin(id,action as 'run'|'reconcile'|'close-unstarted',body)));return;}
         if(batchPreparation){json(res,200,await deliveryControls!.register(batchPreparation[1]!,body));return;}
         if(owner){json(res,200,owner[2]==='prepare'?await ownerControls!.prepare(owner[1]!,body):await ownerControls!.apply(owner[1]!,body));return;}
-        if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await scopeFollowups!.prepare(source,body));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body));return;}
+        if(followup){const action=followup[2]!,source=followup[1]!;if(action==='prepare')json(res,200,await withAI(()=>scopeFollowups!.prepare(source,body)));else if(action==='observe')json(res,200,await scopeFollowups!.observe(source,body));else if(action==='owner-prepare'||action==='owner-apply')json(res,200,await scopeFollowups!.owner(source,action==='owner-prepare'?'prepare':'apply',body));else if(action==='native')json(res,200,await scopeFollowups!.native(source,body));else json(res,202,withAI(()=>scopeFollowups!.begin(source,action as 'start'|'cancel'|'close-interrupted',body)));return;}
         if(overallBaseline){json(res,200,await overall!.prepareFromBaseline(overallBaseline[1]!,body));return;}
-        if(retrospective){json(res,202,await overall!.begin(retrospective[1]!,retrospective[2]! as any,body));return;}
+        if(retrospective){json(res,202,await withAI(()=>overall!.begin(retrospective[1]!,retrospective[2]! as any,body)));return;}
         if(arrangement){json(res,200,await organization!.apply(arrangement[1]!,body));return;}
         if(scope){if(!exactKeys(body,['revision'])||!Number.isSafeInteger(body.revision)||body.revision<0){json(res,400,{error:'scope_control_revision_required'});return;}json(res,200,await controls!.setScope(scope[1]!,scope[2]!,body.revision));return;}
         if(action![2]==='native'){json(res,200,await controls!.controlNative(action![1]!,body));return;}
         if(!exactKeys(body,[])){json(res,400,{error:'task_control_no_runtime_arguments'});return;}
         if(action![2]==='close-interrupted'){json(res,200,await controls!.closeInterrupted(action![1]!));return;}
-        json(res,action![2]==='start'?202:200,action![2]==='start'?await controls!.begin(action![1]!):await controls!.cancel(action![1]!));return;
+        json(res,action![2]==='start'?202:200,action![2]==='start'?await withAI(()=>controls!.begin(action![1]!)):await controls!.cancel(action![1]!));return;
       }
 
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
@@ -321,5 +336,5 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   host = '127.0.0.1:' + address.port;
   const {controls,ownerControls,organization,overall,deliveryControls,secretary,returns,queueActions,polling}=initial??{};
   polling?.start();
-  return { url: 'http://' + host + '/#' + token,mode:github?'github_projects':controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':returns?'bounded_return_work':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{closing=true;const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await Promise.allSettled([github?.close(),projectChat?.then(chat=>chat.drain())]);await Promise.allSettled([...locals.values()].map(async entry=>{const {returns,controls,polling,secretary,scopeFollowups,deliveryExecution,overall}=await entry.value.catch(()=>null)??{};await Promise.allSettled([returns?.drain(),controls?.drain(),polling?.drain(),secretary?.drain(),scopeFollowups?.drain(),deliveryExecution?.drain(),overall?.drain()]);}));await closed;} };
+  return { url: 'http://' + host + '/#' + token,mode:github?'github_projects':controls?.mode??(ownerControls?'bounded_owner_proposals':organization?'bounded_organization':overall?'bounded_overall_review':deliveryControls?.writable?'bounded_delivery_outcomes':secretary?'bounded_secretary':returns?'bounded_return_work':queueActions||polling?'bounded_queue_controls':'read_only'),close:async()=>{closing=true;const closed=new Promise<void>((ok,reject)=>server.close(e=>e?reject(e):ok()));await Promise.allSettled([github?.close(),projectChat?.then(chat=>chat.drain()),ai?.close()]);await Promise.allSettled([...locals.values()].map(async entry=>{const {returns,controls,polling,secretary,scopeFollowups,deliveryExecution,overall}=await entry.value.catch(()=>null)??{};await Promise.allSettled([returns?.drain(),controls?.drain(),polling?.drain(),secretary?.drain(),scopeFollowups?.drain(),deliveryExecution?.drain(),overall?.drain()]);}));await closed;} };
 }

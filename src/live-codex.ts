@@ -4,10 +4,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { hash } from './snapshot.js';
 import { parseCodexResult, currentCodexProtocol, type ResultBinding } from './codex-results.js';
 import {codexConversation,cliVersion} from './cli-capabilities.js';
+import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels} from './ai-execution.js';
+import type {AIModelChoice} from './ai-catalog.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 
 export type Candidate = ResultBinding['candidate'];
 export type CodexTask = {
+  aiModel?:AIModelChoice;
   executable: string; directory: string; system: string; inputs: string[];
   candidate: Candidate; role: 'reviewer' | 'verifier_fact'; run: string;
   inputManifestSha256: string; scopeSource: string; arrangementSource: string;
@@ -50,12 +53,14 @@ export async function runCodex(o: CodexTask) {
     checkConfig(config.config);
     const usage = await rpc.request('account/rateLimits/read', {});
     if (usage.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
-    const thread = await rpc.request('thread/start', {
+    await checkCodexChoice((m,p)=>rpc.request(m,p),o.aiModel);
+    const thread = await rpc.request('thread/start', { ...codexThreadChoice(o.aiModel),
       cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only',
       baseInstructions: o.system, developerInstructions,
       dynamicTools: [], environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [cwd]
     });
     save(join(o.directory, 'thread.json'), thread);
+    checkCodexSelected(thread,o.aiModel);if(o.aiModel)save(join(o.directory,'model-choice.json'),{requested:o.aiModel,actualModel:thread.model,actualEffort:thread.reasoningEffort});
     if (thread.cwd !== cwd || thread.approvalPolicy !== 'never' || thread.sandbox?.type !== 'readOnly' || thread.sandbox.networkAccess !== false || thread.modelProvider !== 'openai') throw new Error('native_role_boundary_not_applied');
     for (const path of thread.instructionSources ?? []) {
       const source = o.allowedInstructionSources.find(x => x.path === path);
@@ -70,7 +75,7 @@ export async function runCodex(o: CodexTask) {
       if (allowed.ordinaryUsageAllowed !== true) throw new Error('ordinary_usage_unavailable');
       // The intent is recorded before the only send. Unknown dispatch is never replayed.
       save(join(o.directory, `turn-${index + 1}-intent.json`), { threadId: t.id, inputSha256: hash(o.inputs[index]!), status: 'send_registered' });
-      const started = await rpc.request('turn/start', { threadId: t.id, input: [{ type: 'text', text: o.inputs[index]! }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high' });
+      const started = await rpc.request('turn/start', { threadId: t.id, input: [{ type: 'text', text: o.inputs[index]! }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...codexTurnChoice(o.aiModel) });
       const turnId = started.turn?.id;
       if (!turnId || binding.turnIds.includes(turnId)) throw new Error('native_turn_identity_mismatch');
       binding.turnIds.push(turnId); save(join(o.directory, 'binding.json'), binding);
@@ -104,9 +109,11 @@ export async function readCodexExecution(directory: string) {
   if (parsed.status === 'waiting') throw new Error('native_waiting_on_user_or_approval');
   if (parsed.status !== 'final_observed') throw new Error('stage_raw_result_not_final');
   const sent = (await readFile(join(directory, 'stdin.ndjson'), 'utf8')).trim().split('\n').map(x => JSON.parse(x));
+  const requestedModel=sent.find(m=>m.method==='thread/start')?.params?.model;const choice:AIModelChoice|undefined=requestedModel?{model:requestedModel,effort:sent.find(m=>m.method==='thread/start')?.params?.config?.model_reasoning_effort??null}:undefined;
+  if(choice){const received=raw.toString().trim().split('\n').map(l=>JSON.parse(l));capturedCodexModels(sent,received,choice);checkCodexSelected(thread,choice);}
   const starts = sent.filter(m => m.method === 'thread/start'), turns = sent.filter(m => m.method === 'turn/start');
-  if (starts.length !== 1 || turns.length !== binding.turnIds.length || turns.some(m => typeof m.params?.input?.[0]?.text !== 'string' || !isDeepStrictEqual(m.params, { threadId: binding.threadId, input: [{ type: 'text', text: m.params.input[0].text }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, effort: 'high' })) ||
-      !isDeepStrictEqual(starts[0].params, { cwd: binding.workspace, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: starts[0].params.baseInstructions, developerInstructions, dynamicTools: [], environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [binding.workspace] }) ||
+  if (starts.length !== 1 || turns.length !== binding.turnIds.length || turns.some(m => typeof m.params?.input?.[0]?.text !== 'string' || !isDeepStrictEqual(m.params, { threadId: binding.threadId, input: [{ type: 'text', text: m.params.input[0].text }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...codexTurnChoice(choice) })) ||
+      !isDeepStrictEqual(starts[0].params, { ...codexThreadChoice(choice),cwd: binding.workspace, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: starts[0].params.baseInstructions, developerInstructions, dynamicTools: [], environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [binding.workspace] }) ||
       hash(JSON.stringify({ system: starts[0].params.baseInstructions, inputs: turns.map(m => m.params.input[0].text) })) !== binding.promptSha256) throw new Error('stage_submitted_input_mismatch');
   // A legacy capture has no stdin digest. Validate the whole request stream,
   // including its order, instead of silently discarding steer/resume/other RPCs.
@@ -117,7 +124,7 @@ export async function readCodexExecution(directory: string) {
     { method: 'initialized', params: {} },
     request('account/read', { refreshToken: false }),
     request('config/read', { includeLayers: false, cwd: binding.workspace }),
-    request('account/rateLimits/read', {}), request('thread/start', starts[0].params),
+    request('account/rateLimits/read', {}), ...(choice?sent.filter(m=>m.method==='model/list').map(m=>request('model/list',m.params)):[]),request('thread/start', starts[0].params),
     ...turns.flatMap(m => [request('account/rateLimits/read', {}), request('turn/start', m.params)])
   ];
   if (!isDeepStrictEqual(sent, expected)) throw new Error('stage_submitted_request_sequence_mismatch');
