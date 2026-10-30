@@ -13,9 +13,9 @@ import type {MessageParticipant} from './message-contract.js';
 export const aiRoles=[
   {id:'secretary',name:'工作秘书',need:'scopedTools',description:'读取当前项目的 Issues、PR 和原任务报告'},
   {id:'issue_owner',name:'任务负责人',need:'readonlyMessages',description:'原任务的分析、联系与综合；写入权限另按原任务执行'},
-  {id:'reviewer',name:'独立审核者',need:'readonlyMessages',description:'独立阅读固定材料并返回审核报告'},
+  {id:'reviewer',name:'独立审核者',need:'controlledReports',description:'独立阅读固定材料并返回审核报告'},
   {id:'verifier_fact',name:'事实核实与修复',need:'scopedTools',description:'使用原执行器的受限文件、测试及授权修复工具'},
-  {id:'verifier_impact',name:'影响核实者',need:'readonlyMessages',description:'分析已核实问题的影响和修正范围'},
+  {id:'verifier_impact',name:'影响核实者',need:'impactReports',description:'分析已核实问题的影响和修正范围'},
   {id:'acceptance',name:'接收与综合',need:'readonlyMessages',description:'解释证据与汇总结果；不替代本人接受'}
 ] as const;
 export type AIRole=typeof aiRoles[number]['id'];

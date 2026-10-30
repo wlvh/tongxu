@@ -13,7 +13,7 @@ import {externalExecutableFamily,externalEntrypoint} from './external-executable
 
 const exec=promisify(execFile);
 export type AIModel={id:string;resolvedId:string|null;name:string;description:string;efforts:string[];defaultEffort:string|null;isDefault:boolean};
-export type AIProvider={id:string;tool:CliTool;path:string;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown';models:AIModel[];observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean};evidence:string};
+export type AIProvider={id:string;tool:CliTool;path:string;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown';models:AIModel[];observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
 export type AIModelChoice={model:string;effort:string|null};
 export type AICatalogConfig={root:string;configured:Array<{tool:CliTool;path:string}>};
 const word=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=256&&!v.startsWith('-')&&!/[\x00-\x20]/.test(v);
@@ -59,13 +59,13 @@ export async function inspectAIProvider(tool:CliTool,path:string,directory:strin
       const config=await rpc.request('config/read',{includeLayers:false,cwd});checkConfig(config.config);
       const packageRoot=resolve(dirname(identity.realpath),'../../..'),host=join(packageRoot,'bin','codex-code-mode-host');let scopedTools=false;
       if(identity.realpath===join(packageRoot,'CodexCLI.app/Contents/MacOS/codex'))try{await access(host,constants.X_OK);scopedTools=true;}catch{}
-      result.capabilities={readonlyMessages:true,scopedTools,ownedControl:(identity.capabilities as any).optionalProfiles?.ownedControl===true};
+      result.capabilities={readonlyMessages:true,scopedTools,ownedControl:(identity.capabilities as any).optionalProfiles?.ownedControl===true,controlledReports:true,impactReports:false};
     }else{
       const auth=await exec(identity.realpath,['auth','status','--json'],{timeout:15000,maxBuffer:256*1024,env:{...process.env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'}}).then(r=>JSON.parse(r.stdout),()=>null);
       result.authentication=auth?.loggedIn&&auth.authMethod==='claude.ai'&&auth.apiProvider==='firstParty'?'subscription':auth?.loggedIn?'other':auth?.loggedIn===false?'not_logged_in':'unknown';
       const metadata=(identity.capabilities as any).initialization??await claudeMetadata(identity.realpath,process.env);result.models=parseAIModels('claude',metadata.models);
       save(join(directory,'catalog-metadata.json'),{reportedVersion:metadata.reportedVersion,rawResponseSha256:metadata.rawResponseSha256,models:metadata.models,rawOutput:metadata.rawOutput,userMessagesSent:0});
-      result.capabilities={readonlyMessages:true,scopedTools:false,ownedControl:false};
+      result.capabilities={readonlyMessages:true,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:true};
     }
     result.available=result.models.length>0&&result.authentication==='subscription';result.reason=result.available?null:result.authentication!=='subscription'?'ai_subscription_not_confirmed':'ai_model_catalog_empty';
   }catch(e){result.reason=e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'ai_probe_unavailable';}
