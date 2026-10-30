@@ -139,6 +139,10 @@ async function workbenchReport(p: WorkbenchPlan, source: string, operation: stri
   const s = p.sources.find(s => s.id === source); if (!s) throw new Error('report_not_found');
   return {source,...await QueueStore.observeReceptionReport(s.store,s.item,operation)};
 }
+export async function workbenchMessageReport(p:WorkbenchPlan,source:string,run:string,messageId:string){
+  const selected=p.sources.find(s=>s.id===source);if(!selected||!/^[a-f0-9]{64}$/.test(run)||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(messageId))throw new Error('report_not_found');
+  return QueueStore.observeMessageReport(selected.store,selected.item,run,messageId);
+}
 export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider}) {
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
@@ -204,6 +208,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const context=await projectPlan(scope);
       if(tool==='tongxu_project_tasks'){if(!exactKeys(args,[]))throw new Error('project_chat_tool_arguments_invalid');return {...await workbenchState(context.plan),project:context.project};}
       if(tool==='tongxu_project_report'){if(!exactKeys(args,['source','operation'])||typeof args.source!=='string'||typeof args.operation!=='string')throw new Error('project_chat_tool_arguments_invalid');return workbenchReport(context.plan,args.source,args.operation);}
+      if(tool==='tongxu_project_message_report'){if(!exactKeys(args,['source','run','messageId'])||['source','run','messageId'].some(k=>typeof args[k]!=='string'))throw new Error('project_chat_tool_arguments_invalid');return workbenchMessageReport(context.plan,args.source,args.run,args.messageId);}
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject).catch(error=>{projectChat=undefined;throw error;});
   };
@@ -246,6 +251,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const withAI=<T>(fn:()=>T)=>ai&&selection?withAIPreferences(ai.snapshot(selection),fn):fn();
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');
+        const prompt=/^\/api\/ai-settings\/prompts\/([a-z_]+)$/.exec(url.pathname);if(req.method==='GET'&&prompt){json(res,200,await ai.prompt(prompt[1]!));return;}
         if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
         if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
@@ -322,7 +328,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const assessment=/^\/api\/delivery-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);
       if(assessment){if(!deliveryControls)throw new Error('report_not_found');json(res,200,await deliveryControls.report(assessment[1]!,assessment[2]!));return;}
       const message=/^\/api\/message-report\/([a-z0-9-]{1,64})\/([a-f0-9]{64})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
-      if(message){const source=plan.sources.find(s=>s.id===message[1]);if(!source)throw new Error('report_not_found');json(res,200,await QueueStore.observeMessageReport(source.store,source.item,message[2]!,message[3]!));return;}
+      if(message){json(res,200,await workbenchMessageReport(plan,message[1]!,message[2]!,message[3]!));return;}
       const feedback=/^\/api\/judgment-feedback-report\/([a-z0-9-]{1,64})$/.exec(url.pathname);
       if(feedback){const source=plan.sources.find(s=>s.id===feedback[1]),keys=[...url.searchParams.keys()].sort();if(!source||keys.join()!=='feedback,judgment'||!text(url.searchParams.get('judgment'),128)||!text(url.searchParams.get('feedback'),128))throw new Error('judgment_feedback_not_selected');json(res,200,await QueueStore.observeJudgmentFeedback(source.store,source.item,{judgment:url.searchParams.get('judgment')!,feedback:url.searchParams.get('feedback')!}));return;}
       const baseline=/^\/api\/owner-baseline\/([a-z0-9-]{1,64})\/([a-f0-9]{64})$/.exec(url.pathname);if(baseline){if(!ownerControls)throw new Error('baseline_not_selected');json(res,200,await ownerControls.baseline(baseline[1]!,baseline[2]!));return;}

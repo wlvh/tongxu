@@ -97,6 +97,13 @@ test('normal project AI settings feed actual native model/effort and stay fixed 
   const q=question('使用本项目选择的模型');await f.post('/api/project-secretary/ask',q);const answer=await f.wait(q.conversationId,m=>m[0]?.status==='completed');assert.equal(answer.messages[0].receipt.aiExecution.actualModel,'fixture-astra');assert.equal(answer.messages[0].receipt.aiExecution.actualEffort,'max');const input=(await f.logs()).find(x=>x.kind==='input');assert.equal(input.model,'fixture-astra');assert.equal(input.effort,'max');
   await f.post('/api/ai-settings/role',{revision:1,role:'secretary',choice:null});const before=await f.logs();await f.post('/api/project-secretary/ask',q);await f.close();const reopened=await f.launch();try{const restored=await reopened.get('/api/project-secretary/conversations/'+q.conversationId);assert.deepEqual(restored.data.messages[0].receipt.aiExecution,answer.messages[0].receipt.aiExecution);assert.deepEqual(await f.logs(),before);}finally{await reopened.close();}
 });
+
+test('each AI setting exposes a usable destination and complete role policy without starting a model',async t=>{
+  const f=await fixture(t),state=await f.get('/api/ai-settings');assert.equal(state.status,200);assert.equal(state.data.roles.length,6);
+  for(const role of state.data.roles){assert.ok(['secretary','tasks','retrospective','deliveries'].includes(role.view));assert.ok(role.entry.length>0);assert.ok(role.interaction.length>0);
+    const prompt=await f.get('/api/ai-settings/prompts/'+role.id);assert.equal(prompt.status,200);assert.equal(prompt.data.assembly.role,role.id);assert.ok(prompt.data.assembly.system.includes('全文已由运行器放入系统提示'));assert.equal(prompt.data.modelInputs,0);}
+  assert.equal((await f.get('/api/ai-settings/prompts/not_a_role')).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+});
 test('a provider that silently substitutes the selected model is rejected before any model input',async t=>{
  const f=await fixture(t,'wrong-selected-model'),scan=await f.post('/api/ai-settings/scan',{}),provider=scan.data.catalog.find((p:any)=>p.available);await f.post('/api/ai-settings/role',{revision:0,role:'secretary',choice:{providerId:provider.id,model:'fixture-astra',effort:'max'}});const q=question('拒绝换模型');await f.post('/api/project-secretary/ask',q);const state=await f.wait(q.conversationId,m=>m[0]&&!m[0].active);assert.notEqual(state.messages[0].status,'completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
 });
