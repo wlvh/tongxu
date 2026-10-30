@@ -117,10 +117,11 @@ export class ProjectChat{
     }catch(e){
       await active.session?.close().catch(()=>{});try{await this.complete(id);return;}catch{}
       const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
-      let ended=rowPhase==='registered'&&!await exists(native);
+      const unstarted=rowPhase==='registered'&&!await exists(native);let ended=unstarted;
       if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
-      this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(!ended?'unknown':active.stop?'interrupted':'failed',reason(e),now(),id);
-      if(await exists(directory))save(join(directory,'outcome.json'),{status:active.stop?'interrupted':'failed',reason:reason(e),automaticResend:false});
+      const phase=!ended?'unknown':active.stop?'interrupted':'failed';
+      this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(phase,reason(e),now(),id);
+      if(await exists(directory))save(join(directory,'outcome.json'),{status:phase,nativeProcessState:unstarted?'not_started':ended?'ended':'unknown',invocationOutcome:active.stop?'stop_requested':'error',reason:reason(e),automaticResend:false});
     }
   }
   private async verified(id:string){
