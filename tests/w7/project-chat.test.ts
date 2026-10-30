@@ -114,6 +114,21 @@ test('the visible wait limit interrupts the exact owned turn, records timeout ra
   const outcome=JSON.parse(await readFile(join(f.root,'chats',q.requestId,'outcome.json'),'utf8'));assert.equal(outcome.invocationOutcome,'timeout');
   await f.post('/api/project-secretary/ask',q);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
 });
+
+for(const cause of ['timeout','user'] as const)test('failed '+cause+' metadata write cannot skip exact owned interruption and process cleanup',async t=>{
+  const f=await fixture(t,cause==='timeout'?'timeout':'hold'),q=question('明确停止记录失败样例');await f.post('/api/project-secretary/ask',q);
+  for(let i=0;i<120;i++){if((await f.logs()).some(x=>x.kind==='input'))break;await new Promise(r=>setTimeout(r,10));}
+  const directory=join(f.root,'chats',q.requestId),native=join(directory,'native');
+  // Only this explanatory record's atomic rename fails; original capture remains writable.
+  await mkdir(join(directory,cause==='timeout'?'timeout-stop-request.json':'stop-request.json'));
+  if(cause==='user'){const stop=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stop.status,200);assert.equal(stop.data.stopRecordSaved,false);}
+  const result=await f.wait(q.conversationId,m=>m[0]&&['failed','interrupted'].includes(m[0].status)&&!m[0].owned);
+  assert.equal(result.messages[0].answer,null);const sent=(await readFile(join(native,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)),thread=JSON.parse(await readFile(join(native,'thread.json'),'utf8')).thread,interrupt=sent.find(m=>m.method==='turn/interrupt');
+  assert.ok(interrupt);assert.equal(interrupt.params.threadId,thread.id);assert.equal(interrupt.params.turnId,'project-turn');assert.equal(sent.filter(m=>m.method==='turn/start').length,1);
+  const exited=JSON.parse(await readFile(join(native,'exit.json'),'utf8'));assert.equal(exited.code,0);const outcome=JSON.parse(await readFile(join(directory,'outcome.json'),'utf8'));assert.equal(outcome.nativeProcessState,'ended');
+  if(cause==='timeout')assert.equal(outcome.cleanupRecordProblem,'timeout_record_unavailable');
+  await f.post('/api/project-secretary/ask',q);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
 test('a provider that silently substitutes the selected model is rejected before any model input',async t=>{
  const f=await fixture(t,'wrong-selected-model'),scan=await f.post('/api/ai-settings/scan',{}),provider=scan.data.catalog.find((p:any)=>p.available);await f.post('/api/ai-settings/role',{revision:0,role:'secretary',choice:{providerId:provider.id,model:'fixture-astra',effort:'max'}});const q=question('拒绝换模型');await f.post('/api/project-secretary/ask',q);const state=await f.wait(q.conversationId,m=>m[0]&&!m[0].active);assert.notEqual(state.messages[0].status,'completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
 });

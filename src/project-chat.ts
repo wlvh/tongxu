@@ -120,14 +120,20 @@ export class ProjectChat{
       active.session=await BoundedCodexSession.start({executable:runtimeConfig.codexExecutable,...(aiSelection?{aiModel:modelChoice(aiSelection)}:{}),directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:this.config.timeoutMs,executionKind:this.config.executionKind,beforeTurn:check,gate,control:{beforeControl:async request=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');send();}}});
       await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,secretarySchema);await active.session.close();await this.complete(id);
     }catch(e){
-      if(reason(e)==='executor_wait_timeout'&&active.session){active.timedOut=true;save(join(directory,'timeout-stop-request.json'),{at:now(),requestId:id,source:'configured_wait_limit',timeoutMs:this.config.timeoutMs,automaticResend:false});await this.stopNative(id,active,'timeout');}
+      let cleanupRecordProblem:string|null=null;
+      if(reason(e)==='executor_wait_timeout'&&active.session){
+        active.timedOut=true;
+        try{save(join(directory,'timeout-stop-request.json'),{at:now(),requestId:id,source:'configured_wait_limit',timeoutMs:this.config.timeoutMs,automaticResend:false});}
+        catch{cleanupRecordProblem='timeout_record_unavailable';}
+        finally{await this.stopNative(id,active,'timeout').catch(()=>{});}
+      }
       await active.session?.close().catch(()=>{});try{await this.complete(id);return;}catch{}
       const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
       const unstarted=rowPhase==='registered'&&!await exists(native);let ended=unstarted;
       if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
       const phase=!ended?'unknown':active.stop?'interrupted':'failed';
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(phase,reason(e),now(),id);
-      if(await exists(directory))save(join(directory,'outcome.json'),{status:phase,nativeProcessState:unstarted?'not_started':ended?'ended':'unknown',invocationOutcome:active.stop?'stop_requested':active.timedOut?'timeout':'error',reason:reason(e),automaticResend:false});
+      if(await exists(directory))save(join(directory,'outcome.json'),{status:phase,nativeProcessState:unstarted?'not_started':ended?'ended':'unknown',invocationOutcome:active.stop?'stop_requested':active.timedOut?'timeout':'error',reason:reason(e),...(cleanupRecordProblem?{cleanupRecordProblem}:{}),automaticResend:false});
     }
   }
   private async verified(id:string){
@@ -155,9 +161,11 @@ export class ProjectChat{
     const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
     if(!row||row.account!==accountId||row.repository!==repositoryId)throw new Error('project_chat_outside_project');
     const active=this.active.get(id);if(!active){await this.recover(row);return {requestId:id,stopRequested:false,newModelInputs:0};}
-    active.stop=true;this.db.prepare("UPDATE messages SET problem='project_chat_user_stop_requested' WHERE id=?").run(id);
-    if(await exists(this.directory(id)))save(join(this.directory(id),'stop-request.json'),{at:now(),requestId:id,source:'explicit_user_stop'});
-    await this.stopNative(id,active);return {requestId:id,stopRequested:true,newModelInputs:0};
+    active.stop=true;let stopRecordSaved=false;
+    try{this.db.prepare("UPDATE messages SET problem='project_chat_user_stop_requested' WHERE id=?").run(id);if(await exists(this.directory(id))){save(join(this.directory(id),'stop-request.json'),{at:now(),requestId:id,source:'explicit_user_stop'});stopRecordSaved=true;}}
+    catch{/* Explanatory record failure must never bypass owned cleanup. */}
+    finally{await this.stopNative(id,active).catch(()=>{});}
+    return {requestId:id,stopRequested:true,stopRecordSaved,newModelInputs:0};
   }
   async drain(){this.accepting=false;for(const a of this.active.values())a.stop=true;await Promise.allSettled([...this.active].map(([id,a])=>this.stopNative(id,a)));await Promise.allSettled([...this.active.values()].map(a=>a.promise));this.db.close();}
 
