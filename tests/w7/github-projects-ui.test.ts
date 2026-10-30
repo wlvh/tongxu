@@ -59,6 +59,12 @@ for(const failed of [false,true])test('an old project action '+(failed?'failure'
   if(failed)p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})"); // Returning to A is a new page context too.
   p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({tasks:[]})});await pending;assert.equal(p.nodes.get('notice')!.textContent,'');
 });
+test('the baseline-review form also binds its success notice to the submitting project through the follow-up refresh',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});view='overview';render=()=>{};overallBaselineDrafts.set('review-a',{requestId:'fixed-question',baseline:'a'.repeat(64)})");
+  const pending=p.run("overallBaselinePreparation({id:'review-a',source:'task-a',current:true,canPrepareFromBaseline:true,baselineChoices:[{proposalSha256:'a'.repeat(64),createdAt:'2026-10-30T00:00:00Z'}]}).children.find(node=>node.tag==='form').onsubmit({preventDefault(){}})");
+  assert.equal(p.fetchCalls[0]!.path,'/api/overall-baseline/review-a/prepare');p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({duplicate:false})});await flush();assert.equal(p.fetchCalls[1]!.path,'/api/state');
+  p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({tasks:[]})});await pending;assert.equal(p.nodes.get('notice')!.textContent,'');
+});
 test('switching projects while both lists are pending cannot let old responses overwrite the chosen repository',async()=>{
   const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");assert.equal(p.calls.length,2);p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");assert.equal(p.calls.length,4);
   p.calls[2]!.resolve(data(2,'issues',22));p.calls[3]!.resolve(data(2,'pulls',23));await flush();p.calls[0]!.resolve(data(1,'issues',11));p.calls[1]!.resolve(data(1,'pulls',12));await flush();
