@@ -29,8 +29,8 @@ CLI 按当前稳定入口解析，并按操作所需能力检查，不比较发�
 
 | 用到 AI 的地方 | 用户入口或实际触发 | 程序怎样交付项目材料与收回结果 | 工具与提示边界 |
 | --- | --- | --- | --- |
-| 项目工作秘书 | 工作秘书与跟进，直接输入和发送；没有已登记任务也可用 | `ProjectChat` → `BoundedCodexSession`；5种原项目查询加完整协作消息读取，返回全文与来源 | `secretary` 完整政策 + `projectChatInstructions` + 实际动态工具；只读，不能把聊天当成开发派发 |
-| 原任务秘书及获准跟进 | 同页“原任务历史与跟进”的既有问题/动作 | `SecretaryControls` → `runSecretary`；使用该任务已固定的查询、报告、联系或提醒工具 | `selectedSecretaryTools` 只开放已登记动作；旧模板仍用其原执行配置及条件 |
+| 项目工作秘书 | 常驻右侧的工作秘书，直接输入和发送；收起后从右下角展开，没有已登记任务也可用 | `ProjectChat` → `BoundedCodexSession`；5种原项目查询加完整协作消息读取，返回全文与来源 | `secretary` 完整政策 + `projectChatInstructions` + 实际动态工具；只读，不能把聊天当成开发派发 |
+| 原任务秘书及获准跟进 | 右侧“原任务历史与跟进”的既有问题/动作 | `SecretaryControls` → `runSecretary`；使用该任务已固定的查询、报告、联系或提醒工具 | `selectedSecretaryTools` 只开放已登记动作；旧模板仍用其原执行配置及条件 |
 | 原任务负责人、联系、补查和综合 | 任务与报告中的原联系入口；目标/范围页中已准备的补查 | `TaskControls` / `ScopeFollowupControls` → `TaskInbox` → `runMessages`；完整材料与前序报告随原请求送达，完整消息可读回 | `issue_owner` + 完整上游 + `messagePolicy`；当前联系无任意工具，报告不能自行创建新权限 |
 | 事实核实、受控修复 | 原任务 RETURN 处理；CLI 受控修复入口 | `ReturnControls` → 独立 worker → `runQueueRepair` → `runRepair`；读取限定文件、运行登记测试，写权成立后替换允许路径，再取得新候选 | `verifier_fact` + 固定任务政策 + 受限工具；worker 显式接收已校验的角色选择，原操作冻结后不受后续设置影响 |
 | 独立候选审核和再审 | 修复链自动进入新审核；原 relay CLI | `runCodex` 或无工具的 `BoundedCodexSession`；当前候选源码、差异、测试和原报告作为材料输入 | `reviewer` + 完整固定上游审核政策；独立上下文，无写入，无工具时不能声称重跑测试 |

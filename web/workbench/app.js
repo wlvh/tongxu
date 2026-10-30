@@ -74,7 +74,7 @@ function contactControls(t){
   return panel;
 }
 async function openTaskContactReport(c){
-  const nonce=++reportNonce;$('report-title').textContent=c.title+' · 联系过程与完整报告';$('report-meta').textContent='读取原任务记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent=c.title+' · 联系过程与完整报告';$('report-meta').textContent='读取原任务记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const v=await api('/api/task-control-report/'+encodeURIComponent(c.id));if(nonce!==reportNonce||!$('report-dialog').open)return;const parts=[];for(const [index,s] of v.steps.entries()){const label=index===0?'原A检查与联系选择':index===1?'所选B的独立回复':'返回原A综合';parts.push(label+' · '+(taskControlPhases[s.phase]||s.phase)+'\n原请求 '+s.id+(s.run?' · 原运行 '+s.run:'')+'\n'+(s.report?'会话 '+s.report.sessionId+(s.report.turnId?' · 轮次 '+s.report.turnId:'')+'\n'+(!s.report.completeCapture||!s.report.consumptionConfirmed?'此原文尚未完成捕获或材料消费核实，不能作为完整处理结论。\n':'')+s.report.reportText:'尚无完整最终报告；原执行和部分记录保留。'));}if(!v.complete)parts.push('联系过程尚未完成：'+readableReason(v.waiting||'task_execution_incomplete'));$('report-body').textContent=parts.join('\n\n');$('report-meta').textContent=returnExecutionLabel(v.executionKind)+' · '+(v.selectedContact?'原A选择 '+v.selectedContact:v.complete?'原A未请求联系':'尚待原A完整选择')+' · 不授予写权或本人批准';$('report-raw').textContent=JSON.stringify(v,null,2);document.querySelector('#report-original summary').textContent='查看准确任务、会话、原文与消费关联';$('report-original').hidden=false;}
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原联系报告尚不可读：'+readableReason(e.message);}
 }
@@ -181,11 +181,11 @@ function judgmentFeedbackView(){
  }return page;
 }
 async function openJudgmentFeedback(task,judgment,feedback){
- const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看原判断与反馈记录';$('report-dialog').showModal();
+ const nonce=++reportNonce;$('report-title').textContent=task.title+' · '+feedbackKindLabels[feedback.kind];$('report-meta').textContent='读取原反馈…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看原判断与反馈记录';showWorkbenchReport();
  try{const response=await workspaceFetch('/api/judgment-feedback-report/'+task.id+'?judgment='+encodeURIComponent(judgment.judgmentId)+'&feedback='+encodeURIComponent(feedback.id),{headers:{Authorization:'Bearer '+key},cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error);if(nonce!==reportNonce)return;$('report-meta').textContent='原判断 '+r.original.judgmentId+' · '+r.feedback.coverageWindow+' · 反馈原件已核摘要；不是新的正确性判断或权限';$('report-body').textContent=r.report;$('report-raw').textContent=JSON.stringify({original:r.original,feedback:r.feedback},null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='原反馈尚不可读';$('report-body').textContent=readableReason(e.message);}}
 }
 async function openOverallReport(entry){
-  const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 完整复盘';$('report-meta').textContent='读取原报告…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 完整复盘';$('report-meta').textContent='读取原报告…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const r=await api('/api/overall-report/'+entry.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确测试输出':'原生执行捕获')+' · '+r.verdict+' · '+(r.current?'当前材料':'历史材料')+' · 原文 SHA256 '+r.reportSha256+' · 不代表本人接受成果';$('report-body').textContent=r.report;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原复盘无法读取：'+readableReason(e.message);}
 }
 async function ownerAction(entry,action,body){
@@ -204,7 +204,7 @@ function baselinePreparationPanel(entry){
  const submit=el('button','固定基线原文并准备确认','outline');submit.type='submit';submit.disabled=stale||pendingOwner.has(entry.source);form.append(submit);form.onsubmit=e=>{e.preventDefault();void ownerAction(entry,'prepare',{kind:'baseline',adoption:draft.adoption,contents:draft.contents});};panel.append(form);return panel;
 }
 async function openOwnerBaseline(entry,request){
- const nonce=++reportNonce;$('report-title').textContent='三类固定基线原文';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看基线引用与原来源记录';$('report-dialog').showModal();
+ const nonce=++reportNonce;$('report-title').textContent='三类固定基线原文';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-original').hidden=true;$('report-original').open=false;document.querySelector('#report-original summary').textContent='查看基线引用与原来源记录';showWorkbenchReport();
  try{const r=await api('/api/owner-baseline/'+entry.source+'/'+request.proposalSha256);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确测试来源 · ':'')+(r.applied?'已有原来源接受记录；使用前须重新核原来源':'已准备，尚未取得本人接受')+' · '+r.scopeVersion;$('report-body').textContent=r.material.map(m=>baselineLabels[m.role]+' · '+m.name+'\nSHA256 '+m.sha256+'\n\n'+m.text).join('\n\n────────\n\n');$('report-raw').textContent=JSON.stringify(r,null,2);$('report-original').hidden=false;}catch(e){if(nonce===reportNonce){$('report-meta').textContent='基线原文尚不可读';$('report-body').textContent=readableReason(e.message);}}
 }
 function ownerRequests(entry,kind,send=ownerAction){
@@ -225,7 +225,7 @@ async function scopeFollowupAction(source,action,body){
   catch(e){await refresh();notify('接续未完成：'+readableReason(e.message));}finally{pendingFollowups.delete(source);render();}
 }
 async function openScopeFollowupReport(source,f){
-  const nonce=++reportNonce;$('report-title').textContent='后续工作 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent='后续工作 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const r=await api('/api/scope-followup-report/'+source+'/'+f.task);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确进程夹具':'原模型捕获')+' · '+(r.completeCapture?'完整捕获已核':'捕获待核')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+' · 新受管会话 '+r.sessionId+' · 原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原结果尚不可读：'+readableReason(e.message);}
 }
 function scopeFollowupPanel(entry){
@@ -276,7 +276,7 @@ function ownerView(kind){
   }return page;
 }
 async function openAssessmentReport(entry,assessment){
-  const nonce=++reportNonce;$('report-title').textContent=entry.batch.title+' · 独立领域判断';$('report-meta').textContent='读取准确原报告…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent=entry.batch.title+' · 独立领域判断';$('report-meta').textContent='读取准确原报告…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const r=await api('/api/delivery-report/'+entry.id+'/'+encodeURIComponent(assessment.id));if(nonce!==reportNonce||!$('report-dialog').open)return;const result=r.result,j=result.report;$('report-meta').textContent=(result.executionKind==='fixture'?'明确进程夹具，非真实模型':'原模型捕获')+' · 会话 '+result.sessionId+' · 输入证据 '+r.inputEvidenceSha256+' · 判断不代表本人接受';$('report-body').textContent=j?[j.report,...j.coverage.map(c=>'场景 '+c.scenario+'：'+({pass:'判断通过',reject:'判断退回',needs_evidence:'判断需补证据'}[c.verdict]||c.verdict)+'\n方法：'+c.method+'\n依据：'+c.reason+'\n原件：'+c.evidence.join('、')),'限制：\n'+j.limitations.join('\n')].join('\n\n'):'原最终输出已保存，但格式无效，未形成可用领域判断。\n'+readableReason(result.invalidReason);$('report-raw').textContent=r.rawFinal;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原判断无法读取：'+readableReason(e.message);}
 }
 async function deliveryAction(entry,action,body){
@@ -319,7 +319,7 @@ async function deliveryWorkAction(entry,action,body){
  try{const response=await workspaceFetch('/api/delivery-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_execution_failed');await refresh();if(action==='prepare')deliveryWorkDrafts.delete(entry.id+':'+body.profile);notify(action==='prepare'?'准确执行请求已准备，尚未测试或发送模型；核对原来源授权后再执行。':action==='owner-apply'?'本次准确授权来源已核对；实际执行另看原运行记录。':'请求已交原执行器，正在核原任务或运行结果；登记不等于完成。');}catch(e){await refresh();notify('成果执行未完成：'+readableReason(e.message));}finally{pendingDeliveryWork.delete(entry.id);render();}
 }
 async function openDeliveryWorkReport(entry,r){
- const nonce=++reportNonce;$('report-title').textContent='成果核验 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+ const nonce=++reportNonce;$('report-title').textContent='成果核验 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
  try{const value=await api('/api/delivery-work-report/'+entry.id+'/'+r.id);if(nonce!==reportNonce||!$('report-dialog').open)return;if(value.kind==='assessment'){$('report-meta').textContent=(value.executionKind==='fixture'?'明确进程夹具':'实际模型捕获')+' · '+(value.completeCapture?'完整捕获已核':'捕获待核')+' · '+(value.consumptionConfirmed?'消费已确认':'消费未确认，保留原输出')+' · 原文 SHA256 '+value.reportSha256;$('report-body').textContent=value.reportText;$('report-raw').textContent=value.report;}else{const s=value.state.result,original=value.originals.find(o=>o.sha256===s.reportSha256);$('report-meta').textContent=(s.demonstrationFixture?'明确隔离场景':'固定场景执行')+' · 原运行 '+s.run+' · '+(s.captureComplete?'完整捕获已核':'捕获有缺口')+' · 不等于本人接受';$('report-body').textContent=JSON.stringify({testedHead:s.testedHead,testedTree:s.testedTree,scenarios:s.scenarios,gaps:s.gaps},null,2);$('report-raw').textContent=original?.content||'原报告缺失';}$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原输出尚不可读：'+readableReason(e.message);}
 }
 function deliveryExecutionPanel(entry){
@@ -507,7 +507,7 @@ async function closeSecretaryQuestion(source,id){
   catch(e){notify('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
 }
 async function openSecretaryReport(source,q){
-  const nonce=++reportNonce;$('report-title').textContent='工作秘书 · 完整回答';$('report-meta').textContent='读取原捕获…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent='工作秘书 · 完整回答';$('report-meta').textContent='读取原捕获…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const v=await api('/api/secretary-report/'+encodeURIComponent(source)+'/'+encodeURIComponent(q.requestId));if(nonce!==reportNonce||!$('report-dialog').open)return;if(v.phase!=='completed'||!v.result)throw new Error('secretary_original_unknown');$('report-meta').textContent=(v.executionKind==='fixture'?'明确测试夹具 · ':'')+'会话 '+v.sessionId+' · 原文摘要 '+v.reportSha256;$('report-body').textContent=v.result.report;$('report-raw').textContent=JSON.stringify({question:v.question,sessionId:v.sessionId,turnId:v.turnId,observations:v.result.observations,queueReceipts:v.result.queueReceipts,contactExecutions:v.result.contactExecutions},null,2);document.querySelector('#report-original summary').textContent='查看原问题、会话和工具回执';$('report-original').hidden=false;}
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原回答仍待核实：'+readableReason(e.message);}
 }
@@ -524,7 +524,7 @@ async function returnWorkAction(entry,action){
   catch(e){notify('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
 }
 async function openReturnReport(entry){
-  const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 原退回与完整结果';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 原退回与完整结果';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const v=await api('/api/return-report/'+entry.id);if(nonce!==reportNonce||!$('report-dialog').open)return;if(!v.available)throw new Error(v.reason);const r=v.repair,result=r.originalResult,parts=['原接收者退回报告\n'+r.originalReturn.report];
     if(v.originalReports?.available){if(v.originalReports.recoveryHistory?.writerTerminal==='unknown_or_interrupted')parts.push('原实施会话中断或终态未知；下方保留中断前已完成轮次和完整影响核实。它们不表示原实施会话完成，恢复后的候选由新的独立审核核实。');for(const report of v.originalReports.reports){const label=report.role==='verifier_fact'?'事实核实与实施':report.role==='verifier_impact'?'独立影响核实':'独立再审';parts.push(label+(report.historicalBeforeRecovery?' · 恢复前原记录':'')+' · 原会话第 '+report.turn+' 轮\n会话 '+report.sessionId+(report.turnId?' · 轮次 '+report.turnId:'')+'\n'+report.finalText);}}
     else if(result)parts.push('部分原报告尚不可核读；下列保存结果不能替代完整原文：'+readableReason(v.originalReports?.reason||'original_return_work_unavailable'));
@@ -603,7 +603,7 @@ function clearProjectView(){
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
 }
 function chooseGithubProject(repo){
-  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');
+  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
 }
 async function loadGithubItems(kind,more=false){
   const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
@@ -649,12 +649,12 @@ function githubItemsPanel(kind){
 }
 function selectedGithubView(){
   if(!gh.selected)return projectsView();
-  const page=append(el('div'),intro(gh.selected.fullName,gh.selected.description||'当前项目的 Issues 与 PR；任务、报告和秘书可从左侧进入。',gh.selected.private?'私有项目':'公开项目')),actions=el('div',null,'actions github-project-actions'),back=el('button','切换项目','outline');back.onclick=()=>{void enterView('projects');};append(actions,back,githubLink('打开 GitHub 仓库',gh.selected.url));page.append(actions);
+  const page=append(el('div'),intro(gh.selected.fullName,gh.selected.description||'当前项目的 Issues 与 PR；任务与报告从左侧查看，右侧秘书随时提问。',gh.selected.private?'私有项目':'公开项目')),actions=el('div',null,'actions github-project-actions'),back=el('button','切换项目','outline');back.onclick=()=>{void enterView('projects');};append(actions,back,githubLink('打开 GitHub 仓库',gh.selected.url));page.append(actions);
   if(gh.selected.archived)page.append(el('p','这个仓库已归档，仍可查看已有条目。','github-error'));
   page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
 }
 async function openGithubItem(kind,item){
-  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-dialog').showModal();
+  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
   try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(nonce!==reportNonce||epoch!==gh.epoch||!$('report-dialog').open)return;
     $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
   }catch(error){if(nonce!==reportNonce||epoch!==gh.epoch||gh.selected?.id!==repo.id||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
@@ -664,16 +664,18 @@ function renderGithub(){
   document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'选择项目'),el('p',gh.selected?'任务、报告和秘书均使用当前项目。切换只改变查看范围，不取消已发出的执行。':'选择一个项目开始；已有记录保留在各自项目中。'));
   $('access-mode').textContent='GitHub 只读';$('access-description').textContent='项目选择决定工作范围；实际执行仍按原任务与权限。浏览不会启动模型。';$('observed').textContent=gh.account?(gh.selected?gh.selected.fullName+' · ':'')+'GitHub · '+gh.account.login:'正在检查 GitHub';$('observation-boundary').textContent='Issues 与 PR 来自 GitHub；项目任务和报告来自各自原记录。选择和查看不启动模型。';
   const runtime=entryInfo?.runtime;$('runtime-version').hidden=!runtime;if(runtime)$('runtime-version').textContent='本次运行版本 '+runtime.sourceHead.slice(0,12);
-  document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=b.dataset.view==='local-history'||(b.dataset.view!=='projects'&&!gh.selected);if(b.dataset.view==='github')b.disabled=!gh.selected;if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=['local-history','secretary'].includes(b.dataset.view)||(b.dataset.view!=='projects'&&!gh.selected);if(b.dataset.view==='github')b.disabled=!gh.selected;if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   $('content').replaceChildren(view==='github'?selectedGithubView():projectsView());if(filterSelection){const input=$('github-project-filter');input.focus({preventScroll:true});input.setSelectionRange(filterSelection.start,filterSelection.end);}$('refresh').disabled=gh.loading||(view==='github'&&(gh.issues?.loading||gh.pulls?.loading));
 }
 async function enterView(next){
   const notify=projectNotifier();
   if(next==='local-history')next='overview';
+  if(next==='secretary'&&entryInfo?.githubProjects){setSecretaryOpen(true);return;}
+  if(next!==view&&$('report-dialog').open)$('report-dialog').close();
   if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
   if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
   if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
-  view=next;if(entryInfo?.githubProjects&&next==='ai-settings'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadAISettings();return;}if(entryInfo?.githubProjects&&next==='secretary'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadProjectChat();return;}if(!state)await refresh();else render();
+  view=next;if(entryInfo?.githubProjects&&next==='ai-settings'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadAISettings();return;}if(!state)await refresh();else render();
 }
 async function startEntry(){
   const notify=projectNotifier();
@@ -684,8 +686,9 @@ async function startEntry(){
 }
 
 function render() {
+  if(entryInfo?.githubProjects&&view==='secretary')view=gh.selected?'github':'projects';
+  renderProjectChat();
   if(entryInfo?.githubProjects&&view==='ai-settings'&&gh.selected){renderAISettings();return;}
-  if(entryInfo?.githubProjects&&view==='secretary'&&gh.selected){renderProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){renderGithub();return;}
   if (!state) return;
   document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'本机原任务'),el('p',gh.selected?'只显示本项目的任务、报告和操作。切换项目不取消已经发出的执行。':'查看原执行和完整报告。'));
@@ -702,13 +705,13 @@ function render() {
   document.querySelector('[data-view="retrospective"]').hidden=!state.tasks.some(t=>t.available)&&!state.overallReviews?.length;
   for(const name of ['goals','authority'])document.querySelector('[data-view="'+name+'"]').hidden=!state.ownerControls?.length;
   document.querySelectorAll('[data-view]').forEach(b => { if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  if(entryInfo?.githubProjects&&gh.selected)document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=b.dataset.view==='local-history';});
+  if(entryInfo?.githubProjects&&gh.selected)document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=['local-history','secretary'].includes(b.dataset.view);});
   $('content').replaceChildren(view === 'overview' ? overview() : view === 'tasks' ? taskView() : view==='deliveries'?deliveryView():view==='organization'?organizationView():view==='retrospective'?retrospectiveView():view==='secretary'?secretaryView():['goals','authority'].includes(view)?ownerView(view):append(el('div'), intro('协作记录', '保留原阶段顺序。独立材料检查、等待、实际发送和返回分别登记。'), timeline([...state.events].reverse())));
 }
 async function refresh() {
+  if(entryInfo?.githubProjects&&gh.selected)void loadProjectChat();
   if(entryInfo?.githubProjects&&view==='ai-settings'){await loadAISettings();return;}
   if(entryInfo===null){await startEntry();return;}
-  if(entryInfo?.githubProjects&&view==='secretary'){await loadProjectChat();return;}
   if(entryInfo?.githubProjects&&githubView()){if(view==='projects')await loadGithubProjects();else await Promise.all([loadGithubItems('issues'),loadGithubItems('pulls')]);return;}
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}
   const epoch=gh.epoch,projectId=gh.selected?.id,current=()=>!entryInfo?.githubProjects||epoch===gh.epoch&&projectId===gh.selected?.id;
@@ -720,16 +723,22 @@ async function refresh() {
   } catch (e) { if(!current())return;notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
   finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
 }
+function showWorkbenchReport(){
+  const dialog=$('report-dialog');if(dialog.open)return;
+  if(entryInfo?.githubProjects){dialog.dataset.projectPanel='true';if(typeof secretaryMedia!=='undefined'&&secretaryMedia?.matches)setSecretaryOpen(false,false);dialog.show();}
+  else{delete dialog.dataset.projectPanel;dialog.showModal();}
+}
 async function openReport(t, o) {
-  const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; $('report-dialog').showModal();
+  const nonce = ++reportNonce; $('report-title').textContent = t.title + ' · 完整报告'; $('report-meta').textContent = '读取原操作…'; $('report-body').textContent = ''; $('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false; showWorkbenchReport();
   try { const r = await api('/api/report/' + t.id + '/' + o.id); if (nonce !== reportNonce || !$('report-dialog').open) return; $('report-meta').textContent = (r.subject ? subjectText(r.subject) + ' · 非逐成员放行 · ' : '') + (verdicts[r.verdict] || r.verdict) + (r.judgmentId ? ' · 判断 ' + r.judgmentId : ' · 原操作 ' + r.operation) + ' · 原文 SHA256 ' + r.reportSha256 + ' · ' + executionText(r.nativeExecution); $('report-body').textContent = r.report; }
   catch (e) { if (nonce === reportNonce) $('report-body').textContent = '原报告无法读取：' + e.message; }
 }
 async function openMessageReport(t,run,m){
-  const nonce=++reportNonce;$('report-title').textContent=t.title+' · 完整消息';$('report-meta').textContent='读取原消息…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
+  const nonce=++reportNonce;$('report-title').textContent=t.title+' · 完整消息';$('report-meta').textContent='读取原消息…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;showWorkbenchReport();
   try{const r=await api('/api/message-report/'+t.id+'/'+run.run+'/'+encodeURIComponent(m.id));if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.current?'当前材料':'历史材料')+' · '+(r.completeCapture?'完整捕获已核':'捕获尚未核实')+(r.consumptionConfirmed?' · 已确认消费指定材料':' · 材料消费未确认，以下保留原始输出')+(r.nativeSessionResumed?' · 准确续接原会话 ':' · 会话 ')+r.sessionId+' · 传输原文 SHA256 '+r.reportSha256;$('report-body').textContent=r.reportText;$('report-raw').textContent=r.report;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原消息无法读取：'+e.message;}
 }
 document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => { void enterView(b.dataset.view); }; });
+$('report-dialog').addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.isComposing){$('report-dialog').close();e.preventDefault();}});
 $('close-report').onclick = () => $('report-dialog').close(); $('report-dialog').addEventListener('close', () => { reportNonce++;githubDetailEpoch=null;document.querySelector('#report-original summary').textContent='查看完整传输原文（含消息引用）'; });
 $('refresh').onclick = refresh;
 document.querySelector('.skip').onclick = e => { e.preventDefault(); $('content').focus(); $('content').scrollIntoView(); };

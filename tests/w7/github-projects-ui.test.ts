@@ -22,19 +22,28 @@ async function page(){
     get firstChild(){return this.children[0];}
     setAttribute(k:string,v:string){this.attributes.set(k,v);}
     removeAttribute(k:string){this.attributes.delete(k);}
-    showModal(){this.open=true;}
+    show(){this.open=true;this.modal=false;}
+    showModal(){this.open=true;this.modal=true;}
     close(){this.open=false;}
   }
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
   const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
   const fetchCalls:Array<{path:string;options:any;resolve:(value:any)=>void;reject:(error:Error)=>void}>=[];
-  const context=createContext({fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
+  const context=createContext({renderProjectChat:()=>{},loadProjectChat:()=>{},setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
   const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,fetchCalls,run,state,nodes,document,findFilter};
 }
 const data=(id:number,kind:string,number:number)=>({repository:{id,fullName:'fixture/repo'+id,description:'Fixture repository',private:true,archived:false,url:'https://github.com/fixture/repo'+id},kind,items:[{number,title:'repo'+id,labels:[],state:'open',updatedAt:'2026-10-30T00:00:00Z',author:'fixture',url:'https://github.com/fixture/repo'+id+'/issues/'+number}],page:1,hasNext:false,connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'}});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+test('project reports are nonmodal so the companion can remain usable; legacy standalone reports keep their modal behavior',async()=>{
+  const p=await page();p.run('showWorkbenchReport()');assert.equal(p.nodes.get('report-dialog')!.modal,false);assert.equal(p.nodes.get('report-dialog')!.dataset.projectPanel,'true');p.run("$('report-dialog').close();entryInfo={githubProjects:false};showWorkbenchReport()");assert.equal(p.nodes.get('report-dialog')!.modal,true);
+});
+test('opening the companion keeps the current page and report, while page navigation closes the report',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});state={tasks:[]};render=()=>{};showWorkbenchReport()");
+  await p.run("enterView('secretary')");assert.equal(p.run('view'),'github');assert.equal(p.nodes.get('report-dialog')!.open,true);
+  await p.run("enterView('tasks')");assert.equal(p.run('view'),'tasks');assert.equal(p.nodes.get('report-dialog')!.open,false);assert.equal(p.fetchCalls.length,0);
+});
 test('project workspace reads and writes carry the chosen account and repository, and discard late JSON bodies',async()=>{
   const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");
   const pending=p.run("api('/api/state')");assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Project'],'1');assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Account'],'7');
