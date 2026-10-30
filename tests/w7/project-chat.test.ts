@@ -9,6 +9,7 @@ import {mkdir} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {startWorkbench} from '../../src/workbench.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
+import {BoundedCodexSession} from '../../src/repair-native.js';
 
 async function fixture(t:test.TestContext,mode='normal'){
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-project-chat-'))),trace=join(root,'trace.ndjson'),binary=join(root,'codex.mjs');await writeFile(trace,'');
@@ -75,4 +76,13 @@ for(const mode of ['missing','truncated'])test('lost original '+mode+' process i
   const unknown=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(unknown.data.messages[0].status,'unknown');assert.equal((await f.post('/api/project-secretary/ask',question('不能绕过未知旧执行'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
   await writeFile(join(native,'process.json'),JSON.stringify(original));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;
   const ended=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(ended.data.messages[0].status,'interrupted');assert.equal(ended.data.messages[0].answer,null);const next=question('原执行结束后明确提新问题');assert.equal((await f.post('/api/project-secretary/ask',next)).status,202);await f.wait(next.conversationId,m=>m[0]?.status==='completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
+test('initialization rejection after creating a native stage does not infer an ended child from a missing session object',async t=>{
+  const f=await fixture(t),originalStart=BoundedCodexSession.start,child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});assert.ok(child.pid);const exited=new Promise<void>(r=>child.once('exit',()=>r()));
+  t.after(async()=>{BoundedCodexSession.start=originalStart;child.kill();await exited;});
+  BoundedCodexSession.start=async options=>{await mkdir(options.directory,{recursive:true});await writeFile(join(options.directory,'process.json'),'{truncated');throw new Error('fixture_start_rejected_after_native_stage');};
+  const q=question('启动故障夹具');assert.equal((await f.post('/api/project-secretary/ask',q)).status,202);const unknown=await f.wait(q.conversationId,m=>m[0]&&m[0].status!=='registered'&&!m[0].owned);assert.equal(unknown.messages[0].status,'unknown');assert.equal(unknown.messages[0].active,false);
+  assert.equal((await f.post('/api/project-secretary/ask',question('不得越过未知启动'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+  await writeFile(join(f.root,'chats',q.requestId,'native','process.json'),JSON.stringify({pid:child.pid,status:'spawn_attempted'}));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;BoundedCodexSession.start=originalStart;
+  assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'interrupted');
 });

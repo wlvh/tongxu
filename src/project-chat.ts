@@ -67,7 +67,7 @@ export class ProjectChat{
   }
   async conversation(scope:ProjectChatScope,id:string){
     const c=this.conversationRow(scope,id);for(const row of this.rows(id))await this.recover(row);
-    const messages=[];for(const r of this.rows(id)){let answer=r.report,receipt=r.receipt?JSON.parse(r.receipt):null,status=r.phase,problem=r.problem;if(status==='completed')try{const checked=await this.verified(r.id);if(checked.report!==answer||canonical(checked.receipt)!==canonical(receipt))throw new Error('project_chat_saved_answer_changed');}catch(e){answer=null;receipt=null;status='unavailable';problem=reason(e);}messages.push({id:r.id,parent:r.parent,question:r.question,status,createdAt:r.created_at,finishedAt:r.finished_at,problem,answer,receipt,active:activePhase(r.phase)&&!!(this.active.has(r.id)||r.pid&&alive(r.pid)),owned:this.active.has(r.id)});}
+    const messages=[];for(const r of this.rows(id)){let answer=r.report,receipt=r.receipt?JSON.parse(r.receipt):null,status=r.phase,problem=r.problem;if(status==='completed')try{const checked=await this.verified(r.id);if(checked.report!==answer||canonical(checked.receipt)!==canonical(receipt))throw new Error('project_chat_saved_answer_changed');}catch(e){answer=null;receipt=null;status='unavailable';problem=reason(e);}messages.push({id:r.id,parent:r.parent,question:r.question,status,createdAt:r.created_at,finishedAt:r.finished_at,problem,answer,receipt,active:activePhase(r.phase)&&!!(this.active.has(r.id)||r.phase!=='unknown'&&r.pid&&alive(r.pid)),owned:this.active.has(r.id)});}
     return {id:c.id,title:c.title,project:scope.repository,messages,newModelInputs:0,continuation:'saved_history_in_new_native_context'};
   }
   async begin(scope:ProjectChatScope,body:unknown){
@@ -109,15 +109,16 @@ export class ProjectChat{
         if(Buffer.byteLength(raw)>128*1024||bytes>512*1024)throw new Error('project_chat_material_limit');await check();before?.();const observationId=hash(raw);observations.push({id:observationId,tool:p.tool,observation});save(join(directory,'observations.json'),observations);
         return {success:true,contentItems:[{type:'inputText',text:JSON.stringify({observationId,...observation})}]};
       }};
-      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);
+      await check();
       // Account/read and ordinary rate-limit observations are captured by the
       // native executor immediately before input. No stale evidence is dated anew.
       active.session=await BoundedCodexSession.start({executable:this.config.codexExecutable,directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:this.config.timeoutMs,executionKind:this.config.executionKind,beforeTurn:check,gate,control:{beforeControl:async request=>{if(!active.stop||request.action!=='interrupt'||request.id!=='stop-'+id)throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!active.stop||request.action!=='interrupt'||request.id!=='stop-'+id)throw new Error('project_chat_control_not_allowed');send();}}});
-      await check();await active.session.turn(canonical(input),candidate,secretarySchema);await active.session.close();await this.complete(id);
+      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,secretarySchema);await active.session.close();await this.complete(id);
     }catch(e){
       await active.session?.close().catch(()=>{});try{await this.complete(id);return;}catch{}
-      let ended=!active.session;
-      if(active.session)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
+      const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
+      let ended=rowPhase==='registered'&&!await exists(native);
+      if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(!ended?'unknown':active.stop?'interrupted':'failed',reason(e),now(),id);
       if(await exists(directory))save(join(directory,'outcome.json'),{status:active.stop?'interrupted':'failed',reason:reason(e),automaticResend:false});
     }
