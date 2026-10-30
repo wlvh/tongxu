@@ -264,7 +264,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.projectSecretary){if(req.method!=='GET')throw new Error('project_chat_not_configured');json(res,200,{available:false,reason:'project_chat_not_configured',conversations:[],newModelInputs:0});return;}
         const chat=await openProjectChat(),conversation=/^\/api\/project-secretary\/conversations\/([0-9a-f-]{36})$/.exec(url.pathname);
         if(req.method==='GET'){
-          if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
+          if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),timeoutMs:p.projectSecretary.timeoutMs,aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
         if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
