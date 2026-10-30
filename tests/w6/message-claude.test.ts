@@ -64,3 +64,8 @@ test('an unfamiliar Claude release with the same stream contract works after its
   const runtime=r.runtimes.find(x=>x.participant==='impact')!,identity=JSON.parse(await readFile(join(runtime.started.directory,'executable.json'),'utf8'));assert.equal(identity.version,'99.7.0 (Claude Code)');
   const trace=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),trace);
 });
+
+
+test('Claude reports a different model after submission: retain the sent original as unknown and never automatically resend',async t=>{
+ const f=await messageFixture(t,'304-wrong-selected-model');f.plan.participants=[{...f.plan.participants[1]!,parent:null,role:'issue_owner',aiModel:{model:'sonnet',effort:'xhigh'}}];f.plan.messages=[{...f.plan.messages[0]!,to:f.plan.participants[0]!.id}];await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.equal(result.newModelRequests,1);assert.equal(result.messages[0]!.state,'Unknown');assert.equal(result.messages[0]!.reply,null);assert.ok(JSON.stringify(result.problems).includes('ai_selected_model_not_applied'));const before=await readFile(f.trace),repeated=await runMessages(f.store,f.path);assert.equal(repeated.newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+});

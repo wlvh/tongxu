@@ -1,5 +1,5 @@
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
-import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels} from './ai-execution.js';
+import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import { mkdir,readFile,lstat,realpath,readdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -86,7 +86,7 @@ export class ReadonlyDialog {
       if(this.rpc.failure)throw new Error(this.rpc.failure);const requests=jsonLines(await regular(join(this.o.directory,'stdin.ndjson'),16*1024*1024)).filter(m=>m.id!==undefined&&m.method),responses=codexReplyMap(requests,this.rpc.events);if([...responses.values()].some(r=>Object.hasOwn(r,'error')))throw new Error('message_rpc_reply_ambiguous');const result=parseCodexResult(await regular(join(this.o.directory,'stdout.ndjson'),16*1024*1024),binding(this.o,this.route,this.turns,this.codexVersion!));if(result.status!=='final_observed')throw new Error('message_final_not_complete');const final=result.turns.at(-1)!.final!.text;return proof('reply',this.o,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId:turn,inputSha256:hash(text),finalText:final,finalSha256:hash(final),...consumption(final,envelope)});
     }
     await beforeSend();const uuid=randomUUID(),version=this.claudeVersion!,contract=this.claudeContract!;beforeSendSync?.();this.rpc.send(messageClaudeInput(version,this.route.sessionId,uuid,text,contract));
-    const init=await this.rpc.waitFor(m=>m.type==='system'&&m.subtype==='init'&&(contract==='legacy-stream-v1'||this.rpc.events.indexOf(m)>=startIndex),30000);checkMessageClaudeInit(init,this.route.sessionId,version);checkClaudeSelected(init,JSON.parse((await regular(join(this.o.directory,'executable.json'))).toString()),this.o.participant.aiModel);
+    const init=await this.rpc.waitFor(m=>m.type==='system'&&m.subtype==='init'&&(contract==='legacy-stream-v1'||this.rpc.events.indexOf(m)>=startIndex),30000);checkMessageClaudeInit(init,this.route.sessionId,version);if(this.o.participant.aiModel)save(join(this.o.directory,'model-selection-'+uuid+'.json'),claudeSelectionObservation(init,this.o.participant.aiModel));checkClaudeSelected(init,JSON.parse((await regular(join(this.o.directory,'executable.json'))).toString()),this.o.participant.aiModel);
     const echo=await this.rpc.waitFor(m=>this.rpc.events.indexOf(m)>=startIndex&&m.type==='user'&&m.uuid===uuid,this.o.timeoutMs);
     if(echo.session_id!==this.route.sessionId||echo.message?.role!=='user'||echo.message.content!==text)throw new Error('message_claude_input_receipt_mismatch');
     delivered(proof('delivered',this.o,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId:uuid,inputSha256:hash(text),source:'actual_replayed_user_message'}));
@@ -264,8 +264,8 @@ async function inspectUnstartedOwnedMessage(o:RuntimeSpec){
     await checkCapture(join(o.directory,'native'));if(!originals['native/exit.json'])throw new Error('message_bootstrap_process_unknown');exit=JSON.parse(originals['native/exit.json'].toString());if(exit!.code===null&&exit!.signal===null)throw new Error('message_bootstrap_process_unknown');
     const pid=JSON.parse(originals['native/process.json']!.toString()).pid;if(!Number.isSafeInteger(pid)||pid<=0||processState(pid)!=='ended')throw new Error('message_bootstrap_process_unknown');
     const sent=jsonLines(originals['native/stdin.ndjson']!),received=jsonLines(originals['native/stdout.ndjson']!);
-    if(sent.some(m=>!['initialize','initialized','account/read','account/rateLimits/read','config/read',...(o.nativeResume?['thread/resume','thread/read']:['thread/start'])].includes(m.method))||received.some(m=>m.method?.startsWith('turn/')||m.method?.startsWith('item/')))throw new Error('message_bootstrap_may_have_executed');
-    const launch=JSON.parse(originals['native/launch.json'].toString());if(launch.command!==o.participant.executable||launch.cwd!==(o.nativeResume?.binding.workspace??join(o.directory,'native','workspace')))throw new Error('message_bootstrap_launch_mismatch');
+    if(sent.some(m=>!['initialize','initialized','account/read','account/rateLimits/read','config/read','model/list',...(o.nativeResume?['thread/resume','thread/read']:['thread/start'])].includes(m.method))||received.some(m=>m.method?.startsWith('turn/')||m.method?.startsWith('item/')))throw new Error('message_bootstrap_may_have_executed');
+    checkMetadataModelRequests(sent);const launch=JSON.parse(originals['native/launch.json'].toString());if(launch.command!==o.participant.executable||launch.cwd!==(o.nativeResume?.binding.workspace??join(o.directory,'native','workspace')))throw new Error('message_bootstrap_launch_mismatch');
   }else if(Object.keys(originals).some(n=>n.startsWith('native/')&&!['native/executable.json'].includes(n)))throw new Error('message_bootstrap_launch_unknown');
   return proof('ended',o,null,{exit,successfulCapture:false,knownUnstarted:true},originals);
 }

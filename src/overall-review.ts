@@ -1,3 +1,4 @@
+import {checkMetadataModelRequests} from './ai-execution.js';
 import {captureRoleAI,selectedProviderOptions,type AIRuntimeChoice} from './ai-settings.js';
 import {cliVersion} from './cli-capabilities.js';
 import { writeFile,readFile,mkdir } from 'node:fs/promises';
@@ -61,8 +62,8 @@ async function unstartedProof(stage:string,executable:string){
   if(!Number.isSafeInteger(process.pid)||process.pid<=0||processState(process.pid)!=='ended'||exit.code!==0||exit.signal!==null||launch.command!==executable||identity.path!==executable||!cliVersion(identity.version,'codex')||launch.cwd!==join(stage,'workspace'))throw new Error('overall_native_execution_started_or_unknown');
   await checkCapture(stage);
   const frames=(bytes:Buffer)=>{if(!bytes.length)return [];if(bytes.at(-1)!==10)throw new Error('overall_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(bytes).trim().split('\n').map(x=>JSON.parse(x));};
-  const sent=frames(originals['stdin.ndjson']!),received=frames(originals['stdout.ndjson']!),contract=json('expected-requests.json'),methods=['initialize','initialized','account/read','account/rateLimits/read','config/read','thread/start'];
-  if(!Array.isArray(contract)||canonical(sent)!==canonical(contract)||sent.some(m=>!methods.includes(m.method))||sent.filter(m=>m.method==='thread/start').length>1||received.some(m=>typeof m.method==='string'?!['thread/started','thread/status/changed','account/rateLimits/updated'].includes(m.method):!Object.hasOwn(m,'id')||!sent.some(s=>s.id===m.id)))throw new Error('overall_native_execution_started_or_unknown');
+  const sent=frames(originals['stdin.ndjson']!),received=frames(originals['stdout.ndjson']!),contract=json('expected-requests.json'),methods=['initialize','initialized','account/read','account/rateLimits/read','config/read','model/list','thread/start'];
+  checkMetadataModelRequests(sent);if(!Array.isArray(contract)||canonical(sent)!==canonical(contract)||sent.some(m=>!methods.includes(m.method))||sent.filter(m=>m.method==='thread/start').length>1||received.some(m=>typeof m.method==='string'?!['thread/started','thread/status/changed','account/rateLimits/updated'].includes(m.method):!Object.hasOwn(m,'id')||!sent.some(s=>s.id===m.id)))throw new Error('overall_native_execution_started_or_unknown');
   const start=sent.find(m=>m.method==='thread/start');if(start&&(start.params?.ephemeral!==true||start.params.cwd!==launch.cwd||start.params.approvalPolicy!=='never'||start.params.sandbox!=='read-only'||canonical(start.params.dynamicTools)!=='[]'))throw new Error('overall_native_execution_started_or_unknown');
   // Keep the actual ended bootstrap and exact frames. A registered turn or
   // an ambiguous frame can never be erased by a close action.
@@ -120,7 +121,7 @@ export async function overallReview(planPath:string, action:'prepare'|'run'|'rec
     if(action==='close-unstarted'){
       if(!last||!closeSource?.trim())throw new Error('overall_unstarted_close_source_required');
       const originalStage=stageAt(dispatched.length);
-      const proof=await unstartedProof(originalStage,config.codexExecutable);
+      const proof=await unstartedProof(originalStage,selectedProviderOptions(aiSelection,'codex',config.codexExecutable).executable);
       return records.closeOverallUnstarted(p.operation,bytes,closeSource,Buffer.from(JSON.stringify({operation:p.operation,id,stage:originalStage,...proof})));
     }
     const recorded=Boolean(last&&!closed),stage=stageAt(recorded?dispatched.length:dispatched.length+1);

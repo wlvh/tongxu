@@ -1,4 +1,4 @@
-import {claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected} from './ai-execution.js';
+import {claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -55,7 +55,7 @@ export async function runClaude(o: {aiModel?:AIModelChoice; executionKind?:'fixt
   let child:LiveProcess;try{child=o.dispatchGate?o.dispatchGate(start):start();}catch(e){await started?.close();throw e;}
   try {
     const init = await child.waitFor(m => m.type === 'system' && m.subtype === 'init', 30_000);
-    save(join(o.directory, 'init.json'), init);checkClaudeSelected(init,identity,o.aiModel);
+    save(join(o.directory, 'init.json'), init);if(o.aiModel)save(join(o.directory,'model-selection-observation.json'),claudeSelectionObservation(init,o.aiModel));checkClaudeSelected(init,identity,o.aiModel);
     if(stream)checkMessageClaudeInit(init,session,version);else if (!init.session_id || init.claude_code_version !== messageClaudeVersion(identity.version) || init.permissionMode !== 'dontAsk' || init.apiKeySource !== 'none' || !Array.isArray(init.tools) || init.tools.length || !Array.isArray(init.mcp_servers) || init.mcp_servers.length) throw new Error('claude_role_boundary_not_applied');
     await child.waitFor(m => m.type === 'result' && m.session_id === init.session_id, o.timeoutMs);
     if(stream)await child.waitFor(m=>m.type==='command_lifecycle'&&m.command_uuid===inputUuid&&m.state==='completed',o.timeoutMs);else await Promise.race([child.closed, new Promise<void>((_, reject) => { const t = setTimeout(() => reject(new Error('claude_exit_timeout')), 30_000); child.closed.then(() => clearTimeout(t)); })]);
@@ -63,7 +63,7 @@ export async function runClaude(o: {aiModel?:AIModelChoice; executionKind?:'fixt
   if (child.failure || child.exit?.code !== 0) throw new Error('claude_final_result_unavailable');
   const wire=await readFile(join(o.directory,'stdin.ndjson')),decoded=stream?streamFinal(child.events,wire,JSON.parse(await readFile(join(o.directory,'launch.json'),'utf8')),identity):null,{init,result}=decoded??finalResult(child.events,identity);
   if(decoded&&decoded.logicalInput!==o.input)throw new Error('claude_submitted_input_changed');
-  const receipt = { kind: 'claude-execution-receipt',protocol,wireInputSha256:hash(wire),...(inputUuid?{inputUuid}:{}), executable: identity, sessionId: result.session_id, model: init.model, inputSha256: hash(o.input), systemPromptSha256: hash(o.system), rawSha256: hash(await readFile(join(o.directory, 'stdout.ndjson'))), processExit: child.exit, nativeBoundary: { tools: init.tools, mcpServers: init.mcp_servers, permissionMode: init.permissionMode, safeMode: true }, finalText: result.result,...(o.aiModel?{requestedModel:o.aiModel}:{}), reportedUsage: result.usage, clientCostEstimateUsd: result.total_cost_usd, costEstimateIsNotBillingProof: true };
+  const receipt = { kind: 'claude-execution-receipt',protocol,wireInputSha256:hash(wire),...(inputUuid?{inputUuid}:{}), executable: identity, sessionId: result.session_id, model: init.model, inputSha256: hash(o.input), systemPromptSha256: hash(o.system), rawSha256: hash(await readFile(join(o.directory, 'stdout.ndjson'))), processExit: child.exit, nativeBoundary: { tools: init.tools, mcpServers: init.mcp_servers, permissionMode: init.permissionMode, safeMode: true }, finalText: result.result,...(o.aiModel?{aiExecution:claudeSelectionObservation(init,o.aiModel)}:{}), reportedUsage: result.usage, clientCostEstimateUsd: result.total_cost_usd, costEstimateIsNotBillingProof: true };
   save(join(o.directory, 'completed.json'), receipt); return receipt;
 }
 

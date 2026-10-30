@@ -10,6 +10,10 @@ export async function checkCodexChoice(request:(m:string,p:any)=>Promise<any>,ch
 export function claudeChoiceArgs(choice?:AIModelChoice){if(!choice)return [];validateModelChoice(choice);return ['--model',choice.model,...(choice.effort!==null?['--effort',choice.effort]:[])];}
 export function checkClaudeChoice(identity:any,choice?:AIModelChoice){if(!choice)return null;const models=parseAIModels('claude',identity.capabilities?.initialization?.models);return requireModelChoice(models,choice);}
 export function checkClaudeSelected(init:any,identity:any,choice?:AIModelChoice){if(!choice)return;const expected=checkClaudeChoice(identity,choice)!;if(init.model!==expected.id&&init.model!==expected.resolvedId)throw new Error('ai_selected_model_not_applied');}
+export function claudeSelectionObservation(init:any,choice?:AIModelChoice){return choice?{requested:choice,cliReportedModel:init.model??null,cliReportedEffort:typeof init.effort==='string'?init.effort:null,effortEvidence:'supported_catalog_and_command_line_argument',modelConfirmationTiming:'after_input_submission',inputMayHaveBeenProcessed:true,automaticResend:false}:null;}
+export function checkMetadataModelRequests(sent:any[]){
+  for(const request of sent.filter(m=>m.method==='model/list')){const p=request.params;if(!p||Object.keys(p).some(k=>!['limit','includeHidden','cursor'].includes(k))||p.limit!==50||p.includeHidden!==false||p.cursor!==undefined&&(typeof p.cursor!=='string'||!p.cursor||p.cursor.length>4096||p.cursor.includes('\0')))throw new Error('ai_model_catalog_metadata_invalid');}
+}
 /** Historical model-list replies are verified against their submitted requests;
  * replay never consults today's catalog or silently adopts today's settings. */
 export function capturedCodexModels(sent:any[],received:any[],choice:AIModelChoice){
