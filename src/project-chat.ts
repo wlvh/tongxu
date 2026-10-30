@@ -116,7 +116,8 @@ export class ProjectChat{
       await check();await active.session.turn(canonical(input),candidate,secretarySchema);await active.session.close();await this.complete(id);
     }catch(e){
       await active.session?.close().catch(()=>{});try{await this.complete(id);return;}catch{}
-      const nativeExists=await exists(native),ended=!nativeExists||await exists(join(native,'exit.json'));
+      let ended=!active.session;
+      if(active.session)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(!ended?'unknown':active.stop?'interrupted':'failed',reason(e),now(),id);
       if(await exists(directory))save(join(directory,'outcome.json'),{status:active.stop?'interrupted':'failed',reason:reason(e),automaticResend:false});
     }
