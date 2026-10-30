@@ -45,12 +45,19 @@ export class ProjectChat{
   private directory(id:string){if(!chatId(id))throw new Error('project_chat_id_invalid');return join(this.config.root,id);}
   private async recover(row:Row){
     if(!activePhase(row.phase)||this.active.has(row.id)||row.owner!==this.owner&&row.pid&&alive(row.pid))return;
-    try{const p=JSON.parse((await regular(join(this.directory(row.id),'native','process.json'),4096)).toString());if(alive(p.pid)&&!await exists(join(this.directory(row.id),'native','exit.json')))return;}catch{}
-    try{await this.complete(row.id);}catch{
-      // The old host ended. Retain an incomplete original rather than treating
-      // absent final text as permission to repeat the same model input.
-      this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem='project_chat_original_incomplete' WHERE id=? AND phase IN ('registered','running','unknown')").run(now(),row.id);
-    }
+    try{await this.complete(row.id);return;}catch{}
+    const native=join(this.directory(row.id),'native');let ended=false,unstarted=false;
+    try{
+      // The durable running transition precedes every native launch. Only a
+      // still-registered row with no native stage proves launch never began.
+      if(row.phase==='registered'&&!await exists(native)){ended=true;unstarted=true;}
+      else{const process=JSON.parse((await regular(join(native,'process.json'),4096)).toString());
+        if(!exactKeys(process,['pid','status'])||!Number.isSafeInteger(process.pid)||process.pid<=0||process.status!=='spawn_attempted')throw new Error('project_chat_process_unknown');
+        ended=!alive(process.pid);
+      }
+    }catch{} // Missing, malformed or inaccessible identity remains unknown.
+    if(!ended){this.db.prepare("UPDATE messages SET phase='unknown',problem='project_chat_process_unknown' WHERE id=? AND phase IN ('registered','running','unknown')").run(row.id);return;}
+    this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem=? WHERE id=? AND phase IN ('registered','running','unknown')").run(now(),unstarted?'project_chat_controller_ended_before_launch':'project_chat_original_incomplete',row.id);
   }
   async list(scope:ProjectChatScope){
     const conversations=this.db.prepare('SELECT * FROM conversations WHERE account=? AND repository=? AND node_id=? ORDER BY created_at DESC,id DESC LIMIT 128').all(scope.account.id,scope.repository.id,scope.repository.nodeId) as Row[];

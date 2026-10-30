@@ -4,6 +4,9 @@ import {mkdtemp,realpath,writeFile,readFile,rm,appendFile} from 'node:fs/promise
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {spawn,spawnSync} from 'node:child_process';
+import {mkdir} from 'node:fs/promises';
+import {DatabaseSync} from 'node:sqlite';
 import {startWorkbench} from '../../src/workbench.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 
@@ -62,4 +65,14 @@ test('stop uses the owned turn, remains available without GitHub, and preserves 
 test('tampered original capture is unavailable, cannot seed follow-up context, and triggers no model',async t=>{
   const f=await fixture(t),q=question();await f.post('/api/project-secretary/ask',q);await f.wait(q.conversationId,m=>m[0]?.status==='completed');await appendFile(join(f.root,'chats',q.requestId,'native','stdout.ndjson'),'broken capture');
   const state=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(state.data.messages[0].status,'unavailable');assert.equal(state.data.messages[0].answer,null);assert.equal((await f.post('/api/project-secretary/ask',question('继续',q.requestId,q.conversationId))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
+for(const mode of ['missing','truncated'])test('lost original '+mode+' process identity stays unknown until the actual child is proved ended',async t=>{
+  const f=await fixture(t);await f.get('/api/project-secretary');
+  const endedHost=spawnSync(process.execPath,['-e','process.exit(0)']).pid,child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});assert.ok(child.pid);const exited=new Promise<void>(r=>child.once('exit',()=>r()));t.after(async()=>{child.kill();await exited;});
+  const q=question(),native=join(f.root,'chats',q.requestId,'native');await mkdir(native,{recursive:true});const original={pid:child.pid,status:'spawn_attempted'};
+  if(mode==='truncated')await writeFile(join(native,'process.json'),'{"pid":');
+  const db=new DatabaseSync(join(f.root,'chats','conversations.sqlite'));db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)').run(q.conversationId,7,1,'R_1','fixture/project-1','Explicit interrupted fixture',new Date().toISOString());db.prepare("INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,NULL,?,'running',?,?,'ended-fixture-host')").run(q.requestId,q.conversationId,q.question,new Date().toISOString(),endedHost);db.close();
+  const unknown=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(unknown.data.messages[0].status,'unknown');assert.equal((await f.post('/api/project-secretary/ask',question('不能绕过未知旧执行'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+  await writeFile(join(native,'process.json'),JSON.stringify(original));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;
+  const ended=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(ended.data.messages[0].status,'interrupted');assert.equal(ended.data.messages[0].answer,null);const next=question('原执行结束后明确提新问题');assert.equal((await f.post('/api/project-secretary/ask',next)).status,202);await f.wait(next.conversationId,m=>m[0]?.status==='completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
 });
