@@ -570,6 +570,9 @@ function secretaryView(){
       append(row,body,buttons);section.append(row);
     }n.append(section);
   }
+  return appendSecretaryFollowups(n);
+}
+function appendSecretaryFollowups(n){
   if(state.queueActions?.length){const section=append(el('section',null,'note-card'),el('h2','直接跟进原任务'),el('p','与秘书使用同一动作和原回执。提醒只请求核查，队列偏好仅改变已获准的安排。','small'));
     for(const a of state.queueActions){const row=el('div',null,'report-row'),body=append(el('div'),el('strong',a.title),el('p',a.available?(a.executionKind==='fixture'?'明确测试夹具 · ':'')+((a.receipts||[]).length?'已有 '+a.receipts.length+' 条原回执':'尚未登记此动作'):readableReason(a.reason),'small')),button=el('button',a.kind==='hint'?'登记核查提醒':'应用获准偏好','outline');button.disabled=!a.available||pendingQueueActions.get(a.id)?.active;button.onclick=()=>runQueueAction(a.id);append(row,body,button);section.append(row);for(const receipt of (a.receipts||[]).slice(0,3))section.append(el('p',date(receipt.recordedAt)+' · '+(receipt.effect==='local_queue_preference_applied'?'原队列偏好已生效':'提醒已登记，未据此派发任务')+' · 回执 '+receipt.eventId,'small'));}n.append(section);
   }
