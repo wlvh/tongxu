@@ -8,7 +8,7 @@ import type {Response} from './contract.js';
 
 type Row=Record<string,any>;
 type Account={id:number;login:string};
-type ProjectQuery='projects'|'issues'|'pulls'|'issue'|'pull';
+type ProjectQuery='projects'|'project'|'issues'|'pulls'|'issue'|'pull';
 export type GitHubProjectReader={query:(operation:ProjectQuery,variables:Row,signal:AbortSignal)=>Promise<Response>};
 export type GitHubReaderFactory=(signal:AbortSignal)=>Promise<GitHubProjectReader>;
 export class GitHubProjectError extends Error{
@@ -26,6 +26,7 @@ const pullFields='draft:isDraft merged_at:mergedAt headRefName baseRefName';
 const pageFields='pageInfo{hasNextPage endCursor}';
 const viewer='account:viewer{id:databaseId login}';
 const queries={
+ project:`query TongxuProject($id:ID!){${viewer} repository:node(id:$id){...on Repository{${repoFields}}}}`,
  projects:`query TongxuProjects($after:String){account:viewer{id:databaseId login projects:repositories(first:50,after:$after,affiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${repoFields}} ${pageFields}}}}`,
  issues:`query TongxuIssues($id:ID!,$after:String,$states:[IssueState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:issues(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields}} ${pageFields}}}}}`,
  pulls:`query TongxuPulls($id:ID!,$after:String,$states:[PullRequestState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:pullRequests(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields} ${pullFields}} ${pageFields}}}}}`,
@@ -119,6 +120,11 @@ export class GitHubProjects{
     if(this.closed||!positive(accountId)||!positive(repositoryId)||this.identity?.id!==accountId||!repo)fail('github_project_not_selected');
     return {account:{...this.identity!},repository:{...repo!},generation:this.epoch};
   }
+  async confirmSelection(accountId:number,repositoryId:number){
+    this.selection(accountId,repositoryId);
+    await this.read(new URL('http://127.0.0.1/api/github/repositories/'+repositoryId+'?account='+accountId));
+    return this.selection(accountId,repositoryId);
+  }
   assertSelection(selection:ReturnType<GitHubProjects['selection']>){
     const current=this.selection(selection.account.id,selection.repository.id);
     if(current.generation!==selection.generation||current.repository.nodeId!==selection.repository.nodeId||current.repository.fullName!==selection.repository.fullName)fail('github_project_selection_changed');
@@ -134,9 +140,9 @@ export class GitHubProjects{
     }finally{this.reads.delete(promise);this.controllers.delete(controller);}
   }
   private async readCurrent(url:URL,signal:AbortSignal,epoch:number){
-    const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)\/(issues|pulls)(?:\/([1-9]\d*))?$/.exec(url.pathname);
+    const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)(?:\/(issues|pulls)(?:\/([1-9]\d*))?)?$/.exec(url.pathname);
     if(!list&&!match)fail('github_route_not_found');
-    queryKeys(url,list?['page','account','cursor']:match![3]?['account']:['account','page','state','cursor']);
+    queryKeys(url,list?['page','account','cursor']:!match![2]||match![3]?['account']:['account','page','state','cursor']);
     const page=queryNumber(url,'page',1);if(page>1000)fail('github_page_limit');
     const expected=list&&page===1?null:queryNumber(url,'account'),repoId=match?Number(match[1]):null,kind=match?.[2] as 'issues'|'pulls'|undefined,state=url.searchParams.get('state')??'open';
     if(!['open','closed','all'].includes(state))fail('github_query_invalid');
@@ -148,8 +154,8 @@ export class GitHubProjects{
     const cursor=url.searchParams.get('cursor');
     if(page===1&&cursor!==null||page>1&&(!bounded(cursor,2048)||!cursor||!cursors?.get(page)?.has(cursor)))fail('github_page_not_discovered');
     const number=match?.[3]?Number(match[3]):null;if(number!==null&&(!positive(number)||number>2147483647))fail('github_query_invalid');
-    const operation:ProjectQuery=list?'projects':number!==null?(kind==='issues'?'issue':'pull'):kind!;
-    const variables=list?{after:cursor}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursor,states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
+    const operation:ProjectQuery=list?'projects':!kind?'project':number!==null?(kind==='issues'?'issue':'pull'):kind!;
+    const variables=list?{after:cursor}:!kind?{id:selected!.nodeId}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursor,states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
     const reader=await this.reader(signal);if(signal.aborted)fail('github_read_cancelled');
     const data=decode(await reader.query(operation,variables,signal)),observed=account(data.account);
     // Viewer identity and all returned data share this ONE authenticated query.
@@ -159,7 +165,8 @@ export class GitHubProjects{
     if(list){connection=data.account.projects;if(!Array.isArray(connection?.nodes)||connection.nodes.length>50)fail();newRepositories=connection.nodes.map(repository);result={repositories:newRepositories,page};}
     else{
       const repo=repository(data.repository);if(repo.id!==repoId||repo.nodeId!==selected!.nodeId)fail('github_repository_identity_changed');newRepositories=[repo];
-      if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
+      if(!kind)result={repository:repo};
+      else if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
       else{connection=data.repository.items;if(!Array.isArray(connection?.nodes)||connection.nodes.length>30)fail();result={repository:repo,kind,state,page,items:connection.nodes.map((x:Row)=>entry(x,repo.fullName,kind!))};}
     }
     if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;result.nextCursor=info.hasNextPage?info.endCursor:null;}

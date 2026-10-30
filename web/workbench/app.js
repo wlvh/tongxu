@@ -59,11 +59,13 @@ async function api(path) {
   if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || '读取失败'); }
   return response.json();
 }
+function projectNotifier(){const epoch=gh.epoch;return text=>{if(!entryInfo?.githubProjects||gh.epoch===epoch)notice(text);};}
 function notice(text) { if(text.includes('workbench_project_changed'))return;$('notice').textContent = text; $('notice').hidden = !text; }
 async function taskControl(id,action){
+  const notify=projectNotifier();
   if(pendingControls.has(id))return;pendingControls.add(id);render();
-  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),result=await response.json();if(!response.ok){const message=readableReason(result.error||'操作未完成')+(result.diagnosticRecorded===false?' 本次诊断未保存：'+readableReason(result.diagnosticError)+'；历史记录不代表这次返回。':'');await refresh();throw new Error(message);}await refresh();notice(action==='start'?'已核对原请求；登记、实际送达和完整回复请以下方原记录为准。':action==='close-interrupted'?'原中断结果已保留；后续请求可由原负责人按原授权继续，当前请求仍未完成。':'未发送待办已撤回。原记录保留；这不表示终止了已执行进程。');}
-  catch(e){notice('操作未完成：'+readableReason(e.message));}
+  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:'{}',cache:'no-store'}),result=await response.json();if(!response.ok){const message=readableReason(result.error||'操作未完成')+(result.diagnosticRecorded===false?' 本次诊断未保存：'+readableReason(result.diagnosticError)+'；历史记录不代表这次返回。':'');await refresh();throw new Error(message);}await refresh();notify(action==='start'?'已核对原请求；登记、实际送达和完整回复请以下方原记录为准。':action==='close-interrupted'?'原中断结果已保留；后续请求可由原负责人按原授权继续，当前请求仍未完成。':'未发送待办已撤回。原记录保留；这不表示终止了已执行进程。');}
+  catch(e){notify('操作未完成：'+readableReason(e.message));}
   finally{pendingControls.delete(id);render();}
 }
 function contactControls(t){
@@ -77,9 +79,10 @@ async function openTaskContactReport(c){
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原联系报告尚不可读：'+readableReason(e.message);}
 }
 async function controlNative(c,option){
+  const notify=projectNotifier();
   const n=c.nativeControl;if(!n?.currentTurnActive||pendingControls.has(c.id))return;pendingControls.add(c.id);render();
-  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(c.id)+'/native',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({option:option.id,threadId:n.threadId,sessionId:n.sessionId,turnId:n.turnId}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'会话操作未完成');await refresh();notice(result.duplicate?'已读取原控制记录，没有再次发送。':option.action==='interrupt'?'中断请求已确认。是否终止和原结果以下方捕获记录为准。':'补充问题已发送到所示轮次；完整回复还须确认实际处理了该补充。');}
-  catch(e){await refresh();notice('会话控制未完成：'+readableReason(e.message));}finally{pendingControls.delete(c.id);render();}
+  try{const response=await workspaceFetch('/api/task-control/'+encodeURIComponent(c.id)+'/native',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({option:option.id,threadId:n.threadId,sessionId:n.sessionId,turnId:n.turnId}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'会话操作未完成');await refresh();notify(result.duplicate?'已读取原控制记录，没有再次发送。':option.action==='interrupt'?'中断请求已确认。是否终止和原结果以下方捕获记录为准。':'补充问题已发送到所示轮次；完整回复还须确认实际处理了该补充。');}
+  catch(e){await refresh();notify('会话控制未完成：'+readableReason(e.message));}finally{pendingControls.delete(c.id);render();}
 }
 function nativeControlPanel(c,investmentStopped,send=controlNative){
   if(!c.nativeControl&&!(c.nativeControlHistory||[]).length)return null;const box=el('div',null,'note-card'),n=c.nativeControl;
@@ -89,15 +92,17 @@ function nativeControlPanel(c,investmentStopped,send=controlNative){
   for(const h of c.nativeControlHistory||[])box.append(el('p',(h.request.action==='interrupt'?'中断':'补充')+' · '+(h.acknowledged?'执行器已确认':'发送已登记，回执待核')+' · '+(h.turnTerminationVerified?'该轮终态已核实':'终态尚未核实'),'small'));
   return box;
 }
-async function setScopeControl(c,value){if(pendingScopeControls.has(c.id))return;pendingScopeControls.add(c.id);render();try{const response=await workspaceFetch('/api/scope-control/'+encodeURIComponent(c.id)+'/'+value,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({revision:c.revision}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'范围控制未完成');await refresh();notice(result.duplicate?'已读回原控制回执；当前状态以下方最新记录为准。':'本机控制已登记并读回。已发操作、权限与资源记录继续保留。');}catch(e){await refresh();notice('控制未改变：'+readableReason(e.message));}finally{pendingScopeControls.delete(c.id);render();}}
+async function setScopeControl(c,value){
+  const notify=projectNotifier();if(pendingScopeControls.has(c.id))return;pendingScopeControls.add(c.id);render();try{const response=await workspaceFetch('/api/scope-control/'+encodeURIComponent(c.id)+'/'+value,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({revision:c.revision}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'范围控制未完成');await refresh();notify(result.duplicate?'已读回原控制回执；当前状态以下方最新记录为准。':'本机控制已登记并读回。已发操作、权限与资源记录继续保留。');}catch(e){await refresh();notify('控制未改变：'+readableReason(e.message));}finally{pendingScopeControls.delete(c.id);render();}}
 function scopeControlPanel(t){const entries=(state.scopeControls||[]).filter(c=>c.source===t.id);if(!entries.length)return null;const panel=el('section',null,'note-card');append(panel,el('h3','本范围的停止与恢复'),el('p','影响本范围的相关任务。恢复只解除本机停止，原授权、用量和资源仍逐项检查；不终止已经发出的执行。','small'));for(const c of entries){const row=el('div',null,'report-row'),left=el('div');append(left,el('strong',c.title),el('p',c.available?'范围 '+c.scopeId+' / '+c.scopeVersion+' · 修订 '+c.revision:'范围来源待核','small'));if(!c.available)left.append(el('p',readableReason(c.reason),'small'));else{append(left,el('p',c.verifiedOwnerStop?'原记录为已验证本人停止，需按原来源恢复。':c.recorded?(c.state==='stopped'?'本机已登记停止。':'本机已登记开放，原权限仍须成立。'):'尚未登记本机停止；不等于获得额外权限。','small'));const buttons=el('div',null,'actions'),stop=el('button','停止','outline'),resume=el('button','恢复','quiet');stop.type=resume.type='button';stop.disabled=c.state==='stopped'||pendingScopeControls.has(c.id);resume.disabled=c.state!=='stopped'||c.verifiedOwnerStop||pendingScopeControls.has(c.id);stop.onclick=()=>setScopeControl(c,'stopped');resume.onclick=()=>setScopeControl(c,'open');append(buttons,stop,resume);row.append(buttons);}row.prepend(left);panel.append(row);}return panel;}
 function intro(title, description, badge) { return append(el('section', null, 'intro'), append(el('div'), el('span', '同序 / 原始记录', 'eyebrow'), el('h1', title), el('p', description)), badge ? pill(badge, 'neutral') : null); }
 const organizationModes={parallel:'并行推进',stage_serial:'按阶段串行',unified_owner:'统一负责人'};
 const organizationStages={investigate:'调查',implement:'实施',receive:'接收',publish:'发布',enable:'启用'};
 async function applyOrganization(group,choice){
+  const notify=projectNotifier();
   if(pendingOrganization.has(group.id))return;pendingOrganization.add(group.id);render();
-  try{const response=await workspaceFetch('/api/organization/'+encodeURIComponent(group.id)+'/apply',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({choice:choice.id,expectedPrevious:group.expectedPrevious}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'组织安排未登记');await refresh();notice(result.duplicate?'已读回原安排；没有重新登记，也没有启动任务。':'安排已登记到原任务记录。实际派发、写权交接和共享前置仍须满足，不会因登记而自动获得权限。');}
-  catch(e){await refresh();notice('组织安排未改变：'+readableReason(e.message));}finally{pendingOrganization.delete(group.id);render();}
+  try{const response=await workspaceFetch('/api/organization/'+encodeURIComponent(group.id)+'/apply',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({choice:choice.id,expectedPrevious:group.expectedPrevious}),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'组织安排未登记');await refresh();notify(result.duplicate?'已读回原安排；没有重新登记，也没有启动任务。':'安排已登记到原任务记录。实际派发、写权交接和共享前置仍须满足，不会因登记而自动获得权限。');}
+  catch(e){await refresh();notify('组织安排未改变：'+readableReason(e.message));}finally{pendingOrganization.delete(group.id);render();}
 }
 function organizationView(){
   const page=append(el('div'),intro('组织方式','为明确选择的任务安排并行、阶段串行或统一负责人。复用原协调记录，保留旧安排和原执行。'));
@@ -122,9 +127,10 @@ const overallBaselineDrafts=new Map(),overallGrantChoices=new Map();
 const overallPhases={not_prepared:'尚未准备',prepared_not_sent:'材料已准备，尚未派发',submitted_or_unknown:'原发送已登记，执行或结果待核',confirmed_unstarted:'已核清未向模型发任务，原记录保留',review_recorded:'完整复盘已保存'};
 const materialLabels={acceptedBaseline:'上一接受基线',cumulativeChanges:'累计变化',currentBehavior:'当前行为',currentDocuments:'当前文档'};
 async function overallAction(entry,action){
+  const notify=projectNotifier();
   if(pendingOverall.has(entry.id))return;pendingOverall.add(entry.id);render();
-  try{const response=await workspaceFetch('/api/overall-review/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(action==='run'&&entry.preparedFromBaseline&&overallGrantChoices.has(entry.id)?{authorization:overallGrantChoices.get(entry.id)}:{}),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'复盘操作未完成');await refresh();notice(action==='run'?'已交给原复盘执行器。请看实际进度和完整结果；请求被接收还不代表模型完成。':action==='prepare'?'正在核对四类材料；准备操作不会派发模型。':action==='reconcile'?'正在查原运行和原结果，不重发未知输入。':'正在检查原启动记录；只会关闭已证实没有向模型发出任务的那一次；初始化进程也必须已结束。');}
-  catch(e){notice('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/overall-review/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(action==='run'&&entry.preparedFromBaseline&&overallGrantChoices.has(entry.id)?{authorization:overallGrantChoices.get(entry.id)}:{}),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'复盘操作未完成');await refresh();notify(action==='run'?'已交给原复盘执行器。请看实际进度和完整结果；请求被接收还不代表模型完成。':action==='prepare'?'正在核对四类材料；准备操作不会派发模型。':action==='reconcile'?'正在查原运行和原结果，不重发未知输入。':'正在检查原启动记录；只会关闭已证实没有向模型发出任务的那一次；初始化进程也必须已结束。');}
+  catch(e){notify('复盘操作未完成：'+readableReason(e.message));}finally{pendingOverall.delete(entry.id);render();}
 }
 function overallBaselinePreparation(entry){
  if(!entry.canPrepareFromBaseline)return null;
@@ -183,9 +189,10 @@ async function openOverallReport(entry){
   try{const r=await api('/api/overall-report/'+entry.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=(r.executionKind==='fixture'?'明确测试输出':'原生执行捕获')+' · '+r.verdict+' · '+(r.current?'当前材料':'历史材料')+' · 原文 SHA256 '+r.reportSha256+' · 不代表本人接受成果';$('report-body').textContent=r.report;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原复盘无法读取：'+readableReason(e.message);}
 }
 async function ownerAction(entry,action,body){
+  const notify=projectNotifier();
   if(pendingOwner.has(entry.source))return;pendingOwner.add(entry.source);
-  try{const response=await workspaceFetch('/api/owner-control/'+entry.source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'本人决定未完成');await refresh();notice(action==='prepare'?'请求已保存。核对完整内容后，仍需从原本人来源确认；没有自动授予权限。':r.duplicate?'已查回原决定，没有重复执行。':r.executionKind==='fixture'?'明确测试来源已记录，不能作为本人采用。':'原本人来源与准确请求已核对，决定已保存。');}
-  catch(e){notice('操作未完成：'+readableReason(e.message));}finally{pendingOwner.delete(entry.source);render();}
+  try{const response=await workspaceFetch('/api/owner-control/'+entry.source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'本人决定未完成');await refresh();notify(action==='prepare'?'请求已保存。核对完整内容后，仍需从原本人来源确认；没有自动授予权限。':r.duplicate?'已查回原决定，没有重复执行。':r.executionKind==='fixture'?'明确测试来源已记录，不能作为本人采用。':'原本人来源与准确请求已核对，决定已保存。');}
+  catch(e){notify('操作未完成：'+readableReason(e.message));}finally{pendingOwner.delete(entry.source);render();}
 }
 const baselineLabels={goals:'目标与边界',rules:'规则与限制',capabilities:'已经具备的能力及其证据'};
 function baselinePreparationPanel(entry){
@@ -212,9 +219,10 @@ function ownerRequests(entry,kind,send=ownerAction){
   }return box;
 }
 async function scopeFollowupAction(source,action,body){
+  const notify=projectNotifier();
   if(pendingFollowups.has(source))return;pendingFollowups.add(source);render();
-  try{const response=await workspaceFetch('/api/scope-followup/'+source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'接续操作未完成');await refresh();notice(action==='observe'?'原已选路径的新观察已保存。旧材料和报告保留，草稿需要明确采用新观察后再准备。':action==='prepare'?'后续工作已准备，原任务和报告保留。发送仍需准确权限与既有用量条件。':action==='owner-apply'?'原来源已核对；实际执行另看原任务状态。':'请求已交给原控制入口；登记、实际发送和完整结果分别显示。');}
-  catch(e){await refresh();notice('接续未完成：'+readableReason(e.message));}finally{pendingFollowups.delete(source);render();}
+  try{const response=await workspaceFetch('/api/scope-followup/'+source+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'接续操作未完成');await refresh();notify(action==='observe'?'原已选路径的新观察已保存。旧材料和报告保留，草稿需要明确采用新观察后再准备。':action==='prepare'?'后续工作已准备，原任务和报告保留。发送仍需准确权限与既有用量条件。':action==='owner-apply'?'原来源已核对；实际执行另看原任务状态。':'请求已交给原控制入口；登记、实际发送和完整结果分别显示。');}
+  catch(e){await refresh();notify('接续未完成：'+readableReason(e.message));}finally{pendingFollowups.delete(source);render();}
 }
 async function openScopeFollowupReport(source,f){
   const nonce=++reportNonce;$('report-title').textContent='后续工作 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -272,18 +280,20 @@ async function openAssessmentReport(entry,assessment){
   try{const r=await api('/api/delivery-report/'+entry.id+'/'+encodeURIComponent(assessment.id));if(nonce!==reportNonce||!$('report-dialog').open)return;const result=r.result,j=result.report;$('report-meta').textContent=(result.executionKind==='fixture'?'明确进程夹具，非真实模型':'原模型捕获')+' · 会话 '+result.sessionId+' · 输入证据 '+r.inputEvidenceSha256+' · 判断不代表本人接受';$('report-body').textContent=j?[j.report,...j.coverage.map(c=>'场景 '+c.scenario+'：'+({pass:'判断通过',reject:'判断退回',needs_evidence:'判断需补证据'}[c.verdict]||c.verdict)+'\n方法：'+c.method+'\n依据：'+c.reason+'\n原件：'+c.evidence.join('、')),'限制：\n'+j.limitations.join('\n')].join('\n\n'):'原最终输出已保存，但格式无效，未形成可用领域判断。\n'+readableReason(result.invalidReason);$('report-raw').textContent=r.rawFinal;$('report-original').hidden=false;}catch(e){if(nonce===reportNonce)$('report-body').textContent='原判断无法读取：'+readableReason(e.message);}
 }
 async function deliveryAction(entry,action,body){
+  const notify=projectNotifier();
   if(pendingOutcomes.has(entry.id))return;pendingOutcomes.add(entry.id);render();
-  try{const response=await workspaceFetch('/api/delivery/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'成果决定未完成');await refresh();notice(action==='prepare'?'固定决定请求已保存；尚未代表本人采用。请核对下方的原来源确认内容。':result.duplicate?'已读回原决定，未再次读取远端来源。':result.executionKind==='fixture'?'隔离示例来源已核对并保存；不代表真实本人决定。':'本人原来源已核对，决定和原证据已保存。');}
-  catch(e){await refresh();const text={delivery_outcome_evidence_changed:'证据已更新，请核对新的结果后重新准备决定。',delivery_outcome_previous_changed:'已有较新的决定，请先核对原记录。',delivery_outcome_current_batch_required:'本批版本、材料或采用范围已变化，旧请求不能继续。',shared_account_is_not_owner_confirmation:'当前来源与执行者是同一身份，不能作为独立本人确认。'}[e.message]||readableReason(e.message);notice('决定未改变：'+text);}finally{pendingOutcomes.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/delivery/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();if(!response.ok)throw new Error(result.error||'成果决定未完成');await refresh();notify(action==='prepare'?'固定决定请求已保存；尚未代表本人采用。请核对下方的原来源确认内容。':result.duplicate?'已读回原决定，未再次读取远端来源。':result.executionKind==='fixture'?'隔离示例来源已核对并保存；不代表真实本人决定。':'本人原来源已核对，决定和原证据已保存。');}
+  catch(e){await refresh();const text={delivery_outcome_evidence_changed:'证据已更新，请核对新的结果后重新准备决定。',delivery_outcome_previous_changed:'已有较新的决定，请先核对原记录。',delivery_outcome_current_batch_required:'本批版本、材料或采用范围已变化，旧请求不能继续。',shared_account_is_not_owner_confirmation:'当前来源与执行者是同一身份，不能作为独立本人确认。'}[e.message]||readableReason(e.message);notify('决定未改变：'+text);}finally{pendingOutcomes.delete(entry.id);render();}
 }
 const pendingBatchPreparation=new Set(),batchDrafts=new Map();
 const batchMember=m=>({source:m.source,packet:m.packet,fingerprint:m.fingerprint});
 const batchEligible=m=>m.current&&m.ownerAvailable&&m.currentScope?.kind==='adopt_scope'&&m.currentScope.scopeVersion===m.scope.version&&m.currentAdoption;
 function batchDraft(m){return {requestId:'batch-'+crypto.randomUUID(),anchor:m.source,title:'',issue:m.issue,previous:null,adoption:m.currentAdoption,members:[batchMember(m)],scenarios:[{id:'scenario-1',title:'',expected:'',sources:[m.source]}]};}
 async function registerBatch(group,d){
+  const notify=projectNotifier();
   if(pendingBatchPreparation.has(group.source))return;pendingBatchPreparation.add(group.source);render();
-  try{const {anchor,...body}=d,response=await workspaceFetch('/api/delivery-preparation/'+anchor+'/register',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_preparation_failed');await refresh();batchDrafts.delete(group.source);notice(r.duplicate?'已查回同一批固定材料，没有重复登记或执行。':'成果材料已固定并加入下方原成果记录；尚未运行测试、调用模型或取得本人接受。');}
-  catch(e){await refresh();notice('成果准备未完成：'+readableReason(e.message));}finally{pendingBatchPreparation.delete(group.source);render();}
+  try{const {anchor,...body}=d,response=await workspaceFetch('/api/delivery-preparation/'+anchor+'/register',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_preparation_failed');await refresh();batchDrafts.delete(group.source);notify(r.duplicate?'已查回同一批固定材料，没有重复登记或执行。':'成果材料已固定并加入下方原成果记录；尚未运行测试、调用模型或取得本人接受。');}
+  catch(e){await refresh();notify('成果准备未完成：'+readableReason(e.message));}finally{pendingBatchPreparation.delete(group.source);render();}
 }
 function batchPreparationView(){
   const out=el('section');for(const group of state.deliveryPreparation||[]){const box=append(el('section',null,'panel delivery-card'),el('h2','从当前任务准备一批成果'),el('p','只选择本入口原任务及其明确后续工作。目标和非目标来自准确采用记录；准备固定材料，验证、独立判断和本人接受另行记录。','small'));out.append(box);
@@ -304,8 +314,9 @@ function prepareBatchRevision(entry){const b=entry.batch,group=(state.deliveryPr
 
 const pendingDeliveryWork=new Set(),deliveryWorkDrafts=new Map(),deliveryWorkGrants=new Map();
 async function deliveryWorkAction(entry,action,body){
+  const notify=projectNotifier();
  if(pendingDeliveryWork.has(entry.id))return;pendingDeliveryWork.add(entry.id);render();
- try{const response=await workspaceFetch('/api/delivery-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_execution_failed');await refresh();if(action==='prepare')deliveryWorkDrafts.delete(entry.id+':'+body.profile);notice(action==='prepare'?'准确执行请求已准备，尚未测试或发送模型；核对原来源授权后再执行。':action==='owner-apply'?'本次准确授权来源已核对；实际执行另看原运行记录。':'请求已交原执行器，正在核原任务或运行结果；登记不等于完成。');}catch(e){await refresh();notice('成果执行未完成：'+readableReason(e.message));}finally{pendingDeliveryWork.delete(entry.id);render();}
+ try{const response=await workspaceFetch('/api/delivery-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),r=await response.json();if(!response.ok)throw new Error(r.error||'delivery_execution_failed');await refresh();if(action==='prepare')deliveryWorkDrafts.delete(entry.id+':'+body.profile);notify(action==='prepare'?'准确执行请求已准备，尚未测试或发送模型；核对原来源授权后再执行。':action==='owner-apply'?'本次准确授权来源已核对；实际执行另看原运行记录。':'请求已交原执行器，正在核原任务或运行结果；登记不等于完成。');}catch(e){await refresh();notify('成果执行未完成：'+readableReason(e.message));}finally{pendingDeliveryWork.delete(entry.id);render();}
 }
 async function openDeliveryWorkReport(entry,r){
  const nonce=++reportNonce;$('report-title').textContent='成果核验 · 已保存原输出';$('report-meta').textContent='读取原运行…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -438,7 +449,7 @@ function collaborationView(t) {
   });return n;
 }
 function taskView() {
-  if(!state.tasks.length)return append(el('div'),intro('任务与完整报告','当前项目尚无已关联的同序任务和报告。'),el('p','可先查看本项目的 Issues 与 PR；其他项目的历史记录不会混入这里。','empty'));
+  if(!state.tasks.length)return append(el('div'),intro('任务与完整报告',state.project?.unresolvedSourceCount?'本机来源归属尚未核清，暂未列出任务和报告。':'当前项目尚无已关联的同序任务和报告。'),el('p','可先查看本项目的 Issues 与 PR；其他项目的历史记录不会混入这里。','empty'));
   if (!selected || !state.tasks.some(t => t.id === selected)) selected = state.tasks[0].id;
   const n = el('div'); n.append(intro('任务与完整报告', '查看准确候选、接收状态及报告原文。来源不可用时会明确显示缺口。'));
   const layout = el('div', null, 'task-layout'), picker = el('div', null, 'task-picker');
@@ -484,14 +495,16 @@ function timeline(events) {
 const secretaryDrafts=new Map(),pendingSecretary=new Set(),pendingQueueActions=new Map();
 const questionPhases={registered_not_sent:'问题已保存，尚未确认送出',submitted_or_unknown:'已有原捕获，结果仍待核实',completed:'完整回答已核实',closed_unstarted:'已核未发送并关闭'};
 async function askSecretary(source,requestId,question){
+  const notify=projectNotifier();
   if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
-  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/ask',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,question}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'问题未登记');const draft=secretaryDrafts.get(source);if(draft&&draft.question===question)draft.id=v.requestId;await refresh();notice('已保存并核对原问题。是否已经发送、是否取得完整回答，以下方原记录为准。');}
-  catch(e){await refresh();notice('提问尚未完成：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/ask',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,question}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'问题未登记');const draft=secretaryDrafts.get(source);if(draft&&draft.question===question)draft.id=v.requestId;await refresh();notify('已保存并核对原问题。是否已经发送、是否取得完整回答，以下方原记录为准。');}
+  catch(e){await refresh();notify('提问尚未完成：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
 }
 async function closeSecretaryQuestion(source,id){
+  const notify=projectNotifier();
   if(pendingSecretary.has(source))return;pendingSecretary.add(source);render();
-  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/close-unstarted',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'原执行仍需核查');const draft=secretaryDrafts.get(source);if(draft?.id===id)draft.id=crypto.randomUUID();await refresh();notice('已核实未发送并保留原问题。现在可提交一个新请求；不会重发已关闭的原请求。');}
-  catch(e){notice('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
+  try{const r=await workspaceFetch('/api/secretary/'+encodeURIComponent(source)+'/close-unstarted',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'原执行仍需核查');const draft=secretaryDrafts.get(source);if(draft?.id===id)draft.id=crypto.randomUUID();await refresh();notify('已核实未发送并保留原问题。现在可提交一个新请求；不会重发已关闭的原请求。');}
+  catch(e){notify('原问题未关闭：'+readableReason(e.message));}finally{pendingSecretary.delete(source);render();}
 }
 async function openSecretaryReport(source,q){
   const nonce=++reportNonce;$('report-title').textContent='工作秘书 · 完整回答';$('report-meta').textContent='读取原捕获…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -499,14 +512,16 @@ async function openSecretaryReport(source,q){
   catch(e){if(nonce===reportNonce)$('report-body').textContent='原回答仍待核实：'+readableReason(e.message);}
 }
 async function runQueueAction(id){
+  const notify=projectNotifier();
   const prior=pendingQueueActions.get(id);if(prior?.active)return;const request=prior||{id:crypto.randomUUID(),active:false};request.active=true;pendingQueueActions.set(id,request);render();
-  try{const r=await workspaceFetch('/api/queue-action/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:request.id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'队列动作未完成');pendingQueueActions.delete(id);await refresh();notice(v.record?.effect==='local_queue_preference_applied'?'原获准队列偏好已保存；这不表示任务已经执行。':'核查提醒已登记；这不表示接收者已经收到或完成模型任务。');}
-  catch(e){request.active=false;await refresh();notice('队列动作仍待核对：'+readableReason(e.message));}finally{render();}
+  try{const r=await workspaceFetch('/api/queue-action/'+encodeURIComponent(id)+'/run',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:request.id}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error||'队列动作未完成');pendingQueueActions.delete(id);await refresh();notify(v.record?.effect==='local_queue_preference_applied'?'原获准队列偏好已保存；这不表示任务已经执行。':'核查提醒已登记；这不表示接收者已经收到或完成模型任务。');}
+  catch(e){request.active=false;await refresh();notify('队列动作仍待核对：'+readableReason(e.message));}finally{render();}
 }
 async function returnWorkAction(entry,action){
+  const notify=projectNotifier();
   if(pendingReturnWork.has(entry.id))return;pendingReturnWork.add(entry.id);render();
-  try{const response=await workspaceFetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(entry.preparation?{selectionSha256:entry.preparation.selectionSha256}:{}),cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notice(action==='start'?'已按所选原退回固定本次计划并交给原执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
-  catch(e){notice('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
+  try{const response=await workspaceFetch('/api/return-work/'+entry.id+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(entry.preparation?{selectionSha256:entry.preparation.selectionSha256}:{}),cache:'no-store'}),value=await response.json();if(!response.ok)throw new Error(value.error);await refresh();notify(action==='start'?'已按所选原退回固定本次计划并交给原执行器；实际修复、测试和独立判断以下方原记录为准。':action==='reconcile'?'正在核对原执行及已发生的修改；未知输入不会另起任务重发。':'正在核对原执行是否确证未开始；只有原后端确认后才会关闭。');}
+  catch(e){notify('退回处理仍待核对：'+readableReason(e.message));}finally{pendingReturnWork.delete(entry.id);render();}
 }
 async function openReturnReport(entry){
   const nonce=++reportNonce;$('report-title').textContent=entry.title+' · 原退回与完整结果';$('report-meta').textContent='读取原记录…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;$('report-dialog').showModal();
@@ -570,7 +585,7 @@ function githubLink(label,url){const a=el('a',label,'github-link');a.href=url;a.
 async function githubApi(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+key},cache:'no-store'}),value=await response.json();if(!response.ok){const e=new Error(value.error||'github_service_unavailable');e.retryAfterSeconds=value.retryAfterSeconds;throw e;}return value;}
 function dismissGithubDetail(){if(githubDetailEpoch!==null){githubDetailEpoch=null;reportNonce++;if($('report-dialog').open)$('report-dialog').close();}}
 function resetGithubIdentity(error){clearProjectView();gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.nextCursor=null;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
-function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected','github_project_selection_changed'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
+function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected','github_project_selection_changed','github_repository_unavailable'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
 async function loadGithubProjects(more=false){
   if(gh.loading)return;const request=++gh.listRequest,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
   try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id+'&cursor='+encodeURIComponent(gh.nextCursor):''));if(request!==gh.listRequest)return;
@@ -649,16 +664,18 @@ function renderGithub(){
   $('content').replaceChildren(view==='github'?selectedGithubView():projectsView());if(filterSelection){const input=$('github-project-filter');input.focus({preventScroll:true});input.setSelectionRange(filterSelection.start,filterSelection.end);}$('refresh').disabled=gh.loading||(view==='github'&&(gh.issues?.loading||gh.pulls?.loading));
 }
 async function enterView(next){
+  const notify=projectNotifier();
   if(next==='local-history')next='overview';
   if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
   if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
-  if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
+  if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
   view=next;if(!state)await refresh();else render();
 }
 async function startEntry(){
+  const notify=projectNotifier();
   if(entryLoading)return;entryLoading=true;$('refresh').disabled=true;
   try{entryInfo=await api('/api/entry');if(entryInfo.githubProjects){view='projects';render();await loadGithubProjects();}else await refresh();}
-  catch(error){notice('无法打开当前入口。'+(error.message==='viewer_key_required'?'请使用本次启动生成的新页面。':'请检查本机服务后重试。'));$('content').replaceChildren(el('p','入口信息尚未读取。','empty'));}
+  catch(error){notify('无法打开当前入口。'+(error.message==='viewer_key_required'?'请使用本次启动生成的新页面。':'请检查本机服务后重试。'));$('content').replaceChildren(el('p','入口信息尚未读取。','empty'));}
   finally{entryLoading=false;$('refresh').disabled=false;}
 }
 
@@ -691,7 +708,7 @@ async function refresh() {
   try {
     if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('viewer_key_required');
     const snapshot = await api('/api/state');if(!current())return;state=snapshot; const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = (gh.selected?gh.selected.fullName+' · ':'')+'本机读取 · ' + date(at||new Date().toISOString());
-    notice(state.project?.unresolvedSourceCount?'有 '+state.project.unresolvedSourceCount+' 项本机来源归属尚未核清；未混入本项目。':state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
+    notice(state.project?.unresolvedSourceCount?'有 '+state.project.unresolvedSourceCount+' 项本机来源归属尚未核清；未混入本项目。'+(state.project.controlsDeferred?'相关操作暂缓，来源恢复后刷新即可继续。':''):state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
   } catch (e) { if(!current())return;notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
   finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
 }

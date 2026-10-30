@@ -52,6 +52,13 @@ test('a project without tasks renders an explicit task/report empty state instea
   const p=await page();p.run("state={tasks:[],project:{repository:{fullName:'fixture/empty'}}};selected=null");
   assert.ok(p.run('taskView()'));assert.ok(p.run('overview()'));assert.equal(p.run('selected'),null);
 });
+for(const failed of [false,true])test('an old project action '+(failed?'failure':'success')+' cannot announce itself after its follow-up refresh crosses a project switch',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});view='overview';render=()=>{}");
+  const pending=p.run("setScopeControl({id:'scope-a',revision:0},'stopped')");p.fetchCalls[0]!.resolve({ok:!failed,status:failed?503:200,json:async()=>failed?{error:'fixture_operation_failed'}:{duplicate:false}});await flush();
+  assert.equal(p.fetchCalls[1]!.path,'/api/state');p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");
+  if(failed)p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})"); // Returning to A is a new page context too.
+  p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({tasks:[]})});await pending;assert.equal(p.nodes.get('notice')!.textContent,'');
+});
 test('switching projects while both lists are pending cannot let old responses overwrite the chosen repository',async()=>{
   const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");assert.equal(p.calls.length,2);p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");assert.equal(p.calls.length,4);
   p.calls[2]!.resolve(data(2,'issues',22));p.calls[3]!.resolve(data(2,'pulls',23));await flush();p.calls[0]!.resolve(data(1,'issues',11));p.calls[1]!.resolve(data(1,'pulls',12));await flush();

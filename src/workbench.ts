@@ -154,9 +154,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   };
   type Local=Awaited<ReturnType<typeof loadLocal>>;
   const locals=new Map<string,{sources:string;value:Promise<Local>}>(),knownRepositories=new Map<string,string>();
-  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>)=>{
+  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>,cacheable=true)=>{
     if(closing)throw new Error('workbench_closing');const sources=plan.sources.map(s=>s.id).sort().join(','),old=locals.get(key);
     if(old){if(old.sources!==sources)throw new Error('workbench_project_sources_changed');return old.value;}
+    // An initially unknown source may recover. Until all bindings are known,
+    // reads use temporary non-running controls; no incomplete cache or action
+    // is created. Existing running controllers always retain their identity.
+    if(!cacheable)return loadLocal(plan,selectedSources);
     const entry={sources,value:loadLocal(plan,selectedSources).then(value=>{if(host&&!closing)value.polling?.start();return value;}).catch(error=>{locals.delete(key);throw error;})};locals.set(key,entry);return entry.value;
   };
   const projectPlan=async(selection:ReturnType<GitHubProjects['selection']>)=>{
@@ -204,11 +208,12 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if (url.search&&!/^\/api\/judgment-feedback-report\/[a-z0-9-]{1,64}$/.test(url.pathname)) { json(res, 400, { error: 'query_not_supported' }); return; }
       const asset=assets.get(url.pathname);if(req.method==='GET'&&asset){reply(res,200,asset.type,asset.bytes);return;}
       if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
-      const selection=github?github.selection(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project'])):null;
+      const selection=github?await github.confirmSelection(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project'])):null;
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;
-      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns}=await openLocal(plan,selection?'project:'+selection.repository.id:'legacy',context?.allowed);
+      const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
+      if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
+      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns}=await openLocal(plan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred);
       if(selection)github!.assertSelection(selection);
-      if(req.method!=='GET'&&context?.selectedSourcesUnknown)throw new Error('workbench_project_sources_unknown');
       if(req.method!=='GET'){
         if(!controls&&!deliveryControls?.writable&&!ownerControls&&!organization&&!overall&&!queueActions&&!secretary&&!returns){json(res,405,{error:'read_only_workbench'});return;}
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
@@ -229,7 +234,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>(owner||followup||batchPreparation||deliveryWork?98304:delivery||secretaryAction?16384:1024)){json(res,413,{error:'task_control_body_limit'});return;}chunks.push(bytes);}
         let body:any;try{body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{json(res,400,{error:'task_control_invalid_json'});return;}
-        if(selection)github!.assertSelection(selection);
+        if(selection){await github!.confirmSelection(selection.account.id,selection.repository.id);github!.assertSelection(selection);}
         if(returnAction){json(res,202,await returns!.begin(returnAction[1]!,returnAction[2]!,body));return;}
         if(secretaryAction){if(secretaryAction[2]==='ask')json(res,202,await secretary!.begin(secretaryAction[1]!,body));else{if(!exactKeys(body,['requestId']))throw new Error('secretary_question_invalid');json(res,200,await secretary!.closeUnstarted(secretaryAction[1]!,body.requestId));}return;}
         if(queueAction){if(!exactKeys(body,['requestId']))throw new Error('event_control_request_id_invalid');json(res,200,await queueActions!.execute(queueAction[1]!,body.requestId));return;}
@@ -249,7 +254,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       }
 
       if (!authorized(req)) { json(res, 401, { error: 'viewer_key_required' }); return; }
-      if (url.pathname === '/api/state') { const snapshot=await workbenchState(plan);if(selection)github!.assertSelection(selection);json(res, 200, {...snapshot,...(context?{project:context.project}:{}),...(deliveryExecution?{deliveryExecution:await Promise.all((snapshot.deliveries??[]).filter(d=>d.available).map(async d=>{try{return {...await deliveryExecution.state(d.id),available:true};}catch(e){return {batchId:d.id,available:false,reason:safeError(e)};}}))}:{}),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(returns?{returnWork:await returns.state(),mode:controls?.mode??'bounded_return_work'}:{}),...(queueActions?{queueActions:await queueActions.state(),queueOptions:queueActions.manifest(),mode:controls?.mode??'bounded_queue_controls'}:{}),...(polling?{sourcePolling:polling.state()}:{}),...(secretary?{secretaries:await secretary.state(),mode:controls?.mode??'bounded_secretary'}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
+      if (url.pathname === '/api/state') { const snapshot=await workbenchState(plan);if(selection)github!.assertSelection(selection);json(res, 200, {...snapshot,...(context?{project:{...context.project,controlsDeferred:deferred}}:{}),...(deliveryExecution?{deliveryExecution:await Promise.all((snapshot.deliveries??[]).filter(d=>d.available).map(async d=>{try{return {...await deliveryExecution.state(d.id),available:true};}catch(e){return {batchId:d.id,available:false,reason:safeError(e)};}}))}:{}),...(runtimeIdentity?{runtime:runtimeIdentity}:{}),...(returns?{returnWork:await returns.state(),mode:controls?.mode??'bounded_return_work'}:{}),...(queueActions?{queueActions:await queueActions.state(),queueOptions:queueActions.manifest(),mode:controls?.mode??'bounded_queue_controls'}:{}),...(polling?{sourcePolling:polling.state()}:{}),...(secretary?{secretaries:await secretary.state(),mode:controls?.mode??'bounded_secretary'}:{}),...(controls?{mode:controls.mode,taskControls:await controls.state(),scopeControls:await controls.scopeState()}: {}),...(scopeFollowups?{scopeFollowups:await scopeFollowups.state()}:{}),...(ownerControls?{ownerControls:await ownerControls.state(),mode:controls?.mode??'bounded_owner_proposals'}:{}),...(organization?{organization:await organization.state(),mode:controls?.mode??(ownerControls?'bounded_owner_proposals':'bounded_organization')}:{}),...(overall?{overallReviews:await overall.state(),...(!controls&&!ownerControls&&!organization&&!deliveryControls?{mode:'bounded_overall_review'}:{})}: {})}); return; }
       const returnReport=/^\/api\/return-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);if(returnReport){if(!returns)throw new Error('report_not_found');json(res,200,await returns.report(returnReport[1]!));return;}
       const contactReport=/^\/api\/task-control-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);if(contactReport){if(!controls)throw new Error('report_not_found');json(res,200,await controls.report(contactReport[1]!));return;}
       const deliveryWorkReport=/^\/api\/delivery-work-report\/([a-z0-9-]{1,64})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/.exec(url.pathname);if(deliveryWorkReport){if(!deliveryExecution)throw new Error('report_not_found');json(res,200,await deliveryExecution.report(deliveryWorkReport[1]!,deliveryWorkReport[2]!));return;}

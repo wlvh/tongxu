@@ -12,8 +12,8 @@ import {hash} from '../../src/snapshot.js';
 function github(){
   let account={id:7,login:'fixture'};
   const repositories=['fixture/reception','fixture/other','fixture/empty'].map((full_name,index)=>({id:index+1,nodeId:'R_'+(index+1),full_name,description:'Explicit fixture',private:true,archived:false,defaultBranchRef:{name:'main'},updated_at:'2026-10-30T00:00:00Z'}));
-  const factory:GitHubReaderFactory=async()=>({query:async op=>{assert.equal(op,'projects');return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:{account:{...account,projects:{nodes:repositories,pageInfo:{hasNextPage:false,endCursor:null}}}}})};}});
-  return {factory,changeAccount:()=>{account={id:8,login:'new-account'};}};
+  let unavailable=false;const factory:GitHubReaderFactory=async()=>({query:async(op,variables)=>{assert.ok(['projects','project'].includes(op));return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:repositories,pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:unavailable?null:repositories.find(r=>r.nodeId===variables.id)}})};}});
+  return {factory,removeAccess:()=>{unavailable=true;},changeAccount:()=>{account={id:8,login:'new-account'};}};
 }
 async function mixed(t:test.TestContext){
   const a=await secretaryEntryFixture(t),b=await setup(t,'complete',1,true,'fixture/other'),received=await runReception(b.path),originalPlan=JSON.parse(await readFile(a.path,'utf8'));
@@ -45,8 +45,20 @@ test('a project without local tasks is empty; missing or changed identity cannot
   assert.equal((await f.post(2,'/api/secretary/selected/ask',{requestId:'wrong-project',question:'must not be sent'})).status,503);
   assert.equal((await f.post(3,'/api/secretary/selected/ask',{requestId:'empty-project',question:'must not be sent'})).status,405);
   assert.equal((await f.a.logs()).length,0);
-  f.gh.changeAccount();await fetch(f.u.origin+'/api/github/projects',{headers:f.auth});
+  f.gh.changeAccount(); // No discovery refresh: the original routes must observe the actual changed viewer.
   assert.equal((await f.get(1)).status,503);assert.equal((await f.post(1,'/api/secretary/selected/ask',{requestId:'old-account',question:'must not be sent'})).status,503);assert.equal((await f.a.logs()).length,0);
+});
+test('original routes recheck actual repository access instead of accepting a previously discovered private repository',async t=>{
+  const f=await mixed(t);assert.equal((await f.get(1)).status,200);f.gh.removeAccess();
+  assert.equal((await f.get(1)).status,503);assert.equal((await f.get(1,'/api/secretary-report/selected/original')).status,503);
+  assert.equal((await f.post(1,'/api/secretary/selected/ask',{requestId:'revoked',question:'must not run'})).status,503);assert.equal((await f.a.logs()).length,0);
+});
+test('a source unknown on first entry can recover in the same server without an empty project cache blocking it',async t=>{
+  const f=await mixed(t),path=join(f.a.store,'queue.sqlite'),saved=join(f.a.store,'preserved.sqlite');await rename(path,saved);
+  try{const response=await f.get(1);assert.equal(response.status,200);const unknown=await response.json() as any;assert.deepEqual(unknown.tasks,[]);assert.equal(unknown.project.unresolvedSourceCount,1);}
+  finally{await rename(saved,path);}
+  const response=await f.get(1);assert.equal(response.status,200);const recovered=await response.json() as any;
+  assert.deepEqual(recovered.tasks.map((x:any)=>x.id),['selected']);assert.equal(recovered.project.unresolvedSourceCount,0);assert.equal(recovered.secretaries[0].source,'selected');assert.equal((await f.a.logs()).length,0);
 });
 test('one project secretary retains its original result on switch, duplicate and cold re-entry without another model input',async t=>{
   const f=await mixed(t),body={requestId:'project-question',question:'Read this project original report'};
