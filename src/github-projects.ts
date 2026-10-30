@@ -114,6 +114,15 @@ export class GitHubProjects{
   private controllers=new Set<AbortController>();
   private reads=new Set<Promise<unknown>>();
   constructor(private reader:GitHubReaderFactory=currentGitHubReader){}
+  selection(accountId:number,repositoryId:number){
+    const repo=this.repositories.get(repositoryId);
+    if(this.closed||!positive(accountId)||!positive(repositoryId)||this.identity?.id!==accountId||!repo)fail('github_project_not_selected');
+    return {account:{...this.identity!},repository:{...repo!},generation:this.epoch};
+  }
+  assertSelection(selection:ReturnType<GitHubProjects['selection']>){
+    const current=this.selection(selection.account.id,selection.repository.id);
+    if(current.generation!==selection.generation||current.repository.nodeId!==selection.repository.nodeId||current.repository.fullName!==selection.repository.fullName)fail('github_project_selection_changed');
+  }
   private changed(){this.identity=null;this.repositories.clear();this.projectCursors=new Map();this.itemCursors.clear();this.epoch++;}
   async read(url:URL):Promise<unknown>{
     if(this.closed)fail('github_reader_closed');
@@ -149,14 +158,14 @@ export class GitHubProjects{
     let result:Row,connection:any,newRepositories:ReturnType<typeof repository>[]=[];
     if(list){connection=data.account.projects;if(!Array.isArray(connection?.nodes)||connection.nodes.length>50)fail();newRepositories=connection.nodes.map(repository);result={repositories:newRepositories,page};}
     else{
-      const repo=repository(data.repository);if(repo.id!==repoId||repo.nodeId!==selected!.nodeId)fail('github_repository_identity_changed');
+      const repo=repository(data.repository);if(repo.id!==repoId||repo.nodeId!==selected!.nodeId)fail('github_repository_identity_changed');newRepositories=[repo];
       if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
       else{connection=data.repository.items;if(!Array.isArray(connection?.nodes)||connection.nodes.length>30)fail();result={repository:repo,kind,state,page,items:connection.nodes.map((x:Row)=>entry(x,repo.fullName,kind!))};}
     }
     if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;result.nextCursor=info.hasNextPage?info.endCursor:null;}
     if(signal.aborted)fail('github_read_cancelled');
     if(this.identity?.id!==observed.id){this.changed();this.identity=observed;}
-    if(list)for(const repo of newRepositories)this.repositories.set(repo.id,repo);
+    for(const repo of newRepositories)this.repositories.set(repo.id,repo);
     if(connection){
       const destination=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,Set<string>>();
       // Each view sends its own returned position. Another first-page read

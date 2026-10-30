@@ -27,13 +27,31 @@ async function page(){
   }
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
   const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
-  const context=createContext({location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
+  const fetchCalls:Array<{path:string;options:any;resolve:(value:any)=>void;reject:(error:Error)=>void}>=[];
+  const context=createContext({fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
-  const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,run,state,nodes,document,findFilter};
+  const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,fetchCalls,run,state,nodes,document,findFilter};
 }
 const data=(id:number,kind:string,number:number)=>({repository:{id,fullName:'fixture/repo'+id,description:'Fixture repository',private:true,archived:false,url:'https://github.com/fixture/repo'+id},kind,items:[{number,title:'repo'+id,labels:[],state:'open',updatedAt:'2026-10-30T00:00:00Z',author:'fixture',url:'https://github.com/fixture/repo'+id+'/issues/'+number}],page:1,hasNext:false,connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'}});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+test('project workspace reads and writes carry the chosen account and repository, and discard late JSON bodies',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");
+  const pending=p.run("api('/api/state')");assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Project'],'1');assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Account'],'7');
+  let release!:(value:any)=>void;p.fetchCalls[0]!.resolve({ok:true,status:200,json:()=>new Promise(r=>release=r)});await flush();
+  p.run("state={tasks:[{id:'original'}]};selected='original';chooseGithubProject({id:2,fullName:'fixture/repo2'})");
+  assert.equal(p.run('state'),null);assert.equal(p.run('selected'),null);const rejected=assert.rejects(pending,/workbench_project_changed/);release({tasks:[{id:'original'}]});await rejected;
+  const action=p.run("workspaceFetch('/api/secretary/new/ask',{method:'POST',headers:{Authorization:'Bearer test'},body:'{}'})");assert.equal(p.fetchCalls[1]!.options.headers['X-Tongxu-Project'],'2');assert.equal(p.fetchCalls[1]!.options.method,'POST');p.fetchCalls[1]!.resolve({ok:true,status:202,json:async()=>({})});await action;
+});
+test('changing project closes an original report and a late task-state reply cannot repopulate the new project',async()=>{
+  const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});view='overview';render=()=>{}");
+  const pending=p.run('refresh()');p.run("$('report-dialog').showModal();chooseGithubProject({id:2,fullName:'fixture/repo2'})");assert.equal(p.nodes.get('report-dialog')!.open,false);
+  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({tasks:[{id:'wrong-project'}]})});await pending;assert.equal(p.run('state'),null);assert.equal(p.state().selected.id,2);
+});
+test('a project without tasks renders an explicit task/report empty state instead of indexing an absent task',async()=>{
+  const p=await page();p.run("state={tasks:[],project:{repository:{fullName:'fixture/empty'}}};selected=null");
+  assert.ok(p.run('taskView()'));assert.ok(p.run('overview()'));assert.equal(p.run('selected'),null);
+});
 test('switching projects while both lists are pending cannot let old responses overwrite the chosen repository',async()=>{
   const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");assert.equal(p.calls.length,2);p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");assert.equal(p.calls.length,4);
   p.calls[2]!.resolve(data(2,'issues',22));p.calls[3]!.resolve(data(2,'pulls',23));await flush();p.calls[0]!.resolve(data(1,'issues',11));p.calls[1]!.resolve(data(1,'pulls',12));await flush();
