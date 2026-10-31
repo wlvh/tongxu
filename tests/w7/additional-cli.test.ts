@@ -9,6 +9,7 @@ import {hash} from '../../src/snapshot.js';
 import {ExtraCliSession,parseAcpPrompt,acpModels,readConfigJson} from '../../src/additional-cli.js';
 import {parseMessagePlan} from '../../src/message-contract.js';
 import type {AdditionalProgram} from '../../src/ai-programs.js';
+import {AISettings,participantWithAI,withAIPreferences} from '../../src/ai-settings.js';
 
 async function fixture(t:test.TestContext,tool:AdditionalProgram,mode='complete'){
  const f=await messageFixture(t);const binary=join(f.root,tool+'.mjs');
@@ -38,7 +39,15 @@ if(m.method==='session/prompt'){
  f.plan.messages=[{id:'first',from:null,to:'owner',body:'Inspect supplied fixed material.',replies:[]},{id:'second',from:null,to:'owner',body:'Consider a counterexample using the complete first report.',replies:['first']}];f.plan.timeoutMs=500;await f.write();return {...f,binary};
 }
 for(const tool of ['kimi','gemini','opencode'] as const)test(tool+' executes two bounded messages, preserves actual session/selection and replays without another input',async t=>{
- const f=await fixture(t,tool);const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));const calls=await f.calls();assert.equal(calls.filter(c=>c.kind==='input').length,2);assert.equal(new Set(calls.map(c=>c.session)).size,1);assert.ok(calls.every(c=>c.model==='fixture/model-next'&&c.effort==='future-depth'));
+ const f=await fixture(t,tool),scope={account:{id:7},repository:{id:1,nodeId:'R_1',fullName:'fixture/reception'}},config={root:join(f.root,'settings'),configured:[{tool,path:f.binary}],disabledMcpServers:[]};
+ const probe:Parameters<typeof AISettings.open>[1]=async(program,path,directory)=>({id:hash(path),tool:program,path,version:'999.1.0',available:path===f.binary,reason:null,authentication:'subscription',models:[{id:'fixture/model-next',name:'Future model',resolvedId:null,description:'Explicit test model',efforts:['future-depth'],defaultEffort:'future-depth',isDefault:true}],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:false,ownedControl:false},evidence:directory});
+ let settings=await AISettings.open(config,probe);await settings.scan(scope);const providerId=hash(f.binary);
+ await settings.change(scope,{revision:0,role:'issue_owner',choice:{providerId,model:'fixture/model-next',effort:'future-depth'}});
+ await assert.rejects(()=>settings.change(scope,{revision:1,role:'secretary',choice:{providerId,model:'fixture/model-next',effort:'future-depth'}}),/tools_not_supported/);
+ await settings.close();settings=await AISettings.open(config,probe);const snapshot=settings.snapshot(scope);await settings.close();
+ const original={...f.plan.participants[0]!,tool:'codex' as const,executable:f.codex,aiModel:undefined};
+ f.plan.participants[0]=withAIPreferences(snapshot,()=>participantWithAI(original,scope.repository.fullName).participant);await f.write();
+ const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));const calls=await f.calls();assert.equal(calls.filter(c=>c.kind==='input').length,2);assert.equal(new Set(calls.map(c=>c.session)).size,1);assert.ok(calls.every(c=>c.model==='fixture/model-next'&&c.effort==='future-depth'));
  const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,true,JSON.stringify(again.problems));assert.deepEqual(await f.calls(),calls);
  const native=result.runtimes[0]!.started.directory;const sent=(await readFile(join(native,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));assert.equal(sent.filter(x=>x.method==='session/prompt').length,2);assert.ok(sent.every(x=>!['authenticate','session/load','session/resume'].includes(x.method)));
 });
