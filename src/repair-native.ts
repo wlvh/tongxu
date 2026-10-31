@@ -1,5 +1,5 @@
 import {projectChatTools,projectChatInstructions} from './project-chat-contract.js';
-import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels} from './ai-execution.js';
+import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels,recordedCodexTurnChoice} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import { mkdir, readFile, realpath, stat,writeFile } from 'node:fs/promises';
@@ -226,7 +226,10 @@ export class BoundedCodexSession {
       save(join(o.directory, 'thread.json'), thread);
       checkCodexSelected(thread,o.aiModel);
       if(this.previous?.aiModel)checkCodexSelected(thread,{model:this.previous.thread.model,effort:this.previous.thread.reasoningEffort??null});
-      this.turnModelChoice=o.aiModel?{...o.aiModel,...(this.previous?.aiModel?{effort:this.previous.thread.reasoningEffort??o.aiModel.effort}:{})}:undefined;
+      if(this.previous?.turnChoice)checkCodexSelected(thread,{model:this.previous.turnChoice.model,effort:null});
+      // Resume the values captured for the original turn, including legacy
+      // implicit high, instead of applying today's CLI defaults to old work.
+      this.turnModelChoice=this.previous?this.previous.turnChoice:o.aiModel;
       if(o.aiModel)save(join(o.directory,'model-choice.json'),{requested:o.aiModel,actualModel:thread.model,actualEffort:thread.reasoningEffort});
       if (thread.cwd !== cwd || thread.approvalPolicy !== 'never' || thread.sandbox?.type !== 'readOnly' || thread.sandbox.networkAccess !== false || thread.modelProvider !== 'openai') throw new Error('native_role_boundary_not_applied');
       for (const path of thread.instructionSources ?? []) { const source = o.allowedInstructionSources.find(x => x.path === path); if (!source || hash(await readFile(path)) !== source.sha256) throw new Error('unexpected_instruction_source'); }
@@ -327,7 +330,7 @@ export class BoundedCodexSession {
 }
 export { BoundedCodexSession as RepairSession };
 
-export type OwnedCodexCapture={directory:string;sourceSha256:string;depth:number;raw:Buffer;binding:ResultBinding;parsed:ReturnType<typeof parseCodexResult>;inputs:any[];start:any;thread:any;identity:any;pid:number;aiModel?:AIModelChoice};
+export type OwnedCodexCapture={directory:string;sourceSha256:string;depth:number;raw:Buffer;binding:ResultBinding;parsed:ReturnType<typeof parseCodexResult>;inputs:any[];start:any;thread:any;identity:any;pid:number;aiModel?:AIModelChoice;turnChoice?:AIModelChoice};
 /** Bounded recovery of our no-tool persistent captures. This reads original
  * bytes only; it grants no permission and never resumes a model itself. */
 export async function readOwnedCodexSession(directory:string,ancestors:string[]=[]):Promise<OwnedCodexCapture>{
@@ -366,7 +369,8 @@ export async function readOwnedCodexSession(directory:string,ancestors:string[]=
   if(parsed.gaps.length||parsed.waiting.length||!parsed.turns.length||parsed.turns.some(t=>!['completed','interrupted'].includes(t.terminal??'')))throw new Error('native_original_terminal_unknown');
   for(const [i,turn] of parsed.turns.entries())if(turn.terminal==='completed')validateNativeReport(JSON.parse(turn.final!.text),inputs[i].subjectCandidate,inputs[i].schema);
   const sourceSha256=hash(canonical({files:Object.fromEntries(Object.entries(originals).map(([name,b])=>[name,hash(b)])),previous:prior?.sourceSha256??null}));
-  return {directory,sourceSha256,depth:(prior?.depth??0)+1,raw,binding,parsed,inputs,start,thread,identity,pid:processRecord.pid,...(aiModel?{aiModel}:{})};
+  const turnChoice=recordedCodexTurnChoice(thread,newInputs.at(-1)?.params)??prior?.turnChoice;
+  return {directory,sourceSha256,depth:(prior?.depth??0)+1,raw,binding,parsed,inputs,start,thread,identity,pid:processRecord.pid,...(aiModel?{aiModel}:{}),...(turnChoice?{turnChoice}:{})};
 }
 
 /** Cache retransmission is delivery of the same response, not a new tool call.

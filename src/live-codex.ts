@@ -112,7 +112,9 @@ export async function readCodexExecution(directory: string) {
   const requestedModel=sent.find(m=>m.method==='thread/start')?.params?.model;const choice:AIModelChoice|undefined=requestedModel?{model:requestedModel,effort:sent.find(m=>m.method==='thread/start')?.params?.config?.model_reasoning_effort??null}:undefined;
   if(choice){const received=raw.toString().trim().split('\n').map(l=>JSON.parse(l));capturedCodexModels(sent,received,choice);checkCodexSelected(thread,choice);}
   const starts = sent.filter(m => m.method === 'thread/start'), turns = sent.filter(m => m.method === 'turn/start');
-  if (starts.length !== 1 || turns.length !== binding.turnIds.length || turns.some(m => typeof m.params?.input?.[0]?.text !== 'string' || !isDeepStrictEqual(m.params, { threadId: binding.threadId, input: [{ type: 'text', text: m.params.input[0].text }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...codexTurnChoice(choice) })) ||
+  // Old no-choice captures explicitly submitted high. Accept their exact
+  // recorded shape as history; new runs no longer impose that override.
+  if (starts.length !== 1 || turns.length !== binding.turnIds.length || turns.some(m => typeof m.params?.input?.[0]?.text !== 'string' || !isDeepStrictEqual(m.params, { threadId: binding.threadId, input: [{ type: 'text', text: m.params.input[0].text }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...(!choice&&m.params.effort==='high'?{effort:'high'}:codexTurnChoice(choice)) })) ||
       !isDeepStrictEqual(starts[0].params, { ...codexThreadChoice(choice),cwd: binding.workspace, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: starts[0].params.baseInstructions, developerInstructions, dynamicTools: [], environments: [], selectedCapabilityRoots: [], runtimeWorkspaceRoots: [binding.workspace] }) ||
       hash(JSON.stringify({ system: starts[0].params.baseInstructions, inputs: turns.map(m => m.params.input[0].text) })) !== binding.promptSha256) throw new Error('stage_submitted_input_mismatch');
   // A legacy capture has no stdin digest. Validate the whole request stream,

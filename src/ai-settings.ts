@@ -8,6 +8,7 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {discoverAIEntries,inspectAIProvider,requireModelChoice,validateModelChoice,type AIProvider,type AIModelChoice,type AICatalogConfig} from './ai-catalog.js';
 import {selectExternalExecutable} from './external-executable.js';
+import {externalExecutableFamily} from './external-executable.js';
 import type {MessageParticipant} from './message-contract.js';
 import {assembleRolePrompt} from './role-prompts.js';
 
@@ -21,7 +22,7 @@ export const aiRoles=[
 ] as const;
 export type AIRole=typeof aiRoles[number]['id'];
 const aiRoleUsage:Record<AIRole,{view:string;entry:string;interaction:string}>={
-  secretary:{view:'secretary',entry:'工作秘书与跟进：输入问题并发送',interaction:'读取所选项目的资料、Issues/PR、原接收及协作报告。聊天不会自动启动开发或扩大权限；旧任务秘书仍使用其已固定配置。'},
+  secretary:{view:'secretary',entry:'右侧工作秘书：输入问题并发送',interaction:'读取所选项目的资料、Issues/PR、原接收及协作报告。聊天不会自动启动开发或扩大权限；旧任务秘书仍使用其已固定配置。'},
   issue_owner:{view:'tasks',entry:'任务与报告：选择原任务，再使用已登记的联系或补查入口',interaction:'程序发送该任务的完整材料和前序报告，角色返回完整消息；当前联系角色没有任意文件或命令工具。没有已登记任务时不能仅靠保存设置启动。'},
   reviewer:{view:'retrospective',entry:'判断与复盘：准备并运行已登记的整体复盘；独立再审也由原修复链触发',interaction:'新的独立上下文阅读固定源码和证据并返回判断。该只读审核不持有写入权限，也不把未执行的测试写成本轮实测。'},
   verifier_fact:{view:'tasks',entry:'任务与报告：在对应 RETURN 的核实与修复入口启动',interaction:'原执行器先开放限定文件读取和测试；写入责任及授权成立后才开放替换文件工具。新候选交独立审核，不自批。'},
@@ -74,11 +75,16 @@ const scopeKey=(s:AISettingsScope)=>{if(!Number.isSafeInteger(s.account.id)||s.a
  * supply tools, filesystem permissions, credentials, billing or merge rights. */
 export class AISettings{
   private scanning:Promise<AIProvider[]>|undefined;
-  private constructor(private config:AISettingsConfig,private db:DatabaseSync,private probe:typeof inspectAIProvider){}
-  static async open(config:AISettingsConfig,probe=inspectAIProvider){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL)');return new AISettings(config,db,probe);}
+  private constructor(private config:AISettingsConfig,private db:DatabaseSync,private probe:typeof inspectAIProvider,private secretaryExecutable?:string){}
+  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL)');return new AISettings(config,db,probe,secretaryExecutable);}
   private catalog(){const row=this.db.prepare('SELECT body FROM catalogs ORDER BY id DESC LIMIT 1').get() as {body:string}|undefined;return row?JSON.parse(row.body) as AIProvider[]:[];}
   private prefs(scope:AISettingsScope){const row=this.db.prepare('SELECT revision,body FROM preferences WHERE scope=?').get(scopeKey(scope)) as {revision:number;body:string}|undefined;return row?{revision:row.revision,choices:JSON.parse(row.body) as Partial<Record<AIRole,AISettingChoice>>}:{revision:0,choices:{}};}
-  state(scope:AISettingsScope){return {roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
+  defaultSecretary(){
+    if(!this.secretaryExecutable)return null;
+    const provider=this.catalog().find(p=>p.tool==='codex'&&externalExecutableFamily(p.path)===externalExecutableFamily(this.secretaryExecutable!));
+    return {tool:'codex' as const,path:this.secretaryExecutable,source:'project_secretary_startup' as const,observed:provider?.defaults??null,observedAt:provider?.defaults?provider.observedAt:null,available:provider?.available??false};
+  }
+  state(scope:AISettingsScope){return {defaults:{secretary:this.defaultSecretary()},roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
   async prompt(role:string){if(!aiRoles.some(r=>r.id===role))throw new Error('ai_role_not_found');return {role,assembly:await assembleRolePrompt(role as AIRole),meaning:'当前公共边界、角色与固定上游提示全文。每次实际执行还会加入该任务的材料、工具和输出要求，并随原运行保存；此处不是某次历史运行的完整输入。',modelInputs:0};}
   async scan(scope:AISettingsScope){if(!this.scanning){this.scanning=(async()=>{const entries=await discoverAIEntries(this.config.configured),out:AIProvider[]=[];for(const entry of entries){const directory=join(this.config.root,'discovery',randomUUID());await mkdir(join(this.config.root,'discovery'),{recursive:true,mode:0o700});out.push(await this.probe(entry.tool,entry.path,directory,this.config.disabledMcpServers));}this.db.prepare('INSERT INTO catalogs(observed,body) VALUES (?,?)').run(new Date().toISOString(),canonical(out));return out;})().finally(()=>{this.scanning=undefined;});}await this.scanning;return this.state(scope);}
   async change(scope:AISettingsScope,body:unknown){

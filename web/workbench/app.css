@@ -53,3 +53,5 @@ dialog[data-project-panel=true]{position:fixed;inset:100px calc(var(--secretary-
 @media(max-width:1120px){.secretary-dock{width:min(440px,100%);box-shadow:-12px 0 50px #183d2426;z-index:30}.with-secretary{--secretary-space:0px}dialog[data-project-panel=true]{inset:16px;max-height:calc(100dvh - 32px)}.secretary-toggle{z-index:31}}
 @media(max-width:700px){.secretary-dock-head{padding:15px 16px}.secretary-dock-content{padding:12px 12px max(12px,env(safe-area-inset-bottom))}.secretary-dock .chat-composer{padding:10px}.secretary-toggle{right:14px;bottom:14px}.secretary-dock .chat-lines{padding-right:0}}
 @media(max-height:600px){.secretary-dock-content{display:block}.secretary-dock .chat-lines{flex:none;min-height:100px;max-height:40dvh;margin:10px 0}.secretary-dock .chat-composer{margin-top:0}}
+
+.ai-choice-preview{padding:14px 16px;margin:12px 0 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);overflow-wrap:anywhere}.ai-choice-preview>strong{display:block;font-size:13px;margin-bottom:6px}.ai-choice-preview p+p{margin-top:5px}

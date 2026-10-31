@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {hash} from '../../src/snapshot.js';
 import {parseAIModels,requireModelChoice,codexModelList,type AIProvider} from '../../src/ai-catalog.js';
 import {AISettings,withAIPreferences,currentAIChoice,participantWithAI} from '../../src/ai-settings.js';
-import {capturedCodexModels,checkCodexSelected,codexTurnChoice,claudeChoiceArgs} from '../../src/ai-execution.js';
+import {capturedCodexModels,checkCodexSelected,codexTurnChoice,codexThreadChoice,recordedCodexTurnChoice,claudeChoiceArgs} from '../../src/ai-execution.js';
 
 const scope=(id=1)=>({account:{id:7},repository:{id,nodeId:'R_'+id,fullName:'fixture/project-'+id}});
 test('current tool catalogs determine model IDs and per-model efforts, without a release or model-name allowlist',async()=>{
@@ -33,4 +33,12 @@ test('project settings are revision checked, preserved on reopen, and do not cha
 test('captured model selection verifies returned availability and actual launch, rather than a settings label',()=>{
   const choice={model:'fixture-astra',effort:'max'},sent=[{id:1,method:'model/list',params:{limit:50,includeHidden:false}}],received=[{id:1,result:{data:[{model:'fixture-astra',supportedReasoningEfforts:[{reasoningEffort:'max'}]}],nextCursor:null}}];
   capturedCodexModels(sent,received,choice);assert.throws(()=>capturedCodexModels([],received,choice),/proof_missing/);assert.throws(()=>capturedCodexModels(sent,[...received,...received],choice),/proof_changed/);assert.throws(()=>checkCodexSelected({model:'fallback',reasoningEffort:'max'},choice),/not_applied/);assert.throws(()=>checkCodexSelected({model:'fixture-astra',reasoningEffort:'high'},choice),/not_applied/);assert.deepEqual(codexTurnChoice(choice),{model:'fixture-astra',effort:'max'});
+});
+test('new default requests leave model and effort to the program; resuming derives values from the original turn',()=>{
+  assert.deepEqual(codexThreadChoice(),{});assert.deepEqual(codexTurnChoice(),{});
+  assert.deepEqual(codexTurnChoice({model:'future-model',effort:null}),{model:'future-model'});
+  const thread={model:'original-model',reasoningEffort:'xhigh'};
+  assert.deepEqual(recordedCodexTurnChoice(thread,{effort:'high'}),{model:'original-model',effort:'high'});
+  assert.deepEqual(recordedCodexTurnChoice(thread,{}),{model:'original-model',effort:'xhigh'});
+  assert.deepEqual(codexTurnChoice(recordedCodexTurnChoice(thread,{effort:'high'})),{model:'original-model',effort:'high'});
 });

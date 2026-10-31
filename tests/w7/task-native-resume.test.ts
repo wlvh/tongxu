@@ -28,6 +28,10 @@ test('a new explicit owner input resumes the exact ended native thread, keeps pr
   assert.ok(s);
   assert.equal(s.sessionId,original.nativeControl.sessionId);assert.equal(s.threadId,original.nativeControl.threadId);assert.notEqual(s.turnId,original.nativeControl.turnId);assert.equal(s.nativeSessionResumed,true);
   await work.handle()!.control('check-counterexample',{threadId:s.threadId,sessionId:s.sessionId,turnId:s.turnId});const result=await work.pending;assert.equal(result.completed,true,JSON.stringify(result.problems));assert.equal(f.q.taskInbox().status(f.task)[1]!.nativeSessionResumed,true);assert.deepEqual(await readFile(path),bytes);
+  const originalNative=join(old.runtimes[0]!.started.directory,'native'),resumedNative=join(result.runtimes[0]!.started.directory,'native');
+  const wire=async(dir:string)=>(await readFile(join(dir,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)).find(x=>x.method==='turn/start').params;
+  assert.equal((await wire(originalNative)).effort,undefined);const originalChoice=(await readOwnedCodexSession(originalNative)).turnChoice!;
+  assert.equal((await wire(resumedNative)).effort,originalChoice.effort);assert.equal((await wire(resumedNative)).model,originalChoice.model);
   const calls=await f.calls();assert.equal(calls.filter(c=>c.kind==='start').length,1);assert.equal(calls.filter(c=>c.kind==='resume').length,1);assert.equal(calls.filter(c=>c.kind==='input').length,2);
   const again=await runMessages(f.store,work.selected.plan,false,work.selected.run);assert.equal(again.completed,true);assert.equal(again.newModelRequests,0);assert.deepEqual(await f.calls(),calls);
   for(const [name,ref] of Object.entries(old.runtimes[0]!.ended.originals) as Array<[string,{sha256:string;bytes:number}]>){const kept=await readFile(join(old.runtimes[0]!.started.directory,name));assert.equal(hash(kept),ref.sha256);assert.equal(kept.length,ref.bytes);}

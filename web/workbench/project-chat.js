@@ -24,7 +24,7 @@ const chatError=e=>({native_turn_interrupted:'本轮已中断，未形成完整�
 function chooseProjectConversation(id){const data=chatData();if(!data)return;data.userSelected=true;data.conversationId=id;data.selectionVersion++;data.messages=[];data.error=null;renderProjectChat();void loadProjectChat();}
 async function loadProjectChat(){
   const data=chatData(),epoch=gh.epoch;if(!data)return;if(data.loading){data.reloadRequested=true;return;}const selection=data.selectionVersion;data.loading=true;data.reloadRequested=false;data.error=null;renderProjectChat();
-  try{const result=await api('/api/project-secretary');if(epoch!==gh.epoch)return;Object.assign(data,{available:result.available,ready:true,conversations:result.conversations||[],busy:result.busy||[],executionKind:result.executionKind,aiChoice:result.aiChoice??null,timeoutMs:result.timeoutMs??null});if(!result.available){data.error=chatError(result.reason);return;}
+  try{const result=await api('/api/project-secretary');if(epoch!==gh.epoch)return;Object.assign(data,{available:result.available,ready:true,conversations:result.conversations||[],busy:result.busy||[],executionKind:result.executionKind,aiChoice:result.aiChoice??null,aiDefault:result.aiDefault??null,timeoutMs:result.timeoutMs??null});if(!result.available){data.error=chatError(result.reason);return;}
     if(selection!==data.selectionVersion)return;
     if(!data.initialLoaded){if(!data.userSelected&&!data.composing&&!chatDraft(data).question)data.conversationId=data.conversations[0]?.id??data.conversationId;data.initialLoaded=true;}
     if(!data.conversationId)data.conversationId=crypto.randomUUID();
@@ -61,7 +61,8 @@ function renderProjectChat(){
       else{answer.append(el('p',m.active?'正在读取资料并回答…':chatError(m.problem||'project_chat_execution_incomplete'),'small'));if(m.owned){const stop=el('button','停止本轮','outline');stop.type='button';stop.onclick=()=>stopProjectChat(m.id);answer.append(stop);}}
       lines.append(answer);
     }if(!data.messages.length)lines.append(el('p','可以直接提问，不需要先登记开发任务。','empty'));lines.dataset.messages=signature;if(followBottom)lines.scrollTop=lines.scrollHeight;}
-  $('project-chat-ai').textContent=data.aiChoice?(data.aiChoice.tool==='claude'?'Claude':'Codex')+' · '+(data.aiChoice.resolvedModel||data.aiChoice.model)+' · '+(data.aiChoice.effort||'默认强度'):'沿用原执行配置';
+  $('project-chat-ai').textContent=data.aiChoice?(data.aiChoice.tool==='claude'?'Claude':'Codex')+' · '+(data.aiChoice.resolvedModel||data.aiChoice.model)+' · '+(data.aiChoice.effort||'默认强度'):data.aiDefault?'默认：Codex · '+(data.aiDefault.observed?.model||'模型待检测')+' · '+(data.aiDefault.observed?.effort||'强度由程序决定'):'默认配置尚未读取';
+  $('project-chat-ai').title=data.aiChoice?'本项目角色选择；实际运行各自保存原记录':'来源：本机项目秘书启动配置；显示最近检测结果，可在设置中重新检测。';
   $('project-chat-limit').textContent='订阅内限额'+(data.timeoutMs?' · 最长 '+Math.ceil(data.timeoutMs/60000)+' 分钟':'')+' · 只读';
   const input=$('project-chat-input');if(input.value!==draft.question&&document.activeElement!==input)input.value=draft.question;input.disabled=data.submitting||data.ready&&!data.available;$('project-chat-send').disabled=!data.ready||!data.available||data.loading||data.submitting||data.busy.length>0;$('project-chat-send').textContent=data.submitting?'正在提交…':'发送';
 }

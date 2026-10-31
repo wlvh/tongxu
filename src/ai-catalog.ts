@@ -13,7 +13,7 @@ import {externalExecutableFamily,externalEntrypoint} from './external-executable
 
 const exec=promisify(execFile);
 export type AIModel={id:string;resolvedId:string|null;name:string;description:string;efforts:string[];defaultEffort:string|null;isDefault:boolean};
-export type AIProvider={id:string;tool:CliTool;path:string;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown';models:AIModel[];observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
+export type AIProvider={id:string;tool:CliTool;path:string;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown';models:AIModel[];defaults?:{model:string|null;effort:string|null;source:'codex_config_read'};observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
 export type AIModelChoice={model:string;effort:string|null};
 export type AICatalogConfig={root:string;configured:Array<{tool:CliTool;path:string}>};
 const word=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=256&&!v.startsWith('-')&&!/[\x00-\x20]/.test(v);
@@ -57,6 +57,7 @@ export async function inspectAIProvider(tool:CliTool,path:string,directory:strin
       const account=await rpc.request('account/read',{refreshToken:false});result.authentication=account.account?.type==='chatgpt'?'subscription':account.account==null?'not_logged_in':'other';
       result.models=await codexModelList((m,p)=>rpc!.request(m,p));
       const config=await rpc.request('config/read',{includeLayers:false,cwd});checkConfig(config.config);
+      result.defaults={model:word(config.config.model)?config.config.model:null,effort:word(config.config.model_reasoning_effort)?config.config.model_reasoning_effort:null,source:'codex_config_read'};
       const packageRoot=resolve(dirname(identity.realpath),'../../..'),host=join(packageRoot,'bin','codex-code-mode-host');let scopedTools=false;
       if(identity.realpath===join(packageRoot,'CodexCLI.app/Contents/MacOS/codex'))try{await access(host,constants.X_OK);scopedTools=true;}catch{}
       result.capabilities={readonlyMessages:true,scopedTools,ownedControl:(identity.capabilities as any).optionalProfiles?.ownedControl===true,controlledReports:true,impactReports:false};

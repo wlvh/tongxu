@@ -4,7 +4,13 @@ import type {AIRuntimeChoice} from './ai-settings.js';
 
 export const modelChoice=(value:AIRuntimeChoice):AIModelChoice=>({model:value.model,effort:value.effort});
 export function codexThreadChoice(choice?:AIModelChoice){if(!choice)return {};validateModelChoice(choice);return {model:choice.model,...(choice.effort!==null?{config:{model_reasoning_effort:choice.effort}}:{})};}
-export function codexTurnChoice(choice?:AIModelChoice){if(!choice)return {effort:'high'};validateModelChoice(choice);return {model:choice.model,...(choice.effort!==null?{effort:choice.effort}:{})};}
+export function codexTurnChoice(choice?:AIModelChoice){if(!choice)return {};validateModelChoice(choice);return {model:choice.model,...(choice.effort!==null?{effort:choice.effort}:{})};}
+/** A resumed run keeps its last submitted values; missing values come from
+ * that original thread response, never today's global configuration. */
+export function recordedCodexTurnChoice(thread:any,turn:any):AIModelChoice|undefined{
+  const model=turn?.model??thread.model;if(typeof model!=='string')return undefined;
+  const choice={model,effort:turn?.effort??thread.reasoningEffort??null};validateModelChoice(choice);return choice;
+}
 export function checkCodexSelected(thread:any,choice?:AIModelChoice){if(choice&&(thread.model!==choice.model||choice.effort!==null&&thread.reasoningEffort!==choice.effort))throw new Error('ai_selected_model_not_applied');}
 export async function checkCodexChoice(request:(m:string,p:any)=>Promise<any>,choice?:AIModelChoice){if(choice)requireModelChoice(await codexModelList(request),choice);}
 export function claudeChoiceArgs(choice?:AIModelChoice){if(!choice)return [];validateModelChoice(choice);return ['--model',choice.model,...(choice.effort!==null?['--effort',choice.effort]:[])];}

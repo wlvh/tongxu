@@ -12,3 +12,14 @@ test('two editors: refresh replaces untouched choices, while edited drafts retai
   assert.equal(page.value.revision,3);assert.equal(page.draftRevisions.get('secretary'),2);assert.equal(page.drafts.get('secretary').model,'my-unsaved-edit');assert.notEqual(page.draftRevisions.get('secretary'),page.value.revision);
   context.reset(page,'secretary');assert.equal(page.drafts.get('secretary').model,'another-editor-change');assert.equal(page.draftRevisions.get('secretary'),3);assert.equal(page.dirty.has('secretary'),false);
 });
+
+test('configuration preview separates observed program defaults, explicit role choices and unknown task plans',async()=>{
+  const source=await readFile(new URL('../../../web/workbench/ai-settings.js',import.meta.url),'utf8'),context:any={date:(s:string)=>s};runInNewContext(source+'\nthis.summary=aiChoiceSummary;',context);
+  const defaults={model:'configured-model',effort:'xhigh',source:'codex_config_read'},value={defaults:{secretary:{tool:'codex',path:'/current/codex',observed:defaults,observedAt:'2026-10-31T00:00:00Z'}},catalog:[{id:'c',tool:'codex',path:'/current/codex',defaults,models:[{id:'chosen-model',resolvedId:null}],observedAt:'2026-10-31T00:00:00Z'},{id:'a',tool:'claude',path:'/current/claude',models:[{id:'sonnet',resolvedId:'sonnet-current'}],observedAt:'2026-10-31T00:00:00Z'}]};
+  let result=context.summary('secretary',null,value);assert.equal(result.model,'configured-model');assert.equal(result.effort,'xhigh');assert.match(result.source,/启动配置/);assert.match(result.source,/最近检测/);
+  result=context.summary('issue_owner',null,value);assert.equal(result.program,'由具体任务决定');assert.equal(result.model,'由具体任务决定');assert.ok(!result.source.includes('configured-model'));
+  result=context.summary('secretary',{providerId:'c',model:'chosen-model',effort:'max'},value);assert.equal(result.model,'chosen-model');assert.equal(result.effort,'max');
+  result=context.summary('secretary',{providerId:'c',model:'chosen-model',effort:null},value);assert.equal(result.effort,'程序默认（最近检测：xhigh）');
+  result=context.summary('issue_owner',{providerId:'a',model:'sonnet',effort:null},value);assert.match(result.model,/sonnet-current/);assert.match(result.effort,/未回报具体值/);assert.ok(!result.effort.includes('xhigh'));
+  result=context.summary('secretary',null,{defaults:{secretary:{tool:'codex',path:'/current/codex',observed:null}}});assert.match(result.model,/未回报/);assert.match(result.source,/尚未检测/);
+});
