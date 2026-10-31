@@ -299,7 +299,7 @@ class ACPMessageDialog extends ReadonlyDialog{
   }
   override async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,beforeSendSync?:()=>void){
     if(envelope.to.sessionId!==this.route.sessionId||envelope.to.threadId!==this.route.threadId)throw Error('message_original_route_changed');
-    await beforeSend();beforeSendSync?.();const text=canonical(envelope),final=await this.session.prompt(text,this.spec.timeoutMs);
+    await beforeSend();const text=canonical(envelope),final=await this.session.prompt(text,this.spec.timeoutMs,beforeSendSync);
     const wire=jsonLines(await regular(join(this.spec.directory,'stdin.ndjson'),16*1024*1024)),request=wire.filter(m=>m.method==='session/prompt').at(-1),turnId='acp-request-'+request.id;
     delivered(proof('delivered',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}));
     return proof('reply',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)});
@@ -308,7 +308,7 @@ class ACPMessageDialog extends ReadonlyDialog{
 }
 async function acpOriginals(o:RuntimeSpec){
   if(!isAdditionalProgram(o.participant.tool))throw Error('additional_cli_message_profile_required');const originals:Record<string,Buffer>={};
-  for(const name of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','profile.json','initialize.json','session.json','selection.json','profile-observed.json',...Object.keys(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy))])if(await exists(join(o.directory,name)))originals[name]=await regular(join(o.directory,name),16*1024*1024);
+  for(const name of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','capture-failure.json','profile.json','initialize.json','session.json','selection.json','profile-observed.json','prompt-boundaries.ndjson',...Object.keys(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy))])if(await exists(join(o.directory,name)))originals[name]=await regular(join(o.directory,name),16*1024*1024);
   if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');return originals;
 }
 async function inspectUnstartedACPMessage(o:RuntimeSpec){
@@ -316,7 +316,7 @@ async function inspectUnstartedACPMessage(o:RuntimeSpec){
     await checkCapture(o.directory);if(!originals['exit.json']||!originals['process.json'])throw Error('message_bootstrap_process_unknown');const exit=JSON.parse(originals['exit.json'].toString()),launch=JSON.parse(originals['launch.json'].toString());
     if(exit.code===null&&exit.signal===null||launch.command!==o.participant.executable||launch.cwd!==join(o.directory,'workspace'))throw Error('message_bootstrap_process_unknown');
     const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!);if(sent.some(m=>!['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/close'].includes(m.method))||received.some(m=>m.params?.update?.sessionUpdate==='agent_message_chunk'))throw Error('message_bootstrap_may_have_executed');
-  }else if(['process.json','stdin.ndjson','stdout.ndjson','exit.json'].some(name=>originals[name]))throw Error('message_bootstrap_launch_unknown');
+  }else if(['process.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','capture-failure.json','initialize.json','session.json','route.json','selection.json','profile-observed.json','prompt-boundaries.ndjson'].some(name=>originals[name]))throw Error('message_bootstrap_launch_unknown');
   return proof('ended',o,null,{exit:originals['exit.json']?JSON.parse(originals['exit.json'].toString()):null,successfulCapture:false,knownUnstarted:true},originals);
 }
 async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
@@ -334,6 +334,9 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
     const start=requests.find(r=>r.method==='session/new')!;if(canonical(response(start).result)!==canonical(session)||canonical(start.params)!==canonical({cwd:join(o.directory,'workspace'),mcpServers:[]})||prompts.length!==expected.length)throw Error('external_cli_wrong_session');
     if(prompts.length){const last=received.indexOf(response(prompts.at(-1)!));if(received.slice(last+1).some(r=>['agent_message_chunk','tool_call','tool_call_update'].includes(r.params?.update?.sessionUpdate)))throw Error('external_cli_late_output');}
     if(o.participant.tool==='kimi'&&o.executionKind==='native_capture'){const bound=read('profile-observed.json');if(bound.systemPromptSha256!==hash((o.assembly.system+'\n'+messagePolicy).trim())||bound.activeToolNames.length||bound.subagents.length||bound.agentsMdPaths.length||bound.modelAlias!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&bound.thinkingEffort!==o.participant.aiModel.effort)throw Error('external_cli_readonly_profile_missing');}
+    if(!originals['prompt-boundaries.ndjson'])throw Error('external_cli_input_boundary_missing');
+    const boundaries=jsonLines(originals['prompt-boundaries.ndjson']);
+    if(boundaries.length!==prompts.length||new Set(boundaries.map(b=>b.requestId)).size!==boundaries.length)throw Error('external_cli_input_boundary_changed');
     let model=session.models?.currentModelId??acpOptions(session.configOptions,'model')?.currentValue,effort=acpOptions(session.configOptions,'thought_level')?.currentValue??null;
     for(const request of requests){
       if(request.method.startsWith('session/')&&request.method!=='session/new'&&request.params?.sessionId!==session.sessionId)throw Error('external_cli_wrong_session');
@@ -342,7 +345,12 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
       if(request.method!=='session/prompt')continue;const index=prompts.indexOf(request),envelope=expected[index]!,text=canonical(envelope);
       if(model!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&effort!==o.participant.aiModel.effort)throw Error('ai_selected_model_not_applied');
       if(canonical(request.params)!==canonical({sessionId:session.sessionId,prompt:[{type:'text',text}]}))throw Error('message_submitted_input_mismatch');
-      const end=received.indexOf(response(request)),previous= index?received.indexOf(response(prompts[index-1]!)):received.indexOf(response(requests[requests.indexOf(request)-1]!));const final=parseAcpPrompt(received.slice(previous+1,end+1),session.sessionId,response(request).result,o.participant.aiModel),turnId='acp-request-'+request.id;
+      const end=received.indexOf(response(request)),previous=index?received.indexOf(response(prompts[index-1]!)):received.indexOf(response(requests[requests.indexOf(request)-1]!)),boundary=boundaries[index]!;
+      const rawInput=originals['stdin.ndjson']!,rawOutput=originals['stdout.ndjson']!;
+      if(boundary.schemaVersion!==1||boundary.requestId!==request.id||boundary.requestSha256!==hash(JSON.stringify(request)+'\n')||!Number.isSafeInteger(boundary.stdoutBytes)||boundary.stdoutBytes<0||boundary.stdoutBytes>rawOutput.length||!Number.isSafeInteger(boundary.stdinBytes)||boundary.stdinBytes<0||boundary.stdinBytes>rawInput.length)throw Error('external_cli_input_boundary_changed');
+      const outputPrefix=rawOutput.subarray(0,boundary.stdoutBytes),inputPrefix=rawInput.subarray(0,boundary.stdinBytes);
+      if(hash(outputPrefix)!==boundary.stdoutSha256||hash(inputPrefix)!==boundary.stdinSha256||boundary.stdoutEvents!==(outputPrefix.length?jsonLines(outputPrefix).length:0)||boundary.stdoutEvents<=previous||boundary.stdoutEvents>end||rawInput.subarray(boundary.stdinBytes).toString().split('\n')[0]!==JSON.stringify(request))throw Error('external_cli_input_boundary_changed');
+      const final=parseAcpPrompt(received.slice(boundary.stdoutEvents,end+1),session.sessionId,response(request).result,o.participant.aiModel),turnId='acp-request-'+request.id;
       proofs.push(proof('delivered',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}),proof('reply',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)}));
     }
     return {ended:proof('ended',o,null,{exit,successfulCapture:true},originals),proofs,error:null};

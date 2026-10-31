@@ -15,7 +15,7 @@ import {externalExecutableFamily,externalEntrypoint} from './external-executable
 
 const exec=promisify(execFile);
 export type AIModel={id:string;resolvedId:string|null;name:string;description:string;efforts:string[];defaultEffort:string|null;isDefault:boolean};
-export type AIProvider={id:string;tool:AIProgram;path:string;installed?:boolean;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown'|'existing_account';models:AIModel[];defaults?:{model:string|null;effort:string|null;source:'codex_config_read'};observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
+export type AIProvider={id:string;tool:AIProgram;path:string;installed?:boolean;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown'|'existing_account';models:AIModel[];defaults?:{model:string|null;effort:string|null;source:'codex_config_read'|'acp_session'};observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
 export type AIModelChoice={model:string;effort:string|null};
 export type AICatalogConfig={root:string;configured:Array<{tool:AIProgram;path:string}>};
 const word=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=256&&!v.startsWith('-')&&!/[\x00-\x20]/.test(v);

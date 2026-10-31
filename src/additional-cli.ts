@@ -3,7 +3,7 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,mkdir,access,readdir} from 'node:fs/promises';
-import {join,dirname} from 'node:path';
+import {join,dirname,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {parse as parseToml} from 'smol-toml';
 import {parse as parseJavaScript} from 'acorn';
@@ -19,7 +19,7 @@ const word=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<51
 const present=async(p:string)=>access(p).then(()=>true,()=>false);
 export function readConfigJson(b:Buffer):any{
   const text=new TextDecoder('utf8',{fatal:true}).decode(b),ast=parseJavaScript('('+text+'\n)',{ecmaVersion:'latest'}) as any;
-  const value=(n:any):any=>{if(n?.type==='Literal'&&!n.regex&&n.bigint===undefined)return n.value;if(n?.type==='ArrayExpression')return n.elements.map(value);if(n?.type==='ObjectExpression'){const out:Record<string,any>={};for(const p of n.properties){if(p.type!=='Property'||p.kind!=='init'||p.method||p.computed||p.shorthand||p.key.type!=='Literal'||typeof p.key.value!=='string'||['__proto__','constructor','prototype'].includes(p.key.value)||Object.hasOwn(out,p.key.value))throw Error('external_cli_configuration_invalid');out[p.key.value]=value(p.value);}return out;}throw Error('external_cli_configuration_invalid');};
+  const value=(n:any):any=>{if(n?.type==='Literal'&&!n.regex&&n.bigint===undefined)return n.value;if(n?.type==='UnaryExpression'&&n.operator==='-'&&n.argument?.type==='Literal'&&typeof n.argument.value==='number')return -n.argument.value;if(n?.type==='ArrayExpression')return n.elements.map(value);if(n?.type==='ObjectExpression'){const out:Record<string,any>={};for(const p of n.properties){if(p.type!=='Property'||p.kind!=='init'||p.method||p.computed||p.shorthand||p.key.type!=='Literal'||typeof p.key.value!=='string'||['__proto__','constructor','prototype'].includes(p.key.value)||Object.hasOwn(out,p.key.value))throw Error('external_cli_configuration_invalid');out[p.key.value]=value(p.value);}return out;}throw Error('external_cli_configuration_invalid');};
   if(ast.body.length!==1||ast.body[0].type!=='ExpressionStatement')throw Error('external_cli_configuration_invalid');return value(ast.body[0].expression);
 }
 const read=async(p:string)=>{const b=await readFile(p);if(b.length>1024*1024)throw Error('external_cli_configuration_limit');return b;};
@@ -42,7 +42,7 @@ export async function prepareExtraProfile(tool:AdditionalProgram,directory:strin
   const files=extraProfileFiles(tool,directory,system),env:Record<string,string>={};let configurationSha256=hash('explicit-fixture'),auth:ExtraProfile['auth']='subscription',allowedModelPrefixes:string[]=[];
   if(tool==='kimi'){
     if(!fixture){
-      const home=process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code'),raw=await read(join(home,'config.toml')),config=parseToml(raw.toString()) as any;
+      const home=process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code');if(!isAbsolute(home))throw Error('external_cli_configuration_invalid');const raw=await read(join(home,'config.toml')),config=parseToml(raw.toString()) as any;
       if(config.hooks?.length||config.plugins||config.extra_agent_dirs?.length)throw Error('kimi_custom_startup_not_isolated');
       for(const p of ['mcp.json','hooks.json','plugins'])if(await present(join(home,p)))throw Error('kimi_custom_startup_not_isolated');
       const provider=config.providers?.['managed:kimi-code'];
@@ -73,16 +73,17 @@ export class ExtraCliSession{
   rpc!:LiveProcess;identity:any;profile!:ExtraProfile;session:any;initial:any;options:any[]=[];catalog:AIModel[]=[];readonly submitted:Array<{requestId:number;input:string;model:string;effort:string|null;final:string}>=[];
   private constructor(readonly tool:AdditionalProgram,readonly executable:string,readonly directory:string,readonly fixture:boolean){}
   private choice:AIModelChoice|undefined;
+  private legacySelectedModel:string|null=null;
   private system='';
   static async open(tool:AdditionalProgram,executable:string,directory:string,system:string,fixture=false,prepared=false){
     if(!prepared)await newStage(directory);const self=new ExtraCliSession(tool,executable,directory,fixture);
     try{
       self.system=system;self.profile=await prepareExtraProfile(tool,directory,system,fixture);save(join(directory,'profile.json'),self.profile);
-      const selected=selectExternalExecutable(executable),version=await exec(selected.realpath,['--version'],{timeout:10000,maxBuffer:16384}),help=await exec(selected.realpath,['--help'],{timeout:10000,maxBuffer:65536});
-      if(!version.stdout.trim()||!help.stdout.includes('acp')||tool==='gemini'&&!help.stdout.includes('--admin-policy')||tool==='opencode'&&!help.stdout.includes('--pure'))throw Error('external_cli_acp_capability_missing');
+      const selected=selectExternalExecutable(executable),version=await exec(selected.realpath,['--version'],{timeout:10000,maxBuffer:16384,cwd:join(directory,'workspace'),env:{...process.env,...self.profile.env}}),help=await exec(selected.realpath,['--help'],{timeout:10000,maxBuffer:65536,cwd:join(directory,'workspace'),env:{...process.env,...self.profile.env}});
+      if(!version.stdout.trim()||tool==='kimi'&&!fixture&&!/^\s+provider\s+/m.test(help.stdout)||!help.stdout.includes('acp')||tool==='gemini'&&!help.stdout.includes('--admin-policy')||tool==='opencode'&&!help.stdout.includes('--pure'))throw Error('external_cli_acp_capability_missing');
       self.identity={path:executable,realpath:selected.realpath,sha256:selected.sha256,version:version.stdout.trim(),selection:'configured-current-v1',externalSelection:selected,capabilities:{kind:'acp-readonly-v1',source:fixture?'explicit_fixture':'actual_cli_help',helpSha256:hash(help.stdout)}};save(join(directory,'executable.json'),self.identity);
       if(tool==='opencode'&&!fixture){
-        const result=await exec(selected.realpath,['--pure','auth','list','--format','json'],{timeout:20000,maxBuffer:256*1024,env:{...process.env,...self.profile.env}}),connections=JSON.parse(result.stdout);
+        const result=await exec(selected.realpath,['--pure','auth','list','--format','json'],{timeout:20000,maxBuffer:256*1024,cwd:join(directory,'workspace'),env:{...process.env,...self.profile.env}}),connections=JSON.parse(result.stdout);
         if(!Array.isArray(connections))throw Error('opencode_billing_route_unknown');
         self.profile.allowedModelPrefixes=connections.filter(p=>word(p.id)&&p.connections?.length&&p.connections.every((c:any)=>c.type==='credential'&&c.method==='oauth'&&!c.status)).map(p=>p.id+'/');
         if(!self.profile.allowedModelPrefixes.length)throw Error('opencode_billing_route_unknown');save(join(directory,'profile.json'),self.profile);
@@ -100,23 +101,28 @@ export class ExtraCliSession{
         const modes=self.session.modes?.availableModes??[];if(!modes.some((m:any)=>m.id==='tongxu'))throw Error('external_cli_readonly_profile_missing');await self.rpc.request('session/set_mode',{sessionId:self.session.sessionId,modeId:'tongxu'});
       }
       return self;
-    }catch(e){await self.close();throw e;}
+    }catch(e){const authRequired=self.rpc?.events.some(m=>m.error?.code===-32000);await self.close();if(authRequired)throw Error('ai_subscription_not_confirmed');throw e;}
   }
   async select(choice:AIModelChoice){
     if(!this.catalog.some(m=>m.id===choice.model))throw Error('ai_model_no_longer_available');
     const option=acpOptions(this.options,'model');const result=await this.rpc.request(option?'session/set_config_option':'session/set_model',option?{sessionId:this.session.sessionId,configId:option.id,value:choice.model}:{sessionId:this.session.sessionId,modelId:choice.model});
     if(option){this.options=result.configOptions??[];if(acpOptions(this.options,'model')?.currentValue!==choice.model)throw Error('ai_selected_model_not_applied');}
+    this.legacySelectedModel=option?null:choice.model;
     if(choice.effort!==null){const effort=acpOptions(this.options,'thought_level');if(!effort?.options.some((e:any)=>e.value===choice.effort))throw Error('ai_effort_not_supported');const changed=await this.rpc.request('session/set_config_option',{sessionId:this.session.sessionId,configId:effort.id,value:choice.effort});this.options=changed.configOptions??[];if(acpOptions(this.options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');}
+    this.checkChoice(choice);
     save(join(this.directory,'selection.json'),{requested:choice,reportedModel:acpOptions(this.options,'model')?.currentValue??null,reportedEffort:acpOptions(this.options,'thought_level')?.currentValue??null,modelSelectionAcknowledged:true});
     this.choice=structuredClone(choice);
   }
   async models(){
     const rows:AIModel[]=[];for(const model of this.catalog){await this.select({model:model.id,effort:null});const effort=acpOptions(this.options,'thought_level');rows.push({...model,efforts:effort?.options.map((e:any)=>e.value)??[],defaultEffort:effort?.currentValue??null});}return rows;
   }
-  async prompt(input:string,timeoutMs:number){
+  private checkChoice(choice:AIModelChoice){
+    if((acpOptions(this.options,'model')?.currentValue??this.legacySelectedModel)!==choice.model||choice.effort!==null&&acpOptions(this.options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');
+  }
+  async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void){
     for(const [p,sha]of Object.entries(this.profile.files))if(hash(await read(join(this.directory,p)))!==sha)throw Error('external_cli_profile_changed');
-    await this.verifyProfile();if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
-    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs);
+    await this.verifyProfile();if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
+    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,beforeSendSync);
     const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();return parsed;
   }
   private async verifyProfile(){
@@ -140,7 +146,7 @@ export function parseAcpPrompt(events:any[],sessionId:string,result:any,choice?:
 }
 export async function probeAdditionalProgram(tool:AdditionalProgram,path:string,directory:string):Promise<AIProvider>{
   const result:AIProvider={id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:null,available:false,reason:null,authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:directory};let session:ExtraCliSession|undefined;
-  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;}
+  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.defaults={model:acpOptions(session.session.configOptions,'model')?.currentValue??session.session.models?.currentModelId??null,effort:acpOptions(session.session.configOptions,'thought_level')?.currentValue??null,source:'acp_session'};result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;}
   catch(e){result.reason=e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'external_cli_probe_unavailable';}
   finally{await session?.close();}
   save(join(directory,'catalog.json'),result);return result;

@@ -105,9 +105,20 @@ export class LiveProcess {
   send(message: unknown) {
     const line = JSON.stringify(this.protocol==='acp'?{jsonrpc:'2.0',...(message as object)}:message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
   }
-  request(method: string, params: unknown, timeoutMs = 30_000): Promise<any> {
+  request(method: string, params: unknown, timeoutMs = 30_000, beforeSendSync?:()=>void): Promise<any> {
     if (this.failure || this.exit) throw new Error(this.failure ?? 'executor_closed');
     const id = ++this.sequence;
+    if(this.protocol==='acp'&&method==='session/prompt'){
+      // Save the exact output prefix observed before this input. A prior turn's
+      // terminal response cannot identify where the next input actually began.
+      if(this.partial.length)throw new Error('external_cli_partial_before_input');
+      const output=readFileSync(join(this.directory,'stdout.ndjson')),input=readFileSync(join(this.directory,'stdin.ndjson'));
+      const requestSha256=hash(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');
+      appendFileSync(join(this.directory,'prompt-boundaries.ndjson'),JSON.stringify({schemaVersion:1,requestId:id,requestSha256,stdoutBytes:output.length,stdoutSha256:hash(output),stdoutEvents:this.events.length,stdinBytes:input.length,stdinSha256:hash(input)})+'\n',{mode:0o600});
+    }
+    // No asynchronous work is permitted between this original authority/source
+    // check and the actual input write below.
+    beforeSendSync?.();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('executor_rpc_timeout')); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer }); this.send({ id, method, params });
