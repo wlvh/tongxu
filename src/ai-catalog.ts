@@ -1,3 +1,5 @@
+import {additionalPrograms,isAdditionalProgram,aiPrograms,type AIProgram} from './ai-programs.js';
+import {probeAdditionalProgram} from './additional-cli.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {access,mkdir,readdir,readFile} from 'node:fs/promises';
@@ -13,9 +15,9 @@ import {externalExecutableFamily,externalEntrypoint} from './external-executable
 
 const exec=promisify(execFile);
 export type AIModel={id:string;resolvedId:string|null;name:string;description:string;efforts:string[];defaultEffort:string|null;isDefault:boolean};
-export type AIProvider={id:string;tool:CliTool;path:string;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown';models:AIModel[];defaults?:{model:string|null;effort:string|null;source:'codex_config_read'};observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
+export type AIProvider={id:string;tool:AIProgram;path:string;installed?:boolean;version:string|null;available:boolean;reason:string|null;authentication:'subscription'|'not_logged_in'|'other'|'unknown'|'existing_account';models:AIModel[];defaults?:{model:string|null;effort:string|null;source:'codex_config_read'};observedAt:string;capabilities:{readonlyMessages:boolean;scopedTools:boolean;ownedControl:boolean;controlledReports?:boolean;impactReports?:boolean};evidence:string};
 export type AIModelChoice={model:string;effort:string|null};
-export type AICatalogConfig={root:string;configured:Array<{tool:CliTool;path:string}>};
+export type AICatalogConfig={root:string;configured:Array<{tool:AIProgram;path:string}>};
 const word=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=256&&!v.startsWith('-')&&!/[\x00-\x20]/.test(v);
 const label=(v:unknown,fallback:string)=>typeof v==='string'?v.slice(0,1024):fallback;
 export function parseAIModels(tool:CliTool,rows:unknown):AIModel[]{
@@ -45,7 +47,8 @@ export async function codexModelList(request:(method:string,params:any)=>Promise
 }
 /** Metadata only: initialize/account/model catalog. Never thread/start,
  * turn/start, prompt, login, install, or credential copying. */
-export async function inspectAIProvider(tool:CliTool,path:string,directory:string,disabledMcpServers:string[]=[]):Promise<AIProvider>{
+export async function inspectAIProvider(tool:AIProgram,path:string,directory:string,disabledMcpServers:string[]=[]):Promise<AIProvider>{
+  if(isAdditionalProgram(tool))return probeAdditionalProgram(tool,path,directory);
   const result:AIProvider={id:hash(JSON.stringify([tool,externalExecutableFamily(path)])).slice(0,24),tool,path,version:null,available:false,reason:null,authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false},evidence:directory};
   await newStage(directory);let rpc:LiveProcess|undefined;
   try{
@@ -74,9 +77,9 @@ export async function inspectAIProvider(tool:CliTool,path:string,directory:strin
   save(join(directory,'catalog.json'),result);return result;
 }
 export async function discoverAIEntries(configured:AICatalogConfig['configured']):Promise<AICatalogConfig['configured']>{
-  const entries=[...configured];const add=(tool:CliTool,path:string)=>{if(isAbsolute(path)&&resolve(path)===path&&!entries.some(e=>e.tool===tool&&externalExecutableFamily(e.path)===externalExecutableFamily(path)))entries.push({tool,path});};
-  for(const tool of ['codex','claude'] as const){for(const dir of (process.env.PATH??'').split(delimiter).filter(isAbsolute))add(tool,join(dir,tool));for(const dir of ['.local/bin','.bun/bin','.npm-global/bin'])add(tool,join(homedir(),dir,tool));}
-  add('claude',join(homedir(),'.claude/local/claude'));add('codex','/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const entries=[...configured];const add=(tool:AIProgram,path:string)=>{if(isAbsolute(path)&&resolve(path)===path&&!entries.some(e=>e.tool===tool&&externalExecutableFamily(e.path)===externalExecutableFamily(path)))entries.push({tool,path});};
+  for(const tool of aiPrograms){for(const dir of (process.env.PATH??'').split(delimiter).filter(isAbsolute))add(tool,join(dir,tool));for(const dir of ['.local/bin','.bun/bin','.npm-global/bin','/opt/homebrew/bin','/usr/local/bin'])add(tool,join(isAbsolute(dir)?dir:join(homedir(),dir),tool));}
+  add('kimi',join(homedir(),'.kimi-code/bin/kimi'));add('opencode',join(homedir(),'.opencode/bin/opencode'));add('claude',join(homedir(),'.claude/local/claude'));add('codex','/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
   const claudeApp=join(homedir(),'Library/Application Support/Claude/claude-code');
   try{const versions=(await readdir(claudeApp,{withFileTypes:true})).filter(d=>d.isDirectory()).sort((a,b)=>b.name.localeCompare(a.name,undefined,{numeric:true})).slice(0,3);for(const v of versions)for(const d of (await readdir(join(claudeApp,v.name),{withFileTypes:true})).filter(d=>d.isDirectory()).slice(0,2))add('claude',join(claudeApp,v.name,d.name,'claude.app/Contents/MacOS/claude'));}catch{}
   const found=[];for(const e of entries){try{await access(externalEntrypoint(e.path),constants.X_OK);found.push(e);}catch{}}

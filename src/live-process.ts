@@ -43,7 +43,7 @@ export class LiveProcess {
   private closing = false;
   private replies = new Map<string, { request: string; response: unknown }>();
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable) {
+  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable,private readonly protocol:'codex'|'acp'='codex') {
     const selected=expected??selectExternalExecutable(command);
     if(selected.configuredPath!==command)throw new Error('external_executable_selection_mismatch');
     assertExternalExecutable(selected);
@@ -80,6 +80,9 @@ export class LiveProcess {
   private receive(m: any) {
     this.events.push(m);
     if (typeof m?.method === 'string' && 'id' in m) {
+      if(this.protocol==='acp'&&m.method==='session/request_permission'){
+        this.send({id:m.id,result:{outcome:{outcome:'cancelled'}}});this.fail('external_cli_tool_request_denied');return;
+      }
       if (this.onRequest && m.method === 'item/tool/call') {
         this.serving = this.serving.then(async () => {
           if (this.closing || this.failure) throw new Error('executor_not_accepting_tools');
@@ -100,7 +103,7 @@ export class LiveProcess {
     if (!this.failure) { this.failure = reason; save(join(this.directory, 'capture-failure.json'), { reason }); }
   }
   send(message: unknown) {
-    const line = JSON.stringify(message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
+    const line = JSON.stringify(this.protocol==='acp'?{jsonrpc:'2.0',...(message as object)}:message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
   }
   request(method: string, params: unknown, timeoutMs = 30_000): Promise<any> {
     if (this.failure || this.exit) throw new Error(this.failure ?? 'executor_closed');

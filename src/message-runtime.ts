@@ -1,3 +1,5 @@
+import {isAdditionalProgram} from './ai-programs.js';
+import {ExtraCliSession,parseAcpPrompt,extraProfileArgs,extraProfileFiles,acpOptions} from './additional-cli.js';
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
@@ -53,9 +55,10 @@ function binding(o:RuntimeSpec,route:Row,turns:string[],version?:string):ResultB
 /** Only new processes and exact sessions created here are addressable. A
  * SessionRecords link is deliberately not accepted as a control capability. */
 export class ReadonlyDialog {
-  private constructor(private o:RuntimeSpec,private rpc:LiveProcess,readonly route:Row,private claudeVersion:MessageClaudeVersion|null=null,private claudeContract:MessageClaudeContract|null=null,private codexVersion:string|null=null){}
+  protected constructor(private o:RuntimeSpec,private rpc:LiveProcess,readonly route:Row,private claudeVersion:MessageClaudeVersion|null=null,private claudeContract:MessageClaudeContract|null=null,private codexVersion:string|null=null){}
   private turns:string[]=[];
   static async open(o:RuntimeSpec):Promise<ReadonlyDialog>{
+    if(isAdditionalProgram(o.participant.tool))return ACPMessageDialog.openExtra(o);
     requireIssuedRolePrompt(o.assembly,o.participant.role);await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
     // Executable capabilities and the current resolved identity are checked below.
     const identity=await executable(o.participant.executable,o.participant.tool==='codex'?codexConversation:messageClaudeRequirements,o.executionKind);if(!capturedExecutableMatches(identity,o.participant.executable,o.participant.executableSha256))throw new Error('message_executor_changed');save(join(o.directory,'executable.json'),identity);
@@ -99,6 +102,7 @@ export class ReadonlyDialog {
 /** Reconstruct only complete original receipts; never launch or resume a
  * session on recovery. Expected envelopes come from the original queue. */
 export async function inspectDialogCapture(o:RuntimeSpec,expected:Row[],controls:NativeControlRequest[]=[]){
+  if(isAdditionalProgram(o.participant.tool))return inspectACPMessage(o,expected);
   if(o.nativeControls)return inspectOwnedMessageCapture(o,expected,controls);
   const originals:Record<string,Buffer>={};for(const n of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json',...(o.participant.tool==='codex'?['thread.json','effective-config.json','instruction-sources.json']:['auth-route.json'])])originals[n]=await regular(join(o.directory,n),16*1024*1024);
   const read=(n:string)=>JSON.parse(originals[n]!.toString());if(canonical(read('runtime-spec.json'))!==canonical(o))throw new Error('message_original_runtime_spec_changed');inspectRolePrompt(o.assembly,o.participant.role);
@@ -150,6 +154,7 @@ export async function inspectDialogCapture(o:RuntimeSpec,expected:Row[],controls
  * an unstarted task. This enables bounded retry after an actual precondition
  * change without retargeting an unknown message. */
 export async function inspectUnstartedDialog(o:RuntimeSpec){
+  if(isAdditionalProgram(o.participant.tool))return inspectUnstartedACPMessage(o);
   if(o.nativeControls)return inspectUnstartedOwnedMessage(o);
   const originals:Record<string,Buffer>={};for(const n of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','thread.json','effective-config.json','instruction-sources.json','auth-route.json'])if(await exists(join(o.directory,n)))originals[n]=await regular(join(o.directory,n),16*1024*1024);
   if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw new Error('message_original_bootstrap_unknown');let exit:Row|null=null;
@@ -277,4 +282,64 @@ async function inspectUnstartedOwnedMessage(o:RuntimeSpec){
     checkMetadataModelRequests(sent);const launch=JSON.parse(originals['native/launch.json'].toString());if(launch.command!==o.participant.executable||launch.cwd!==(o.nativeResume?.binding.workspace??join(o.directory,'native','workspace')))throw new Error('message_bootstrap_launch_mismatch');
   }else if(Object.keys(originals).some(n=>n.startsWith('native/')&&!['native/executable.json'].includes(n)))throw new Error('message_bootstrap_launch_unknown');
   return proof('ended',o,null,{exit,successfulCapture:false,knownUnstarted:true},originals);
+}
+
+/** Additional programs share the original addressed-message ledger. ACP
+ * request IDs are transport references, not invented native turn identities. */
+class ACPMessageDialog extends ReadonlyDialog{
+  private constructor(private spec:RuntimeSpec,private session:ExtraCliSession,route:Row){super(spec,session.rpc,route);}
+  static async openExtra(o:RuntimeSpec){
+    if(!isAdditionalProgram(o.participant.tool)||o.nativeControls||o.nativeResume||!o.participant.aiModel||!['issue_owner','acceptance'].includes(o.participant.role))throw Error('additional_cli_message_profile_required');
+    requireIssuedRolePrompt(o.assembly,o.participant.role);await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
+    const session=await ExtraCliSession.open(o.participant.tool,o.participant.executable,o.directory,o.assembly.system+'\n'+messagePolicy,o.executionKind==='fixture',true);
+    try{
+      if(!capturedExecutableMatches(session.identity,o.participant.executable,o.participant.executableSha256))throw Error('message_executor_changed');
+      await session.select(o.participant.aiModel);const route={...nativeRoute(o,session.session.sessionId,session.session.sessionId,join(o.directory,'workspace'),true),protocol:'acp/1',nativeTurnIdsAvailable:false};save(join(o.directory,'route.json'),route);return new ACPMessageDialog(o,session,route);
+    }catch(e){await session.close();throw e;}
+  }
+  override async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,beforeSendSync?:()=>void){
+    if(envelope.to.sessionId!==this.route.sessionId||envelope.to.threadId!==this.route.threadId)throw Error('message_original_route_changed');
+    await beforeSend();beforeSendSync?.();const text=canonical(envelope),final=await this.session.prompt(text,this.spec.timeoutMs);
+    const wire=jsonLines(await regular(join(this.spec.directory,'stdin.ndjson'),16*1024*1024)),request=wire.filter(m=>m.method==='session/prompt').at(-1),turnId='acp-request-'+request.id;
+    delivered(proof('delivered',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}));
+    return proof('reply',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)});
+  }
+  override async close(){await this.session.close();}
+}
+async function acpOriginals(o:RuntimeSpec){
+  if(!isAdditionalProgram(o.participant.tool))throw Error('additional_cli_message_profile_required');const originals:Record<string,Buffer>={};
+  for(const name of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','profile.json','initialize.json','session.json','selection.json','profile-observed.json',...Object.keys(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy))])if(await exists(join(o.directory,name)))originals[name]=await regular(join(o.directory,name),16*1024*1024);
+  if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');return originals;
+}
+async function inspectUnstartedACPMessage(o:RuntimeSpec){
+  const originals=await acpOriginals(o);if(originals['launch.json']){await checkCapture(o.directory);const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!);if(sent.some(m=>!['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/close'].includes(m.method))||received.some(m=>m.params?.update?.sessionUpdate==='agent_message_chunk'))throw Error('message_bootstrap_may_have_executed');}
+  return proof('ended',o,null,{exit:originals['exit.json']?JSON.parse(originals['exit.json'].toString()):null,successfulCapture:false,knownUnstarted:true},originals);
+}
+async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
+  const originals=await acpOriginals(o),read=(name:string)=>JSON.parse(originals[name]!.toString()),exit=read('exit.json'),ended=proof('ended',o,null,{exit,successfulCapture:false},originals),proofs:DialogProof[]=[];
+  try{
+    await checkCapture(o.directory);if(!isAdditionalProgram(o.participant.tool)||!o.participant.aiModel||exit.code!==0||exit.signal!==null)throw Error('external_cli_incomplete_result');inspectRolePrompt(o.assembly,o.participant.role);
+    const launch=read('launch.json'),identity=read('executable.json'),route=read('route.json'),session=read('session.json'),profile=read('profile.json'),choice=read('selection.json');
+    if(!capturedExecutableMatches(identity,o.participant.executable,o.participant.executableSha256)||launch.command!==o.participant.executable||launch.cwd!==join(o.directory,'workspace')||canonical(launch.args)!==canonical(extraProfileArgs(o.participant.tool,o.directory))||canonical(choice.requested)!==canonical(o.participant.aiModel)||route.sessionId!==session.sessionId||route.threadId!==session.sessionId||canonical(route)!==canonical({...nativeRoute(o,session.sessionId,session.sessionId,join(o.directory,'workspace'),true),protocol:'acp/1',nativeTurnIdsAvailable:false}))throw Error('message_original_execution_binding_changed');
+    for(const [path,text]of Object.entries(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy)))if(originals[path]?.toString()!==text||profile.files[path]!==hash(text))throw Error('external_cli_profile_changed');
+    const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!),requests=sent.filter(m=>m.method),prompts=requests.filter(m=>m.method==='session/prompt');
+    const allowed=['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/prompt','session/close'];
+    if(sent.length!==requests.length||requests.some((r,i)=>r.jsonrpc!=='2.0'||r.id!==i+1||!allowed.includes(r.method))||requests.filter(r=>r.method==='initialize').length!==1||requests.filter(r=>r.method==='session/new').length!==1||received.some(r=>r.method&&Object.hasOwn(r,'id')||!r.method&&!requests.some(q=>q.id===r.id)))throw Error('external_cli_unregistered_request');
+    const response=(r:Row)=>{const rows=received.filter(m=>m.id===r.id&&!m.method);if(rows.length!==1||rows[0].error||!Object.hasOwn(rows[0],'result'))throw Error('external_cli_response_missing');return rows[0];};requests.forEach(response);
+    const start=requests.find(r=>r.method==='session/new')!;if(canonical(response(start).result)!==canonical(session)||canonical(start.params)!==canonical({cwd:join(o.directory,'workspace'),mcpServers:[]})||prompts.length!==expected.length)throw Error('external_cli_wrong_session');
+    if(prompts.length){const last=received.indexOf(response(prompts.at(-1)!));if(received.slice(last+1).some(r=>['agent_message_chunk','tool_call','tool_call_update'].includes(r.params?.update?.sessionUpdate)))throw Error('external_cli_late_output');}
+    if(o.participant.tool==='kimi'&&o.executionKind==='native_capture'){const bound=read('profile-observed.json');if(bound.systemPromptSha256!==hash((o.assembly.system+'\n'+messagePolicy).trim())||bound.activeToolNames.length||bound.subagents.length||bound.agentsMdPaths.length||bound.modelAlias!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&bound.thinkingEffort!==o.participant.aiModel.effort)throw Error('external_cli_readonly_profile_missing');}
+    let model=session.models?.currentModelId??acpOptions(session.configOptions,'model')?.currentValue,effort=acpOptions(session.configOptions,'thought_level')?.currentValue??null;
+    for(const request of requests){
+      if(request.method.startsWith('session/')&&request.method!=='session/new'&&request.params?.sessionId!==session.sessionId)throw Error('external_cli_wrong_session');
+      if(request.method==='session/set_model')model=request.params.modelId;
+      if(request.method==='session/set_config_option'){const options=response(request).result.configOptions;model=acpOptions(options,'model')?.currentValue;effort=acpOptions(options,'thought_level')?.currentValue??null;const returned=options?.find((x:any)=>x.id===request.params.configId);if(returned?.currentValue!==request.params.value)throw Error('ai_selected_model_not_applied');}
+      if(request.method!=='session/prompt')continue;const index=prompts.indexOf(request),envelope=expected[index]!,text=canonical(envelope);
+      if(model!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&effort!==o.participant.aiModel.effort)throw Error('ai_selected_model_not_applied');
+      if(canonical(request.params)!==canonical({sessionId:session.sessionId,prompt:[{type:'text',text}]}))throw Error('message_submitted_input_mismatch');
+      const end=received.indexOf(response(request)),previous= index?received.indexOf(response(prompts[index-1]!)):received.indexOf(response(requests[requests.indexOf(request)-1]!));const final=parseAcpPrompt(received.slice(previous+1,end+1),session.sessionId,response(request).result,o.participant.aiModel),turnId='acp-request-'+request.id;
+      proofs.push(proof('delivered',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}),proof('reply',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)}));
+    }
+    return {ended:proof('ended',o,null,{exit,successfulCapture:true},originals),proofs,error:null};
+  }catch(e){return {ended,proofs:[],error:e instanceof Error?e.message:'message_capture_unknown'};}
 }

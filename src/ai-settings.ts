@@ -1,3 +1,4 @@
+import {aiPrograms,additionalPrograms,isAdditionalProgram,type AIProgram} from './ai-programs.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdir,writeFile} from 'node:fs/promises';
@@ -30,7 +31,7 @@ const aiRoleUsage:Record<AIRole,{view:string;entry:string;interaction:string}>={
   acceptance:{view:'deliveries',entry:'成果与验收：选择原成果和已登记的验证方案',interaction:'程序装配成果证据，由验收角色解释并返回完整报告；不代替本人接受。这里的选择不修改旧 PR 技术接收器的固定计划。'}
 };
 export type AISettingChoice=AIModelChoice&{providerId:string};
-export type AIRuntimeChoice=AIModelChoice&{tool:'codex'|'claude';executable:string;resolvedModel:string|null;settingsRevision:number;role:AIRole;project:{account:number;repository:number;nodeId:string};catalogObservedAt:string};
+export type AIRuntimeChoice=AIModelChoice&{tool:AIProgram;executable:string;resolvedModel:string|null;settingsRevision:number;role:AIRole;project:{account:number;repository:number;nodeId:string};catalogObservedAt:string};
 export type AISettingsConfig=AICatalogConfig&{disabledMcpServers:string[]};
 export type AISettingsScope={account:{id:number};repository:{id:number;nodeId:string;fullName:string}};
 export type AIPreferenceSnapshot={revision:number;scope:AISettingsScope;roles:Partial<Record<AIRole,AIRuntimeChoice>>;errors?:Partial<Record<AIRole,string>>};
@@ -46,7 +47,7 @@ export function parseAIPreferences(value:unknown):AIPreferenceSnapshot{
   scopeKey(v.scope);if(typeof v.scope.repository.nodeId!=='string'||v.scope.repository.nodeId.length>256)throw new Error('ai_worker_preferences_invalid');
   if(!v.roles||typeof v.roles!=='object'||Array.isArray(v.roles)||Object.keys(v.roles).some(id=>!aiRoles.some(r=>r.id===id)))throw new Error('ai_worker_preferences_invalid');
   for(const [role,c] of Object.entries(v.roles)){
-    if(!c||!exactKeys(c,['tool','executable','model','effort','resolvedModel','settingsRevision','role','project','catalogObservedAt'])||c.role!==role||c.settingsRevision!==v.revision||!['codex','claude'].includes(c.tool)||!path(c.executable)||!(c.resolvedModel===null||typeof c.resolvedModel==='string')||!Number.isFinite(Date.parse(c.catalogObservedAt))||!exactKeys(c.project,['account','repository','nodeId'])||c.project.account!==v.scope.account.id||c.project.repository!==v.scope.repository.id||c.project.nodeId!==v.scope.repository.nodeId)throw new Error('ai_worker_preferences_invalid');
+    if(!c||!exactKeys(c,['tool','executable','model','effort','resolvedModel','settingsRevision','role','project','catalogObservedAt'])||c.role!==role||c.settingsRevision!==v.revision||!aiPrograms.includes(c.tool)||!path(c.executable)||!(c.resolvedModel===null||typeof c.resolvedModel==='string')||!Number.isFinite(Date.parse(c.catalogObservedAt))||!exactKeys(c.project,['account','repository','nodeId'])||c.project.account!==v.scope.account.id||c.project.repository!==v.scope.repository.id||c.project.nodeId!==v.scope.repository.nodeId)throw new Error('ai_worker_preferences_invalid');
     validateModelChoice({model:c.model,effort:c.effort});
   }
   if(Object.hasOwn(v,'errors')&&(!v.errors||typeof v.errors!=='object'||Array.isArray(v.errors)||Object.keys(v.errors).some(id=>!aiRoles.some(r=>r.id===id))||Object.values(v.errors).some(e=>typeof e!=='string'||!e||e.length>2048||e.includes('\0'))))throw new Error('ai_worker_preferences_invalid');
@@ -59,16 +60,16 @@ export function participantWithAI(original:MessageParticipant,repository:string)
   const c=context.getStore(),choice=currentAIChoice(original.role);if(!choice)return {participant:original,selection:null};
   if(c!.scope.repository.fullName.toLowerCase()!==repository.toLowerCase())throw new Error('ai_settings_outside_project');
   const selected=selectExternalExecutable(choice.executable);
-  const participant:MessageParticipant={...original,tool:choice.tool,executable:choice.executable,executableSha256:selected.sha256,aiModel:{model:choice.model,effort:choice.effort},...(choice.tool==='claude'?{disabledMcpServers:[],allowedInstructionSources:[]}:{})};
+  const participant:MessageParticipant={...original,tool:choice.tool,executable:choice.executable,executableSha256:selected.sha256,aiModel:{model:choice.model,effort:choice.effort},...(choice.tool!=='codex'?{disabledMcpServers:[],allowedInstructionSources:[]}:{})};
   return {participant,selection:choice};
 }
 export function frozenParticipantMatches(original:MessageParticipant,selection:AIRuntimeChoice,actual:MessageParticipant){
-  if(!selection||selection.role!==original.role||!['codex','claude'].includes(selection.tool)||!path(selection.executable))return false;
-  const expected={...original,tool:selection.tool,executable:selection.executable,executableSha256:actual.executableSha256,aiModel:{model:selection.model,effort:selection.effort},...(selection.tool==='claude'?{disabledMcpServers:[],allowedInstructionSources:[]}:{})};return canonical(actual)===canonical(expected);
+  if(!selection||selection.role!==original.role||!aiPrograms.includes(selection.tool)||!path(selection.executable))return false;
+  const expected={...original,tool:selection.tool,executable:selection.executable,executableSha256:actual.executableSha256,aiModel:{model:selection.model,effort:selection.effort},...(selection.tool!=='codex'?{disabledMcpServers:[],allowedInstructionSources:[]}:{})};return canonical(actual)===canonical(expected);
 }
 const path=(s:unknown):s is string=>typeof s==='string'&&isAbsolute(s)&&resolve(s)===s&&!/[\0\r\n]/.test(s);
 export function validateAISettingsConfig(c:unknown):asserts c is AISettingsConfig{
-  const v=c as AISettingsConfig;if(!exactKeys(v,['root','configured','disabledMcpServers'])||!path(v.root)||!Array.isArray(v.configured)||v.configured.length>16||v.configured.some(e=>!exactKeys(e,['tool','path'])||!['codex','claude'].includes(e.tool)||!path(e.path))||!Array.isArray(v.disabledMcpServers)||v.disabledMcpServers.some(s=>typeof s!=='string'||!/^[-\w]+$/.test(s)))throw new Error('ai_settings_configuration_invalid');
+  const v=c as AISettingsConfig;if(!exactKeys(v,['root','configured','disabledMcpServers'])||!path(v.root)||!Array.isArray(v.configured)||v.configured.length>16||v.configured.some(e=>!exactKeys(e,['tool','path'])||!aiPrograms.includes(e.tool)||!path(e.path))||!Array.isArray(v.disabledMcpServers)||v.disabledMcpServers.some(s=>typeof s!=='string'||!/^[-\w]+$/.test(s)))throw new Error('ai_settings_configuration_invalid');
 }
 const scopeKey=(s:AISettingsScope)=>{if(!Number.isSafeInteger(s.account.id)||s.account.id<1||!Number.isSafeInteger(s.repository.id)||s.repository.id<1||!s.repository.nodeId)throw new Error('ai_settings_project_invalid');return canonical([s.account.id,s.repository.id,s.repository.nodeId]);};
 /** Settings express a local choice of execution program/model. They never
@@ -86,7 +87,7 @@ export class AISettings{
   }
   state(scope:AISettingsScope){return {defaults:{secretary:this.defaultSecretary()},roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
   async prompt(role:string){if(!aiRoles.some(r=>r.id===role))throw new Error('ai_role_not_found');return {role,assembly:await assembleRolePrompt(role as AIRole),meaning:'当前公共边界、角色与固定上游提示全文。每次实际执行还会加入该任务的材料、工具和输出要求，并随原运行保存；此处不是某次历史运行的完整输入。',modelInputs:0};}
-  async scan(scope:AISettingsScope){if(!this.scanning){this.scanning=(async()=>{const entries=await discoverAIEntries(this.config.configured),out:AIProvider[]=[];for(const entry of entries){const directory=join(this.config.root,'discovery',randomUUID());await mkdir(join(this.config.root,'discovery'),{recursive:true,mode:0o700});out.push(await this.probe(entry.tool,entry.path,directory,this.config.disabledMcpServers));}this.db.prepare('INSERT INTO catalogs(observed,body) VALUES (?,?)').run(new Date().toISOString(),canonical(out));return out;})().finally(()=>{this.scanning=undefined;});}await this.scanning;return this.state(scope);}
+  async scan(scope:AISettingsScope){if(!this.scanning){this.scanning=(async()=>{const entries=await discoverAIEntries(this.config.configured),out:AIProvider[]=[];for(const entry of entries){const directory=join(this.config.root,'discovery',randomUUID());await mkdir(join(this.config.root,'discovery'),{recursive:true,mode:0o700});out.push(await this.probe(entry.tool,entry.path,directory,this.config.disabledMcpServers));}for(const tool of additionalPrograms)if(!entries.some(e=>e.tool===tool))out.push({id:'missing-'+tool,tool,path:'',installed:false,version:null,available:false,reason:'ai_program_not_installed',authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:''});this.db.prepare('INSERT INTO catalogs(observed,body) VALUES (?,?)').run(new Date().toISOString(),canonical(out));return out;})().finally(()=>{this.scanning=undefined;});}await this.scanning;return this.state(scope);}
   async change(scope:AISettingsScope,body:unknown){
     const b=body as any;if(!exactKeys(b,['revision','role','choice'])||!Number.isSafeInteger(b.revision)||b.revision<0||!aiRoles.some(r=>r.id===b.role)||!(b.choice===null||exactKeys(b.choice,['providerId','model','effort'])&&typeof b.choice.providerId==='string'))throw new Error('ai_settings_request_invalid');
     if(b.choice!==null)this.resolveChoice(scope,b.role,b.choice,b.revision+1);

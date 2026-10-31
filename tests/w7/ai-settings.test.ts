@@ -1,4 +1,5 @@
 import test from 'node:test';
+import type {AIProgram} from '../../src/ai-programs.js';
 import assert from 'node:assert/strict';
 import {mkdtemp,realpath,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -20,7 +21,7 @@ test('current tool catalogs determine model IDs and per-model efforts, without a
 test('project settings are revision checked, preserved on reopen, and do not change captured operation choices',async t=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-ai-settings-')));t.after(()=>rm(root,{recursive:true,force:true}));const codex=join(root,'codex'),claude=join(root,'claude');for(const p of [codex,claude])await writeFile(p,'#!/bin/sh\nexit 0\n',{mode:0o700});
   let fail=false;const config={root:join(root,'settings'),configured:[{tool:'codex' as const,path:codex},{tool:'claude' as const,path:claude}],disabledMcpServers:[]};
-  const probe=async(tool:'codex'|'claude',path:string,directory:string):Promise<AIProvider>=>({id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:'future version',available:!fail&&[codex,claude].includes(path),reason:fail?'ai_probe_unavailable':null,authentication:'subscription',models:[{id:tool==='codex'?'fixture-astra':'sonnet',resolvedId:tool==='claude'?'fixture-sonnet':null,name:'Explicit fixture',description:'No model call',efforts:['max','xhigh'],defaultEffort:null,isDefault:true}],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:tool==='codex',ownedControl:tool==='codex'},evidence:directory});
+  const probe=async(tool:AIProgram,path:string,directory:string):Promise<AIProvider>=>({id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:'future version',available:!fail&&[codex,claude].includes(path),reason:fail?'ai_probe_unavailable':null,authentication:'subscription',models:[{id:tool==='codex'?'fixture-astra':'sonnet',resolvedId:tool==='claude'?'fixture-sonnet':null,name:'Explicit fixture',description:'No model call',efforts:['max','xhigh'],defaultEffort:null,isDefault:true}],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:tool==='codex',ownedControl:tool==='codex'},evidence:directory});
   let settings=await AISettings.open(config,probe);await settings.scan(scope());const catalog=settings.state(scope()).catalog,c=catalog.find(p=>p.path===codex)!,a=catalog.find(p=>p.path===claude)!;
   await settings.change(scope(),{revision:0,role:'secretary',choice:{providerId:c.id,model:'fixture-astra',effort:'max'}});const original=settings.snapshot(scope());
   await assert.rejects(()=>settings.change(scope(),{revision:0,role:'secretary',choice:null}),/revision_changed/);
