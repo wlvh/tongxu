@@ -123,11 +123,16 @@ export class ExtraCliSession{
     for(const event of this.rpc.events.slice(this.configurationEventIndex+1))if(event.method==='session/update'&&event.params?.update?.sessionUpdate==='config_option_update')options=event.params.update.configOptions;
     if((acpOptions(options,'model')?.currentValue??this.legacySelectedModel)!==choice.model||choice.effort!==null&&acpOptions(options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');
   }
+  assertCanForward(){
+    if(this.rpc.failure)throw Error(this.rpc.failure);
+    checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);
+  }
   async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void){
     for(const [p,sha]of Object.entries(this.profile.files))if(hash(await read(join(this.directory,p)))!==sha)throw Error('external_cli_profile_changed');
     await this.verifyProfile();checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
     const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,beforeSendSync);
-    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);return parsed;
+    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();this.assertCanForward();
+    const requestId=this.rpc.events.find(m=>!m.method&&m.result===result)?.id;if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');return {final:parsed,requestId};
   }
   private async verifyProfile(){
     if(this.fixture||this.tool!=='kimi')return;

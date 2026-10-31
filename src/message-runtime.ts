@@ -75,6 +75,7 @@ export class ReadonlyDialog {
     }catch(e){await rpc.close();throw e;}
   }
   address(){return proof('route',this.o,null,this.route);}
+  assertCanForward(){} // ACP overrides this for live session-wide observations.
   async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,beforeSendSync?:()=>void){
     const text=canonical(envelope);if(Buffer.byteLength(text)>1024*1024||envelope.run!==this.o.run||canonical(envelope.to)!==canonical(this.route))throw new Error('message_runtime_input_or_address_changed');
     if(this.rpc.failure||this.rpc.exit)throw new Error('message_recipient_not_running');
@@ -299,11 +300,12 @@ class ACPMessageDialog extends ReadonlyDialog{
   }
   override async send(envelope:Row,beforeSend:()=>Promise<void>,delivered:(p:DialogProof)=>void,beforeSendSync?:()=>void){
     if(envelope.to.sessionId!==this.route.sessionId||envelope.to.threadId!==this.route.threadId)throw Error('message_original_route_changed');
-    await beforeSend();const text=canonical(envelope),final=await this.session.prompt(text,this.spec.timeoutMs,beforeSendSync);
-    const wire=jsonLines(await regular(join(this.spec.directory,'stdin.ndjson'),16*1024*1024)),request=wire.filter(m=>m.method==='session/prompt').at(-1),turnId='acp-request-'+request.id;
+    await beforeSend();const text=canonical(envelope),result=await this.session.prompt(text,this.spec.timeoutMs,beforeSendSync);
+    this.assertCanForward();const final=result.final,turnId='acp-request-'+result.requestId;
     delivered(proof('delivered',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}));
     return proof('reply',this.spec,envelope.messageId,{sessionId:this.route.sessionId,threadId:this.route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)});
   }
+  override assertCanForward(){this.session.assertCanForward();}
   override async close(){await this.session.close();}
 }
 async function acpOriginals(o:RuntimeSpec){

@@ -24,6 +24,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.pa
 if(m.method==='initialize')result={protocolVersion:1,agentInfo:{name:tool,version:'999.1.0'},agentCapabilities:{sessionCapabilities:{close:{}}}};
 if(m.method==='session/new'&&mode==='auth-required'){emit({id:m.id,error:{code:-32000,message:'Authentication required'}});return;}
 if(m.method==='session/new')result={sessionId:session,configOptions:options(),...(mode==='legacy-model'?{models:{currentModelId:model,availableModels:[{modelId:'fixture/model-a',name:'Fixture A'},{modelId:'fixture/model-next',name:'Future model'}]}}:{}),modes:{currentModeId:'tongxu',availableModes:[{id:'tongxu'}]}};
+if(m.method==='session/new'&&mode==='slow-bootstrap'){setTimeout(()=>emit({id:m.id,result}),300);return;}
 if(m.method==='session/set_model')model=m.params.modelId;
 if(m.method==='session/set_config_option'){if(m.params.configId==='model')model=mode==='wrong-model'?'other':m.params.value;else {effort=m.params.value;if(mode==='effort-changes-model')model='fixture/model-a';}result={configOptions:options()};}
 if(m.method==='session/prompt'){
@@ -34,6 +35,7 @@ if(m.method==='session/prompt'){
  result={stopReason:mode==='cancelled'?'cancelled':'end_turn'};
  }emit({id:m.id,result});
  if(m.method==='session/prompt'&&mode==='duplicate-response')emit({id:m.id,error:{code:-1,message:'conflicting response'}});
+ if(m.method==='session/prompt'&&mode==='late-duplicate')setTimeout(()=>emit({id:m.id,error:{code:-1,message:'late conflicting response'}}),100);
  if(m.method==='session/prompt'&&mode==='unknown-response')emit({id:99999,result:{stopReason:'end_turn'}});
  if(m.method==='session/prompt'&&turn===1&&mode.startsWith('between-'))setTimeout(()=>{model='fixture/model-a';emit({method:'session/update',params:{sessionId:mode==='between-wrong-session'?'foreign':session,update:mode==='between-model'?{sessionUpdate:'config_option_update',configOptions:options()}:{sessionUpdate:'tool_call',toolCallId:'forbidden',status:'completed'}}});},50);
  if(mode==='unsolicited-between-inputs'&&m.method==='session/prompt'&&turn===1)setTimeout(()=>emit({method:'session/update',params:{sessionId:session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify({messageId:'second',consumed:[],report:'Unsolicited text before second input: never a second result'})}}}}),50);
@@ -142,4 +144,16 @@ for(const mode of ['duplicate-response','unknown-response'])test(mode+' cannot p
 test('legacy model selection with independent thought options is discoverable, consumable and repeatable without another input',async t=>{
  const f=await fixture(t,'gemini','legacy-model'),metadata=await ExtraCliSession.open('gemini',f.binary,join(f.root,'legacy-catalog'),'metadata only',true);assert.ok((await metadata.models())[1]!.efforts.includes('future-depth'));await metadata.close();
  const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));const calls=await f.calls();assert.equal(calls.length,2);const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,true,JSON.stringify(again.problems));assert.deepEqual(await f.calls(),calls);
+});
+
+test('an observed late protocol failure at the publication boundary cannot publish a report',async t=>{
+ const f=await fixture(t,'opencode','late-duplicate'),original=ExtraCliSession.prototype.prompt;
+ t.mock.method(ExtraCliSession.prototype,'prompt',async function(this:ExtraCliSession,...args:Parameters<ExtraCliSession['prompt']>){const result=await original.apply(this,args);await this.rpc.waitFor(m=>m.error?.message==='late conflicting response',1000);return result;});
+ const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.equal((await f.calls()).length,1);assert.equal(result.messages.find(m=>m.id==='first')?.reply??null,null);assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'));
+});
+
+test('a failure in the original participant during the next participant bootstrap stops cross-participant consumption before a second input',async t=>{
+ const f=await fixture(t,'opencode','late-duplicate'),other=await fixture(t,'gemini','slow-bootstrap');
+ f.plan.participants.push({...other.plan.participants[0]!,id:'other',item:f.item,role:'acceptance'});f.plan.messages[1]!.to='other';f.plan.messages[1]!.from='owner';await f.write();
+ const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'),JSON.stringify(result.problems));assert.equal((await f.calls()).length,1);assert.equal((await other.calls()).length,0);await runMessages(f.store,f.path,true);assert.equal((await other.calls()).length,0);
 });
