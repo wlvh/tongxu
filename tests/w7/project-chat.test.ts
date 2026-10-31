@@ -9,6 +9,8 @@ import {mkdir} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {startWorkbench} from '../../src/workbench.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
+import {hash} from '../../src/snapshot.js';
+import type {AIProvider} from '../../src/ai-catalog.js';
 import {BoundedCodexSession} from '../../src/repair-native.js';
 
 async function fixture(t:test.TestContext,mode='normal'){
@@ -20,19 +22,20 @@ if(process.argv.includes('--version')){console.log('codex-cli 0.163.0-alpha.10.2
 let thread,turn,context;
 const finish=observation=>{const report={candidateH:context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无'),observationIds:[observation.observationId]},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
 readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;finish(JSON.parse(m.result.contentItems[0].text));return;}if(!('id'in m))return;let result={};
+if(m.method==='model/list')result={data:[{model:'fixture-astra',displayName:'Fixture Astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
-if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name)});emit({id:m.id,result:{thread,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',context});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});if(mode==='hold')return;emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
+if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,reasoningEffort:m.params.config?.model_reasoning_effort??'xhigh',source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name)});emit({id:m.id,result:{thread,model:mode==='wrong-selected-model'?'wrong':m.params.model??'fixture-default',reasoningEffort:thread.reasoningEffort,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
+if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});if(mode==='hold'||mode==='timeout')return;emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
 if(m.method==='turn/interrupt'){log({kind:'interrupt'});emit({id:m.id,result:{}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});return;}
 emit({id:m.id,result});});
 `;
   await writeFile(binary,code,{mode:0o700});let account=7,offline=false;
   const repo=(id:number)=>({id,nodeId:'R_'+id,full_name:'fixture/project-'+id,description:'Explicit project fixture',private:true,archived:false,defaultBranchRef:id===2?null:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:'2026-10-30T00:00:00Z'});
   const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(offline)throw new Error('github_connection_unavailable');return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{id:account,login:'fixture',projects:{nodes:[repo(1),repo(2)],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account:{id:account,login:'fixture'},repository:repo(v.id==='R_2'?2:1)}})};}});
-  const plan={schemaVersion:1,kind:'tongxu-local-workbench',title:'Project chat fixture',goal:'No task registration required',sources:[],githubProjects:true,projectSecretary:{root:join(root,'chats'),codexExecutable:binary,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,billing:'existing_subscription_only',executionKind:'fixture'}},path=join(root,'workbench.json');await writeFile(path,JSON.stringify(plan));
-  const launch=async()=>{const app=await startWorkbench(path,undefined,{githubReader:reader}),u=new URL(app.url),auth={Authorization:'Bearer '+u.hash.slice(1)};let ended=false;const close=async()=>{if(!ended){ended=true;await app.close();}};const headers=(id=1)=>({...auth,'X-Tongxu-Account':String(account),'X-Tongxu-Project':String(id)});await fetch(u.origin+'/api/github/projects',{headers:auth});return {app,u,auth,headers,close,get:async(path:string,id=1)=>{const r=await fetch(u.origin+path,{headers:headers(id)});return {status:r.status,data:await r.json() as any};},post:async(path:string,body:any,id=1)=>{const r=await fetch(u.origin+path,{method:'POST',headers:{...headers(id),Origin:u.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json() as any};}};};
+  const plan={schemaVersion:1,kind:'tongxu-local-workbench',title:'Project chat fixture',goal:'No task registration required',sources:[],githubProjects:true,aiSettings:{root:join(root,'ai-settings'),configured:[{tool:'codex',path:binary}],disabledMcpServers:[]},projectSecretary:{root:join(root,'chats'),codexExecutable:binary,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:mode==='timeout'?1000:3000,billing:'existing_subscription_only',executionKind:'fixture'}},path=join(root,'workbench.json');await writeFile(path,JSON.stringify(plan));
+  const launch=async()=>{const app=await startWorkbench(path,undefined,{githubReader:reader,aiProbe:async(tool,path,directory):Promise<AIProvider>=>({id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:'explicit fixture',available:path===binary,reason:path===binary?null:'explicit_fixture_not_selected',authentication:'subscription',models:[{id:'fixture-astra',resolvedId:null,name:'Fixture Astra',description:'Explicit fixture',efforts:['max'],defaultEffort:'max',isDefault:true}],defaults:{model:'fixture-default',effort:'xhigh',source:'codex_config_read'},observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:tool==='codex',ownedControl:tool==='codex'},evidence:directory})}),u=new URL(app.url),auth={Authorization:'Bearer '+u.hash.slice(1)};let ended=false;const close=async()=>{if(!ended){ended=true;await app.close();}};const headers=(id=1)=>({...auth,'X-Tongxu-Account':String(account),'X-Tongxu-Project':String(id)});await fetch(u.origin+'/api/github/projects',{headers:auth});return {app,u,auth,headers,close,get:async(path:string,id=1)=>{const r=await fetch(u.origin+path,{headers:headers(id)});return {status:r.status,data:await r.json() as any};},post:async(path:string,body:any,id=1)=>{const r=await fetch(u.origin+path,{method:'POST',headers:{...headers(id),Origin:u.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json() as any};}};};
   const current=await launch();t.after(async()=>{await current.close();await rm(root,{recursive:true,force:true});});
   const logs=async()=>((await readFile(trace,'utf8')).trim().split('\n').filter(Boolean).map(x=>JSON.parse(x)));
   const wait=async(id:string,predicate:(messages:any[])=>boolean)=>{for(let n=0;n<150;n++){const r=await current.get('/api/project-secretary/conversations/'+id);if(predicate(r.data.messages??[]))return r.data;await new Promise(r=>setTimeout(r,25));}throw new Error('fixture_chat_timeout');};
@@ -85,4 +88,55 @@ test('initialization rejection after creating a native stage does not infer an e
   assert.equal((await f.post('/api/project-secretary/ask',question('不得越过未知启动'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
   await writeFile(join(f.root,'chats',q.requestId,'native','process.json'),JSON.stringify({pid:child.pid,status:'spawn_attempted'}));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;BoundedCodexSession.start=originalStart;
   assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'interrupted');
+});
+
+
+test('normal project AI settings feed actual native model/effort and stay fixed on history replay',async t=>{
+  const f=await fixture(t),scan=await f.post('/api/ai-settings/scan',{});assert.equal(scan.status,200);assert.equal((await f.logs()).length,0);
+  const provider=scan.data.catalog.find((p:any)=>p.available);const saved=await f.post('/api/ai-settings/role',{revision:0,role:'secretary',choice:{providerId:provider.id,model:'fixture-astra',effort:'max'}});assert.equal(saved.status,200);assert.equal((await f.get('/api/ai-settings',2)).data.revision,0);
+  const q=question('使用本项目选择的模型');await f.post('/api/project-secretary/ask',q);const answer=await f.wait(q.conversationId,m=>m[0]?.status==='completed');assert.equal(answer.messages[0].receipt.aiExecution.actualModel,'fixture-astra');assert.equal(answer.messages[0].receipt.aiExecution.actualEffort,'max');const input=(await f.logs()).find(x=>x.kind==='input');assert.equal(input.model,'fixture-astra');assert.equal(input.effort,'max');
+  await f.post('/api/ai-settings/role',{revision:1,role:'secretary',choice:null});const before=await f.logs();await f.post('/api/project-secretary/ask',q);await f.close();const reopened=await f.launch();try{const restored=await reopened.get('/api/project-secretary/conversations/'+q.conversationId);assert.deepEqual(restored.data.messages[0].receipt.aiExecution,answer.messages[0].receipt.aiExecution);assert.deepEqual(await f.logs(),before);}finally{await reopened.close();}
+});
+
+test('each AI setting exposes a usable destination and complete role policy without starting a model',async t=>{
+  const f=await fixture(t),state=await f.get('/api/ai-settings');assert.equal(state.status,200);assert.equal(state.data.roles.length,6);
+  for(const role of state.data.roles){assert.ok(['secretary','tasks','retrospective','deliveries'].includes(role.view));assert.ok(role.entry.length>0);assert.ok(role.interaction.length>0);
+    const prompt=await f.get('/api/ai-settings/prompts/'+role.id);assert.equal(prompt.status,200);assert.equal(prompt.data.assembly.role,role.id);assert.ok(prompt.data.assembly.system.includes('全文已由运行器放入系统提示'));assert.equal(prompt.data.modelInputs,0);}
+  assert.equal((await f.get('/api/ai-settings/prompts/not_a_role')).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+});
+
+test('the visible wait limit interrupts the exact owned turn, records timeout rather than user stop, and never repeats input',async t=>{
+  const f=await fixture(t,'timeout'),q=question('明确超时样例');assert.equal((await f.get('/api/project-secretary')).data.timeoutMs,1000);
+  await f.post('/api/project-secretary/ask',q);const result=await f.wait(q.conversationId,m=>m[0]?.status==='failed'&&!m[0]?.owned);
+  assert.equal(result.messages[0].problem,'executor_wait_timeout');assert.equal(result.messages[0].answer,null);
+  const logs=await f.logs();assert.equal(logs.filter(x=>x.kind==='input').length,1);assert.equal(logs.filter(x=>x.kind==='interrupt').length,1);
+  const record=JSON.parse(await readFile(join(f.root,'chats',q.requestId,'timeout-stop-request.json'),'utf8'));assert.equal(record.source,'configured_wait_limit');
+  const outcome=JSON.parse(await readFile(join(f.root,'chats',q.requestId,'outcome.json'),'utf8'));assert.equal(outcome.invocationOutcome,'timeout');
+  await f.post('/api/project-secretary/ask',q);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
+
+for(const cause of ['timeout','user'] as const)test('failed '+cause+' metadata write cannot skip exact owned interruption and process cleanup',async t=>{
+  const f=await fixture(t,cause==='timeout'?'timeout':'hold'),q=question('明确停止记录失败样例');await f.post('/api/project-secretary/ask',q);
+  for(let i=0;i<120;i++){if((await f.logs()).some(x=>x.kind==='input'))break;await new Promise(r=>setTimeout(r,10));}
+  const directory=join(f.root,'chats',q.requestId),native=join(directory,'native');
+  // Only this explanatory record's atomic rename fails; original capture remains writable.
+  await mkdir(join(directory,cause==='timeout'?'timeout-stop-request.json':'stop-request.json'));
+  if(cause==='user'){const stop=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stop.status,200);assert.equal(stop.data.stopRecordSaved,false);}
+  const result=await f.wait(q.conversationId,m=>m[0]&&['failed','interrupted'].includes(m[0].status)&&!m[0].owned);
+  assert.equal(result.messages[0].answer,null);const sent=(await readFile(join(native,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)),thread=JSON.parse(await readFile(join(native,'thread.json'),'utf8')).thread,interrupt=sent.find(m=>m.method==='turn/interrupt');
+  assert.ok(interrupt);assert.equal(interrupt.params.threadId,thread.id);assert.equal(interrupt.params.turnId,'project-turn');assert.equal(sent.filter(m=>m.method==='turn/start').length,1);
+  const exited=JSON.parse(await readFile(join(native,'exit.json'),'utf8'));assert.equal(exited.code,0);const outcome=JSON.parse(await readFile(join(directory,'outcome.json'),'utf8'));assert.equal(outcome.nativeProcessState,'ended');
+  if(cause==='timeout')assert.equal(outcome.cleanupRecordProblem,'timeout_record_unavailable');
+  await f.post('/api/project-secretary/ask',q);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
+test('a provider that silently substitutes the selected model is rejected before any model input',async t=>{
+ const f=await fixture(t,'wrong-selected-model'),scan=await f.post('/api/ai-settings/scan',{}),provider=scan.data.catalog.find((p:any)=>p.available);await f.post('/api/ai-settings/role',{revision:0,role:'secretary',choice:{providerId:provider.id,model:'fixture-astra',effort:'max'}});const q=question('拒绝换模型');await f.post('/api/project-secretary/ask',q);const state=await f.wait(q.conversationId,m=>m[0]&&!m[0].active);assert.notEqual(state.messages[0].status,'completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+});
+
+test('unconfigured project secretary exposes the actual default source and does not submit a hidden high override',async t=>{
+  const f=await fixture(t);const before=(await f.get('/api/ai-settings')).data;assert.equal(before.defaults.secretary.path,f.plan.projectSecretary.codexExecutable);assert.equal(before.defaults.secretary.observed,null);
+  const scanned=await f.post('/api/ai-settings/scan',{});assert.equal(scanned.status,200);assert.deepEqual(scanned.data.defaults.secretary.observed,{model:'fixture-default',effort:'xhigh',source:'codex_config_read'});
+  const list=await f.get('/api/project-secretary');assert.equal(list.data.aiChoice,null);assert.equal(list.data.aiDefault.observed.effort,'xhigh');
+  const q=question('明确测试：使用程序当前默认值');await f.post('/api/project-secretary/ask',q);await f.wait(q.conversationId,m=>m[0]?.status==='completed');const input=(await f.logs()).find(x=>x.kind==='input');assert.equal(input.effort,undefined);assert.equal(input.model,undefined);assert.equal(input.effectiveEffort,'xhigh');
+  const calls=await f.logs();await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.deepEqual(await f.logs(),calls);
 });

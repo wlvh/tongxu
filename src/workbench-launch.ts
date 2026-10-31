@@ -20,8 +20,8 @@ const exec=promisify(execFile);
 export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:Array<{path:string;sha256:string}>};
 export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;verifiedAt:string};
 async function runtimeFiles(root:string){
-  const result:string[]=[];async function visit(relative:string){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative+'/'+entry.name;if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');if(entry.isDirectory())await visit(name);else if(entry.isFile()&&name.endsWith('.js'))result.push(name);}}
-  await visit('dist/src');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
+  const result:string[]=[];async function visit(relative:string,suffix:string){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative+'/'+entry.name;if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');if(entry.isDirectory())await visit(name,suffix);else if(entry.isFile()&&name.endsWith(suffix))result.push(name);}}
+  await visit('dist/src','.js');await visit('prompts','.md');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/ai-settings.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
 }
 /** One explicit local composition, not an updater or a parallel store. */
 export async function inspectWorkbenchRuntime(raw:Buffer){
@@ -32,7 +32,7 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   for(const f of p.files)if(hash(await regular(join(p.sourceDirectory,f.path),4*1024*1024))!==f.sha256)throw new Error('workbench_runtime_build_changed');
   const plan=await regular(p.plan.path,256*1024);if(hash(plan)!==p.plan.sha256)throw new Error('workbench_runtime_plan_changed');
   const options={timeout:5000,maxBuffer:1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}};
-  const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','package.json','tsconfig.json'],options);
+  const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','prompts','package.json','tsconfig.json'],options);
   if(head.stdout.trim()!==p.sourceHead||status.stdout.trim())throw new Error('workbench_runtime_source_changed');
   // Load only this bootstrap's own pure runtime helper after all selected
   // artifacts are verified. It must match the selected build's helper bytes.

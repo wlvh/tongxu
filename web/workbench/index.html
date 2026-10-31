@@ -7,6 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/app.css">
   <script src="/project-chat.js" defer></script>
+  <script src="/ai-settings.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -25,6 +26,7 @@
       <button data-view="events"><span aria-hidden="true">↳</span>协作记录</button>
       <button data-view="organization" hidden><span aria-hidden="true">⇄</span>组织方式</button>
       <button data-view="retrospective" hidden><span aria-hidden="true">◷</span>判断与复盘</button>
+      <button data-view="ai-settings" hidden><span aria-hidden="true">⚙</span>AI 与角色设置</button>
       <button data-view="secretary" hidden><span aria-hidden="true">◌</span>工作秘书与跟进</button>
     </nav>
     <div class="side-note"><span class="dot"></span>连接本地原队列<p>刷新只读取已有记录。<br>原报告和失败历史保留。</p></div>
@@ -36,6 +38,11 @@
     <main id="content" tabindex="-1" aria-live="polite"><div class="loading">正在打开工作台…</div></main>
     <footer><p id="runtime-version" hidden></p><span id="observation-boundary">来源是本机保存的运行记录。本次查看不会重新核对 GitHub，也不会启动模型。各队列分别观测。</span></footer>
   </div>
+  <button id="secretary-toggle" class="secretary-toggle" type="button" aria-controls="secretary-dock" aria-expanded="false" hidden>工作秘书</button>
+  <aside id="secretary-dock" class="secretary-dock" aria-label="工作秘书" hidden>
+    <header class="secretary-dock-head"><div><span class="eyebrow">随时沟通</span><h2>工作秘书</h2><p id="secretary-project" class="small">选择项目后开始对话</p></div><div class="actions"><button id="secretary-refresh" class="quiet" type="button" aria-label="刷新秘书对话">↻</button><button id="secretary-close" class="quiet" type="button" aria-label="收起工作秘书">收起</button></div></header>
+    <div id="secretary-dock-content" class="secretary-dock-content"></div>
+  </aside>
   <dialog id="report-dialog" aria-labelledby="report-title"><div class="dialog-head"><div><span class="eyebrow">原始报告</span><h2 id="report-title">完整报告</h2></div><button id="close-report" class="quiet" aria-label="关闭完整报告">关闭 ×</button></div><p id="report-meta" class="report-meta"></p><pre id="report-body" tabindex="0" role="region" aria-label="完整报告正文"></pre><details id="report-original" hidden><summary>查看完整传输原文（含消息引用）</summary><pre id="report-raw" tabindex="0" role="region" aria-label="完整传输原文"></pre></details></dialog>
 </body>
 </html>

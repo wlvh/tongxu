@@ -7,7 +7,7 @@ import {messageFixture} from './message-fixture.js';
 import {runMessages} from '../../src/messages.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
-import {messageClaudeVersion,messageClaudeInput,checkMessageClaudeInit,messageClaudeFinal} from '../../src/message-claude.js';
+import {messageClaudeVersion,checkClaudeAuthCancellation,messageClaudeInput,checkMessageClaudeInit,messageClaudeFinal} from '../../src/message-claude.js';
 
 test('Claude release labels are not an allowlist; archived wire profiles and actual init identity remain distinct',()=>{
   assert.equal(messageClaudeVersion('2.1.233 (Claude Code)'),'2.1.233');
@@ -63,4 +63,24 @@ test('an unfamiliar Claude release with the same stream contract works after its
   const r=await runMessages(f.store,f.path);assert.equal(r.completed,true,JSON.stringify(r.problems));assert.equal(r.newModelRequests,4);
   const runtime=r.runtimes.find(x=>x.participant==='impact')!,identity=JSON.parse(await readFile(join(runtime.started.directory,'executable.json'),'utf8'));assert.equal(identity.version,'99.7.0 (Claude Code)');
   const trace=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),trace);
+});
+
+
+test('Claude reports a different model after submission: retain the sent original as unknown and never automatically resend',async t=>{
+ const f=await messageFixture(t,'304-wrong-selected-model');f.plan.participants=[{...f.plan.participants[1]!,parent:null,role:'issue_owner',aiModel:{model:'sonnet',effort:'xhigh'}}];f.plan.messages=[{...f.plan.messages[0]!,to:f.plan.participants[0]!.id}];await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.equal(result.newModelRequests,1);assert.equal(result.messages[0]!.state,'Unknown');assert.equal(result.messages[0]!.reply,null);assert.ok(JSON.stringify(result.problems).includes('ai_selected_model_not_applied'));const before=await readFile(f.trace),repeated=await runMessages(f.store,f.path);assert.equal(repeated.newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+});
+
+
+test('an exact CLI 401 cancellation is a retained interrupted request, not a timeout or a successful answer',async t=>{
+ const f=await messageFixture(t,'304-auth-failure');f.plan.participants=[{...f.plan.participants[1]!,parent:null,role:'issue_owner',aiModel:{model:'sonnet',effort:'xhigh'}}];f.plan.messages=[{...f.plan.messages[0]!,to:f.plan.participants[0]!.id}];await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.equal(result.newModelRequests,1);assert.equal(result.messages[0]!.state,'Interrupted');assert.equal(result.messages[0]!.reply,null);assert.equal(result.runtimes[0]!.captureVerification!.proof.successfulCapture,true);assert.ok(JSON.stringify(result.problems).includes('claude_authentication_failed'));assert.equal(JSON.stringify(result.problems).includes('executor_wait_timeout'),false);const before=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+ const dir=result.runtimes[0]!.started.directory,sent=JSON.parse((await readFile(join(dir,'stdin.ndjson'),'utf8')).trim()),events=(await readFile(join(dir,'stdout.ndjson'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
+ for(const mutate of [(r:any)=>{r.usage.output_tokens=1;},(r:any)=>{r.api_error_status=500;},(r:any)=>{r.subagent_stats.spawned=1;}]){const bad=structuredClone(events);mutate(bad.find(e=>e.type==='result'));assert.throws(()=>checkClaudeAuthCancellation(bad,sent.session_id,'2.1.304',sent.uuid,sent.message.content),/not_proven/);}
+});
+
+test('a prior unknown classification of the identical 401 originals is corrected by append only',async t=>{
+ const f=await messageFixture(t,'304-auth-failure');f.plan.participants=[{...f.plan.participants[1]!,parent:null,role:'issue_owner'}];f.plan.messages=[{...f.plan.messages[0]!,to:f.plan.participants[0]!.id}];await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.messages[0]!.state,'Interrupted');
+ // Explicit old-reader fixture: alter this test ledger, never a real capture.
+ const db=new DatabaseSync(join(f.store,'queue.sqlite')),row=db.prepare("SELECT id,data FROM events WHERE kind='message_runtime_ended'").get() as any,record=JSON.parse(row.data);record.value.proof={exit:record.value.proof.exit,successfulCapture:false};const bytes=Buffer.from(canonical(record.value));record.sha256=hash(bytes);db.prepare('INSERT OR IGNORE INTO blobs VALUES (?,?)').run(record.sha256,bytes);const original=JSON.stringify(record);db.prepare('UPDATE events SET data=? WHERE id=?').run(original,row.id);db.prepare("DELETE FROM events WHERE kind='message_interrupted'").run();db.close();
+ const before=await readFile(f.trace),restored=await runMessages(f.store,f.path,true);assert.equal(restored.completed,false);assert.equal(restored.messages[0]!.state,'Interrupted');assert.equal(restored.runtimes[0]!.ended.proof.successfulCapture,false);assert.equal(restored.runtimes[0]!.captureVerification!.source,'strict_original_claude_cancellation_recheck');assert.equal(restored.runtimes[0]!.captureVerification!.proof.successfulCapture,true);assert.deepEqual(await readFile(f.trace),before);
+ const check=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.equal((check.prepare('SELECT data FROM events WHERE id=?').get(row.id) as any).data,original);}finally{check.close();}assert.equal((await runMessages(f.store,f.path,true)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
 });

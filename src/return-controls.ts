@@ -13,6 +13,7 @@ import {LiveProcess,checkCapture,save} from './live-process.js';
 import type {ProjectRequest} from './project-repair.js';
 import {readRepairReports} from './repair.js';
 import {loadReturnPreparation,resolvePreparedReturn,freezePreparedReturn,type ReturnPreparation,type ReturnPreparationEntry} from './return-preparation.js';
+import {currentAIPreferences} from './ai-settings.js';
 
 type Ref={path:string;sha256:string};
 type Source={id:string;store:string;item:string};
@@ -59,9 +60,10 @@ export class ReturnControls {
   private key(f:Frozen){return canonical([f.source.store,f.plan.operation]);}
   private async invoke(f:Frozen,action:string,plan:Ref){
     const directory=join(f.source.store,'return-work-'+f.plan.operation+'-'+randomUUID()),worker=fileURLToPath(new URL('./return-work-worker.js',import.meta.url));await privateDirectory(directory,true);
-    save(join(directory,'input.json'),{kind:'fixed-original-return-invocation',action,plan,operation:f.plan.operation,item:f.source.item,workerSha256:hash(await regular(worker,128*1024)),originalQueueIsAuthoritative:true});
+    const aiPreferences=currentAIPreferences(['reviewer','verifier_fact','verifier_impact']),input=join(directory,'input.json');
+    save(input,{kind:'fixed-original-return-invocation',action,plan,operation:f.plan.operation,item:f.source.item,workerSha256:hash(await regular(worker,128*1024)),originalQueueIsAuthoritative:true,...(aiPreferences?{aiPreferences}:{})});
     if(!this.accepting){save(join(directory,'held-before-launch.json'),{reason:'return_control_closing',controllerLaunched:false,newModelInputs:0});throw new Error('return_control_closing');}
-    const child=new LiveProcess(directory,process.execPath,[worker,action,plan.path,plan.sha256],directory,process.env);
+    const child=new LiveProcess(directory,process.execPath,[worker,action,plan.path,plan.sha256,...(aiPreferences?[input,hash(await regular(input,256*1024))]:[])],directory,process.env);
     await child.closed;await checkCapture(directory);const result=child.events[0];
     if(child.events.length!==1||result?.kind!=='tongxu-return-worker'||result.action!==action||result.inputSha256!==plan.sha256)throw new Error('return_worker_result_unknown');
     if(child.exit?.code!==0||result.controllerReturned!==true)throw new Error(typeof result.reason==='string'&&/^[a-z0-9_]+$/.test(result.reason)?result.reason:'original_return_worker_failed');

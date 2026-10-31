@@ -94,3 +94,8 @@ test('an old failed-capture classification of an intact refusal is revalidated b
   const after=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.equal((after.prepare('SELECT data FROM events WHERE id=?').get(row.id) as any).data,old);assert.equal((after.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='message_runtime_revalidated'").get() as any).n,1);}finally{after.close();}
   const repeated=await runMessages(f.store,f.path,true);assert.equal(repeated.messages[0]!.state,'Refused');assert.deepEqual(await readFile(f.trace),trace);f.plan.source+=' next explicitly authorized fixture task';await f.write();const next=await runMessages(f.store,f.path);assert.equal(next.newModelRequests,1);assert.equal(next.messages[0]!.state,'Refused');
 });
+
+
+test('explicit Codex model and effort reach both native start and turn, while recovery keeps original values',async t=>{
+ const f=await messageFixture(t);f.plan.participants=f.plan.participants.slice(0,1);f.plan.messages=f.plan.messages.slice(0,1);f.plan.participants[0]!.aiModel={model:'fixture-astra',effort:'max'};await f.write();const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));const dir=result.runtimes[0]!.started.directory,wire=(await readFile(join(dir,'stdin.ndjson'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));assert.equal(wire.find(m=>m.method==='thread/start').params.model,'fixture-astra');assert.equal(wire.find(m=>m.method==='turn/start').params.effort,'max');const before=await readFile(f.trace);assert.equal((await runMessages(f.store,f.path,true)).completed,true);assert.deepEqual(await readFile(f.trace),before);
+});

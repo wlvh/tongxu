@@ -5,6 +5,16 @@ type Row=Record<string,any>;
 export type MessageClaudeVersion=string;
 export type MessageClaudeContract='legacy-stream-v1'|'composed-command-v1';
 export const messageClaudeRequirements=claudeConversation;
+/** A terminal provider error is not a complete model answer. Surface it before
+ * waiting for a successful command lifecycle that will never arrive. */
+export function claudeExecutionFailure(event:Row):string|null{
+  if(event?.type!=='result')return null;
+  if(event.api_error_status===401)return 'claude_authentication_failed';
+  if(event.api_error_status===403)return 'claude_access_denied';
+  if(event.api_error_status===429)return 'claude_rate_limit_or_capacity';
+  if(event.is_error===true||event.terminal_reason==='api_error')return 'claude_api_error';
+  return null;
+}
 export function messageClaudeVersion(identity:string):MessageClaudeVersion {
   return cliVersion(identity,'claude');
 }
@@ -25,6 +35,17 @@ export function messageClaudeInput(version:MessageClaudeVersion,session:string,u
 export function checkMessageClaudeReceipt(events:Row[],session:string,uuid:string,text:string){
   const echoes=events.filter(e=>e.type==='user'),results=events.filter(e=>e.type==='result');
   if(echoes.length!==1||echoes[0]!.uuid!==uuid||echoes[0]!.session_id!==session||echoes[0]!.message?.role!=='user'||echoes[0]!.message.content!==text||results.length!==1||events.indexOf(results[0]!)<events.indexOf(echoes[0]!))throw new Error('message_claude_receipt_ambiguous');
+}
+/** Narrow terminal failure contract observed from the official CLI. This
+ * proves a cancelled, zero-usage authentication rejection, never a reply or
+ * permission to resend. Other errors/partial work retain the unknown state. */
+export function checkClaudeAuthCancellation(events:Row[],session:string,version:string,uuid:string,text:string){
+  const inits=events.filter(e=>e.type==='system'&&e.subtype==='init'),results=events.filter(e=>e.type==='result'),r=results[0],lifecycle=events.filter(e=>e.type==='command_lifecycle'),assistants=events.filter(e=>e.type==='assistant');
+  if(inits.length!==1||results.length!==1||!r)throw new Error('claude_auth_cancellation_not_proven');checkMessageClaudeInit(inits[0]!,session,version);checkMessageClaudeReceipt(events,session,uuid,text);
+  const stats=r.subagent_stats,usage=r.usage;
+  if(r.is_error!==true||r.terminal_reason!=='api_error'||r.api_error_status!==401||r.user_message_uuid!==uuid||canonical(r.user_message_uuids)!==canonical([uuid])||r.queued_turn_count!==0||!usage||[usage.input_tokens,usage.output_tokens,usage.cache_creation_input_tokens,usage.cache_read_input_tokens].some(v=>v!==0)||!Array.isArray(r.permission_denials)||r.permission_denials.length||r.safety_stops!==0||!stats||[stats.spawned,stats.spawned_by_subagents,stats.started_in_background,stats.completed,stats.failed,stats.max_depth,stats.requested?.background,stats.requested?.foreground,stats.requested?.unset,stats.killed?.parent,stats.killed?.user,stats.killed?.system,stats.refused?.depth_limit,stats.refused?.concurrency_limit,stats.refused?.budget].some(v=>v!==0)||!stats.by_type||Object.keys(stats.by_type).length)throw new Error('claude_auth_cancellation_not_proven');
+  if(events.some(e=>e.session_id!==session||e.parent_tool_use_id!=null||!['system','user','assistant','result','command_lifecycle','rate_limit_event'].includes(e.type)||e.type==='system'&&!(e.subtype==='init'||e.subtype==='api_retry'&&e.error==='authentication_failed'))||assistants.length!==1||assistants[0]!.error!=='authentication_failed'||assistants[0]!.message?.model!=='<synthetic>'||canonical(assistants[0]!.message?.content)!==canonical([{type:'text',text:r.result}])||canonical(lifecycle.map(e=>e.state))!==canonical(['queued','started','cancelled'])||lifecycle.some(e=>e.command_uuid!==uuid)||events.indexOf(lifecycle[1]!)>events.indexOf(r)||events.indexOf(lifecycle[2]!)<events.indexOf(r)||events.at(-1)!==lifecycle[2])throw new Error('claude_auth_cancellation_not_proven');
+  return {providerFailure:'claude_authentication_failed',apiStatus:401,cliReportedUsage:usage,source:'claude-authentication-cancellation-v1',modelAnswerProduced:false,automaticResend:false};
 }
 /** Every reply uses its original input UUID. 304 adds lifecycle completion,
  * explicit consumed user UUIDs and native child/tool denial summaries; these
