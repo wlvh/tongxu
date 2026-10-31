@@ -6,7 +6,7 @@
 
 ## 从哪里开始
 
-- [产品说明：有什么、怎么用](docs/PRODUCT_GUIDE.md)
+- [工作机制主文档：具体任务、并行与阶段依赖、完成条件](docs/PRODUCT_GUIDE.md)
 - [现行完整设计与实施基线](docs/tongxu_v2_plan.md)
 - [发给 Codex 的持续开发指令](docs/CODEX_NEXT.md)
 - [只读 CLI：安装、采集、缺口与恢复](docs/w1_cli.md)
