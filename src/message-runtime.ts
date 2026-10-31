@@ -1,5 +1,5 @@
 import {isAdditionalProgram} from './ai-programs.js';
-import {ExtraCliSession,parseAcpPrompt,extraProfileArgs,extraProfileFiles,acpOptions} from './additional-cli.js';
+import {ExtraCliSession,parseAcpPrompt,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions} from './additional-cli.js';
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
@@ -312,7 +312,11 @@ async function acpOriginals(o:RuntimeSpec){
   if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');return originals;
 }
 async function inspectUnstartedACPMessage(o:RuntimeSpec){
-  const originals=await acpOriginals(o);if(originals['launch.json']){await checkCapture(o.directory);const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!);if(sent.some(m=>!['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/close'].includes(m.method))||received.some(m=>m.params?.update?.sessionUpdate==='agent_message_chunk'))throw Error('message_bootstrap_may_have_executed');}
+  const originals=await acpOriginals(o);if(originals['launch.json']){
+    await checkCapture(o.directory);if(!originals['exit.json']||!originals['process.json'])throw Error('message_bootstrap_process_unknown');const exit=JSON.parse(originals['exit.json'].toString()),launch=JSON.parse(originals['launch.json'].toString());
+    if(exit.code===null&&exit.signal===null||launch.command!==o.participant.executable||launch.cwd!==join(o.directory,'workspace'))throw Error('message_bootstrap_process_unknown');
+    const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!);if(sent.some(m=>!['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/close'].includes(m.method))||received.some(m=>m.params?.update?.sessionUpdate==='agent_message_chunk'))throw Error('message_bootstrap_may_have_executed');
+  }else if(['process.json','stdin.ndjson','stdout.ndjson','exit.json'].some(name=>originals[name]))throw Error('message_bootstrap_launch_unknown');
   return proof('ended',o,null,{exit:originals['exit.json']?JSON.parse(originals['exit.json'].toString()):null,successfulCapture:false,knownUnstarted:true},originals);
 }
 async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
@@ -326,6 +330,7 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
     const allowed=['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/prompt','session/close'];
     if(sent.length!==requests.length||requests.some((r,i)=>r.jsonrpc!=='2.0'||r.id!==i+1||!allowed.includes(r.method))||requests.filter(r=>r.method==='initialize').length!==1||requests.filter(r=>r.method==='session/new').length!==1||received.some(r=>r.method&&Object.hasOwn(r,'id')||!r.method&&!requests.some(q=>q.id===r.id)))throw Error('external_cli_unregistered_request');
     const response=(r:Row)=>{const rows=received.filter(m=>m.id===r.id&&!m.method);if(rows.length!==1||rows[0].error||!Object.hasOwn(rows[0],'result'))throw Error('external_cli_response_missing');return rows[0];};requests.forEach(response);
+    const initialize=requests.find(r=>r.method==='initialize')!;if(requests[0]!==initialize||canonical(initialize.params)!==canonical(extraInitializeParams())||canonical(response(initialize).result)!==canonical(read('initialize.json')))throw Error('external_cli_initialize_changed');
     const start=requests.find(r=>r.method==='session/new')!;if(canonical(response(start).result)!==canonical(session)||canonical(start.params)!==canonical({cwd:join(o.directory,'workspace'),mcpServers:[]})||prompts.length!==expected.length)throw Error('external_cli_wrong_session');
     if(prompts.length){const last=received.indexOf(response(prompts.at(-1)!));if(received.slice(last+1).some(r=>['agent_message_chunk','tool_call','tool_call_update'].includes(r.params?.update?.sessionUpdate)))throw Error('external_cli_late_output');}
     if(o.participant.tool==='kimi'&&o.executionKind==='native_capture'){const bound=read('profile-observed.json');if(bound.systemPromptSha256!==hash((o.assembly.system+'\n'+messagePolicy).trim())||bound.activeToolNames.length||bound.subagents.length||bound.agentsMdPaths.length||bound.modelAlias!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&bound.thinkingEffort!==o.participant.aiModel.effort)throw Error('external_cli_readonly_profile_missing');}

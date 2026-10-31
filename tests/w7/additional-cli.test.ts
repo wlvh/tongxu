@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {messageFixture} from '../w6/message-fixture.js';
 import {runMessages} from '../../src/messages.js';
+import {inspectUnstartedDialog,inspectDialogCapture} from '../../src/message-runtime.js';
 import {hash} from '../../src/snapshot.js';
 import {ExtraCliSession,parseAcpPrompt,acpModels,readConfigJson} from '../../src/additional-cli.js';
 import {parseMessagePlan} from '../../src/message-contract.js';
@@ -60,4 +61,15 @@ test('unknown, cancelled, tool-bearing and wrong-session streams cannot become f
 test('configuration metadata accepts JSON comments without executing expressions or accepting prototype keys',()=>{
  assert.deepEqual(readConfigJson(Buffer.from('{/* native config */"security":{"auth":{"selectedType":"oauth-personal",}},}')),{security:{auth:{selectedType:'oauth-personal'}}});
  for(const text of ['{"x":process.exit()}','{"__proto__":{"allowed":true}}','{"a":1,"a":2}','{"x":(()=>1)()}'])assert.throws(()=>readConfigJson(Buffer.from(text)));
+});
+
+test('missing original exit or launch cannot classify an ACP bootstrap as safely unstarted',async t=>{
+ const f=await fixture(t,'kimi','wrong-model');const result=await runMessages(f.store,f.path);const dir=result.runtimes[0]!.started.directory,spec=JSON.parse(await readFile(join(dir,'runtime-spec.json'),'utf8'));
+ const exit=await readFile(join(dir,'exit.json'));await rm(join(dir,'exit.json'));await assert.rejects(()=>inspectUnstartedDialog(spec),/process_unknown/);await writeFile(join(dir,'exit.json'),exit);
+ const launch=await readFile(join(dir,'launch.json'));await rm(join(dir,'launch.json'));await assert.rejects(()=>inspectUnstartedDialog(spec),/launch_unknown/);await writeFile(join(dir,'launch.json'),launch);assert.equal((await f.calls()).length,0);
+});
+test('altered route scope or a contradictory initialization record cannot be consumed from an intact stream',async t=>{
+ const f=await fixture(t,'kimi');const result=await runMessages(f.store,f.path);assert.equal(result.completed,true);const dir=result.runtimes[0]!.started.directory,spec=JSON.parse(await readFile(join(dir,'runtime-spec.json'),'utf8')),sent=(await readFile(join(dir,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)),expected=sent.filter(m=>m.method==='session/prompt').map(m=>JSON.parse(m.params.prompt[0].text));
+ const route=await readFile(join(dir,'route.json'));await writeFile(join(dir,'route.json'),JSON.stringify({...JSON.parse(route.toString()),writePermission:true}));assert.equal((await inspectDialogCapture(spec,expected)).error,'message_original_execution_binding_changed');await writeFile(join(dir,'route.json'),route);
+ const init=JSON.parse(await readFile(join(dir,'initialize.json'),'utf8'));await writeFile(join(dir,'initialize.json'),JSON.stringify({...init,protocolVersion:99}));assert.equal((await inspectDialogCapture(spec,expected)).error,'external_cli_initialize_changed');
 });

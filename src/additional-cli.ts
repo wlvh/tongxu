@@ -26,6 +26,7 @@ const read=async(p:string)=>{const b=await readFile(p);if(b.length>1024*1024)thr
 const overrides=['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_CLOUD_PROJECT','GOOGLE_CLOUD_LOCATION','GOOGLE_GENAI_USE_VERTEXAI','GOOGLE_GEMINI_BASE_URL','KIMI_MODEL_NAME','KIMI_CODE_BASE_URL','KIMI_CODE_OAUTH_HOST','KIMI_OAUTH_HOST','KIMI_CODE_CUSTOM_HEADERS','OPENCODE_API_KEY'];
 export type ExtraProfile={tool:AdditionalProgram;args:string[];env:Record<string,string>;files:Record<string,string>;configurationSha256:string;auth:'subscription'|'existing_account';allowedModelPrefixes:string[]};
 export const extraProfileArgs=(tool:AdditionalProgram,directory:string)=>tool==='gemini'?['--acp','--admin-policy',join(directory,'deny-tools.toml'),'--extensions']:tool==='opencode'?['--pure','acp']:['acp'];
+export const extraInitializeParams=()=>({protocolVersion:1,clientInfo:{name:'tongxu-readonly',version:'0.1.0'},clientCapabilities:{fs:{readTextFile:true,writeTextFile:true},terminal:true}});
 export function extraProfileFiles(tool:AdditionalProgram,directory:string,system:string):Record<string,string>{
   if(tool==='kimi')return {'workspace/.kimi-code/agents/agent.md':'---\nname: agent\noverride: true\ndescription: Tongxu supplied-material reader\ntools: []\nsubagents: []\n---\n'+system+'\n'};
   if(tool==='gemini')return {'system.md':system,'deny-tools.toml':'[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n','gemini-system.json':JSON.stringify({security:{auth:{selectedType:'oauth-personal'}},admin:{mcp:{enabled:false},extensions:{enabled:false},skills:{enabled:false}},hooksConfig:{enabled:false},skills:{enabled:false},tools:{core:[],discoveryCommand:'',callCommand:''},context:{fileName:'TONGXU_NO_IMPORTED_CONTEXT.md'},telemetry:{enabled:false},general:{enableAutoUpdate:false},policyPaths:[join(directory,'deny-tools.toml')]})};
@@ -88,7 +89,7 @@ export class ExtraCliSession{
       }
       assertExternalExecutable(selected);
       self.rpc=new LiveProcess(directory,executable,self.profile.args,join(directory,'workspace'),{...process.env,...self.profile.env},undefined,selected,'acp');
-      self.initial=await self.rpc.request('initialize',{protocolVersion:1,clientInfo:{name:'tongxu-readonly',version:'0.1.0'},clientCapabilities:{fs:{readTextFile:true,writeTextFile:true},terminal:true}});
+      self.initial=await self.rpc.request('initialize',extraInitializeParams());
       if(self.initial?.protocolVersion!==1||typeof self.initial.agentInfo?.name!=='string')throw Error('external_cli_acp_capability_missing');save(join(directory,'initialize.json'),self.initial);
       self.session=await self.rpc.request('session/new',{cwd:join(directory,'workspace'),mcpServers:[]});
       if(!word(self.session?.sessionId))throw Error('acp_session_identity_missing');self.options=self.session.configOptions??[];save(join(directory,'session.json'),self.session);self.catalog=acpModels(self.session);
