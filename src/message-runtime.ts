@@ -1,5 +1,5 @@
 import {isAdditionalProgram} from './ai-programs.js';
-import {ExtraCliSession,parseAcpPrompt,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions} from './additional-cli.js';
+import {ExtraCliSession,parseAcpPrompt,checkAcpSessionEvents,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions} from './additional-cli.js';
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
@@ -327,6 +327,7 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
     if(!capturedExecutableMatches(identity,o.participant.executable,o.participant.executableSha256)||launch.command!==o.participant.executable||launch.cwd!==join(o.directory,'workspace')||canonical(launch.args)!==canonical(extraProfileArgs(o.participant.tool,o.directory))||canonical(choice.requested)!==canonical(o.participant.aiModel)||route.sessionId!==session.sessionId||route.threadId!==session.sessionId||canonical(route)!==canonical({...nativeRoute(o,session.sessionId,session.sessionId,join(o.directory,'workspace'),true),protocol:'acp/1',nativeTurnIdsAvailable:false}))throw Error('message_original_execution_binding_changed');
     for(const [path,text]of Object.entries(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy)))if(originals[path]?.toString()!==text||profile.files[path]!==hash(text))throw Error('external_cli_profile_changed');
     const sent=jsonLines(originals['stdin.ndjson']!),received=jsonLines(originals['stdout.ndjson']!),requests=sent.filter(m=>m.method),prompts=requests.filter(m=>m.method==='session/prompt');
+    checkAcpSessionEvents(received,session.sessionId);
     const allowed=['initialize','session/new','session/set_config_option','session/set_model','session/set_mode','session/prompt','session/close'];
     if(sent.length!==requests.length||requests.some((r,i)=>r.jsonrpc!=='2.0'||r.id!==i+1||!allowed.includes(r.method))||requests.filter(r=>r.method==='initialize').length!==1||requests.filter(r=>r.method==='session/new').length!==1||received.some(r=>r.method&&Object.hasOwn(r,'id')||!r.method&&!requests.some(q=>q.id===r.id)))throw Error('external_cli_unregistered_request');
     const response=(r:Row)=>{const rows=received.filter(m=>m.id===r.id&&!m.method);if(rows.length!==1||rows[0].error||!Object.hasOwn(rows[0],'result'))throw Error('external_cli_response_missing');return rows[0];};requests.forEach(response);
@@ -337,11 +338,12 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
     if(!originals['prompt-boundaries.ndjson'])throw Error('external_cli_input_boundary_missing');
     const boundaries=jsonLines(originals['prompt-boundaries.ndjson']);
     if(boundaries.length!==prompts.length||new Set(boundaries.map(b=>b.requestId)).size!==boundaries.length)throw Error('external_cli_input_boundary_changed');
-    let model=session.models?.currentModelId??acpOptions(session.configOptions,'model')?.currentValue,effort=acpOptions(session.configOptions,'thought_level')?.currentValue??null;
+    const legacyModelInterface=!acpOptions(session.configOptions,'model');let model=session.models?.currentModelId??acpOptions(session.configOptions,'model')?.currentValue,effort=acpOptions(session.configOptions,'thought_level')?.currentValue??null;
+    let configurationEnd=received.indexOf(response(start));
     for(const request of requests){
       if(request.method.startsWith('session/')&&request.method!=='session/new'&&request.params?.sessionId!==session.sessionId)throw Error('external_cli_wrong_session');
-      if(request.method==='session/set_model')model=request.params.modelId;
-      if(request.method==='session/set_config_option'){const options=response(request).result.configOptions;model=acpOptions(options,'model')?.currentValue;effort=acpOptions(options,'thought_level')?.currentValue??null;const returned=options?.find((x:any)=>x.id===request.params.configId);if(returned?.currentValue!==request.params.value)throw Error('ai_selected_model_not_applied');}
+      if(request.method==='session/set_model'){if(!legacyModelInterface)throw Error('external_cli_model_interface_changed');model=request.params.modelId;configurationEnd=received.indexOf(response(request));}
+      if(request.method==='session/set_config_option'){const options=response(request).result.configOptions;model=acpOptions(options,'model')?.currentValue??(legacyModelInterface?model:undefined);effort=acpOptions(options,'thought_level')?.currentValue??null;const returned=options?.find((x:any)=>x.id===request.params.configId);if(returned?.currentValue!==request.params.value)throw Error('ai_selected_model_not_applied');configurationEnd=received.indexOf(response(request));}
       if(request.method!=='session/prompt')continue;const index=prompts.indexOf(request),envelope=expected[index]!,text=canonical(envelope);
       if(model!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&effort!==o.participant.aiModel.effort)throw Error('ai_selected_model_not_applied');
       if(canonical(request.params)!==canonical({sessionId:session.sessionId,prompt:[{type:'text',text}]}))throw Error('message_submitted_input_mismatch');
@@ -350,6 +352,8 @@ async function inspectACPMessage(o:RuntimeSpec,expected:Row[]){
       if(boundary.schemaVersion!==1||boundary.requestId!==request.id||boundary.requestSha256!==hash(JSON.stringify(request)+'\n')||!Number.isSafeInteger(boundary.stdoutBytes)||boundary.stdoutBytes<0||boundary.stdoutBytes>rawOutput.length||!Number.isSafeInteger(boundary.stdinBytes)||boundary.stdinBytes<0||boundary.stdinBytes>rawInput.length)throw Error('external_cli_input_boundary_changed');
       const outputPrefix=rawOutput.subarray(0,boundary.stdoutBytes),inputPrefix=rawInput.subarray(0,boundary.stdinBytes);
       if(hash(outputPrefix)!==boundary.stdoutSha256||hash(inputPrefix)!==boundary.stdinSha256||boundary.stdoutEvents!==(outputPrefix.length?jsonLines(outputPrefix).length:0)||boundary.stdoutEvents<=previous||boundary.stdoutEvents>end||rawInput.subarray(boundary.stdinBytes).toString().split('\n')[0]!==JSON.stringify(request))throw Error('external_cli_input_boundary_changed');
+      for(const event of received.slice(configurationEnd+1,boundary.stdoutEvents))if(event.params?.update?.sessionUpdate==='config_option_update'){const options=event.params.update.configOptions;model=acpOptions(options,'model')?.currentValue??(legacyModelInterface?model:undefined);effort=acpOptions(options,'thought_level')?.currentValue??null;}
+      if(model!==o.participant.aiModel.model||o.participant.aiModel.effort!==null&&effort!==o.participant.aiModel.effort)throw Error('ai_selected_model_not_applied');
       const final=parseAcpPrompt(received.slice(boundary.stdoutEvents,end+1),session.sessionId,response(request).result,o.participant.aiModel),turnId='acp-request-'+request.id;
       proofs.push(proof('delivered',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),source:'actual_acp_prompt_response',turnReferenceKind:'acp_request_id'}),proof('reply',o,envelope.messageId,{sessionId:route.sessionId,threadId:route.threadId,turnId,inputSha256:hash(text),finalText:final,finalSha256:hash(final),turnReferenceKind:'acp_request_id',...consumption(final,envelope)}));
     }

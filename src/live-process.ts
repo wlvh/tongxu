@@ -42,6 +42,8 @@ export class LiveProcess {
   private serving = Promise.resolve();
   private closing = false;
   private replies = new Map<string, { request: string; response: unknown }>();
+  private acpRequests = new Set<number>();
+  private acpResponses = new Set<number>();
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable,private readonly protocol:'codex'|'acp'='codex') {
     const selected=expected??selectExternalExecutable(command);
@@ -97,6 +99,10 @@ export class LiveProcess {
       this.fail('executor_request_denied'); return;
     }
     const p = this.pending.get(m?.id);
+    if(this.protocol==='acp'&&!('method' in m)){
+      if(m.jsonrpc!=='2.0'||!this.acpRequests.has(m.id)||this.acpResponses.has(m.id)||Object.hasOwn(m,'result')===Object.hasOwn(m,'error')){this.fail('external_cli_response_ambiguous');return;}
+      this.acpResponses.add(m.id);
+    }
     if (p && !('method' in m)) { clearTimeout(p.timer); this.pending.delete(m.id); 'error' in m ? p.reject(new Error('executor_rpc_error')) : p.resolve(m.result); }
   }
   private fail(reason: string) {
@@ -121,7 +127,7 @@ export class LiveProcess {
     beforeSendSync?.();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('executor_rpc_timeout')); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer }); this.send({ id, method, params });
+      this.pending.set(id, { resolve, reject, timer });if(this.protocol==='acp')this.acpRequests.add(id);this.send({ id, method, params });
     });
   }
   writeText(text: string) { appendFileSync(join(this.directory, 'stdin.ndjson'), text); this.process.stdin.end(text); }

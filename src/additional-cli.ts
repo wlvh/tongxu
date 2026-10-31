@@ -74,6 +74,7 @@ export class ExtraCliSession{
   private constructor(readonly tool:AdditionalProgram,readonly executable:string,readonly directory:string,readonly fixture:boolean){}
   private choice:AIModelChoice|undefined;
   private legacySelectedModel:string|null=null;
+  private configurationEventIndex=-1;
   private system='';
   static async open(tool:AdditionalProgram,executable:string,directory:string,system:string,fixture=false,prepared=false){
     if(!prepared)await newStage(directory);const self=new ExtraCliSession(tool,executable,directory,fixture);
@@ -107,8 +108,9 @@ export class ExtraCliSession{
     if(!this.catalog.some(m=>m.id===choice.model))throw Error('ai_model_no_longer_available');
     const option=acpOptions(this.options,'model');const result=await this.rpc.request(option?'session/set_config_option':'session/set_model',option?{sessionId:this.session.sessionId,configId:option.id,value:choice.model}:{sessionId:this.session.sessionId,modelId:choice.model});
     if(option){this.options=result.configOptions??[];if(acpOptions(this.options,'model')?.currentValue!==choice.model)throw Error('ai_selected_model_not_applied');}
+    this.configurationEventIndex=this.rpc.events.findIndex(m=>!m.method&&m.result===result);
     this.legacySelectedModel=option?null:choice.model;
-    if(choice.effort!==null){const effort=acpOptions(this.options,'thought_level');if(!effort?.options.some((e:any)=>e.value===choice.effort))throw Error('ai_effort_not_supported');const changed=await this.rpc.request('session/set_config_option',{sessionId:this.session.sessionId,configId:effort.id,value:choice.effort});this.options=changed.configOptions??[];if(acpOptions(this.options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');}
+    if(choice.effort!==null){const effort=acpOptions(this.options,'thought_level');if(!effort?.options.some((e:any)=>e.value===choice.effort))throw Error('ai_effort_not_supported');const changed=await this.rpc.request('session/set_config_option',{sessionId:this.session.sessionId,configId:effort.id,value:choice.effort});this.options=changed.configOptions??[];this.configurationEventIndex=this.rpc.events.findIndex(m=>!m.method&&m.result===changed);if(acpOptions(this.options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');}
     this.checkChoice(choice);
     save(join(this.directory,'selection.json'),{requested:choice,reportedModel:acpOptions(this.options,'model')?.currentValue??null,reportedEffort:acpOptions(this.options,'thought_level')?.currentValue??null,modelSelectionAcknowledged:true});
     this.choice=structuredClone(choice);
@@ -117,13 +119,15 @@ export class ExtraCliSession{
     const rows:AIModel[]=[];for(const model of this.catalog){await this.select({model:model.id,effort:null});const effort=acpOptions(this.options,'thought_level');rows.push({...model,efforts:effort?.options.map((e:any)=>e.value)??[],defaultEffort:effort?.currentValue??null});}return rows;
   }
   private checkChoice(choice:AIModelChoice){
-    if((acpOptions(this.options,'model')?.currentValue??this.legacySelectedModel)!==choice.model||choice.effort!==null&&acpOptions(this.options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');
+    let options=this.options;
+    for(const event of this.rpc.events.slice(this.configurationEventIndex+1))if(event.method==='session/update'&&event.params?.update?.sessionUpdate==='config_option_update')options=event.params.update.configOptions;
+    if((acpOptions(options,'model')?.currentValue??this.legacySelectedModel)!==choice.model||choice.effort!==null&&acpOptions(options,'thought_level')?.currentValue!==choice.effort)throw Error('ai_selected_model_not_applied');
   }
   async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void){
     for(const [p,sha]of Object.entries(this.profile.files))if(hash(await read(join(this.directory,p)))!==sha)throw Error('external_cli_profile_changed');
-    await this.verifyProfile();if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
+    await this.verifyProfile();checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
     const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,beforeSendSync);
-    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();return parsed;
+    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);return parsed;
   }
   private async verifyProfile(){
     if(this.fixture||this.tool!=='kimi')return;
@@ -138,6 +142,11 @@ export class ExtraCliSession{
     if(this.choice&&(profile.modelAlias!==this.choice.model||this.choice.effort!==null&&profile.thinkingEffort!==this.choice.effort))throw Error('ai_selected_model_not_applied');
   }
   async close(){if(!this.rpc)return;try{if(this.session?.sessionId&&this.initial?.agentCapabilities?.sessionCapabilities?.close)await this.rpc.request('session/close',{sessionId:this.session.sessionId},3000);}catch{}await this.rpc.close();}
+}
+/** Session-wide safety/state events are checked independently from per-input
+ * text windows. Moving a text boundary must never hide a tool or foreign run. */
+export function checkAcpSessionEvents(events:any[],sessionId:string){
+  for(const event of events){if(!event.method)continue;if(event.method!=='session/update')throw Error('external_cli_unexpected_event');if(event.params?.sessionId!==sessionId)throw Error('external_cli_wrong_session');if(['tool_call','tool_call_update','plan'].includes(event.params?.update?.sessionUpdate))throw Error('external_cli_tool_boundary_failed');}
 }
 export function parseAcpPrompt(events:any[],sessionId:string,result:any,choice?:AIModelChoice){
   if(result?.stopReason!=='end_turn')throw Error('external_cli_incomplete_result');let text='';
