@@ -42,8 +42,10 @@ export class LiveProcess {
   private serving = Promise.resolve();
   private closing = false;
   private replies = new Map<string, { request: string; response: unknown }>();
+  private acpRequests = new Set<number>();
+  private acpResponses = new Set<number>();
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable) {
+  constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable,private readonly protocol:'codex'|'acp'='codex') {
     const selected=expected??selectExternalExecutable(command);
     if(selected.configuredPath!==command)throw new Error('external_executable_selection_mismatch');
     assertExternalExecutable(selected);
@@ -80,6 +82,9 @@ export class LiveProcess {
   private receive(m: any) {
     this.events.push(m);
     if (typeof m?.method === 'string' && 'id' in m) {
+      if(this.protocol==='acp'&&m.method==='session/request_permission'){
+        this.send({id:m.id,result:{outcome:{outcome:'cancelled'}}});this.fail('external_cli_tool_request_denied');return;
+      }
       if (this.onRequest && m.method === 'item/tool/call') {
         this.serving = this.serving.then(async () => {
           if (this.closing || this.failure) throw new Error('executor_not_accepting_tools');
@@ -94,20 +99,35 @@ export class LiveProcess {
       this.fail('executor_request_denied'); return;
     }
     const p = this.pending.get(m?.id);
+    if(this.protocol==='acp'&&!('method' in m)){
+      if(m.jsonrpc!=='2.0'||!this.acpRequests.has(m.id)||this.acpResponses.has(m.id)||Object.hasOwn(m,'result')===Object.hasOwn(m,'error')){this.fail('external_cli_response_ambiguous');return;}
+      this.acpResponses.add(m.id);
+    }
     if (p && !('method' in m)) { clearTimeout(p.timer); this.pending.delete(m.id); 'error' in m ? p.reject(new Error('executor_rpc_error')) : p.resolve(m.result); }
   }
   private fail(reason: string) {
     if (!this.failure) { this.failure = reason; save(join(this.directory, 'capture-failure.json'), { reason }); }
   }
   send(message: unknown) {
-    const line = JSON.stringify(message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
+    const line = JSON.stringify(this.protocol==='acp'?{jsonrpc:'2.0',...(message as object)}:message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
   }
-  request(method: string, params: unknown, timeoutMs = 30_000): Promise<any> {
+  request(method: string, params: unknown, timeoutMs = 30_000, beforeSendSync?:()=>void): Promise<any> {
     if (this.failure || this.exit) throw new Error(this.failure ?? 'executor_closed');
     const id = ++this.sequence;
+    if(this.protocol==='acp'&&method==='session/prompt'){
+      // Save the exact output prefix observed before this input. A prior turn's
+      // terminal response cannot identify where the next input actually began.
+      if(this.partial.length)throw new Error('external_cli_partial_before_input');
+      const output=readFileSync(join(this.directory,'stdout.ndjson')),input=readFileSync(join(this.directory,'stdin.ndjson'));
+      const requestSha256=hash(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');
+      appendFileSync(join(this.directory,'prompt-boundaries.ndjson'),JSON.stringify({schemaVersion:1,requestId:id,requestSha256,stdoutBytes:output.length,stdoutSha256:hash(output),stdoutEvents:this.events.length,stdinBytes:input.length,stdinSha256:hash(input)})+'\n',{mode:0o600});
+    }
+    // No asynchronous work is permitted between this original authority/source
+    // check and the actual input write below.
+    beforeSendSync?.();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('executor_rpc_timeout')); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer }); this.send({ id, method, params });
+      this.pending.set(id, { resolve, reject, timer });if(this.protocol==='acp')this.acpRequests.add(id);this.send({ id, method, params });
     });
   }
   writeText(text: string) { appendFileSync(join(this.directory, 'stdin.ndjson'), text); this.process.stdin.end(text); }

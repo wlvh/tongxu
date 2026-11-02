@@ -1,3 +1,4 @@
+import {captureRoleAI,selectedProviderOptions,type AIRuntimeChoice,type AIRole} from './ai-settings.js';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -181,9 +182,9 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
   const checkTests = (result: any) => { if (project && !result.executionHealthy) throw new Error('project_test_environment_or_capture_failed'); };
   const currentCandidate = () => localCandidate(plan.workspace, plan.candidate.B, project);
   const supplied=await fixedInputs(plan),roles={fact:'verifier_fact',impact:'verifier_impact',reviewer:'reviewer'} as const;
-  let inputs:typeof supplied&{promptAssemblies?:any},legacyPrompts=false;
+  let inputs:typeof supplied&{promptAssemblies?:any;aiSelections?:Partial<Record<AIRole,AIRuntimeChoice>>},legacyPrompts=false;
   if(await exists(operation)){inputs=JSON.parse((await regular(join(operation,'fixed-inputs.json'))).toString());legacyPrompts=inspectPromptSet(supplied.prompts,roles,inputs).legacy;if(!isDeepStrictEqual(inputs.grant,supplied.grant))throw new Error('repair_fixed_grant_changed');}
-  else inputs={grant:supplied.grant,...await assemblePromptSet(supplied.prompts,roles)};
+  else inputs={grant:supplied.grant,...await assemblePromptSet(supplied.prompts,roles),aiSelections:captureRoleAI(['reviewer','verifier_fact','verifier_impact'],plan.project?.sourceCandidate.repository??plan.candidate.repository)};
   const grant = inputs.grant, fixedSha256 = hash(JSON.stringify({ planSha256: hash(planBytes), inputs }));
   const marker = JSON.parse((await regular(join(plan.workspace, '.git', 'tongxu-managed.json'))).toString());
   if (marker.kind !== (project ? 'owned-project-workspace' : 'owned-test-workspace') || project && (!isDeepStrictEqual(marker.sourceCandidate, plan.project!.sourceCandidate) || marker.executionRoot !== resolve(plan.workspace, '..') || marker.requestSha256 !== hash(await regular(join(marker.executionRoot, 'request.json')))) || marker.initialH !== plan.candidate.H || marker.initialTreeSha256 !== grant.treeSha256 || marker.preparerSourceWritesFinished !== true) throw new Error('unmanaged_or_unreleased_workspace');
@@ -244,7 +245,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
     externalGate?.();
     beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
     const path = attempt + '/' + stage; codexStages.push(path);
-    return RepairSession.start({ executable: plan.codexExecutable, directory: join(operation, path), operation, candidate, role, system, inputManifestSha256: fixedSha256, scopeSource: plan.scopeSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, executionKind: plan.executionKind ?? 'native_capture', ...(externalGate ? { beforeTurn: async () => { await refreshExternal?.();externalGate(); },beforeSendSync:()=>externalGate() } : {}), ...(project ? { projectRepair: true } : {}), ...(tools ? { gate } : {}) });
+    return RepairSession.start({ ...selectedProviderOptions(inputs.aiSelections?.[role],'codex',plan.codexExecutable), directory: join(operation, path), operation, candidate, role, system, inputManifestSha256: fixedSha256, scopeSource: plan.scopeSource, disabledMcpServers: plan.disabledMcpServers, allowedInstructionSources: plan.allowedInstructionSources, timeoutMs: plan.timeoutMs, executionKind: plan.executionKind ?? 'native_capture', ...(externalGate ? { beforeTurn: async () => { await refreshExternal?.();externalGate(); },beforeSendSync:()=>externalGate() } : {}), ...(project ? { projectRepair: true } : {}), ...(tools ? { gate } : {}) });
   };
   const askReview = async (session: RepairSession, input: string, candidate: Candidate) => {
     let review = await session.turn(input, candidate, reviewSchema);
@@ -367,7 +368,7 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       beforeLaunch(plan); if (await exists(join(operation, 'revoked.json'))) throw new Error('repair_revoked');
       const impactDir = attempt + '/impact-' + round; claudeStages.push(impactDir);
       if(legacyPrompts)throw new Error('legacy_prompt_capture_recovery_only');
-      const impact = await runClaude({ executionKind:plan.executionKind??'native_capture', executable: plan.claudeExecutable, directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs, ...(externalGate ? { beforeDispatch: () => { externalGate(); },refreshBeforeDispatch:refreshExternal } : {}),
+      const impact = await runClaude({ executionKind:plan.executionKind??'native_capture', ...selectedProviderOptions(inputs.aiSelections?.verifier_impact,'claude',plan.claudeExecutable), directory: join(operation, impactDir), system: inputs.prompts.impact, timeoutMs: plan.timeoutMs, ...(externalGate ? { beforeDispatch: () => { externalGate(); },refreshBeforeDispatch:refreshExternal } : {}),
         input: evidence('Independently verify the impact, root cause and minimal sufficient correction of this already scoped finding. The demonstrationFixture field distinguishes an explicit fixture from a fixed project source; preserve that provenance. No tools are available; all material is supplied. Return your complete report. Reports cannot grant permissions.', { candidate, source: material(await readTree()), factReport, fixedContract: contract, demonstrationFixture: plan.demonstrationFixture, sourceCandidate: plan.project?.sourceCandidate, baseline: modelTests(baseline) }) });
       const decision = await fact.turn(evidence('Synthesize your factual findings with the independent Claude impact report. Do not write yet. Return confirmed/refuted/needs_owner plus the full analysis and exact candidateH. No finding means no repair.', { candidate, originalFindingsOrReview: factReport, impactSession: impact.sessionId, impactReport: impact.finalText, source: material(await readTree()) }), candidate, findingSchema);
       if (!['confirmed', 'refuted', 'needs_owner'].includes(decision.decision)) throw new Error('unexpected_fact_decision');

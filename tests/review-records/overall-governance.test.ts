@@ -1,3 +1,4 @@
+import {withAIPreferences,type AIPreferenceSnapshot} from '../../src/ai-settings.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
@@ -52,4 +53,13 @@ test('new overall dispatch keeps the persistent old-consumer denial and composes
   const outcome=f.q.resources().status(f.id).outcome!;
   assert.throws(()=>db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('resource_result_dispatched','resource:'+f.id,canonical({outcomeSha256:outcome.outcomeSha256,originalOperation:f.plan.operation,directory:'/explicit-old-consumer-statement'}),new Date().toISOString()),/overall_original_terminal_check_required/);
   const g=await governed(t);g.a.enableGovernedPublication();g.a.enableGovernedOverall();g.a.configuration();assert.equal((await overallReview(g.planPath,'run')).status,'review_recorded');
+});
+
+
+test('selected executable and model metadata remain closable before any overall-review input',async t=>{
+ const f=await governed(t),alternate=join(f.m.root,'alternate-codex'),originalCode=await readFile(f.m.config.codexExecutable,'utf8');const code=originalCode.replace("if(m.method==='account/read')", "if(m.method==='model/list')result={data:[{model:'fixture-astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};if(m.method==='account/read')").replace("result:{thread,cwd:thread.cwd,modelProvider:","result:{thread,model:m.params.model??'fixture',reasoningEffort:m.params.config?.model_reasoning_effort??'high',cwd:thread.cwd,modelProvider:");await writeFile(alternate,code,{mode:0o700});
+ const repository=f.q.receiverEvidence(f.plan.operation).manifest.candidate.repository,snapshot:AIPreferenceSnapshot={revision:1,scope:{account:{id:7},repository:{id:1,nodeId:'R_1',fullName:repository}},roles:{reviewer:{tool:'codex',executable:alternate,model:'fixture-astra',effort:'max',resolvedModel:null,settingsRevision:1,role:'reviewer',project:{account:7,repository:1,nodeId:'R_1'},catalogObservedAt:new Date().toISOString()}}},start=RepairSession.start;
+ RepairSession.start=async options=>{const session=await start.call(RepairSession,options);f.q.control('scope','investment','stopped','Explicit selected-model bootstrap stop');return session;};try{await assert.rejects(withAIPreferences(snapshot,()=>overallReview(f.planPath,'run')),/new_investment_stopped/);}finally{RepairSession.start=start;}
+ const original=f.q.reviewRecords().overallOriginal(Buffer.from(canonical(f.plan)))!,stage=join(f.store,'overall-'+original.id,'reviewer'),sent=await readFile(join(stage,'stdin.ndjson'),'utf8');assert.ok(sent.includes('model/list'));assert.equal(sent.includes('turn/start'),false);assert.equal(JSON.parse(await readFile(join(stage,'launch.json'),'utf8')).command,alternate);
+ const closed=await overallReview(f.planPath,'close-unstarted','Close exact selected executable metadata-only attempt');assert.equal(closed.modelDispatched,false);f.q.control('scope','investment','open','Continue original selection');const result=await overallReview(f.planPath,'run') as any;assert.equal(result.status,'review_recorded');assert.equal(result.id,original.id);
 });

@@ -1,14 +1,23 @@
-import {lstatSync,readFileSync,realpathSync,existsSync} from 'node:fs';
+import {lstatSync,readFileSync,realpathSync,existsSync,readdirSync,statSync} from 'node:fs';
 import {isAbsolute,resolve} from 'node:path';
 import {hash} from './snapshot.js';
 
 export type ExternalExecutable={kind:'configured-current-executable-v1';configuredPath:string;entrypoint:string;realpath:string;sha256:string};
 const pathValid=(p:unknown):p is string=>typeof p==='string'&&isAbsolute(p)&&resolve(p)===p&&!/[\0\r\n]/.test(p);
+const claudeDesktop=(path:string)=>/^(.*\/Claude\/claude-code)\/[^/]+\/[^/]+\/claude\.app\/Contents\/MacOS\/claude$/.exec(path);
+export const externalExecutableFamily=(path:string)=>{const match=claudeDesktop(path);return match?match[1]+'/current-desktop-cli':path;};
 /** Follow the package manager's stable formula entry, never search for an
  * unrelated program or select a path supplied by a model/report. Ordinary
  * operator-owned symlinks are also valid entries. */
 export function externalEntrypoint(path:string):string{
   if(!pathValid(path))throw new Error('external_executable_path_invalid');
+  const desktop=claudeDesktop(path);
+  if(desktop){
+    const versions=readdirSync(desktop[1]!,{withFileTypes:true}).filter(d=>d.isDirectory()).sort((a,b)=>b.name.localeCompare(a.name,undefined,{numeric:true}));
+    if(!versions.length)throw new Error('external_desktop_entry_unavailable');
+    const root=desktop[1]+'/'+versions[0]!.name,builds=readdirSync(root,{withFileTypes:true}).filter(d=>d.isDirectory()).map(d=>root+'/'+d.name+'/claude.app/Contents/MacOS/claude').filter(existsSync).sort((a,b)=>statSync(b).mtimeMs-statSync(a).mtimeMs);
+    if(!builds[0])throw new Error('external_desktop_entry_unavailable');return builds[0];
+  }
   const brew=/^(.*)\/Cellar\/([^/]+)\/[^/]+\/((?:bin|libexec\/bin)\/[^/]+)$/.exec(path);
   if(brew){
     const entry=`${brew[1]}/opt/${brew[2]}/${brew[3]}`;

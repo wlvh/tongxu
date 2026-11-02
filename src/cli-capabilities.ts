@@ -47,10 +47,13 @@ export function inspectCodexCapabilities(schema:any,methods:string[]){
 }
 const claudeFlags=['--safe-mode','--setting-sources','--tools','--permission-mode','--strict-mcp-config','--mcp-config','--no-chrome','--no-session-persistence','--disable-slash-commands','--output-format','--verbose','--system-prompt','--input-format','--replay-user-messages','--session-id'];
 export function inspectClaudeCapabilities(help:string){
-  for(const flag of claudeFlags)if(!new RegExp('(^|[\\s,])'+flag+'(?=[\\s,=<\\[]|$)','m').test(help))missing('claude',flag);
+  // Some current releases hide --verbose from help. The metadata-only
+  // initialization below still passes it and must actually succeed; an
+  // unsupported flag fails there instead of trusting a version label.
+  for(const flag of claudeFlags)if(flag!=='--verbose'&&!new RegExp('(^|[\\s,])'+flag+'(?=[\\s,=<\\[]|$)','m').test(help))missing('claude',flag);
   return {kind:'claude-stream-command-v1' as const,flags:claudeFlags};
 }
-async function claudeMetadata(path:string,env:NodeJS.ProcessEnv){
+export async function claudeMetadata(path:string,env:NodeJS.ProcessEnv){
   const directory=await mkdtemp(join(tmpdir(),'tongxu-claude-capability-'));
   const request={type:'control_request',request_id:'tongxu-capabilities',request:{subtype:'initialize'}};
   const args=['-p','--safe-mode','--setting-sources','','--tools','','--permission-mode','dontAsk','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--no-chrome','--no-session-persistence','--disable-slash-commands','--output-format','stream-json','--verbose','--system-prompt','Metadata initialization only; no user work or model turn.','--input-format','stream-json','--replay-user-messages','--session-id',randomUUID()];
@@ -63,7 +66,7 @@ async function claudeMetadata(path:string,env:NodeJS.ProcessEnv){
     if(events.length!==1||events[0]?.type!=='control_response')missing('claude','zero_input_initialization');
     const response=events[0].response,value=response?.response;
     if(response?.subtype!=='success'||response.request_id!==request.request_id||!Array.isArray(response.pending_permission_requests)||response.pending_permission_requests.length||!Array.isArray(response.pending_user_dialog_requests)||response.pending_user_dialog_requests.length||value?.current_permission_mode!=='dontAsk'||value.session_state!=='idle'||value.fast_mode_state!=='off'||!Array.isArray(value.commands)||value.commands.length||typeof value.claude_code_version!=='string')missing('claude','restricted_initialization');
-    return {request,rawResponseSha256:hash(stdout),reportedVersion:value.claude_code_version,permissionMode:value.current_permission_mode,sessionState:value.session_state,fastMode:value.fast_mode_state,userMessagesSent:0};
+    return {request,rawResponseSha256:hash(stdout),rawOutput:stdout,reportedVersion:value.claude_code_version,permissionMode:value.current_permission_mode,sessionState:value.session_state,fastMode:value.fast_mode_state,userMessagesSent:0,models:value.models??[],account:value.account??null};
   }finally{await rm(directory,{recursive:true,force:true});}
 }
 export async function probeCliCapabilities(path:string,requirement:CliRequirement,executionKind:'fixture'|'native_capture'){
@@ -79,7 +82,8 @@ export async function probeCliCapabilities(path:string,requirement:CliRequiremen
   try{
     await exec(path,['app-server','generate-json-schema','--experimental','--out',directory],{timeout:30000,maxBuffer:2*1024*1024,env});
     const raw=await readFile(join(directory,'ClientRequest.json'));if(raw.length>16*1024*1024)missing('codex','bounded_request_schema');
-    return {...inspectCodexCapabilities(JSON.parse(raw.toString()),requirement.methods??codexConversation.methods!),source:'actual_cli_schema',helpSha256:hash(help.stdout),requestSchemaSha256:hash(raw)};
+    const schema=JSON.parse(raw.toString());let ownedControl=false;try{inspectCodexCapabilities(schema,['thread/read','thread/resume','turn/steer','turn/interrupt']);ownedControl=true;}catch{}
+    return {...inspectCodexCapabilities(schema,requirement.methods??codexConversation.methods!),optionalProfiles:{ownedControl},source:'actual_cli_schema',helpSha256:hash(help.stdout),requestSchemaSha256:hash(raw)};
   }finally{await rm(directory,{recursive:true,force:true});}
 }
 /** The configured path is the approved entry; its long-lived fingerprint is

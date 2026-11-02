@@ -10,9 +10,22 @@ import { prepareRepairFixture, runRepair, revokeRepair, type RepairConfig } from
 import { git, tree, treeHash, acquireWorkspace, releaseWorkspace, RepairTools, testClamp, safeEnv } from '../../src/repair-workspace.js';
 import { fixture } from './repair-fixture.js';
 import { checkConfig, disabledFeatures } from '../../src/live-codex.js';
+import {withAIPreferences,type AIPreferenceSnapshot} from '../../src/ai-settings.js';
 
 const exec = promisify(execFile);
 const modelInputs = (text: string) => text.split('\n').filter(x => x.includes('"kind":"model-input"')).length;
+
+test('repair consumers apply the frozen model to fact tools and fresh review, and ignore later settings on completed replay',async t=>{
+  const f=await fixture(t),plan=JSON.parse(await readFile(f.plan,'utf8'));
+  const scope={account:{id:7},repository:{id:1,nodeId:'R_1',fullName:plan.candidate.repository}},roles:any={};
+  for(const role of ['verifier_fact','reviewer'])roles[role]={tool:'codex',executable:f.config.codexExecutable,model:'fixture-astra',effort:'max',resolvedModel:null,settingsRevision:1,role,project:{account:7,repository:1,nodeId:'R_1'},catalogObservedAt:new Date().toISOString()};
+  const prefs:AIPreferenceSnapshot={revision:1,scope,roles,errors:{}};
+  const done=await withAIPreferences(prefs,()=>runRepair(f.plan,f.operation));assert.equal(done.status,'completed');assert.equal(done.actualRepairPerformed,true);
+  const fixed=JSON.parse(await readFile(join(f.operation,'fixed-inputs.json'),'utf8'));assert.equal(fixed.aiSelections.verifier_fact.model,'fixture-astra');assert.equal(fixed.aiSelections.reviewer.effort,'max');
+  const paths=['attempt-1/fact-and-repair/stdin.ndjson','attempt-1/review-1/stdin.ndjson'];
+  for(const path of paths){const rows=(await readFile(join(f.operation,path),'utf8')).trim().split('\n').map(x=>JSON.parse(x));assert.equal(rows.find(m=>m.method==='thread/start').params.model,'fixture-astra');for(const turn of rows.filter(m=>m.method==='turn/start')){assert.equal(turn.params.model,'fixture-astra');assert.equal(turn.params.effort,'max');}}
+  const trace=await readFile(f.trace);prefs.roles.verifier_fact!.model='no-longer-selected';prefs.roles.reviewer!.model='no-longer-selected';assert.deepEqual(await withAIPreferences(prefs,()=>runRepair(f.plan,f.operation)),done);assert.deepEqual(await readFile(f.trace),trace);
+});
 
 test('one controlled entry performs tool writes, actual tests, a new commit and a fresh review', async t => {
   const f = await fixture(t), before = await git(f.workspace, ['rev-parse', 'HEAD']), result = await runRepair(f.plan, f.operation);

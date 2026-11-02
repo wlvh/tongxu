@@ -114,6 +114,24 @@ async function reviseCapture(native: string, name: string, mutate: (messages: an
   if (name === 'stdin.ndjson') { const contract = Buffer.from(JSON.stringify(messages)); await writeFile(join(native, 'expected-requests.json'), contract); receipt.inputSha256 = hash(bytes); receipt.contractSha256 = hash(contract); } else receipt.rawSha256 = hash(bytes);
   await writeFile(receiptPath, JSON.stringify(receipt));
 }
+test('new secretary defaults and explicit legacy high captures both recover the full answer without another input', async t => {
+  const f=await fixture(t),result=await runSecretary(f.secretaryPlan,f.output),native=join(f.output,'codex-secretary'),logs=await f.logs();
+  const sent=(await readFile(join(native,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
+  assert.equal(Object.hasOwn(sent.find(x=>x.method==='turn/start').params,'effort'),false);
+  const current=await runSecretary(f.secretaryPlan,f.output);assert.equal(current.report,result.report);assert.equal(current.newModelTasks,0);
+  // Explicit historical-wire fixture, with all capture hashes kept consistent.
+  await reviseCapture(native,'stdin.ndjson',messages=>{messages.find(x=>x.method==='turn/start').params.effort='high';});
+  const legacy=await runSecretary(f.secretaryPlan,f.output);assert.equal(legacy.report,result.report);assert.equal(legacy.newModelTasks,0);assert.deepEqual(await f.logs(),logs);
+});
+test('secretary default compatibility still rejects undeclared effort, model and turn permissions in a rehashed capture', async t => {
+  const f=await fixture(t);await runSecretary(f.secretaryPlan,f.output);const native=join(f.output,'codex-secretary'),logs=await f.logs();
+  const names=['stdin.ndjson','capture-status.json','expected-requests.json','completed.json'],originals=await Promise.all(names.map(name=>readFile(join(native,name))));
+  for(const delta of [{effort:'low'},{effort:null},{model:'undeclared-model'},{approvalPolicy:'on-request'},{sandboxPolicy:{type:'readOnly',networkAccess:true}}]){
+    for(const [i,name] of names.entries())await writeFile(join(native,name),originals[i]!);
+    await reviseCapture(native,'stdin.ndjson',messages=>{Object.assign(messages.find(x=>x.method==='turn/start').params,delta);});
+    await assert.rejects(runSecretary(f.secretaryPlan,f.output),/secretary_submitted_protocol_changed/);assert.deepEqual(await f.logs(),logs);
+  }
+});
 test('coherently rehashed capture cannot change thread permissions, client request IDs, bare replies or accepted turn identity', async t => {
   for (const mode of ['permissions', 'request-id', 'bare-response', 'accepted-turn']) {
     const f = await fixture(t); await runSecretary(f.secretaryPlan, f.output); const logs = await f.logs(), native = join(f.output, 'codex-secretary');

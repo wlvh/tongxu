@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { hash } from '../../src/snapshot.js';
 import { runRelay, recoverStage, type RelayPlan } from '../../src/relay.js';
 import { LiveProcess, newStage } from '../../src/live-process.js';
+import {runClaude,readClaudeExecution} from '../../src/live-claude.js';
 import { readCodexExecution } from '../../src/live-codex.js';
 
 // These are deliberately synthetic process executors. They never import a
@@ -200,4 +201,11 @@ test('raw process capture preserves split UTF-8 and rejects an incomplete JSON f
     const child = new LiveProcess(dir, process.execPath, ['-e', code], f.root, process.env); child.process.stdin.end(); await child.closed;
     if (incomplete) assert.equal(child.failure, 'incomplete_output_frame'); else { assert.equal(child.failure, null); assert.equal(child.events[0].text, '汉字🙂'); }
   }
+});
+
+
+test('legacy text capture with an explicit mismatched model cannot be consumed by direct or relay recovery; old captures without a choice remain readable',async t=>{
+ const f=await fixture(t),directory=join(f.root,'legacy-original');const result=await runClaude({executionKind:'fixture',executable:f.plan.claudeExecutable,directory,system:'Explicit legacy fixture',input:'Fixed fixture source',timeoutMs:1000});assert.equal((await readClaudeExecution(directory)).finalText,result.finalText);
+ const changed=join(f.root,'synthetic-mismatched-selection');await cp(directory,changed,{recursive:true});const launch=JSON.parse(await readFile(join(changed,'launch.json'),'utf8')),identity=JSON.parse(await readFile(join(changed,'executable.json'),'utf8'));launch.args.push('--model','desired-fixture-model','--effort','max');identity.capabilities.initialization={models:[{value:'desired-fixture-model',resolvedModel:'desired-fixture-model',supportedEffortLevels:['max']}]};await writeFile(join(changed,'launch.json'),JSON.stringify(launch));await writeFile(join(changed,'executable.json'),JSON.stringify(identity));
+ const trace=await readFile(f.trace);await assert.rejects(readClaudeExecution(changed),/ai_selected_model_not_applied/);await assert.rejects(recoverStage(changed,'claude'),/ai_selected_model_not_applied/);assert.deepEqual(await readFile(f.trace),trace);assert.equal((await recoverStage(directory,'claude')).finalText,result.finalText);
 });

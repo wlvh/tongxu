@@ -6,8 +6,9 @@
 
 ## 从哪里开始
 
-- [产品说明：有什么、怎么用](docs/PRODUCT_GUIDE.md)
-- [现行完整设计与实施基线](docs/tongxu_v2_plan.md)
+- [项目机制总览与检讨指南：完整流程、在途协调、跨模型联系、审核合入与细节索引](docs/PRODUCT_GUIDE.md) — 不读源码时从这里理解和逐节检讨；流程约定、当前能力与验证记录分别标明。
+- 分别查看[产品应该具备的能力与依据](docs/PRODUCT_GUIDE.md#required-capabilities)和[当前未完成项的原记录入口](docs/PRODUCT_GUIDE.md#unfinished-work)；[实现选择与待讨论扩展](docs/PRODUCT_GUIDE.md#requirement-decisions)不自动变成必做欠账。
+- [产品设计与实施基线](docs/tongxu_v2_plan.md) — 保留原目标、原则和阶段安排；结合后续有效决定阅读，不作为第二份当前状态表。
 - [发给 Codex 的持续开发指令](docs/CODEX_NEXT.md)
 - [只读 CLI：安装、采集、缺口与恢复](docs/w1_cli.md)
 - [隔离验证：固定树、逐前缀测试与结果对照](docs/w2_verification.md)

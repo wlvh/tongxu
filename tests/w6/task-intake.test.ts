@@ -22,6 +22,7 @@ import {hash} from '../../src/snapshot.js';
 import {messagePlanId} from '../../src/message-contract.js';
 import {messageAuthority} from './message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
+import {withAIPreferences,type AIPreferenceSnapshot} from '../../src/ai-settings.js';
 
 const raw=(v:unknown)=>Buffer.from(canonical(v));
 async function fixture(t:test.TestContext,mode='complete'){
@@ -32,6 +33,14 @@ async function fixture(t:test.TestContext,mode='complete'){
   return {...f,definition,a,request};
 }
 async function waitInput(f:Awaited<ReturnType<typeof fixture>>){const end=Date.now()+4000;while(Date.now()<end){if((await f.calls()).some(c=>c.kind==='input'))return;await new Promise(r=>setTimeout(r,10));}throw new Error('fixture_input_not_observed');}
+
+test('a new task-owner plan consumes the selected Claude model and effort, then freezes that choice across replay',async t=>{
+  const f=await fixture(t,'304'),request=f.request('chosen-owner');f.q.taskInbox().enqueue(raw(request));
+  const snapshot:AIPreferenceSnapshot={revision:1,scope:{account:{id:7},repository:{id:1,nodeId:'R_1',fullName:f.definition.repository}},roles:{issue_owner:{tool:'claude',executable:f.claude,model:'sonnet',effort:'xhigh',resolvedModel:'fixture-sonnet',settingsRevision:1,role:'issue_owner',project:{account:7,repository:1,nodeId:'R_1'},catalogObservedAt:new Date().toISOString()}}};
+  const selected=await withAIPreferences(snapshot,()=>prepareTaskOwner(f.store,f.a.item,request.id)),plan=JSON.parse(await readFile(selected.plan,'utf8'));assert.equal(plan.participants[0].tool,'claude');assert.deepEqual(plan.participants[0].aiModel,{model:'sonnet',effort:'xhigh'});assert.equal(f.q.taskInbox().originalResponsibility(f.a.item).participant.tool,'codex');
+  const result=await runMessages(f.store,selected.plan,false,selected.run);assert.equal(result.completed,true,JSON.stringify(result.problems));assert.equal(result.newModelRequests,1);const launch=JSON.parse(await readFile(join(result.runtimes[0]!.started.directory,'launch.json'),'utf8'));assert.equal(launch.args[launch.args.indexOf('--model')+1],'sonnet');assert.equal(launch.args[launch.args.indexOf('--effort')+1],'xhigh');
+  const before=await readFile(f.trace),changed={...snapshot,revision:2,roles:{}};const again=await withAIPreferences(changed,()=>prepareTaskOwner(f.store,f.a.item,request.id));assert.equal(again.run,selected.run);assert.deepEqual(await readFile(again.plan),await readFile(selected.plan));assert.equal((await runMessages(f.store,again.plan,true)).completed,true);assert.deepEqual(await readFile(f.trace),before);
+});
 
 test('no PR: actual dirty bytes, stable task identity, retained old packet, no invented verification',async t=>{
   const f=await fixture(t);await writeFile(join(f.definition.workspace,'sample.js'),'// actual uncommitted test material\nexport const value=7;\n');
@@ -153,4 +162,12 @@ test('native-impact BOM counterexample: HEAD and working file retain the exact U
 test('native-impact dangling-link counterexample: an existing broken link is not a missing file',async t=>{
   const f=await fixture(t),p={...f.definition,id:'dangling',paths:['dangling.js']};await symlink(join(f.root,'missing-target'),join(p.workspace,'dangling.js'));await assert.rejects(observeTaskWorkspace(p),/task_selected_symlink/);
   await symlink(join(f.root,'missing-directory'),join(p.workspace,'linked-dir'));await assert.rejects(observeTaskWorkspace({...p,paths:['linked-dir/absent.js']}),/task_selected_symlink/);
+});
+
+
+test('a verified authentication cancellation can close explicitly, then the same owner handles a new question without rewriting or resending the old one',async t=>{
+ const f=await fixture(t,'304-auth-failure'),request=f.request('auth-failed');request.participant={...request.participant,tool:'claude',executable:f.claude,aiModel:{model:'sonnet',effort:'xhigh'}};f.q.taskInbox().enqueue(raw(request));const first=await prepareTaskOwner(f.store,f.a.item,request.id),result=await runMessages(f.store,first.plan);assert.equal(result.messages[0]!.state,'Interrupted');const directory=result.runtimes[0]!.started.directory,oldBytes=await readFile(join(directory,'stdout.ndjson'));
+ f.q.taskInbox().closeInterrupted(f.a.item,request.id,'Explicit fixture owner login restored, close failed original',hash(canonical(request)));assert.equal(f.q.taskInbox().status(f.a.item)[0]!.phase,'interrupted_closed');
+ await writeFile(f.claude,(await readFile(f.claude,'utf8')).replace('mode="304-auth-failure"','mode="304"'));
+ const next={...request,id:'after-login-new-question',question:'这是后续新问题，请核对保留的失败记录和当前材料。'};f.q.taskInbox().enqueue(raw(next));const selected=await prepareTaskOwner(f.store,f.a.item,next.id),completed=await runMessages(f.store,selected.plan);assert.equal(completed.completed,true,JSON.stringify(completed.problems));assert.equal(completed.newModelRequests,1);assert.deepEqual(await readFile(join(directory,'stdout.ndjson')),oldBytes);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,2);const before=await readFile(f.trace);assert.equal((await runMessages(f.store,first.plan,true)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
 });

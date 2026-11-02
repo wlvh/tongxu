@@ -1,9 +1,11 @@
+import {aiPrograms,isAdditionalProgram,type AIProgram} from './ai-programs.js';
 import { isAbsolute,resolve } from 'node:path';
 import { exactKeys,isAuthorityDigest } from './authority-contract.js';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
+import {validateModelChoice,type AIModelChoice} from './ai-catalog.js';
 export type MessageRole='reviewer'|'verifier_fact'|'verifier_impact'|'issue_owner'|'acceptance';
-export type MessageParticipant={id:string;item:string;role:MessageRole;tool:'codex'|'claude';parent:string|null;executable:string;executableSha256:string;disabledMcpServers:string[];allowedInstructionSources:Array<{path:string;sha256:string}>};
+export type MessageParticipant={id:string;item:string;role:MessageRole;tool:AIProgram;parent:string|null;executable:string;executableSha256:string;disabledMcpServers:string[];allowedInstructionSources:Array<{path:string;sha256:string}>;aiModel?:AIModelChoice};
 export type WorkMessage={id:string;from:string|null;to:string;body:string;replies:string[]};
 export type MessageNativeControl={id:string;messageId:string;title:string;action:'steer'|'interrupt';text:string|null};
 export type MessageNativeResume={run:string;participant:string;messageId:string;captureSha256:string};
@@ -20,7 +22,9 @@ export function parseMessagePlan(raw:Buffer):MessagePlan{
   if(p.resourceBudget!==undefined){checkMessageResources(p.resourceBudget);if(p.authorityIntent===null)throw new Error('message_resource_authority_required');}
   if(!Array.isArray(p.participants)||p.participants.length<1||p.participants.length>4||!Array.isArray(p.messages)||!p.messages.length||p.messages.length>8||!Array.isArray(p.material)||p.material.length>16)throw new Error('message_plan_bound_invalid');
   const ids=new Set<string>();for(const a of p.participants){
-    if(!exactKeys(a,['id','item','role','tool','parent','executable','executableSha256','disabledMcpServers','allowedInstructionSources'])||!messageId(a.id)||ids.has(a.id)||!isAuthorityDigest(a.item)||!['reviewer','verifier_fact','verifier_impact','issue_owner','acceptance'].includes(a.role)||!['codex','claude'].includes(a.tool)||!['issue_owner','acceptance'].includes(a.role)&&a.tool!==(a.role==='verifier_impact'?'claude':'codex')||!(a.parent===null||messageId(a.parent))||!messagePath(a.executable)||!isAuthorityDigest(a.executableSha256)||!Array.isArray(a.disabledMcpServers)||a.disabledMcpServers.length>30||new Set(a.disabledMcpServers).size!==a.disabledMcpServers.length||a.disabledMcpServers.some((s:unknown)=>typeof s!=='string'||!/^[-\w]+$/.test(s))||!Array.isArray(a.allowedInstructionSources)||a.allowedInstructionSources.length>8||a.tool==='claude'&&a.allowedInstructionSources.length||new Set(a.allowedInstructionSources.map((s:any)=>s?.path)).size!==a.allowedInstructionSources.length||a.allowedInstructionSources.some((s:any)=>!exactKeys(s,['path','sha256'])||!messagePath(s.path)||!isAuthorityDigest(s.sha256)))throw new Error('message_participant_invalid');ids.add(a.id);
+    if(a.aiModel!==undefined)validateModelChoice(a.aiModel);
+    if(isAdditionalProgram(a.tool)&&(!a.aiModel||!['issue_owner','acceptance'].includes(a.role)||a.disabledMcpServers?.length))throw new Error('additional_cli_message_profile_required');
+    if(!exactKeys(a,['id','item','role','tool','parent','executable','executableSha256','disabledMcpServers','allowedInstructionSources',...(a.aiModel?['aiModel']:[])])||!messageId(a.id)||ids.has(a.id)||!isAuthorityDigest(a.item)||!['reviewer','verifier_fact','verifier_impact','issue_owner','acceptance'].includes(a.role)||!aiPrograms.includes(a.tool)||!(a.parent===null||messageId(a.parent))||!messagePath(a.executable)||!isAuthorityDigest(a.executableSha256)||!Array.isArray(a.disabledMcpServers)||a.disabledMcpServers.length>30||new Set(a.disabledMcpServers).size!==a.disabledMcpServers.length||a.disabledMcpServers.some((s:unknown)=>typeof s!=='string'||!/^[-\w]+$/.test(s))||!Array.isArray(a.allowedInstructionSources)||a.allowedInstructionSources.length>8||a.tool!=='codex'&&a.allowedInstructionSources.length||new Set(a.allowedInstructionSources.map((s:any)=>s?.path)).size!==a.allowedInstructionSources.length||a.allowedInstructionSources.some((s:any)=>!exactKeys(s,['path','sha256'])||!messagePath(s.path)||!isAuthorityDigest(s.sha256)))throw new Error('message_participant_invalid');ids.add(a.id);
   }
   for(const a of p.participants){const seen=new Set<string>([a.id]);let next=a.parent;while(next!==null){if(!ids.has(next)||seen.has(next))throw new Error('message_parent_cycle_or_missing');seen.add(next);next=p.participants.find((x:MessageParticipant)=>x.id===next).parent;}}
   const prior=new Map<string,WorkMessage>();for(const m of p.messages){
