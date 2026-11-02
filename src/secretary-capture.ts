@@ -76,7 +76,7 @@ export async function verifySecretaryCapture(directory: string, p: SecretaryPlan
   const sent = await lines('stdin.ndjson'), received = await lines('stdout.ndjson'), cwd = join(directory, 'workspace');
   const inputs = [{ input: question, subjectCandidate: p.candidate, schema: secretarySchema }];
   if (!['codex-app-server/0.163.0-alpha.10.2','codex-app-server/thread-turn-v1'].includes(binding.protocol) || binding.sourceKind !== p.executionKind || binding.scopeSource !== p.scopeSource || binding.arrangementSource !== p.arrangementSource || binding.promptSha256 !== hash(JSON.stringify({ system: frozen.system, inputs })) || !equal(await json('inputs.json'), inputs)) throw new Error('secretary_input_binding_changed');
-  const id=7,prefix=[...metadataRequests(directory,p,frozen),{id,method:'turn/start',params:{threadId:binding.threadId,input:[{type:'text',text:question}],approvalPolicy:'never',sandboxPolicy:{type:'readOnly',networkAccess:false},effort:'high',outputSchema:secretarySchema}}];
+  const id=7,turn={id,method:'turn/start',params:{threadId:binding.threadId,input:[{type:'text',text:question}],approvalPolicy:'never',sandboxPolicy:{type:'readOnly',networkAccess:false},outputSchema:secretarySchema}},prefix=[...metadataRequests(directory,p,frozen),turn];
   const replies = new Map<number, any>(), expectedToolReplies: any[] = [];
   for (const m of received) {
     if (!Object.hasOwn(m, 'id')) continue;
@@ -88,7 +88,11 @@ export async function verifySecretaryCapture(directory: string, p: SecretaryPlan
     if (m.method !== 'item/tool/call' || !record || args.threadId !== binding.threadId || args.turnId !== binding.turnIds[0] || args.namespace != null || !equal(record.request, { tool: args.tool, arguments: args.arguments, callId: args.callId })) throw new Error('secretary_server_request_mismatch');
     expectedToolReplies.push({ id: m.id, result: record.response });
   }
-  if (!equal(sent, [...prefix, ...expectedToolReplies]) || replies.size !== id || binding.workspace !== cwd) throw new Error('secretary_submitted_protocol_changed');
+  // New requests inherit the program's default; historical requests explicitly
+  // sent high. Accept exactly these two envelopes without relaxing other fields
+  // or deriving an allowed model/effort from the untrusted captured contract.
+  const expected=[...prefix,...expectedToolReplies],legacyHigh=[...prefix.slice(0,-1),{...turn,params:{...turn.params,effort:'high'}},...expectedToolReplies];
+  if ((!equal(sent, expected) && !equal(sent, legacyHigh)) || replies.size !== id || binding.workspace !== cwd) throw new Error('secretary_submitted_protocol_changed');
   if (replies.get(2)?.account?.type !== 'chatgpt' || replies.get(4)?.ordinaryUsageAllowed !== true || replies.get(6)?.ordinaryUsageAllowed !== true) throw new Error('secretary_subscription_reply_mismatch');
   checkConfig(replies.get(3)?.config, true);
   const thread = replies.get(5), t = thread?.thread;
