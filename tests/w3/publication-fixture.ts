@@ -4,13 +4,14 @@ import {join} from 'node:path';
 import {setup} from './receiver-fixture.js';
 import {runReception} from '../../src/receiver.js';
 import {hash} from '../../src/snapshot.js';
+import {nativeReceptionFixture} from '../w7/native-reception-fixture.js';
 
 export async function publicationFixture(t: test.TestContext, mode = 'normal',receiverMode='complete') {
   const f = await setup(t,receiverMode);
   // Native-shaped local fixture plus a fake gh process. No supplier or GitHub
   // request is possible; this declaration is not reported as a real capture.
   const secret = 'PRIVATE_REPORT_SENTINEL @someone /Users/private/token=fixture ```';
-  await writeFile(f.plan.claudeExecutable, (await readFile(f.plan.claudeExecutable, 'utf8')).replace("report:'明确标注的模拟接收判断；没有真实模型或业务批准。'", 'report:' + JSON.stringify(secret)));
+  await nativeReceptionFixture(f.plan.claudeExecutable,f.trace,{mode:receiverMode,report:secret});
   await writeFile(f.path, JSON.stringify({ ...f.plan, executionKind: 'native_capture' }));
   const result = await runReception(f.path), remotePath = join(f.root, 'fake-remote.json');
   const data = { mode, repository: 'fixture/reception', repositoryId: 71, actor: { id: 72, login: 'fixture-publisher' }, H: result.candidate.H, B: result.candidate.B, target: result.candidate.targetRef, comments: [], statuses: [], requests: [], posts: [], rejectionConsumed: false };

@@ -40,7 +40,7 @@ export class GhTransport implements Transport {
   async get(endpoint: string): Promise<Response> {
     assertEndpoint(endpoint);
     try {
-      const { stdout } = await exec('gh', ['api', '--hostname', 'github.com', '--method', 'GET', '--include', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', endpoint], { timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+      const { stdout } = await exec('gh', ['api', '--hostname', 'github.com', '--method', 'GET', '--include', '-H', 'Accept: application/vnd.github+json', endpoint], { timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
       return parseGh(stdout);
     } catch (error) {
       // gh may return a useful HTTP error response on stdout. Never expose its stderr.

@@ -7,7 +7,7 @@ import {repoPattern,shaPattern,validBranchRef} from './contract.js';
 
 export type ObservedCandidateBinding={repository:string;pr:number;H:string;B:string;T:string;targetRef:string;integration:string;integrationRequestSha256:string;item:string;packet:number;fingerprint:string;manifestSha256:string;reportSha256:string;contextSha256:string;observationVersion:number};
 type Original={name:string;sha256:string;bytes:number;encoding:'base64';text:string};
-export type ObservedCandidateCapture={schemaVersion:1;kind:'tongxu-remote-candidate-observation';requestSha256:string;binding:ObservedCandidateBinding;repositoryId:number;executable:{path:string;sha256:string};startedAt:string;observedAt:string;observations:Array<{endpoint:string;status:number;bodySha256:string;body:unknown;originals:Original[]}>;nonAtomicRemoteObservation:true;source:'configured-executable-get';remoteWritePerformed:false;modelInputs:0;testsStarted:0;permissionGranted:false};
+export type ObservedCandidateCapture={schemaVersion:1;kind:'tongxu-remote-candidate-observation';requestSha256:string;binding:ObservedCandidateBinding;repositoryId:number;executable:{path:string;sha256:string;configuredSha256?:string;realpath?:string};startedAt:string;observedAt:string;observations:Array<{endpoint:string;status:number;bodySha256:string;body:unknown;originals:Original[]}>;nonAtomicRemoteObservation:true;source:'configured-executable-get';remoteWritePerformed:false;modelInputs:0;testsStarted:0;permissionGranted:false};
 const issued=new WeakMap<object,string>();
 
 /** The configured process performs GETs only. The capture proves that exact
@@ -29,7 +29,8 @@ export async function observeRemoteCandidate(p:ObservedCandidateRequest,b:Observ
   for(const v of [first,last])if(v.number!==b.pr||v.state!=='open'||v.merged===true||!repository(v.head?.repo)||!repository(v.base?.repo)||v.head.sha!==b.H||!validBranchRef(v.head.ref)||v.head.ref===b.targetRef||v.base.ref!==b.targetRef||v.html_url!==`https://github.com/${b.repository}/pull/${b.pr}`)throw new Error('observed_candidate_remote_changed');
   for(const v of [before,after])if(v.ref!==`refs/heads/${b.targetRef}`||v.object?.type!=='commit'||v.object.sha!==b.B)throw new Error('observed_candidate_target_changed');
   if(canonical(identity(first))!==canonical(identity(last)))throw new Error('observed_candidate_changed_during_read');
-  const capture:ObservedCandidateCapture={schemaVersion:1,kind:'tongxu-remote-candidate-observation',requestSha256:hash(canonical(p)),binding:b,repositoryId:p.repositoryId,executable:{path:p.ghExecutable,sha256:p.ghSha256},startedAt,observedAt:new Date().toISOString(),observations,nonAtomicRemoteObservation:true,source:'configured-executable-get',remoteWritePerformed:false,modelInputs:0,testsStarted:0,permissionGranted:false};
+  const selected=http.executableSelection;if(!selected)throw new Error('observed_candidate_executable_unknown');
+  const capture:ObservedCandidateCapture={schemaVersion:1,kind:'tongxu-remote-candidate-observation',requestSha256:hash(canonical(p)),binding:b,repositoryId:p.repositoryId,executable:{path:p.ghExecutable,sha256:selected.sha256,configuredSha256:p.ghSha256,realpath:selected.realpath},startedAt,observedAt:new Date().toISOString(),observations,nonAtomicRemoteObservation:true,source:'configured-executable-get',remoteWritePerformed:false,modelInputs:0,testsStarted:0,permissionGranted:false};
   issued.set(capture,hash(canonical(capture)));return capture;
 }
 export function requireObservedCandidate(c:ObservedCandidateCapture,p:ObservedCandidateRequest,b:ObservedCandidateBinding){

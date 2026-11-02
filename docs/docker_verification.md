@@ -4,7 +4,7 @@
 
 ## 运行条件和计划
 
-宿主需要 Node 24、Git 和已有 Docker CLI/本地 Unix socket。Docker 镜像由负责人事先准备并核对；运行器只接受本地完整镜像 ID，不拉取、不构建、不装依赖。镜像是可信工具链，需包含 `/usr/bin/env`、`/usr/bin/timeout`、`/usr/bin/git` 及明确指定的 Node；镜像 ID 固定字节，不等于它没有私人内容。镜像声明的自动卷不被接受，默认命令和健康检查不会运行。
+宿主需要 Node 24.0.0或更新版本、Git 和已有 Docker CLI/本地 Unix socket。Docker 镜像由负责人事先准备并核对；运行器接受已有本地镜像名称、标签或摘要；每次准备解析实际镜像ID用于本次执行，不拉取、不构建、不装依赖。镜像是可信工具链，需包含 `/usr/bin/env`、`/usr/bin/timeout`、`/usr/bin/git` 及明确指定的 Node；本次镜像ID记录所运行的字节，不是以后必须使用同一镜像的条件，也不等于镜像没有私人内容。镜像声明的自动卷不被接受，默认命令和健康检查不会运行。
 
 Docker 计划和输出报告使用 schemaVersion 2；旧 bubblewrap 计划/报告仍为1。旧消费者会拒绝2，不能在忽略容器原件的情况下报告材料完整。新消费者同时读取两种格式，不将旧原件改写为新格式。Docker原件须独立满足非root/有界参数等固定约束，创建意图与前后观测一致，并与原计划的timeout绑定；不能用原件自己的声明替自己放行。不完整捕获与矛盾原件分别记录。
 
@@ -15,7 +15,7 @@ Docker 计划和输出报告使用 schemaVersion 2；旧 bubblewrap 计划/报�
     "kind": "docker",
     "client": "/usr/local/bin/docker",
     "endpoint": "unix:///absolute/existing/docker.sock",
-    "image": "sha256:REPLACE_WITH_64_HEX_LOCAL_IMAGE_ID",
+    "image": "tongxu-runtime:current",
     "node": "/opt/node/bin/node"
   },
   "tools": [{
@@ -36,6 +36,8 @@ node dist/src/cli.js verify --snapshot ABS_W1_BUNDLE --objects ABS_LOCAL_GIT --p
 CLI 与固定 H/B/T 的规则沿用 [W2 文档](w2_verification.md)。计划由可信调用者提供，候选代码、Issue 或模型报告不能提供新的程序、网络入口或权限。容器仅见本阶段新 checkout、工具专属结果目录和所选只读依赖；原作者目录、个人 HOME、认证、Docker socket 不挂入。候选环境由固定入口清空；不继承宿主 token、代理或工具配置。
 
 每个容器采用普通宿主 UID/GID、cap-drop ALL、no-new-privileges、Docker 内置默认 seccomp、默认系统路径屏蔽、独立 PID/IPC/cgroup、禁网络、只读根目录。容器自己的临时目录明确使用exec,nosuid,nodev，以便执行测试生成的普通helper；不放开宿主临时目录。固定上限为1GiB内存/无额外swap、128进程、2CPU、256MiB临时目录、16MiB HOME及共享内存；宿主绑定目录没有磁盘配额，不能称全面资源隔离。不会采用 privileged、unconfined 或 host 命名空间。执行器核实际容器配置，并用无宿主挂载的固定探针核内置过滤、非root及零能力权限；全局默认不同也不静默放宽。
+
+客户端正常升级不阻止恢复。恢复核当前客户端、原引擎ID、原容器身份与原件；仍不重发任务。完整规则见[外部依赖兼容](runtime_compatibility.md)。
 
 ## 原运行和中断核查
 

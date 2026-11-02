@@ -1,6 +1,8 @@
+import {SecretaryTools} from '../../src/secretary-tools.js';
+import {BoundedCodexSession} from '../../src/repair-native.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,readdir,unlink,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,readdir,unlink,mkdir,symlink,appendFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {secretaryFixture} from '../w4/secretary-fixture.js';
 import {hash} from '../../src/snapshot.js';
@@ -13,6 +15,8 @@ import {save} from '../../src/live-process.js';
 import {secretaryEntryFixture as fixture} from './secretary-entry-fixture.js';
 
 async function waitFor(f:Awaited<ReturnType<typeof fixture>>,condition:(s:any)=>boolean){const until=Date.now()+12000;let state;while(Date.now()<until){state=await f.get();if(condition(state))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('fixture_workbench_question_timeout:'+JSON.stringify(state));}
+
+async function stableEntry(f:Awaited<ReturnType<typeof secretaryFixture>>){const entry=join(f.root,'current-codex');await symlink(f.p.codexExecutable,entry);f.p.codexExecutable=entry;await writeFile(f.secretaryPlan,JSON.stringify(f.p));}
 
 test('interrupted web registration then CLI upgrade preserves the selected request, permits explicit closure and a new request',async t=>{
   const f=await fixture(t),requestId='interrupted-registration',question='原组合任务做成了什么，现在还需要处理什么？',directory=join(f.root,hash(requestId));
@@ -59,7 +63,7 @@ test('legacy recovery cannot start a second identical unresolved question and te
 });
 
 test('a CLI update after installation uses the same normal entry without editing its template; old answers survive another update',async t=>{
-  const f=await fixture(t),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
+  const f=await fixture(t,'normal',false,stableEntry),requestId='same-entry-after-cli-update',question='核对原任务并保留完整结果。';
   const templateBefore=await readFile(f.secretaryPlan),catalogBefore=await readFile(f.catalogPath);
   const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','99.7.0'));
   assert.notEqual(hash(await readFile(f.p.codexExecutable)),f.p.codexSha256);
@@ -72,6 +76,7 @@ test('a CLI update after installation uses the same normal entry without editing
   await writeFile(f.p.codexExecutable,code.replaceAll('0.163.0-alpha.10.2','100.0.0'));
   assert.equal((await f.post('ask',{requestId,question})).status,202);
   const again=await f.get();assert.equal(again.secretaries[0].questions[0].phase,'completed');
+  const full=await(await fetch(f.u.origin+'/api/secretary-report/selected/'+requestId,{headers:f.headers})).json() as any;assert.equal(full.phase,'completed');assert.equal(full.result.report,JSON.parse(resultBefore.toString()).report);
   assert.deepEqual(await readFile(f.trace),traceBefore);assert.deepEqual(await readFile(join(directory,'execution/result.json')),resultBefore);
   assert.deepEqual(await readFile(f.secretaryPlan),templateBefore);assert.deepEqual(await readFile(f.catalogPath),catalogBefore);
 });
@@ -119,10 +124,12 @@ test('same workbench composes secretary, direct queue receipt and foreground tic
 });
 
 test('ended metadata-only stop closes explicitly, preserves every original and allows a new question attempt',async t=>{
-  const f=await fixture(t,'late-stop-once'),requestId='zero-input',question='核对这个原任务的当前记录';
+  const f=await fixture(t,'late-stop-once',false,stableEntry),requestId='zero-input',question='核对这个原任务的当前记录';
+  const installed=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,installed.replaceAll('0.163.0-alpha.10.2','99.8.0'));
   await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
   const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=(await readdir(native,{withFileTypes:true})).filter(n=>n.isFile()).map(n=>n.name),originals=await Promise.all(names.map(n=>readFile(join(native,n))));
   assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  await writeFile(f.p.codexExecutable,installed.replaceAll('0.163.0-alpha.10.2','100.0.0'));
   assert.equal((await f.post('close-unstarted',{requestId})).status,200);assert.equal((await f.post('close-unstarted',{requestId})).status,200);
   assert.equal((await f.get()).secretaries[0].questions[0].phase,'closed_unstarted');
   const receipt=JSON.parse((await readFile(join(output,'closed-unstarted.json'))).toString());assert.equal(receipt.proof.metadataOnly,true);assert.equal(receipt.proof.modelInputs,0);
@@ -146,4 +153,48 @@ test('metadata closure rejects live, partial, incomplete, model-intent and tool 
   const raw=await read('stdout.ndjson'),tool=Buffer.concat([raw,Buffer.from(JSON.stringify({id:'unexpected',method:'item/tool/call',params:{}})+'\n')]),updated=JSON.parse(status.toString());updated.files['stdout.ndjson']=hash(tool);await writeFile(join(native,'capture-status.json'),JSON.stringify(updated));
   try{await altered('stdout.ndjson',tool,/protocol_unknown/);}finally{await writeFile(join(native,'capture-status.json'),status);}
   assert.equal((await closeUnstartedSecretary(output)).closed,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+});
+
+
+test('retargeting the stable entry after input checks cannot rebind a registered question or send its model input',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),start=BoundedCodexSession.start,question='核对入口升级时的原问题。',requestId='upgrade-at-native-start';let replaced=false;
+  BoundedCodexSession.start=async options=>{
+    if(options.role==='secretary'&&!replaced){replaced=true;const next=join(f.fixtureRoot,'codex-new-install');await writeFile(next,(await readFile(f.p.codexExecutable,'utf8')).replaceAll('0.163.0-alpha.10.2','99.9.1'),{mode:0o700});await unlink(f.p.codexExecutable);await symlink(next,f.p.codexExecutable);}
+    return start(options);
+  };t.after(()=>{BoundedCodexSession.start=start;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);
+  assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const path=join(f.root,hash(requestId),'input-plan.json'),original=await readFile(path),outcome=JSON.parse(await readFile(join(f.root,hash(requestId),'execution/outcome.json'),'utf8'));assert.equal(outcome.reason,'native_registered_executable_changed');
+  await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(path),original);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);await f.post('ask',{requestId:'explicit-after-upgrade',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-after-upgrade'&&q.phase==='completed'));
+  const reply=await(await fetch(f.u.origin+'/api/secretary-report/selected/explicit-after-upgrade',{headers:f.headers})).json() as any;assert.equal(reply.phase,'completed');assert.ok(reply.result.report.length);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);assert.deepEqual(await readFile(path),original);
+});
+
+test('a CLI change after model input retains the original uncertain attempt and never resends it',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),turn=BoundedCodexSession.prototype.turn,requestId='upgrade-after-input',question='保留已发出的原输入。';let replaced=false;
+  BoundedCodexSession.prototype.turn=async function(...args){const result=await turn.apply(this,args);if(this.o.role==='secretary'&&!replaced){replaced=true;await appendFile(f.p.codexExecutable,'\n// compatible update after input was already sent\n');}return result;};t.after(()=>{BoundedCodexSession.prototype.turn=turn;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+  const before=await readFile(f.trace);await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),before);assert.equal((await f.post('close-unstarted',{requestId})).status,503);
+});
+
+
+test('an upgrade after metadata but before model send can be explicitly closed only from complete zero-input originals',async t=>{
+  const f=await fixture(t,'normal',false,stableEntry),start=BoundedCodexSession.start,requestId='upgrade-after-metadata',question='升级后保留原问题再明确重开。';let replaced=false;
+  BoundedCodexSession.start=async options=>{const session=await start(options);if(options.role==='secretary'&&!replaced){replaced=true;const next=join(f.fixtureRoot,'codex-next-after-metadata');await writeFile(next,(await readFile(f.p.codexExecutable,'utf8')).replaceAll('0.163.0-alpha.10.2','99.9.2'),{mode:0o700});await unlink(f.p.codexExecutable);await symlink(next,f.p.codexExecutable);}return session;};t.after(()=>{BoundedCodexSession.start=start;});
+  await f.post('ask',{requestId,question});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(replaced,true);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const output=join(f.root,hash(requestId),'execution'),native=join(output,'codex-secretary'),names=await readdir(native),originals=await Promise.all(names.filter(n=>n.endsWith('.json')||n.endsWith('.ndjson')||n.endsWith('.txt')).map(async name=>({name,bytes:await readFile(join(native,name))})));
+  assert.equal(names.some(n=>n==='inputs.json'||n.startsWith('turn-')),false);assert.equal(JSON.parse(await readFile(join(native,'capture-failure.json'),'utf8')).reason,'external_executable_changed_during_operation');assert.doesNotMatch(await readFile(join(native,'stdin.ndjson'),'utf8'),/turn\/start/);
+  await f.post('ask',{requestId,question});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+  const stdout=await readFile(join(native,'stdout.ndjson')),capture=await readFile(join(native,'capture-status.json')),corrupt=Buffer.concat([stdout,Buffer.from(JSON.stringify({id:'unexpected-tool',method:'item/tool/call',params:{turnId:null}})+'\n')]),status=JSON.parse(capture.toString());status.files['stdout.ndjson']=hash(corrupt);await writeFile(join(native,'stdout.ndjson'),corrupt);await writeFile(join(native,'capture-status.json'),JSON.stringify(status));
+  assert.equal((await f.post('close-unstarted',{requestId})).status,503);await writeFile(join(native,'stdout.ndjson'),stdout);await writeFile(join(native,'capture-status.json'),capture);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,200);for(const original of originals)assert.deepEqual(await readFile(join(native,original.name)),original.bytes);
+  await f.post('ask',{requestId:'explicit-next-after-metadata',question});await waitFor(f,s=>s.secretaries[0].questions.some((q:any)=>q.requestId==='explicit-next-after-metadata'&&q.phase==='completed'));assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,1);
+});
+
+
+test('an unsolicited tool with null turn before the first input never reaches the secretary backend',async t=>{
+  const f=await fixture(t,'normal',false,async f=>{const code=await readFile(f.p.codexExecutable,'utf8');await writeFile(f.p.codexExecutable,code.replace("if(m.method==='account/rateLimits/read'){", "if(m.method==='account/rateLimits/read'&&m.id===6)emit({id:'premature-tool',method:'item/tool/call',params:{threadId:thread.id,turnId:null,callId:'premature-tool',tool:'tongxu_task_status',namespace:null,arguments:{}}});if(m.method==='account/rateLimits/read'){") );});
+  const call=SecretaryTools.prototype.call;let backendCalls=0;SecretaryTools.prototype.call=async function(...args){backendCalls++;return call.apply(this,args);};t.after(()=>{SecretaryTools.prototype.call=call;});
+  const requestId='null-turn-tool';await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(backendCalls,0);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);const trace=await readFile(f.trace);
+  assert.equal((await f.post('close-unstarted',{requestId})).status,503);await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),trace);assert.equal(backendCalls,0);
 });

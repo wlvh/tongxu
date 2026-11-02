@@ -50,7 +50,7 @@ export async function resourceAction(store:string,id:string,action:'claim'|'retr
     const observations=kind==='claim'?await sourceObservations(q,request.authorityIntent,directory):[];
     let registered=false;
     try{
-      const reply=await callResourceProvider(p,command,capture,dir=>{if(kind==='claim')r.dispatchClaim(id,cap,observations,callerRole,dir,action==='retry-refused');else r.dispatchResult(id,cap,dir);registered=true;});
+      const reply=await callResourceProvider(p,command,capture,dir=>{if(kind==='claim')r.dispatchClaim(id,cap,observations,callerRole,dir,action==='retry-refused');else r.dispatchResult(id,cap,dir);registered=true;},cap.executableSelection);
       return {...r.observe(id,command,reply),newProviderCall:true,providerWrite:true};
     }catch(e){r.problem(id,e instanceof Error?e.message:'original_ledger_request_unknown',capture);throw e;}
     finally{if(registered)r.controllerReturned(id,kind==='claim'?'claim':'result',capture);}

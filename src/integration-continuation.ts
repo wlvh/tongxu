@@ -7,9 +7,10 @@ import {regular,exists,processState} from './repair-workspace.js';
 import {integrationRecipe,type IntegrationMaterial} from './integration-producer.js';
 import {readIntegrationGit,integrationGitCaptureSha as stepHash} from './integration-git.js';
 import {verifyObjectSource} from './integration-objects.js';
+import {requireNodeRuntime} from './node-runtime.js';
 
 export const integrationContinuationProtocol='ended-fixed-prefix-v1';
-export const integrationRuntimeNames=['integration','integration-store','integration-contract','integration-producer','integration-git','integration-objects','integration-continuation','queue-store','authority-store'];
+export const integrationRuntimeNames=['integration','integration-store','integration-contract','integration-producer','integration-git','integration-objects','integration-continuation','queue-store','authority-store','node-runtime'];
 export async function integrationRuntimeHashes(){return Object.fromEntries(await Promise.all(integrationRuntimeNames.map(async n=>[n,hash(await readFile(new URL('./'+n+'.js',import.meta.url)))])));}
 const encoded=(x:unknown)=>Buffer.from(canonical(x));
 type StepResult=Awaited<ReturnType<typeof readIntegrationGit>>;
@@ -60,7 +61,8 @@ export async function inspectIntegrationContinuation(m:IntegrationMaterial){
   const producerBytes=await regular(join(m.directory,'producer.json')),producer=JSON.parse(producerBytes.toString()),producerSha256=hash(producerBytes);
   const originals=new Map<string,Buffer>([[producerSha256,producerBytes]]);
   if(producer.kind!=='tongxu-fixed-git-integration'||producer.requestSha256!==m.requestSha256||producer.sourceSha256!==hash(canonical(m.source))||producer.directory!==m.directory||producer.continuationProtocol!==integrationContinuationProtocol)throw new Error('integration_continuation_original_protocol_required');
-  if(canonical(producer.runtimeModules)!==canonical(await integrationRuntimeHashes())||producer.node.executable!==process.execPath||producer.node.version!==process.version)throw new Error('integration_continuation_executor_changed');
+  if(canonical(producer.runtimeModules)!==canonical(await integrationRuntimeHashes()))throw new Error('integration_continuation_executor_changed');
+  await requireNodeRuntime();
   await requireEnded(m.directory,producer.controllerId,producer.controllerPid,producerSha256,originals);
   const attempts=join(m.directory,'continuations');if(await exists(attempts))for(const name of await readdir(attempts)){
     if(!/^[a-f0-9-]{36}\.json$/.test(name))throw new Error('integration_continuation_record_changed');const bytes=await regular(join(attempts,name)),a=JSON.parse(bytes.toString());originals.set(hash(bytes),bytes);
@@ -86,5 +88,5 @@ export async function inspectIntegrationContinuation(m:IntegrationMaterial){
 }
 export async function recordIntegrationContinuation(directory:string,id:string,proof:Awaited<ReturnType<typeof inspectIntegrationContinuation>>){
   const root=join(directory,'continuations');if(!await exists(root))await privateDirectory(root,true);else await privateDirectory(root,false);
-  const bytes=encoded({schemaVersion:1,id,requestSha256:proof.material.requestSha256,producerSha256:proof.producerSha256,controllerPid:process.pid,completedSteps:proof.completedSteps,nextStep:proof.nextStep,lastBoundarySha256:proof.lastBoundarySha256,checkedAt:new Date().toISOString()});await save(join(root,id+'.json'),bytes);return bytes;
+  const bytes=encoded({schemaVersion:1,id,requestSha256:proof.material.requestSha256,producerSha256:proof.producerSha256,controllerPid:process.pid,node:await requireNodeRuntime(),completedSteps:proof.completedSteps,nextStep:proof.nextStep,lastBoundarySha256:proof.lastBoundarySha256,checkedAt:new Date().toISOString()});await save(join(root,id+'.json'),bytes);return bytes;
 }

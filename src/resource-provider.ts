@@ -1,3 +1,4 @@
+import {selectExternalExecutable,assertExternalExecutable,capturedExternalExecutable,type ExternalExecutable} from './external-executable.js';
 import { readFile,realpath,lstat,writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LiveProcess,checkCapture } from './live-process.js';
@@ -6,7 +7,7 @@ import { hash,privateDirectory } from './snapshot.js';
 import { parseLedgerProfile,parseLedgerCommand,parseLedgerReply,type LedgerProfile,type LedgerCommand,type LedgerReply } from './resource-contract.js';
 import { regular } from './repair-workspace.js';
 
-export type LedgerObservation={profileSha256:string;inputSha256:string;reply:LedgerReply;directory:string;raw:Buffer;capturedAt:string};
+export type LedgerObservation={executableSelection?:ExternalExecutable;profileSha256:string;inputSha256:string;reply:LedgerReply;directory:string;raw:Buffer;capturedAt:string};
 const observed=new WeakSet<object>();
 export type ResourceDispatchReference={event:number;phase:'claim'|'result';directory:string;controllerPid:number;controllerReturned:boolean};
 export type ResourceUnstartedProof={referenceSha256:string;inputSha256:string;observedAt:string;proof:Buffer};
@@ -37,15 +38,17 @@ export function requireLedgerObservation(x:LedgerObservation,p:LedgerProfile,c:L
 }
 /** The existing provider is trusted operator configuration. No report can
  * select its program, arguments, URL, credentials, refund or a new paid route. */
-export async function callResourceProvider(profile:LedgerProfile,command:LedgerCommand,directory:string,beforeDispatch?:(directory:string)=>void):Promise<LedgerObservation>{
+export async function callResourceProvider(profile:LedgerProfile,command:LedgerCommand,directory:string,beforeDispatch?:(directory:string)=>void,expected?:ExternalExecutable):Promise<LedgerObservation>{
   const p=parseLedgerProfile(Buffer.from(canonical(profile))),c=parseLedgerCommand(JSON.parse(canonical(command)),p);
   if(['claim','record_result'].includes(c.command)&&!beforeDispatch)throw new Error('resource_persisted_intent_gate_required');
-  await privateDirectory(directory,true);const exe=await realpath(p.executable),st=await lstat(exe);
-  if(!st.isFile()||!(st.mode&0o111)||hash(await readFile(exe))!==p.executableSha256)throw new Error('resource_provider_executable_changed');
+  await privateDirectory(directory,true);const selected=expected??selectExternalExecutable(p.executable);
+  if(selected.configuredPath!==p.executable)throw new Error('provider_executable_selection_mismatch');
+  assertExternalExecutable(selected);
+  await writeFile(join(directory,'executable.json'),canonical(selected),{flag:'wx',mode:0o600});
   const input=canonical(c)+'\n';await writeFile(join(directory,'fixed-input.json'),input,{flag:'wx',mode:0o600});
   // Hooks register the exact original request before spawn; no await in between.
   const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,TMPDIR:process.env.TMPDIR,LANG:process.env.LANG};
-  beforeDispatch?.(directory);const live=new LiveProcess(directory,exe,['--tongxu-ledger-v1'],directory,env);
+  assertExternalExecutable(selected);beforeDispatch?.(directory);const live=new LiveProcess(directory,p.executable,['--tongxu-ledger-v1'],directory,env,undefined,selected);
   let timer:ReturnType<typeof setTimeout>|undefined;
   try{
     live.writeText(input);
@@ -54,7 +57,7 @@ export async function callResourceProvider(profile:LedgerProfile,command:LedgerC
     await checkCapture(directory);
     if(live.events.length!==1)throw new Error('resource_provider_one_reply_required');
     const raw=await readFile(join(directory,'stdout.ndjson')),reply=parseLedgerReply(raw,p,c);
-    const observation=Object.freeze({profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,directory,raw:Buffer.from(raw),capturedAt:new Date().toISOString()});
+    const observation=Object.freeze({executableSelection:Object.freeze({...selected}),profileSha256:hash(canonical(p)),inputSha256:hash(canonical(c)),reply,directory,raw:Buffer.from(raw),capturedAt:new Date().toISOString()});
     observed.add(observation);return observation;
   }finally{if(timer)clearTimeout(timer);await live.close();}
 }

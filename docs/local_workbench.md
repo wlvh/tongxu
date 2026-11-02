@@ -1,5 +1,7 @@
 # W7：读取真实任务与报告的本机工作台
 
+当前运行环境最低要求为 **Node.js 24.0.0**，兼容升级不要求改清单或恢复旧二进制。启动器每次选择当前可用Node并核实际能力；旧记录中的版本是历史观察值。详见[最低要求与兼容性检查](runtime_compatibility.md)。下方历史版本、失败及交付事实保留。
+
 ## 当前本机试用入口（2026-10-23）
 
 双击已装配目录的 `START_WORKBENCH.command`，按 `CURRENT_WORKBENCH.json` 核定本次源码、构建和配置，具体可用任务见同目录 `TRY_TONGXU.md`。用户最新选择为使用最新代码；f847、cb009、f536 是保留的历史检查点，不再作为固定不变的默认版本。本次将[新到达 RETURN 的准备连接](return_workbench.md)接入原入口，用户无需逐次手写请求/计划。已配置范围、原任务和权限条件继续有效，不承诺未登记候选的自动接管。
@@ -78,7 +80,7 @@ node dist/src/workbench-cli.js --plan /absolute/private/workbench-plan.json
 
 ## 当前组合的单一启动记录
 
-新增 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`，读取一个当前组合记录（`tongxu-current-workbench`）。它核对准确 Git 提交、运行相关源码未改、全部编译模块与页面资产、Node 版本、原配置摘要，然后才导入选定工作台。旧库、操作与配置不自动升级或重写；文件变化时明确拒绝，保留原诊断 CLI。
+新增 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`，读取一个当前组合记录（`tongxu-current-workbench`）。它核对准确 Git 提交、运行相关源码未改、全部编译模块与页面资产、Node最低版本及实际数据库能力、原配置摘要，然后才导入选定工作台。清单中Node版本只保留当时构建环境，不要求与当前相同。旧库、操作与配置不自动升级或重写；应用文件变化时明确拒绝，保留原诊断 CLI。
 
 安装时用 `prepareWorkbenchRuntime(sourceDirectory, planPath)` 固定已完成构建/验证的组合，保存其返回的记录即可。此函数不执行构建、不批准代码、不启用权限，也不替换现有启动文件。运行时匹配这些固定记录不是独立审核或产品验收；实际源码与构建的对应关系仍由交付构建和测试证据支持。每次页面显示本次版本与配置摘要。`--open` 只在 Mac 上打开该次本机回环地址，启动本身不发送模型任务。
 

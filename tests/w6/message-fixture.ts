@@ -4,13 +4,19 @@ import { join,basename } from 'node:path';
 import { setup } from '../w3/receiver-fixture.js';
 import { hash } from '../../src/snapshot.js';
 import type { MessagePlan } from '../../src/message-contract.js';
-export async function messageFixture(t:test.TestContext,mode='complete'){
+export async function messageFixture(t:test.TestContext,mode='complete',nativeMetadata=false){
   const cleanup:Array<()=>unknown>=[],preserve=process.env.TONGXU_MESSAGE_TEST_PRESERVE==='1';const f=await setup({after:(fn:()=>unknown)=>cleanup.push(fn)} as unknown as test.TestContext,'complete',1,!preserve);t.after(async()=>{await cleanup.pop()?.();if(process.env.TONGXU_MESSAGE_TEST_EVIDENCE){await mkdir(process.env.TONGXU_MESSAGE_TEST_EVIDENCE,{recursive:true});if(preserve)await writeFile(join(process.env.TONGXU_MESSAGE_TEST_EVIDENCE,basename(f.root)+'.json'),JSON.stringify({root:f.root,store:f.store,mode,originalsPreservedInPlace:true,officialModels:0},null,2)+'\n');else await cp(f.root,join(process.env.TONGXU_MESSAGE_TEST_EVIDENCE,basename(f.root)),{recursive:true});}for(const fn of cleanup.reverse())await fn();});const trace=join(f.root,'message-calls.ndjson'),quotaFile=join(f.root,'quota-present');await writeFile(trace,'');if(mode==='quota-toggle')await writeFile(quotaFile,'blocked');
   const script=`#!${process.execPath}
 import fs from 'node:fs';import readline from 'node:readline';
 const quotaFile=${JSON.stringify(quotaFile)},mode=${JSON.stringify(mode)},trace=${JSON.stringify(trace)},claude=process.argv[1].includes('claude-messages'),version=mode.startsWith('304')?'2.1.304':'2.1.233',emit=m=>process.stdout.write(JSON.stringify(m)+'\\n');
 if(process.argv.includes('--version')){console.log(claude?version+' (Claude Code)':'codex-cli 0.163.0-alpha.10.2');process.exit(0);}
 if(process.argv.includes('auth')){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty',subscriptionType:'max'}));process.exit(0);}
+// Explicit metadata double for tests entering the native-shaped code path.
+if(${nativeMetadata}&&!claude&&process.argv.includes('--help')){console.log('Explicit test-only app-server schema provider');process.exit(0);}
+if(${nativeMetadata}&&!claude&&process.argv.includes('generate-json-schema')){
+ const fields={initialize:['clientInfo','capabilities'],'account/read':['refreshToken'],'account/rateLimits/read':[],'config/read':['includeLayers','cwd'],'thread/start':['cwd','ephemeral','approvalPolicy','sandbox','baseInstructions','developerInstructions','dynamicTools','environments','selectedCapabilityRoots','runtimeWorkspaceRoots'],'turn/start':['threadId','input','approvalPolicy','sandboxPolicy','effort','outputSchema']};
+ const schema={definitions:{},oneOf:Object.entries(fields).map(([method,keys])=>({properties:{method:{enum:[method]},params:{type:'object',properties:Object.fromEntries(keys.map(k=>[k,{}]))}}}))};fs.writeFileSync(process.argv[process.argv.indexOf('--out')+1]+'/ClientRequest.json',JSON.stringify(schema));process.exit(0);
+}
 fs.appendFileSync(trace,JSON.stringify({kind:'runtime',claude,pid:process.pid})+'\\n');
 let thread,turn=0,initialized=false;const session=process.argv[process.argv.indexOf('--session-id')+1],rl=readline.createInterface({input:process.stdin});
 const report=x=>JSON.stringify({messageId:x.messageId,consumed:mode==='missing-consumption'?[]:x.replyReferences,report:'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId});

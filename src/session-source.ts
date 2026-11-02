@@ -36,7 +36,7 @@ export async function readExactCodexSession(spec:SessionReadSpec,directory:strin
   for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])if(process.env[key])throw new Error('api_billing_override_present');
   const cwd=join(directory,'reader-workspace');await mkdir(cwd,{mode:0o700});
   const args=readerArgs(spec);
-  const rpc=new LiveProcess(directory,spec.executable,args,cwd,spec.executionKind==='fixture'?{PATH:'/usr/bin:/bin',HOME:cwd}:process.env);let metadata:Row|null=null,gap:string|null=null;
+  const rpc=new LiveProcess(directory,spec.executable,args,cwd,spec.executionKind==='fixture'?{PATH:'/usr/bin:/bin',HOME:cwd}:process.env,undefined,reader.externalSelection);let metadata:Row|null=null,gap:string|null=null;
   try{
     await rpc.request('initialize',{clientInfo:{name:'tongxu-exact-session-reader',version:'0.1.0'},capabilities:{experimentalApi:true}});rpc.send({method:'initialized',params:{}});
     // No model or resumed runtime is created. Reading global configuration
@@ -61,7 +61,7 @@ export async function replaySessionRead(spec:SessionReadSpec,directory:string):P
   const originals:Record<string,Buffer>={};for(const name of ['read-spec.json','executable.json','launch.json','process.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json'])originals[name]=await regular(join(directory,name),16*1024*1024);
   const decode=(name:string)=>JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(originals[name]!)),lines=(name:string)=>{const raw=originals[name]!;if(!raw.length||raw.at(-1)!==10)throw new Error('session_original_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(raw).trim().split('\n').map(x=>JSON.parse(x));};
   const reader=decode('executable.json'),launch=decode('launch.json'),exit=decode('exit.json'),cwd=join(directory,'reader-workspace');
-  if(canonical(decode('read-spec.json'))!==canonical(spec)||!capturedExecutableMatches(reader,spec.executable,spec.executableSha256)||reader.path!==spec.executable||reader.realpath!==spec.executable||!cliVersion(reader.version,'codex')||launch.command!==spec.executable||launch.cwd!==cwd||canonical(launch.args)!==canonical(readerArgs(spec))||exit.code!==0||exit.signal!==null||!Number.isFinite(Date.parse(exit.at)))throw new Error('session_original_reader_contract_mismatch');
+  if(canonical(decode('read-spec.json'))!==canonical(spec)||!capturedExecutableMatches(reader,spec.executable,spec.executableSha256)||reader.path!==spec.executable||!cliVersion(reader.version,'codex')||launch.command!==spec.executable||launch.cwd!==cwd||canonical(launch.args)!==canonical(readerArgs(spec))||exit.code!==0||exit.signal!==null||!Number.isFinite(Date.parse(exit.at)))throw new Error('session_original_reader_contract_mismatch');
   const sent=lines('stdin.ndjson'),received=lines('stdout.ndjson'),initial=[{id:1,method:'initialize',params:{clientInfo:{name:'tongxu-exact-session-reader',version:'0.1.0'},capabilities:{experimentalApi:true}}},{method:'initialized',params:{}}];
   const current=[...initial,{id:2,method:'thread/read',params:{threadId:spec.threadId,includeTurns:false}}],legacy=[...initial,{id:2,method:'config/read',params:{includeLayers:false,cwd}},{id:3,method:'thread/read',params:{threadId:spec.threadId,includeTurns:false}}],legacyRead=canonical(sent)===canonical(legacy);
   if(canonical(sent)!==canonical(current)&&!legacyRead||received.some((m:Row)=>m.method==='turn/started'||m.method==='item/tool/call'||m.method&&m.id!==undefined))throw new Error('session_original_read_boundary_changed');

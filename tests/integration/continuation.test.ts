@@ -12,10 +12,12 @@ import {integrationPrivateState} from '../../src/integration-continuation.js';
 import {hash} from '../../src/snapshot.js';
 
 const options={skip:!process.env.TONGXU_TEST_DOCKER_CONFIG,timeout:120000};
-async function paused(t:test.TestContext,governed=false){
+async function paused(t:test.TestContext,governed=false,priorRuntime?:{version:string;execPath:string}){
   const f=await integrationFixture(t),owner=governed?await integrationAuthority(f):null,boundary=IntegrationRecords.prototype.boundary;let ended=false;
   IntegrationRecords.prototype.boundary=function(...args){const value=boundary.apply(this,args);if(!ended&&value.name==='006-merge-0'){ended=true;throw new Error('fixture_controller_returned_after_successful_boundary');}return value;};
-  try{await assert.rejects(runIntegration(f.store,f.path));}finally{IntegrationRecords.prototype.boundary=boundary;}
+  const oldVersion=Object.getOwnPropertyDescriptor(process,'version')!,oldPath=Object.getOwnPropertyDescriptor(process,'execPath')!;
+  if(priorRuntime){Object.defineProperty(process,'version',{...oldVersion,value:priorRuntime.version});Object.defineProperty(process,'execPath',{...oldPath,value:priorRuntime.execPath});}
+  try{await assert.rejects(runIntegration(f.store,f.path));}finally{IntegrationRecords.prototype.boundary=boundary;Object.defineProperty(process,'version',oldVersion);Object.defineProperty(process,'execPath',oldPath);}
   assert.equal(ended,true);const state=f.q.integrations().state(f.request.id);assert.equal(state.phase,'started_or_unknown');return {...f,owner,state,directory:state.directory};
 }
 async function captures(directory:string){const files:Record<string,unknown>={};const walk=async(path:string,relative='')=>{for(const name of (await readdir(path)).sort()){const full=join(path,name),key=relative+name,s=await stat(full);if(s.isDirectory())await walk(full,key+'/');else files[key]={sha256:hash(await readFile(full)),mtimeMs:s.mtimeMs};}};await walk(join(directory,'steps'));return files;}
@@ -29,6 +31,15 @@ test('MI05: same ended prefix continues only missing Git steps, preserving captu
   assert.ok('recovery' in result&&'result' in result&&'reusedGitSteps' in result&&'newGitProcesses' in result&&'newModelInputs' in result);assert.equal(result.phase,'produced');assert.equal(result.recovery,'continued_verified_ended_prefix');assert.equal(result.reusedGitSteps,7);assert.equal(result.newGitProcesses,result.result!.steps-7);assert.equal(result.newModelInputs,0);assert.equal(result.result!.candidate.T,f.packet.summary.tree);assert.equal(result.directory,f.directory);
   const after=await captures(f.directory);for(const [name,value] of Object.entries(before))assert.deepEqual(after[name],value);assert.deepEqual(await f.authorState(),author);assert.equal(await f.count(),0);
   const queue=f.q.status(),again=await runIntegration(f.store,f.path,'continue-ended');assert.equal(again.newGitProcesses,0);assert.deepEqual(f.q.status(),queue);assert.deepEqual(await captures(f.directory),after);
+});
+test('Node upgrade and relocation preserve an ended integration prefix and record the actual new runtime',options,async t=>{
+ const f=await paused(t,false,{version:'v24.0.0',execPath:'/explicit-fixture/previous-node'}),before=await captures(f.directory),producer=await readFile(join(f.directory,'producer.json'));
+ assert.equal(JSON.parse(producer.toString()).node.version,'v24.0.0');
+ const result=await runIntegration(f.store,f.path,'continue-ended');assert.equal(result.phase,'produced');assert.ok('reusedGitSteps' in result);assert.equal(result.reusedGitSteps,7);
+ const attempts=await readdir(join(f.directory,'continuations'));assert.equal(attempts.length,1);const continued=JSON.parse(await readFile(join(f.directory,'continuations',attempts[0]!),'utf8'));
+ assert.equal(continued.node.nodeVersion,process.version);assert.equal(continued.node.nodeExecutable,process.execPath);assert.equal(continued.node.minimumNodeVersion,'24.0.0');assert.deepEqual(await readFile(join(f.directory,'producer.json')),producer);
+ const after=await captures(f.directory);for(const [name,value] of Object.entries(before))assert.deepEqual(after[name],value);
+ const again=await runIntegration(f.store,f.path,'continue-ended');assert.equal(again.newGitProcesses,0);assert.equal(await f.count(),0);
 });
 test('MI05: active controller, changed private state, altered boundary, unknown child and partial capture refuse all new commands',options,async t=>{
   const f=await paused(t),steps=await readdir(join(f.directory,'steps')),producer=JSON.parse(await readFile(join(f.directory,'producer.json'),'utf8')),returned=join(f.directory,'controller-returns',producer.controllerId+'.json'),held=join(f.root,'held-controller-return.json');

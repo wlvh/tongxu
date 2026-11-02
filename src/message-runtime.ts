@@ -55,20 +55,15 @@ export class ReadonlyDialog {
   private turns:string[]=[];
   static async open(o:RuntimeSpec):Promise<ReadonlyDialog>{
     requireIssuedRolePrompt(o.assembly,o.participant.role);await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
-    // Vendor installers may hard-link their immutable executable. This reader
-    // never edits it; the single-link rule for repairable source is unrelated.
-    // Keep canonical plan paths, no symlinks, executable mode, size and exact
-    // content/version checks. No repair-file guard is relaxed.
-    const file=await lstat(o.participant.executable);if(!file.isFile()||!(file.mode&0o111)||file.size>512*1024*1024||await realpath(o.participant.executable)!==o.participant.executable)throw new Error('message_executor_file_invalid');
-
+    // Executable capabilities and the current resolved identity are checked below.
     const identity=await executable(o.participant.executable,o.participant.tool==='codex'?codexConversation:messageClaudeRequirements,o.executionKind);if(!capturedExecutableMatches(identity,o.participant.executable,o.participant.executableSha256))throw new Error('message_executor_changed');save(join(o.directory,'executable.json'),identity);
     for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_BASE_URL','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'])if(process.env[k])throw new Error('api_billing_override_present');
     const cwd=join(o.directory,'workspace');await mkdir(cwd,{mode:0o700});const env=o.executionKind==='fixture'?{PATH:'/usr/bin:/bin',HOME:cwd}:process.env;
     if(o.participant.tool==='claude'){
-      const result=await promisify(execFile)(o.participant.executable,['auth','status','--json'],{timeout:15000,env:{...env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'}});const a=JSON.parse(result.stdout);if(!a.loggedIn||a.authMethod!=='claude.ai'||a.apiProvider!=='firstParty'||a.subscriptionType!=='max')throw new Error('included_subscription_not_confirmed');save(join(o.directory,'auth-route.json'),{loggedIn:a.loggedIn,authMethod:a.authMethod,apiProvider:a.apiProvider,subscriptionType:a.subscriptionType});
-      const session=randomUUID(),route=nativeRoute(o,session,session,cwd,false);save(join(o.directory,'route.json'),route);const rpc=new LiveProcess(o.directory,o.participant.executable,streamArgs(o.assembly,session),cwd,{...env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});return new ReadonlyDialog(o,rpc,route,messageClaudeVersion(identity.version),messageClaudeContract(identity));
+      const result=await promisify(execFile)(identity.realpath,['auth','status','--json'],{timeout:15000,env:{...env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'}});const a=JSON.parse(result.stdout);if(!a.loggedIn||a.authMethod!=='claude.ai'||a.apiProvider!=='firstParty'||a.subscriptionType!=='max')throw new Error('included_subscription_not_confirmed');save(join(o.directory,'auth-route.json'),{loggedIn:a.loggedIn,authMethod:a.authMethod,apiProvider:a.apiProvider,subscriptionType:a.subscriptionType});
+      const session=randomUUID(),route=nativeRoute(o,session,session,cwd,false);save(join(o.directory,'route.json'),route);const rpc=new LiveProcess(o.directory,o.participant.executable,streamArgs(o.assembly,session),cwd,{...env,DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'},undefined,identity.externalSelection);return new ReadonlyDialog(o,rpc,route,messageClaudeVersion(identity.version),messageClaudeContract(identity));
     }
-    const rpc=new LiveProcess(o.directory,o.participant.executable,codexArgs(o.participant),cwd,env);
+    const rpc=new LiveProcess(o.directory,o.participant.executable,codexArgs(o.participant),cwd,env,undefined,identity.externalSelection);
     try{await rpc.request('initialize',{clientInfo:{name:'tongxu-addressed-readonly',version:'0.1.0'},capabilities:{experimentalApi:true}});rpc.send({method:'initialized',params:{}});
       const account=await rpc.request('account/read',{refreshToken:false});if(account.account?.type!=='chatgpt')throw new Error('included_subscription_not_confirmed');const config=await rpc.request('config/read',{includeLayers:false,cwd});checkConfig(config.config);save(join(o.directory,'effective-config.json'),config);
       const thread=await rpc.request('thread/start',threadParams(o,cwd));save(join(o.directory,'thread.json'),thread);const sources=[];if(!Array.isArray(thread.instructionSources))throw new Error('message_instruction_sources_unknown');for(const path of thread.instructionSources){const expected=o.participant.allowedInstructionSources.find(s=>s.path===path);if(!expected)throw new Error('message_unexpected_instruction_source');const text=new TextDecoder('utf8',{fatal:true}).decode(await regular(path,128*1024));if(hash(text)!==expected.sha256)throw new Error('message_instruction_source_changed');sources.push({...expected,text});}save(join(o.directory,'instruction-sources.json'),sources);const route=codexThread(o,thread,cwd,sources,identity);save(join(o.directory,'route.json'),route);return new ReadonlyDialog(o,rpc,route,null,null,cliVersion(identity.version,'codex'));
@@ -194,7 +189,6 @@ export class OwnedReadonlyDialog{
     if(o.participant.tool!=='codex'||!o.nativeControls?.length)throw new Error('message_owned_codex_profile_required');
     requireIssuedRolePrompt(o.assembly,o.participant.role);
     await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
-    const file=await lstat(o.participant.executable);if(!file.isFile()||!(file.mode&0o111)||file.size>512*1024*1024||await realpath(o.participant.executable)!==o.participant.executable)throw new Error('message_executor_changed');
     for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_BASE_URL','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'])if(process.env[k])throw new Error('api_billing_override_present');
     const dialog=new OwnedReadonlyDialog(o,hooks);
     const prior=await resumeSource(o);

@@ -61,7 +61,7 @@ export async function managedMergeAction(store:string,operation:string,action:'r
       if(!preflight.result.ready)return {...m.status(operation),newMergeCall:false,preflight:preflight.result};
       const observations=await ownerSources(q,state.binding.authorityIntent,directory),capture=join(directory,'send-'+randomUUID());let registered=false;
       try{
-        const reply=await callMergeProvider(p,mergeCommand(state.binding,'merge'),capture,dir=>{m.dispatch(operation,preflight,observations,dir,action==='retry-refused');registered=true;newMergeCall=true;});
+        const reply=await callMergeProvider(p,mergeCommand(state.binding,'merge'),capture,dir=>{m.dispatch(operation,preflight,observations,dir,action==='retry-refused');registered=true;newMergeCall=true;},preflight.records[0]!.observation.executableSelection);
         m.controllerReturned(operation,capture);m.response(operation,reply);
       }catch(e){m.problem(operation,e instanceof Error?e.message:'merge_request_unknown');throw e;}
       finally{if(registered)m.controllerReturned(operation,capture);}

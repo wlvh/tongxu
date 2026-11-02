@@ -38,7 +38,7 @@ export async function runCodex(o: CodexTask) {
     args.push('-c', `mcp_servers.${name}.enabled=false`);
   }
   args.push('-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0', '-c', 'model_provider="openai"', '-c', 'service_tier="default"', 'app-server', '--listen', 'stdio://');
-  const rpc = new LiveProcess(o.directory, o.executable, args, cwd, process.env);
+  const rpc = new LiveProcess(o.directory, o.executable, args, cwd, process.env,undefined,identity.externalSelection);
   let binding: ResultBinding | undefined;
   try {
     await rpc.request('initialize', { clientInfo: { name: 'tongxu-readonly-relay', version: '0.1.0' }, capabilities: { experimentalApi: true } });

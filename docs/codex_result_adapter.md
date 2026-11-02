@@ -30,7 +30,7 @@
 需要 Node >=24；从核验过的源码安装锁定开发依赖并编译：
 
 ```bash
-npm ci --ignore-scripts
+npm install --ignore-scripts --package-lock=false
 npm run build
 ```
 
