@@ -9,19 +9,19 @@ import { QueueStore } from '../../src/queue-store.js';
 import { readPacket } from '../../src/queue-evidence.js';
 import type { ReceiverPlan } from '../../src/receiver.js';
 
-export async function setup(t: test.TestContext, mode = 'complete', seats = 1, cleanup = true) {
+export async function setup(t: test.TestContext, mode = 'complete', seats = 1, cleanup = true, repository = 'fixture/reception') {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'tongxu-receiver-fixture-')); if (cleanup) t.after(() => rm(root, { recursive: true, force: true }));
   const objects = join(root, 'objects'); await mkdir(objects); const git = (args: string[]) => execFileSync('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: objects, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '--initial-branch=fixture']); await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=1;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture']);
   const B = git(['rev-parse', 'HEAD']), baseTree = git(['rev-parse', 'HEAD^{tree}']);
   await writeFile(join(objects, 'sample.js'), '// explicit test fixture; no real model\nexport const value=2;\n'); git(['add', '.']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'fixture candidate']);
   const H = git(['rev-parse', 'HEAD']);
-  const store = join(root, 'queue'), q = await QueueStore.create(store, 'fixture/reception', seats); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
+  const store = join(root, 'queue'), q = await QueueStore.create(store, repository, seats); if (mode !== 'no-enable') q.enableReceiver(); t.after(() => q.close()); let index = 0;
   async function packet(options: { incomplete?: boolean; target?: string; pr?: number; requires?: any[]; H?: string; sourceAt?: string; executionAt?: string; scopeId?: string; scopeVersion?: string; arrangementVersion?: string; artifactIndex?: number } = {}) {
     ++index;
     const at = options.executionAt ?? new Date(Date.parse('2026-10-19T00:00:00Z') + index * 2000).toISOString(), pr = options.pr ?? 1;
     const selectedH = options.H ?? H, selectedTree = git(['rev-parse', `${selectedH}^{tree}`]);
-    const candidate = { repository: 'fixture/reception', pr, H: selectedH, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: options.sourceAt ?? at };
+    const candidate = { repository, pr, H: selectedH, B, mergeBase: B, targetRef: options.target ?? 'fixture', observedAt: options.sourceAt ?? at };
     const snapshot = join(root, 'snapshot-' + index), s = await Snapshot.create(snapshot, candidate.repository, pr, [], []); s.manifest.candidate = candidate;
     await s.artifact(JSON.stringify({ fixture: true, index: options.artifactIndex ?? index }), { kind: 'pr', round: 1, retrievedAt: at, provenance: 'local_fixture', status: 200 }); s.manifest.rounds.push({ number: 1, startedAt: at, finishedAt: at, coverage: {}, sources: [], notes: [], gaps: [], limitations: ['fixture'], current: true }); await s.save(); await s.close();
     const manifest = await readFile(join(snapshot, 'manifest.json')), verification = join(root, 'verification-' + index); await mkdir(verification, { mode: 0o700 }); await mkdir(join(verification, 'raw'), { mode: 0o700 });

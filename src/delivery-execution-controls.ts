@@ -23,9 +23,9 @@ async function fixed(path:string,bytes:Buffer){try{await writeFile(path,bytes,{f
 export class DeliveryExecutionControls{
  private active=new Map<string,Promise<unknown>>();private preparing=new Set<Promise<unknown>>();private problems=new Map<string,string>();private accepting=true;
  private constructor(private workspace:DeliveryWorkspaceControls,private frozen:Frozen[]){}
- static async load(workspace:DeliveryWorkspaceControls,path:string,sha256:string,sources:string[]){
+ static async load(workspace:DeliveryWorkspaceControls,path:string,sha256:string,sources:string[],selectedSources?:ReadonlySet<string>){
   const bytes=await regular(path,256*1024);if(hash(bytes)!==sha256)throw new Error('delivery_profiles_changed');const catalog=parseDeliveryProfiles(bytes,sources),frozen:Frozen[]=[];
-  for(const profile of catalog.profiles){let tools:Frozen['tools']=[];if(profile.kind==='validation'){const test=await regular(profile.testPlan.path,64*1024);if(hash(test)!==profile.testPlan.sha256)throw new Error('delivery_profile_test_plan_changed');const plan=parsePlan(JSON.parse(test.toString()));if(!plan.executor)throw new Error('delivery_profile_isolation_required');tools=plan.tools.filter(t=>t.expectedSampleIds?.length).map(t=>({id:t.id,samples:t.expectedSampleIds!}));if(!tools.length)throw new Error('delivery_profile_structured_samples_required');}frozen.push({profile,sha256:hash(canonical(profile)),tools});}
+  for(const profile of catalog.profiles){if(selectedSources&&!selectedSources.has(profile.source))continue;let tools:Frozen['tools']=[];if(profile.kind==='validation'){const test=await regular(profile.testPlan.path,64*1024);if(hash(test)!==profile.testPlan.sha256)throw new Error('delivery_profile_test_plan_changed');const plan=parsePlan(JSON.parse(test.toString()));if(!plan.executor)throw new Error('delivery_profile_isolation_required');tools=plan.tools.filter(t=>t.expectedSampleIds?.length).map(t=>({id:t.id,samples:t.expectedSampleIds!}));if(!tools.length)throw new Error('delivery_profile_structured_samples_required');}frozen.push({profile,sha256:hash(canonical(profile)),tools});}
   return new DeliveryExecutionControls(workspace,frozen);
  }
  private key(store:string,id:string){return canonical([store,id]);}

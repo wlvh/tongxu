@@ -37,15 +37,15 @@ function parse(raw:Buffer):Entry[]{
  * configure a source, construct a new permission, dispatch an agent or merge. */
 export class QueueEventControls {
   private constructor(private path:string,readonly catalogSha256:string,private entries:Array<{entry:Entry;source:Source}>,private executionKind?:'fixture'|'github'){ }
-  static async load(path:string,sha256:string,sources:Source[],selectedSource?:string,executionKind?:'fixture'|'github'){
+  static async load(path:string,sha256:string,sources:Source[],selectedSource?:string,executionKind?:'fixture'|'github',selectedSources?:ReadonlySet<string>){
     if(!messagePath(path)||!isAuthorityDigest(sha256)||selectedSource!==undefined&&!sourceId(selectedSource))throw new Error('event_control_reference_invalid');
     const raw=await regular(path,128*1024);if(hash(raw)!==sha256)throw new Error('event_control_catalog_changed');
-    const entries=parse(raw).filter(e=>selectedSource===undefined||e.source===selectedSource).map(entry=>{
+    const entries=parse(raw).filter(e=>(selectedSource===undefined||e.source===selectedSource)&&(!selectedSources||selectedSources.has(e.source))).map(entry=>{
       const source=sources.find(s=>s.id===entry.source);
       if(!source||entry.kind==='preference'&&entry.preference.item!==source.item)throw new Error('event_control_task_not_selected');
       return {entry,source:structuredClone(source)};
     });
-    if(!entries.length)throw new Error('event_control_task_not_selected');
+    if(!entries.length&&!selectedSources)throw new Error('event_control_task_not_selected');
     const controls=new QueueEventControls(path,sha256,entries,executionKind);
     // The caller's executor kind is a boundary, not a label on its result.
     // Verify before starting a model and again at the original action gate.

@@ -29,13 +29,14 @@ export class ReturnControls {
   private active=new Map<string,Promise<unknown>>();
   private problems=new Map<string,string>();
   private constructor(private entries:Frozen[],private incoming:ReturnPreparation[]){}
-  static async load(path:string,sha256:string,sources:Source[]){
+  static async load(path:string,sha256:string,sources:Source[],selectedSources?:ReadonlySet<string>){
     if(!messagePath(path)||!isAuthorityDigest(sha256))throw new Error('return_control_reference_invalid');const raw=await regular(path,128*1024);if(hash(raw)!==sha256)throw new Error('return_control_catalog_changed');const p=JSON.parse(raw.toString());
     if(!exactKeys(p,['schemaVersion','kind','entries'])||![1,2].includes(p.schemaVersion)||p.kind!=='tongxu-return-controls'||!Array.isArray(p.entries)||!p.entries.length||p.entries.length>8)throw new Error('return_control_catalog_invalid');
     const ids=new Set(),operations=new Set(),entries:Frozen[]=[],incoming:ReturnPreparation[]=[];
     for(const e of p.entries as (Entry&Partial<ReturnPreparationEntry>)[]){
       const source=sources.find(s=>s.id===e?.source);
       if(!source||!messageId(e.id)||ids.has(e.id)||typeof e.title!=='string'||!e.title.trim()||e.title.length>160||/[\x00-\x1f]/.test(e.title))throw new Error('return_control_entry_invalid');
+      if(selectedSources&&!selectedSources.has(source.id))continue;
       if(p.schemaVersion===2&&Object.hasOwn(e,'prepare')){
         if(!exactKeys(e,['id','title','source','prepare'])||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(e.id))throw new Error('return_preparation_entry_invalid');
         incoming.push(await loadReturnPreparation(e as ReturnPreparationEntry,source));ids.add(e.id);continue;

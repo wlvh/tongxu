@@ -11,16 +11,24 @@ const flags=['--hostname','--method','--include','--input','--header','--raw-fie
 export type GhExecutableSelection={kind:'configured-original-gh-v1'|'configured-current-gh-v1';externalSelection?:ExternalExecutable;configuredPath:string;configuredSha256:string;realpath:string;sha256:string;version?:string;apiHelpSha256?:string};
 /** A configured entry can be upgraded. Old fingerprints describe setup, while
  * one read/publication attempt still uses one observed executable throughout. */
-export async function selectGhExecutable(path:string,configuredSha256:string):Promise<GhExecutableSelection>{
+export async function selectGhExecutable(path:string,configuredSha256:string,signal?:AbortSignal):Promise<GhExecutableSelection>{
+  if(signal?.aborted)throw new Error('gh_capability_check_cancelled');
   if(!isAbsolute(path)||resolve(path)!==path||!digest.test(configuredSha256))throw new Error('gh_entry_invalid');
   const externalSelection=selectExternalExecutable(path),actual=externalSelection.realpath,s=await lstat(actual);
   if(!s.isFile()||s.nlink!==1||!(s.mode&0o111)||s.size>128*1024*1024)throw new Error('gh_entry_invalid');
   const sha256=hash(await readFile(actual)),base={externalSelection,configuredPath:path,configuredSha256,realpath:actual,sha256};
   if(sha256===configuredSha256)return {kind:'configured-original-gh-v1',...base};
-  const options={timeout:10000,maxBuffer:2*1024*1024,env:{...process.env,GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'}};
+  const options={signal,killSignal:'SIGKILL' as const,timeout:10000,maxBuffer:2*1024*1024,env:{...process.env,GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'}};
+  const probe=(args:string[])=>new Promise<string>((resolve,reject)=>{
+    if(signal?.aborted){reject(new Error('gh_capability_check_cancelled'));return;}
+    let ended=false,result:{error:Error|null;stdout:string}|undefined;
+    const finish=()=>{if(!ended||!result)return;result.error?reject(result.error):resolve(result.stdout);};
+    const child=execFile(actual,args,options,(error,stdout)=>{result={error,stdout};finish();});
+    child.once('close',()=>{ended=true;finish();});
+  });
   let version:string,help:string;
-  try{version=(await exec(actual,['--version'],options)).stdout.trim();help=(await exec(actual,['api','--help'],options)).stdout;}
-  catch{throw new Error('gh_current_capabilities_unavailable');}
+  try{version=(await probe(['--version'])).trim();help=await probe(['api','--help']);}
+  catch{throw new Error(signal?.aborted?'gh_capability_check_cancelled':'gh_current_capabilities_unavailable');}
   if(version.length>4096||!/^gh version [^\s\x00-\x1f]+(?:\s|$)/.test(version))throw new Error('gh_current_identity_not_observed');
   for(const flag of flags)if(!new RegExp('(^|[\\s,])'+flag+'(?=[\\s,=<\\[]|$)','m').test(help))throw new Error('gh_capability_missing_'+flag.slice(2).replaceAll('-','_'));
   const selected:GhExecutableSelection={kind:'configured-current-gh-v1',...base,version,apiHelpSha256:hash(help)};

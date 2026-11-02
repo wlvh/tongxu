@@ -35,7 +35,7 @@ export class SecretaryControls {
   private preparing=new Set<Promise<unknown>>();
   private problems=new Map<string,string>();
   private constructor(private entries:Frozen[]){}
-  static async load(path:string,sha256:string,sources:Source[]){
+  static async load(path:string,sha256:string,sources:Source[],selectedSources?:ReadonlySet<string>){
     if(!messagePath(path)||!isAuthorityDigest(sha256))throw new Error('secretary_control_reference_invalid');
     const raw=await regular(path,128*1024);if(hash(raw)!==sha256)throw new Error('secretary_control_catalog_changed');const c=JSON.parse(raw.toString());
     if(!exactKeys(c,['schemaVersion','kind','entries'])||c.schemaVersion!==1||c.kind!=='tongxu-workbench-secretaries'||!Array.isArray(c.entries)||!c.entries.length||c.entries.length>8)throw new Error('secretary_control_catalog_invalid');
@@ -43,6 +43,7 @@ export class SecretaryControls {
     for(const e of c.entries as Entry[]){
       const source=sources.find(s=>s.id===e?.source);
       if(!exactKeys(e,['source','title','template','outputRoot'])||!source||seen.has(e.source)||typeof e.title!=='string'||!e.title.trim()||e.title.length>100||!exactKeys(e.template,['path','sha256'])||!messagePath(e.template.path)||!isAuthorityDigest(e.template.sha256)||!messagePath(e.outputRoot)||roots.has(e.outputRoot))throw new Error('secretary_control_entry_invalid');
+      if(selectedSources&&!selectedSources.has(source.id))continue;
       const template=await regular(e.template.path,128*1024);if(hash(template)!==e.template.sha256)throw new Error('secretary_control_template_changed');const plan=parseSecretaryPlan(template);
       if(plan.store!==source.store||plan.item!==source.item||[plan.taskControls,plan.workbench,plan.queueActions].some(ref=>ref&&ref.source!==source.id))throw new Error('secretary_control_task_mismatch');
       if(await exists(e.outputRoot))await privateDirectory(e.outputRoot,false);seen.add(e.source);roots.add(e.outputRoot);entries.push({entry:structuredClone(e),source:structuredClone(source),template,plan});
