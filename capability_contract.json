@@ -1,0 +1,185 @@
+{
+  "schema_version": "0.1.0",
+  "status": "active",
+  "purpose": "同序选定公开承诺、边界、职责及文档锚点的登记；依据既有正式说明与已接受政策，当前实现及证据范围见 interact.md 和 TESTING.md。不是运行授权或自动生成接口的输入。",
+  "source_language": "zh-CN",
+  "rules": [
+    "登记项须依据既有公开承诺或已接受政策，当前事实另以代码、配置、测试或原件核验；既有细分规范在各自范围内仍有效。",
+    "描述性事实核对当前实现、配置、测试、committed artifacts 或可重复运行结果；规范性政策核对有效项目授权与政策依据，混合语句拆开处理；active 不使实现观察自动成为政策。",
+    "已有正式用户文档、接口规范和已接受政策继续在各自覆盖范围内有效；本 contract 登记选定的承诺与边界，interact 展开交互语义，用户指南负责使用说明，生成文档不因文件名自动覆盖既有权威。",
+    "只登记值得明确保留的公开承诺、边界、职责和调用行为，并在 statement 中指出既有公开承诺或已接受政策依据。纯实现或测试观察通常优先写入 interact.md，不自动升级为长期支持或拒绝政策；新增长期承诺按项目已有授权与持久化规则采纳。",
+    "没有适用内容时按现有结构准确表达不适用及已检查范围与原因，不编造条目或消费者。Not applicable 表示确实不适用，Not configured 表示适用机制尚未配置，尚未确认表示证据不足；这些说明不增加或替换状态枚举。",
+    "test_anchor 是证据指针，不是正文作者；不从测试自动生成 statement 或 status，也不从本 contract 生成 CLI、MCP、OpenAPI 或 handler；实际调用指向真实公开接口及其正式参考。",
+    "future 或 proposed 行为必须使用明确的非 active 状态，不得呈现为当前可用能力。",
+    "Markdown 文档只用 `<!-- capability-anchor: <ANCHOR_ID> -->` 引用稳定 anchor_id；marker 名称与 ANCHOR_ID 大小写敏感，ANCHOR_ID 必须匹配 `[A-Za-z0-9_.-]+`；目标 checker 可容忍 comment 内空白差异，但不得用 JSON path、数组位置或 schema 内部路径代替 anchor ID。",
+    "其他 anchor、ref、contract 或 wiki link 形式不受支持，不能建立 alignment 引用；本通用协议不保证任何消费者会穷举发现或拒绝未知 alias。",
+    "Anchor 引用只证明结构上引用了已登记 ID，不单独证明句子级绑定、业务语义或实现已完成。",
+    "deprecated anchor 必须保留原始语义登记，且不得复用于其他含义。",
+    "显式使用 test_anchor: null 的契约必须同时记录非空、具体的 untested_reason 与非空 pending_since；这只登记覆盖缺口，不表示声明已经验证。",
+    "since 记录本登记首次核对日期，不反推能力最早发布或真实模型验收时间；automated 只表示有对应自动测试，实际执行结果与模拟或真实环境另行记录。"
+  ],
+  "contracts": {
+    "capabilities": [
+      {
+        "anchor_id": "CAPABILITY.fixed_pr_evidence",
+        "type": "capability",
+        "status": "active",
+        "statement": "按 docs/w1_cli.md 的既有只读采集约定，inspect/collect 固定指定 GitHub PR 的候选与原始材料，保留缺口；collect 的原包可沿原范围恢复。完成采集不表示批准、合并许可或业务通过。实现 src/cli.ts、src/collector.ts、src/snapshot.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w1/collection.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.project_browse",
+        "type": "capability",
+        "status": "active",
+        "statement": "按 docs/github_project_entry.md 的公开入口约定，工作台读取当前账号可访问的所选 GitHub 仓库的 Issues/PR，并把本地任务限制在相应项目；没有本地任务仍可浏览仓库。身份变化与数据缺口不能伪装为原项目空成功。实现 src/github-projects.ts、src/workbench.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/github-projects.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.project_secretary",
+        "type": "capability",
+        "status": "active",
+        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/project-chat.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.task_contact",
+        "type": "capability",
+        "status": "active",
+        "statement": "按 docs/task_contact_choice.md 的有限联系约定，原任务 A 只能从预登记计划选择联系人 B，完整回复沿原记录返回 A；普通报告不触发联系，原结果或资源未处理不推进依赖步骤。该能力不承诺任意在途会话实时插话。实现 src/task-contact-choice.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w6/task-contact-choice.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      }
+    ],
+    "capability_boundaries": [
+      {
+        "anchor_id": "BOUNDARY.runtime_minimum",
+        "type": "capability_boundary",
+        "status": "active",
+        "statement": "按 docs/runtime_compatibility.md 明确替代旧版本门槛的规则，Node 最低 24.0.0，并须具有实际 SQLite 严格表与事务能力；依赖按最低要求和所需能力核验，不把旧路径、版本或二进制摘要作为长期白名单。单次执行身份和应用资产仍校验，未来版本不是已经验证的承诺。实现 src/node-runtime.ts、src/workbench-launch.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/workbench-launch.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "BOUNDARY.secretary_scope",
+        "type": "capability_boundary",
+        "status": "active",
+        "statement": "按 docs/tongxu_v2_plan.md 和 prompts/runtime_contract.md 的秘书职责边界，秘书不做技术任务、不签署本人接受、不自行扩大权限。当前右侧项目秘书仅开放 src/project-chat-contract.ts 中六种只读查询；旧任务秘书仅有自身已登记的有限动作，不因此取得通用开发、测试或合并入口。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/project-chat.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "BOUNDARY.unknown_no_resend",
+        "type": "capability_boundary",
+        "status": "active",
+        "statement": "按 docs/project_secretary_chat.md、docs/managed_merge.md 及既有原操作恢复约定，已发或未知请求保留原记录，先核原进程、原捕获和真实副作用，不因超时、重入或回执丢失自动重发。显式重试仅依各入口确证的条件执行。实现 src/project-chat.ts、src/managed-merge.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/merge/managed.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      }
+    ],
+    "responsibility_boundaries": [
+      {
+        "anchor_id": "RESPONSIBILITY.owner_decision",
+        "type": "responsibility_boundary",
+        "status": "active",
+        "statement": "按 docs/tongxu_v2_plan.md 与 docs/owner_authority.md，用户成果接受和有效授权来自可验证的本人来源；技术判断、模型文字、查看标识或配置存在不替代本人决定。委托与停止按准确范围核查，测试样例不得作用于真实 GitHub。实现 src/authority-source.ts、src/authority-store.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/authority/authority.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      }
+    ],
+    "agent_behaviors": [
+      {
+        "anchor_id": "BEHAVIOR.ai_selection",
+        "type": "agent_behavior",
+        "status": "active",
+        "statement": "按 docs/local_ai_roles.md 的已公开设置边界，按项目和角色保存执行偏好，仅用于后续未固定的新运行；已开始或已准备的输入及历史结果不追溯换绑。保存设置不发送模型问题，不提供工具、文件、凭据、费用或合并权；不支持组合明确拒绝。实现 src/ai-settings.ts、src/ai-execution.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/ai-workflow.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-03"
+      }
+    ],
+    "documents": [
+      {
+        "anchor_id": "DOC.interact",
+        "type": "document",
+        "status": "active",
+        "statement": "interact.md 按本 contract rules 的范围规则展开用户可观察行为、交互语义与验收。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "document_path": "interact.md",
+        "language": "zh-CN"
+      },
+      {
+        "anchor_id": "DOC.business_user_guide",
+        "type": "document",
+        "status": "active",
+        "statement": "docs/business_user_guide.md 按本 contract rules 的范围规则提供使用说明、正式文档与接口目录及必要补充；成熟项目可使用短桥接页。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "document_path": "docs/business_user_guide.md",
+        "language": "zh-CN"
+      }
+    ]
+  }
+}
