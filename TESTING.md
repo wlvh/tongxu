@@ -17,12 +17,12 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | `npm run test:relay`、`npm run test:repair` | w5 全部；后者只运行 repair 文件。测试中的本地执行和模型协议样例分开解释。 |
 | `npm run test:receiver`、`npm run test:publication`、`npm run test:secretary` | 各自单个 receiver、publication、secretary 测试文件，不能代表相应整个目录或所有新消费者。 |
 | `npm run test:pair`、`npm run test:messages`、`npm run test:tasks` | 分别是全部 w6、指定 messages/message-claude/message-continuation 文件、task-intake 单文件。 |
-| `npm run test:workbench`、`npm run test:deliveries` | 分别是全部 w7、w7 的 delivery-* 子集。完整入口需 `TONGXU_TEST_DOCKER_CONFIG` 和可用 Docker：delivery-execution、return-preparation、return-work 中相应场景导入真实隔离 fixture；其他本机 HTTP/协议样例不替代这部分或浏览器视觉验收。 |
+| `npm run test:workbench`、`npm run test:deliveries` | 分别是全部 w7、w7 的 delivery-* 子集。二者完整入口均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像：相应成果执行/退回场景使用真实隔离测试。完整 `test:workbench` 还需 `/bin/zsh` 执行 `workbench-launch.test.ts`；这项启动器前提不属于仅运行 delivery-* 的 `test:deliveries`。其他本机 HTTP/协议样例不替代真实隔离或浏览器视觉验收。 |
 | `npm run test:authority`、`npm run test:resources`、`npm run test:merge` | 对应 authority/resources/merge 目录；校验本人来源、资源及受管合并的样例，不能证明生产配置已启用。 |
 | `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。 |
-| `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收；完整 review-records 含 queue-repair，需 Docker 配置。 |
+| `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收。三者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；composition、project-repair 的测试文件在加载阶段检查配置，review-records 的 queue-repair 测试也导入强制要求配置的准备文件。 |
 | `npm run test:sessions` | w4 role-prompts 与 session-* 子集。 |
-| `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。完整 integration 的 repair-continuation、workspace-handoff-originals、active-writer-new-task 导入需 Docker 的 fixture；其余具体条件仍核各测试。 |
+| `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。二者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；integration 及成员修复都使用 `tests/integration/fixture.ts` 的共享准备流程，在进入该流程时强制检查配置并执行真实隔离验证，不能只按少数文件判断环境要求。 |
 | `npm run test:delivery-validation`、`npm run test:delivery-assessment` | 对应 delivery-validation/delivery-assessment 目录，二者均导入真实 Docker 验证 fixture，需 `TONGXU_TEST_DOCKER_CONFIG`、已有镜像和可用引擎；模型判断另用明确样例，不能把它称为真实模型验收。 |
 
 按变化风险选择已有入口，说明哪些覆盖重叠。本文不把所有命令设成每次文案修改必跑清单。运行环境不同的尝试分别记结果；macOS 套件通过不能覆盖 Linux/Docker 未运行或失败。尤其 `test:native` 名称不表示它全部跨平台；其完整隔离入口见 [w4_native_inspection](docs/w4_native_inspection.md)。
