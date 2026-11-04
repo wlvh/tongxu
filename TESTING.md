@@ -56,6 +56,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | --- | --- | --- |
 | 固定 PR 原件 | 非法 scope 不调用外部工具；候选变动保留缺口；恢复不覆盖旧页 | `tests/w1/cli.test.ts`、`tests/w1/collection.test.ts`；见 test:mac |
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
+| 项目补充与原实施 | A运行时收件，成功H1/资源后以新上下文消费并回原会话；取消/停止不续写，冷重开零输入 | `tests/project-repair/integration.test.ts` 新补充场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
 | 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
@@ -67,7 +68,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 初次 Issue 实施的受影响组合沿 `tests/project-repair/integration.test.ts` 运行，需上表同一真实 Docker 配置/镜像；包含正常项目 HTTP 入口、原授权/资源、两次合法写入、实际注册测试和宿主 H1，模型为明确程序样例。页面脚本场景在 `tests/w7/github-projects-ui.test.ts`。真实浏览器与正常入口真实 Codex 分开留证，不能以这些组件场景代填。
 
-该组合还覆盖两处确证未发等待：席位忙登记后释放、最终来源刷新失败只留下原输入；热重试/冷重开均沿原 ID、任务和材料到 H1，原资源只领取/结算一次。补准备前取消/停止、输入或文件/暂存变化、原生启动证据和竞争写者仍须零派发；已发未知继续只查原现场。页面脚本核 registered 的同 ID 补准备、重复点击和项目切换。扩展原 fixture，不另建恢复测试框架。
+该组合还覆盖两处确证未发等待：席位忙登记后释放、最终来源刷新失败只留下原输入；热重试/冷重开均沿原 ID、任务和材料到 H1，原资源只领取/结算一次。补准备前取消/停止、输入或文件/暂存变化、原生启动证据和竞争写者仍须零派发；已发未知继续只查原现场。页面脚本核 registered 的同 ID 补准备、重复点击和项目切换。扩展原 fixture，不另建恢复测试框架。 同一忙席位场景参数化普通请求/补充请求，核 H1/原责任/补充原文、热/新服务实例补准备和原会话完整回流；同名普通请求碰撞时开始与取消均拒绝、原请求与输入计数不变。正确绑定读回及同 ID 改目标/原文的拒绝沿该场景验证。
 
 同一场景覆盖配置资源但尚未 start 即取消，热/新服务实例的新请求可至 H1，原项保持零资源登记/领取/模型输入；已领取取消沿原结果结算，未知及损坏资源原件仍阻下一项。新消费者的两次写入/H1 场景参数化测试打印未选定文件：原日志保留全文，工具回复与全部模型输入均不含原文；旧 project repair 的同类隐私场景继续回归。
 

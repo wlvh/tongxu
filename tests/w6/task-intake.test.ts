@@ -25,6 +25,7 @@ import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {withAIPreferences,type AIPreferenceSnapshot} from '../../src/ai-settings.js';
 
 const raw=(v:unknown)=>Buffer.from(canonical(v));
+const receipt=(context:any,reference:any)=>context.historyProjection.materials[reference.historyRef].value;
 async function fixture(t:test.TestContext,mode='complete'){
   const f=await messageFixture(t,mode);await taskMain(['enable','--store',f.store]);
   const original=f.q.status().items.find((i:any)=>i.id===f.item),definition:DevelopmentTask=parseDevelopmentTask(raw({schemaVersion:1,kind:'tongxu-development-task',id:'task-a',repository:'fixture/reception',title:'尚无 PR 的任务 A',goal:'核对实际选定代码与常量契约',acceptance:['指出实际值并说明是否满足契约'],source:'explicit local test fixture',issue:null,context:original.context,workspace:join(f.root,'objects'),base:original.candidate.B,target:original.candidate.targetRef,paths:['sample.js']}));
@@ -57,7 +58,7 @@ test('one worker consumes requests arriving during a real child turn, retaining 
   f.q.taskInbox().enqueue(raw(f.request('followup')));assert.throws(()=>f.q.taskInbox().prepare(f.a.item,'followup'),/task_original_responsibility_pending/);
   const result=await work;assert.equal(result.newModelRequests,2);assert.equal(result.pending.length,0);const states=f.q.taskInbox().status(f.a.item);assert.deepEqual(states.map(x=>x.phase),['returned','returned']);assert.notEqual(states[0]!.sessionId,states[1]!.sessionId);
   const first=f.q.messages().status(states[0]!.run).messages[0]!.reply,second=f.q.messages().submitted(states[1]!.run,'owner')[0]!,context=JSON.parse(second.material[0].text);
-  assert.equal(context.previousExecutions[0].reports[0].receipt.finalText,first.finalText);assert.equal(context.nativeSessionResumed,false);assert.equal(context.task.candidate.pr,null);assert.equal(second.permissions.write,false);
+  assert.equal(receipt(context,context.historyProjection.executions[context.previousExecutions[0].historyRef].reports[0].receipt).finalText,first.finalText);assert.equal(context.nativeSessionResumed,false);assert.equal(context.task.candidate.pr,null);assert.equal(second.permissions.write,false);
   const repeated=await workTaskOwner(f.store,f.a.item,3);assert.equal(repeated.newModelRequests,0);assert.equal((await f.calls()).filter(x=>x.kind==='input').length,2);
 });
 
@@ -65,7 +66,7 @@ test('accurate contact consumes sender capture, refuses invented sender and stal
   const f=await fixture(t),bp={...f.definition,id:'task-b',title:'另一任务'},b=f.q.tasks().observe(bp,await observeTaskWorkspace(bp));
   f.q.taskInbox().enqueue(raw(f.request('b-check',b.item)));await workTaskOwner(f.store,b.item,1);const source=f.q.taskInbox().status(b.item)[0]!;
   const contact={...f.request('contact'),from:{task:b.item,run:source.run,messageId:'b-check'}};f.q.taskInbox().enqueue(raw(contact));await workTaskOwner(f.store,f.a.item,1);const target=f.q.taskInbox().status(f.a.item)[0]!,context=JSON.parse(f.q.messages().submitted(target.run,'owner')[0]!.material[0].text);
-  assert.equal(context.sender.reply.finalText,f.q.messages().status(source.run).messages[0]!.reply.finalText);
+  assert.equal(receipt(context,context.sender.reply).finalText,f.q.messages().status(source.run).messages[0]!.reply.finalText);
   assert.throws(()=>f.q.taskInbox().enqueue(raw({...contact,id:'fake',from:{...contact.from,messageId:'not-real'}})),/task_contact_requires_current_captured_sender/);
   f.q.taskInbox().enqueue(raw({...contact,id:'later'}));await writeFile(join(bp.workspace,'sample.js'),'export const value=9;\n');f.q.tasks().observe(bp,await observeTaskWorkspace(bp));const held=await workTaskOwner(f.store,f.a.item,1);assert.equal(held.newModelRequests,0);assert.equal(held.pending[0]?.reason,'task_contact_requires_current_captured_sender');
 });
@@ -170,4 +171,105 @@ test('a verified authentication cancellation can close explicitly, then the same
  f.q.taskInbox().closeInterrupted(f.a.item,request.id,'Explicit fixture owner login restored, close failed original',hash(canonical(request)));assert.equal(f.q.taskInbox().status(f.a.item)[0]!.phase,'interrupted_closed');
  await writeFile(f.claude,(await readFile(f.claude,'utf8')).replace('mode="304-auth-failure"','mode="304"'));
  const next={...request,id:'after-login-new-question',question:'这是后续新问题，请核对保留的失败记录和当前材料。'};f.q.taskInbox().enqueue(raw(next));const selected=await prepareTaskOwner(f.store,f.a.item,next.id),completed=await runMessages(f.store,selected.plan);assert.equal(completed.completed,true,JSON.stringify(completed.problems));assert.equal(completed.newModelRequests,1);assert.deepEqual(await readFile(join(directory,'stdout.ndjson')),oldBytes);assert.equal((await f.calls()).filter(c=>c.kind==='input').length,2);const before=await readFile(f.trace);assert.equal((await runMessages(f.store,first.plan,true)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+});
+
+
+for(const withSender of [false,true])test('sixteen actual task turns retain every original once; repeated sender='+withSender,async t=>{
+  const f=await fixture(t),originals:Array<{run:string;input:Buffer;context:Buffer;report:string}>=[],sizes:number[]=[];
+  const bDefinition={...f.definition,id:'sender-b'},b=f.q.tasks().observe(bDefinition,await observeTaskWorkspace(bDefinition));
+  let from:TaskOwnerRequest['from']=null,bInput:Buffer|null=null,bReply:any=null;
+  if(withSender){
+    const script=await readFile(f.codex,'utf8');await writeFile(f.codex,script.replace("report:'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId", "report:x.messageId.startsWith('b-report')?'B-SINGLE-ORIGINAL-'+('R'.repeat(60000)):'Short A reply '+x.messageId"));
+    f.q.taskInbox().enqueue(raw(f.request('b-report',b.item)));assert.equal((await workTaskOwner(f.store,b.item,1)).runs[0]!.completed,true);
+    from={task:b.item,run:f.q.taskInbox().status(b.item)[0]!.run,messageId:'b-report'};
+    bInput=raw(f.q.messages().submitted(from.run,'owner')[0]);bReply=f.q.messages().status(from.run).messages[0]!.reply;
+  }
+  for(let i=0;i<16;i++){
+    const request={...f.request('round-'+i),from,question:'Unique controlled question '+i+'; '+JSON.stringify({kind:'tongxu-task-owner-context',previousExecutions:['ordinary user JSON, retain verbatim']})};
+    f.q.taskInbox().enqueue(raw(request));
+    const selected=await prepareTaskOwner(f.store,f.a.item,request.id),contextBytes=await readFile(join(f.store,'task-inbox',f.a.item,request.id,'context.json'));
+    sizes.push(contextBytes.length);t.diagnostic('round='+i+' contextBytes='+contextBytes.length);
+    const result=await workTaskOwner(f.store,f.a.item,1);assert.equal(result.newModelRequests,1,JSON.stringify(result));
+    const input=f.q.messages().submitted(selected.run,'owner')[0]!,context=JSON.parse(input.material[0].text);
+    assert.equal(context.previousExecutions.length,i);t.diagnostic('envelopeBytes='+Buffer.byteLength(canonical(input))+' uniqueInputs='+Object.keys(context.historyProjection.inputs).length);
+    if(i){
+      assert.equal(Object.keys(context.historyProjection.executions).length,i);
+      assert.equal(Object.keys(context.historyProjection.inputs).length,i);
+      assert.equal(Object.keys(context.historyProjection.materials).length,2*i+1+(withSender?1:0));
+      for(let j=0;j<i;j++){
+        const prior=originals[j]!,ref=context.previousExecutions[j],execution=context.historyProjection.executions[ref.historyRef];
+        assert.equal(execution.run,prior.run);assert.equal(receipt(context,execution.reports[0].receipt).finalText,prior.report);
+        const entry=context.historyProjection.inputs[execution.originalRoleInputs[0].historyRef];
+        const actual=JSON.parse(prior.input.toString());assert.equal(entry.source.sha256,hash(prior.input));
+        assert.equal(entry.value.body,actual.body);
+        const material=context.historyProjection.materials[entry.value.material[0].historyRef];
+        assert.equal(material.source.sha256,hash(prior.context));assert.equal(material.value.request.question,actual.body);
+        assert.ok(material.value.previousExecutions.every((e:any)=>e.historyRef&&!e.originalRoleInputs));
+        assert.deepEqual(f.q.taskInbox().originalInput(f.a.item,prior.run,entry.source.messageId,entry.source.sha256),prior.input);
+      }
+    }
+    if(from){
+      const reports=Object.values(context.historyProjection.materials).filter((m:any)=>m.source.task===from!.task&&m.source.run===from!.run&&m.source.messageId===from!.messageId) as any[];
+      assert.equal(reports.length,1);assert.deepEqual(receipt(context,context.sender.reply),bReply);
+      for(const material of Object.values(context.historyProjection.materials) as any[])if(material.value?.kind==='tongxu-task-owner-context')assert.deepEqual(material.value.sender.reply,context.sender.reply);
+      assert.ok(Object.values(context.historyProjection.executions).every((e:any)=>e.task===f.a.item),'a sender report must not import all sender inputs');
+      assert.deepEqual(raw(f.q.messages().submitted(from.run,'owner')[0]),bInput);
+    }
+    assert.deepEqual(input.permissions,{tools:[],write:false,publish:false,merge:false,formalJudgment:false});
+    const report=f.q.messages().status(selected.run).messages[0]!.reply.finalText;
+    originals.push({run:selected.run,input:raw(input),context:contextBytes,report});
+    // An independent bound for this fixed small fixture, not a limit derived
+    // from the measured result. Indices may grow quadratically; bodies do not.
+    assert.ok(contextBytes.length<(withSender?150000:20000)+22000*i+400*i*i,'context growth bound: '+sizes.join(','));
+  }
+  const before=await readFile(f.trace);assert.equal((await workTaskOwner(f.store,f.a.item,1)).newModelRequests,0);assert.deepEqual(await readFile(f.trace),before);
+  t.diagnostic('fixed-fixture context bytes: '+sizes.join(','));
+  if(from){
+    assert.ok(sizes[15]!<400*1024);assert.equal((await f.calls()).filter(c=>c.kind==='input'&&c.messageId==='b-report').length,1);
+    f.q.taskInbox().enqueue(raw(f.request('b-report-same-text',b.item)));await workTaskOwner(f.store,b.item,1);
+    const second={task:b.item,run:f.q.taskInbox().status(b.item)[1]!.run,messageId:'b-report-same-text'},secondReply=f.q.messages().status(second.run).messages[0]!.reply;
+    assert.equal(secondReply.report,bReply.report);assert.notEqual(second.run,from.run);
+    f.q.taskInbox().enqueue(raw({...f.request('different-run-same-text'),from:second}));const selected=await prepareTaskOwner(f.store,f.a.item,'different-run-same-text'),context=JSON.parse((f.q.taskInbox().prepare(f.a.item,'different-run-same-text')).context.toString());
+    assert.notEqual(context.sender.reply.historyRef,JSON.parse(originals[15]!.context.toString()).sender.reply.historyRef);
+    assert.deepEqual(receipt(context,context.sender.reply),secondReply);assert.deepEqual(receipt(context,JSON.parse(originals[15]!.context.toString()).sender.reply),bReply);
+    assert.equal((await workTaskOwner(f.store,f.a.item,1)).runs[0]!.completed,true);
+    // Old sender evidence stays readable after its source changes; this new
+    // operator question does not claim that the old sender is current.
+    await writeFile(join(f.definition.workspace,'sample.js'),'export const value=99;\n');f.q.tasks().observe(bDefinition,await observeTaskWorkspace(bDefinition));f.q.tasks().observe(f.definition,await observeTaskWorkspace(f.definition));
+    f.q.taskInbox().enqueue(raw(f.request('read-stale-history')));assert.equal((await workTaskOwner(f.store,f.a.item,1)).runs[0]!.completed,true);
+    assert.deepEqual(raw(f.q.messages().submitted(from.run,'owner')[0]),bInput);assert.deepEqual(f.q.messages().status(from.run).messages[0]!.reply,bReply);
+    const trace=await f.calls();assert.equal((await runMessages(f.store,selected.plan,true)).newModelRequests,0);assert.deepEqual(await f.calls(),trace);
+  }
+});
+
+
+test('history original reads bind task, run, message and digest; missing or damaged evidence blocks preparation without input',async t=>{
+ const f=await fixture(t),first=f.request('original');f.q.taskInbox().enqueue(raw(first));await workTaskOwner(f.store,f.a.item,1);
+ const run=f.q.taskInbox().status(f.a.item)[0]!.run,input=raw(f.q.messages().submitted(run,'owner')[0]),sha=hash(input),before=await f.calls();
+ assert.deepEqual(f.q.taskInbox().originalInput(f.a.item,run,first.id,sha),input);
+ assert.throws(()=>f.q.taskInbox().originalInput('f'.repeat(64),run,first.id,sha),/identity/);
+ assert.throws(()=>f.q.taskInbox().originalInput(f.a.item,run,'wrong-message',sha),/identity/);
+ assert.throws(()=>f.q.taskInbox().originalInput(f.a.item,run,first.id,'f'.repeat(64)),/identity/);
+ f.q.taskInbox().enqueue(raw(f.request('next')));
+ const db=new DatabaseSync(join(f.store,'queue.sqlite'));try{
+  db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('damaged'),sha);
+  assert.throws(()=>f.q.taskInbox().prepare(f.a.item,'next'),/original_missing_or_changed/);
+  db.prepare('DELETE FROM blobs WHERE hash=?').run(sha);
+  assert.throws(()=>f.q.taskInbox().prepare(f.a.item,'next'),/original_missing_or_changed/);
+ }finally{db.close();}
+ assert.deepEqual(await f.calls(),before);
+});
+
+test('genuinely unique complete reports over the context limit stay queued and send no model request',async t=>{
+ const f=await fixture(t),script=await readFile(f.codex,'utf8');
+ await writeFile(f.codex,script.replace("report:'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId", "report:'Unique complete report '+x.messageId+' '+('R'.repeat(32000))"));
+ let limited=false;
+ for(let i=0;i<16;i++){
+  const request=f.request('large-report-'+i);f.q.taskInbox().enqueue(raw(request));const before=await f.calls();
+  try{f.q.taskInbox().prepare(f.a.item,request.id);}catch(error){
+   assert.equal((error as Error).message,'task_complete_context_limit');assert.equal(f.q.taskInbox().status(f.a.item).at(-1)!.run,null);assert.deepEqual(await f.calls(),before);limited=true;break;
+  }
+  const result=await workTaskOwner(f.store,f.a.item,1);assert.equal(result.runs[0]!.completed,true,JSON.stringify(result));
+ }
+ assert.equal(limited,true,'unique retained complete reports must still hit the unchanged size boundary');
 });
