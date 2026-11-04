@@ -205,7 +205,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const key=scope.account.id+':'+scope.repository.id;let selected=implementations.get(key);
     if(!selected){selected=IssueImplementationControls.load(p.issueImplementation.path,p.issueImplementation.sha256,scope.repository.fullName,async number=>{
       const url=new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id),result=await github.read(url) as Row;return result.item;
-    },()=>verifyProject(scope));implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
+    },()=>verifyProject(scope)).then(controls=>{if(p.projectSecretary)controls.onFinished(async target=>{if(!closing)await(await openProjectChat()).processSupplements(scope,target);});return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
     return selected;
   };
   let projectChat:Promise<ProjectChat>|undefined;
@@ -223,7 +223,12 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(tool==='tongxu_project_report'){if(!exactKeys(args,['source','operation'])||typeof args.source!=='string'||typeof args.operation!=='string')throw new Error('project_chat_tool_arguments_invalid');return workbenchReport(context.plan,args.source,args.operation);}
       if(tool==='tongxu_project_message_report'){if(!exactKeys(args,['source','run','messageId'])||['source','run','messageId'].some(k=>typeof args[k]!=='string'))throw new Error('project_chat_tool_arguments_invalid');return workbenchMessageReport(context.plan,args.source,args.run,args.messageId);}
       throw new Error('project_chat_tool_not_allowed');
-    },verifyProject).catch(error=>{projectChat=undefined;throw error;});
+    },verifyProject,p.issueImplementation?{
+      targets:async scope=>(await openImplementation(scope)).supplementTargets(),
+      read:async(scope,target,compiled)=>(await openImplementation(scope)).readSupplement(target,compiled),
+      work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
+      cancel:async(scope,target,id)=>{try{await(await openImplementation(scope)).cancel(target.source,id);}catch(error){if((error as Error).message!=='implementation_request_not_registered')throw error;}}
+    }:undefined).catch(error=>{projectChat=undefined;throw error;});
   };
   const initial=p.githubProjects?null:await openLocal(p);
   const assets = new Map<string, { type: string; bytes: Buffer }>();
@@ -296,10 +301,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),timeoutMs:p.projectSecretary.timeoutMs,aiDefault:ai?.defaultSecretary()??{tool:'codex',path:p.projectSecretary.codexExecutable,source:'project_secretary_startup',observed:null,observedAt:null},aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
-        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/continue-supplements'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
+        if(url.pathname.endsWith('/supplement')){const result=await chat.receiveSupplement(selection,body);json(res,202,result);void chat.processSupplements(selection,body.target).catch(()=>{});return;}
+        if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
+        if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
         if(url.pathname.endsWith('/ask'))json(res,202,await withAI(()=>chat.begin(selection,body)));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
       }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;

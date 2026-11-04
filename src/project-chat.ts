@@ -22,21 +22,24 @@ const now=()=>new Date().toISOString();
 const reason=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?e.message:'project_chat_execution_incomplete';
 const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){return e.code!=='ESRCH';}};
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
+export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
+export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string):Promise<void>};
 type Active={promise:Promise<void>;session?:BoundedCodexSession;stop:boolean;timedOut?:boolean};
 
 /** One durable conversation history. Existing task queues and native capture
  * contracts remain authoritative; opening or replaying a chat never sends. */
 export class ProjectChat{
   private active=new Map<string,Active>();private accepting=true;private owner=randomUUID();
-  private constructor(private config:ProjectChatConfig,private db:DatabaseSync,private read:Reader,private verify:(scope:ProjectChatScope)=>Promise<void>){}
-  static async open(config:ProjectChatConfig,read:Reader,verify:(scope:ProjectChatScope)=>Promise<void>){
+  private constructor(private config:ProjectChatConfig,private db:DatabaseSync,private read:Reader,private verify:(scope:ProjectChatScope)=>Promise<void>,private supplements?:SupplementConsumer){}
+  static async open(config:ProjectChatConfig,read:Reader,verify:(scope:ProjectChatScope)=>Promise<void>,supplements?:SupplementConsumer){
     validateProjectChatConfig(config);if(!await exists(config.root))await privateDirectory(config.root,true);else await privateDirectory(config.root,false);
     const path=join(config.root,'conversations.sqlite');try{await writeFile(path,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}await regular(path,64*1024*1024);
     const db=new DatabaseSync(path);db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,account INTEGER NOT NULL,repository INTEGER NOT NULL,node_id TEXT NOT NULL,name TEXT NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),parent TEXT,question TEXT NOT NULL,phase TEXT NOT NULL,created_at TEXT NOT NULL,finished_at TEXT,pid INTEGER,owner TEXT,problem TEXT,report TEXT,receipt TEXT);
+      CREATE TABLE IF NOT EXISTS task_supplements(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),target TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0,compiled TEXT);
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation,created_at,id);`);
-    return new ProjectChat(structuredClone(config),db,read,verify);
+    return new ProjectChat(structuredClone(config),db,read,verify,supplements);
   }
   private transaction<T>(fn:()=>T){this.db.exec('BEGIN IMMEDIATE');try{const value=fn();this.db.exec('COMMIT');return value;}catch(e){this.db.exec('ROLLBACK');throw e;}}
   private conversationRow(scope:ProjectChatScope,id:string){
@@ -65,16 +68,17 @@ export class ProjectChat{
     const conversations=this.db.prepare('SELECT * FROM conversations WHERE account=? AND repository=? AND node_id=? ORDER BY created_at DESC,id DESC LIMIT 128').all(scope.account.id,scope.repository.id,scope.repository.nodeId) as Row[];
     for(const c of conversations)for(const row of this.rows(c.id))await this.recover(row);
     const busy=conversations.flatMap(c=>this.rows(c.id).filter(r=>activePhase(r.phase)).map(r=>({conversationId:c.id,requestId:r.id,status:r.phase})));
-    return {available:true,executionKind:this.config.executionKind,project:scope.repository,busy,conversations:conversations.map(c=>({id:c.id,title:c.title,createdAt:c.created_at})),newModelInputs:0};
+    return {available:true,executionKind:this.config.executionKind,project:scope.repository,supplementTargets:this.supplements?await this.supplements.targets(scope):[],busy,conversations:conversations.map(c=>({id:c.id,title:c.title,createdAt:c.created_at})),newModelInputs:0};
   }
   async conversation(scope:ProjectChatScope,id:string){
     const c=this.conversationRow(scope,id);for(const row of this.rows(id))await this.recover(row);
     const messages=[];for(const r of this.rows(id)){let answer=r.report,receipt=r.receipt?JSON.parse(r.receipt):null,status=r.phase,problem=r.problem;if(status==='completed')try{const checked=await this.verified(r.id);if(checked.report!==answer||canonical(checked.receipt)!==canonical(receipt))throw new Error('project_chat_saved_answer_changed');}catch(e){answer=null;receipt=null;status='unavailable';problem=reason(e);}messages.push({id:r.id,parent:r.parent,question:r.question,status,createdAt:r.created_at,finishedAt:r.finished_at,problem,answer,receipt,active:activePhase(r.phase)&&!!(this.active.has(r.id)||r.phase!=='unknown'&&r.pid&&alive(r.pid)),owned:this.active.has(r.id)});}
-    return {id:c.id,title:c.title,project:scope.repository,messages,newModelInputs:0,continuation:'saved_history_in_new_native_context'};
+    return {id:c.id,title:c.title,project:scope.repository,messages,supplements:await this.supplementState(scope,id),newModelInputs:0,continuation:'saved_history_in_new_native_context'};
   }
   async begin(scope:ProjectChatScope,body:unknown){
     if(!this.accepting)throw new Error('project_chat_closing');const b=body as Row;
     if(!exactKeys(b,['conversationId','requestId','parent','question'])||!chatId(b.conversationId)||!chatId(b.requestId)||!(b.parent===null||chatId(b.parent))||typeof b.question!=='string'||!b.question.trim()||b.question.length>8192||b.question.includes('\0'))throw new Error('project_chat_question_invalid');
+    if(this.db.prepare('SELECT id FROM task_supplements WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
     const old=this.db.prepare('SELECT * FROM messages WHERE id=?').get(b.requestId) as Row|undefined;
     if(old){this.conversationRow(scope,old.conversation);if(old.conversation!==b.conversationId||old.question!==b.question||old.parent!==b.parent)throw new Error('project_chat_request_changed');return {conversationId:b.conversationId,requestId:b.requestId,duplicate:true,newModelInputs:0};}
     const c=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(b.conversationId);
@@ -95,14 +99,50 @@ export class ProjectChat{
     active.promise=this.execute(scope,b.requestId,active).catch(()=>{/* The durable registration stays unresolved if recording the failure also fails. */}).finally(()=>this.active.delete(b.requestId));
     return {conversationId:b.conversationId,requestId:b.requestId,duplicate:false,registered:true,newModelInputs:null};
   }
+  private supplementRows(conversation:string){return this.db.prepare('SELECT * FROM task_supplements WHERE conversation=? ORDER BY rowid').all(conversation) as Row[];}
+  private async supplementState(scope:ProjectChatScope,conversation:string){
+    return Promise.all(this.supplementRows(conversation).map(async r=>{let original;try{original=this.supplements?await this.supplements.read(scope,JSON.parse(r.target),r.compiled):{reason:'project_supplement_consumer_unavailable'};}catch(e){original={reason:reason(e)};}return {id:r.id,text:r.text,target:JSON.parse(r.target),createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};}));
+  }
+  async receiveSupplement(scope:ProjectChatScope,body:unknown){
+    if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');const b=body as Row;
+    if(!exactKeys(b,['conversationId','requestId','target','text'])||!chatId(b.conversationId)||!chatId(b.requestId)||!exactKeys(b.target,['source','requestId','task','operation'])||typeof b.text!=='string'||!b.text.trim()||b.text.length>8192||b.text.includes('\0'))throw new Error('project_supplement_invalid');
+    const target=canonical(b.target),old=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(b.requestId) as Row|undefined;
+    if(old){this.conversationRow(scope,old.conversation);if(old.conversation!==b.conversationId||old.target!==target||old.text!==b.text)throw new Error('project_supplement_id_is_fixed');return {requestId:b.requestId,received:true,duplicate:true,newModelInputs:0};}
+    await this.verify(scope);const targets=await this.supplements.targets(scope);if(!targets.some(({title,...t})=>canonical(t)===target))throw new Error('project_supplement_target_not_registered');
+    this.transaction(()=>{
+      const repeated=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(b.requestId) as Row|undefined;if(repeated){if(repeated.conversation!==b.conversationId||repeated.target!==target||repeated.text!==b.text)throw new Error('project_supplement_id_is_fixed');return;}
+      if(this.db.prepare('SELECT id FROM messages WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
+      const c=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(b.conversationId);if(c)this.conversationRow(scope,b.conversationId);else{const count=this.db.prepare('SELECT COUNT(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;if(count.n>=128)throw new Error('project_chat_history_limit');this.db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)').run(b.conversationId,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,b.text.slice(0,80),now());}
+      const rows=this.supplementRows(b.conversationId);if(rows.length>=32||Buffer.byteLength(canonical(rows.map(r=>r.text)))+Buffer.byteLength(b.text)>192*1024)throw new Error('project_supplement_history_limit');
+      this.db.prepare('INSERT INTO task_supplements(id,conversation,target,text,created_at) VALUES(?,?,?,?,?)').run(b.requestId,b.conversationId,target,b.text,now());
+    });
+    return {requestId:b.requestId,received:true,duplicate:false,newModelInputs:0,meaning:'saved_intent_not_native_delivery'};
+  }
+  async cancelSupplement(scope:ProjectChatScope,id:string){
+    if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row|undefined;if(!r)throw new Error('project_supplement_not_found');this.conversationRow(scope,r.conversation);
+    if(r.cancelled)return {requestId:id,cancelled:true,duplicate:true,newModelInputs:0};
+    if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled);
+    this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
+  }
+  async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
+    if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
+    const rows=this.db.prepare('SELECT task_supplements.* FROM task_supplements JOIN conversations ON conversations.id=task_supplements.conversation WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=? AND target=? ORDER BY task_supplements.rowid').all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
+    for(const row of rows){if(row.cancelled)continue;const state=await this.supplements.read(scope,target,row.compiled);if(row.compiled){if(!state.successful)break;continue;}if(!state.ready)break;
+      const compiled='supplement-'+row.id;
+      this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
+      const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};
+      await this.supplements.work(scope,target,compiled,row.text,beforeRegistration);break;
+    }
+    return {newModelInputs:null,originalRequestsRetained:true};
+  }
   private async execute(scope:ProjectChatScope,id:string,active:Active){
     const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row,directory=this.directory(id),native=join(directory,'native');
     try{
       await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository}},initialId=hash(canonical(initial));
       const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];save(join(directory,'observations.json'),observations);
-      const history=this.rows(row.conversation).filter(r=>r.id!==id).map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report}));
+      const history=this.rows(row.conversation).filter(r=>r.id!==id).map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report})),taskSupplements=await this.supplementState(scope,row.conversation);
       const candidate:Candidate={kind:'project-conversation',repository:scope.repository.fullName,pr:null,projectId:scope.repository.id,accountId:scope.account.id,conversationId:row.conversation,H:scope.repository.defaultHead??'',B:scope.repository.defaultHead??'',target:scope.repository.defaultHead?scope.repository.defaultBranch??'':'',sourceSha256:initialId};
-      const prompt=await assembleRolePrompt('secretary',projectChatInstructions),input={kind:'project_secretary_question',candidate,initialObservation:{observationId:initialId,...initial},conversation:history,question:row.question};
+      const prompt=await assembleRolePrompt('secretary',projectChatInstructions),input={kind:'project_secretary_question',candidate,initialObservation:{observationId:initialId,...initial},conversation:history,taskSupplements,question:row.question};
       const aiSelection=currentAIChoice('secretary');if(aiSelection&&(aiSelection.tool!=='codex'||aiSelection.project.account!==scope.account.id||aiSelection.project.repository!==scope.repository.id||aiSelection.project.nodeId!==scope.repository.nodeId))throw new Error('ai_role_tools_not_supported');
       const runtimeConfig=aiSelection?{...this.config,codexExecutable:aiSelection.executable}:this.config;
       save(join(directory,'request.json'),{requestId:id,conversationId:row.conversation,candidate,input,system:prompt.system,config:runtimeConfig,...(aiSelection?{aiSelection}:{}),historyTransfer:'complete_saved_history_new_native_context'});

@@ -51,8 +51,8 @@
       {
         "anchor_id": "CAPABILITY.project_secretary",
         "type": "capability",
-        "status": "active",
-        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。",
+        "status": "pending_validation",
+        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；此写作者组合的真实原生路径待验。",
         "audience": [
           "business_user",
           "agent",

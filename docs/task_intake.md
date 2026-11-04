@@ -59,3 +59,5 @@ node dist/src/task-cli.js contact --store /absolute/queue --plan /absolute/conta
 原始提交信封、原材料、捕获与全文回复保持不变。内部只读 `TaskInbox.originalInput(task, run, messageId, sha256)` 按准确身份读回原信封；它没有任意路径参数，不是额外模型工具或通用 HTTP 接口。旧已准备计划继续按原字节执行/查回；只有尚未固定的新请求采用新装配，混合旧格式从经过核对的原执行重新投影，不重发旧请求。
 
 输入仍有 512 KiB 上限和原有材料/请求数量限制。消除重复不能保证任意长度历史均可发送；真实唯一材料或完整报告仍超限时，保留原请求并明确拒绝准备，不摘要、不裁剪、不提高上限。`task-intake` 的真实程序夹具覆盖无联系人及重复同一联系人报告的 16 轮实际提交、同文不同运行、原文及身份回读、历史来源变化、损坏/缺失和真实超限；范围后续夹具核对联系人报告随原任务继承。这是协议夹具验证，不是本次真实模型验收。
+
+项目秘书对原实施任务的补充由 [project_task_supplements](project_task_supplements.md) 接到专用实施消费者；现有 TaskOwnerRequest/普通 MessagePlan 继续只读，不增加写权。
