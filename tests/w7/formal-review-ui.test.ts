@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {createContext,runInContext} from 'node:vm';
+import {randomUUID} from 'node:crypto';
+async function ui(){const calls:any[]=[],context=createContext({crypto:{randomUUID},gh:{account:{id:7},selected:{id:1}},key:'fixture-key',readableReason:(s:string)=>s,render:()=>{},setTimeout:()=>0,api:async()=>({available:true,entries:[]}),workspaceFetch:(path:string,options:any)=>new Promise(resolve=>calls.push({path,options,resolve}))});runInContext(await readFile(new URL('../../../web/workbench/formal-review.js',import.meta.url),'utf8'),context);return {calls,run:(s:string)=>runInContext(s,context)};}
+test('a formal action error survives its successful follow-up GET refresh',async()=>{const f=await ui(),run=f.run("formalWork('registered','prepare')");assert.equal(f.calls.length,1);f.calls[0].resolve({ok:false,json:async()=>({error:'formal_current_candidate_material_not_imported'})});await run;assert.equal(f.run('formalData().error'),'当前 PR 材料还没有与最新来源核对，请补查原来源后继续。');assert.equal(f.run('formalData().pending'),false);});
+test('a project switch during formal preparation cannot start its prepared operation or post an old notice',async()=>{const f=await ui(),run=f.run("formalWork('registered','prepare')");f.run('gh.selected={id:2}');f.calls[0].resolve({ok:true,json:async()=>({operation:'original-operation'})});await run;assert.equal(f.calls.length,1);assert.equal(f.run('formalData().error'),null);const before=f.calls.length;await f.run("formalWork('registered','start','old-operation','7:1')");assert.equal(f.calls.length,before);});

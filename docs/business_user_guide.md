@@ -17,6 +17,7 @@
 | 选择本机程序、模型和角色 | “AI 与角色设置”；[local_ai_roles](local_ai_roles.md)、[cli_capabilities](cli_capabilities.md)。 |
 | 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功H1不表示正式审核/发布；真实Codex路径仍待准确环境核验。 |
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
+| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；真实模型外层演练仍待配置验证。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
 
@@ -28,7 +29,7 @@
 
 ## 2. Typical Uses
 
-选择当前项目后查看 Issues、PR、任务和报告；向秘书询问材料显示什么并核回答来源。已有授权任务需补查或处理 RETURN 时，从原任务已登记入口推进。可观察行为和失败断言见 [interact](../interact.md)。
+选择当前项目后查看 Issues、PR、任务和报告；向秘书询问材料显示什么并核回答来源。已有授权任务需补查或处理 RETURN 时，从原任务已登记入口推进。已配置的 PR 可从任务页启动正式审核：整批问题和完整报告由程序转交；查看具体缺口或业务取舍，并可停止。局部修复、待发布、待正式结论与正式 PASS 含义不同；成果仍沿 #9 确认真实使用结果。可观察行为和失败断言见 [interact](../interact.md)。
 
 源码使用者先满足环境要求、安装依赖并构建，再运行 CLI 帮助或正式命令。工作台需要有效的私人计划；`ABS_PLAN`/`ABS_RUNTIME` 是占位路径，不是附带文件。正常安装入口由安装者交付，源码 checkout 不含所有人可直接运行的桌面启动文件。
 

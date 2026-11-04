@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {join} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {messageFixture} from '../w6/message-fixture.js';
+import {messageAuthority} from '../w6/message-authority-fixture.js';
+import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
+import {hash} from '../../src/snapshot.js';
+import {canonical} from '../../src/comparison.js';
+import {resourceAction,prepareResourceRequest} from '../../src/resource-claims.js';
+import {readOwnerSource} from '../../src/authority-source.js';
+import type {FormalStage} from '../../src/formal-review-store.js';
+import type {FormalCandidate} from '../../src/formal-review-contract.js';
+import {readFile,writeFile} from 'node:fs/promises';
+import {runReception} from '../../src/receiver.js';
+
+test('formal stage uses the original receive authority/resource envelope and preserves its own claim until the original terminal',async t=>{
+ const f=await messageFixture(t),owner=await messageAuthority(f),ledger=await ledgerFixture(t);f.q.resources().configure(Buffer.from(canonical(ledger.profile)));f.q.authority().enableGovernedReceiver();f.q.authority().enableFormalReviewResources();
+ const item=f.q.status().items.find((i:any)=>i.id===f.item),candidate:FormalCandidate={repository:item.candidate.repository,pr:item.candidate.pr,H:item.candidate.H,B:item.candidate.B,target:item.candidate.targetRef,requirementsSha256:'a'.repeat(64)};
+ const registered=f.q.formalReviews().register('one-pr',f.item,{kind:'tongxu-formal-pr-review',item:f.item,candidate,executionKind:'fixture',workSha256:hash('fixed formal work')}),operation=registered.operation;
+ const grant=await owner.adopt({kind:'delegate',adoption:owner.scope.sha,roles:['background'],targets:[candidate.target],actions:['receive'],paths:[],resourceRefs:[ledger.profile.resources[0]!.ref],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const {payloadSha256,...originalAction}=owner.request;const intent='formal-review-'+randomUUID(),action={...originalAction,action:'receive' as const,formalWorkSha256:hash('fixed formal work'),item:f.item,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},resourceRefs:[ledger.profile.resources[0]!.ref]},refresh=async()=>{const {profile}=f.q.authority().configuration();return Promise.all(f.q.authority().sourceRequests(grant.sha).map(r=>readOwnerSource(profile,r.proposalSha256,r.commentId,join(f.root,randomUUID()))));};
+ f.q.authority().reserveAction(intent,action,'background',grant.sha,await refresh());
+ const resource={...ledger.request,operation,authorityIntent:intent,actionSha256:hash(canonical(action)),role:'background' as const};
+ const stage:FormalStage={key:'round-1/review',role:'reviewer',candidate,inputSha256:hash('actual formal input'),systemSha256:hash('actual role system'),materialSha256:hash('complete material'),actorRole:'background',directory:join(f.root,'formal-review'),authorityIntent:intent,budgetIntent:intent,action,authorization:grant.sha,resources:[resource]};
+ f.q.formalReviews().prepareStage(operation,stage);
+ const prepared=await prepareResourceRequest(f.store,Buffer.from(canonical(resource)),'background');await resourceAction(f.store,prepared.id,'claim','background');
+ assert.equal(ledger.state().claims.length,1);assert.equal(f.q.resources().status(prepared.id).state,'held');
+ const stale=new DatabaseSync(join(f.store,'queue.sqlite'));try{assert.throws(()=>stale.prepare("UPDATE operations SET status='complete',result='{}' WHERE id=?").run(operation),/formal_review_consumer_required/);}finally{stale.close();}
+ f.q.formalReviews().dispatched(operation,stage.key,await refresh());assert.throws(()=>f.q.formalReviews().dispatched(operation,stage.key,[]),/no_resend|source|observation/);
+ assert.throws(()=>f.q.formalReviews().finish(operation,{status:'pass',reviewKey:stage.key,candidate}),/stage_unknown|complete_reviewer/);
+ // This storage-only test explicitly supplies a synthetic captured-turn
+ // original; native parsing is tested by the runner, not claimed here.
+ f.q.formalReviews().returned(operation,stage.key,{candidateH:candidate.H,reviewedInputSha256:stage.materialSha256,verdict:'PASS',report:'Explicit storage fixture',findings:[],coverageGaps:[],ownerQuestions:[]}, {inputSha256:stage.inputSha256,systemSha256:stage.systemSha256,candidate,role:'reviewer',completeCapture:true,executionKind:'fixture'}, {'fixture-turn.txt':Buffer.from('explicit storage proof; no model')});
+ const fact={...stage,key:'round-1/fact',role:'verifier_fact' as const,inputSha256:hash('next bounded fact turn')};f.q.formalReviews().prepareStage(operation,fact);f.q.formalReviews().dispatched(operation,fact.key,await refresh());f.q.formalReviews().returned(operation,fact.key,{report:'Explicit second storage turn'}, {inputSha256:fact.inputSha256,systemSha256:fact.systemSha256,candidate,role:'verifier_fact',completeCapture:true,executionKind:'fixture'}, {'fixture-fact.txt':Buffer.from('explicit second storage proof; no model')});f.q.formalReviews().completeResourcePhase(operation,intent);await resourceAction(f.store,prepared.id,'record-result','background');assert.equal(ledger.state().settlements.length,1);assert.equal(f.q.formalReviews().state(operation).resourcesSettled,true);
+ const done=f.q.formalReviews().finish(operation,{status:'pass',reviewKey:stage.key,candidate});assert.equal(done.terminal.result.status,'pass');assert.equal(f.q.status().claims.length,0);assert.equal(f.q.formalReviews().register('one-pr',f.item,{kind:'tongxu-formal-pr-review',item:f.item,candidate,executionKind:'fixture',workSha256:hash('fixed formal work')}).operation,operation);
+});
+
+test('ended formal review preserves its original record while the existing independent receiver can still use its own ordinary binding',async t=>{
+ const f=await messageFixture(t),owner=await messageAuthority(f);owner.a.enableGovernedReceiver();owner.a.enableFormalReviewResources();
+ const item=f.q.status().items.find((i:any)=>i.id===f.item),candidate:FormalCandidate={repository:item.candidate.repository,pr:item.candidate.pr,H:item.candidate.H,B:item.candidate.B,target:item.candidate.targetRef,requirementsSha256:'a'.repeat(64)},request={kind:'tongxu-formal-pr-review',item:f.item,candidate,executionKind:'fixture',workSha256:hash('fixed formal work')},op=f.q.formalReviews().register('formal-and-existing-receiver',f.item,request).operation;
+ const grant=await owner.adopt({kind:'delegate',adoption:owner.scope.sha,roles:['background','receiver'],targets:[candidate.target],actions:['receive'],paths:[],resourceRefs:[],expiresAt:new Date(Date.now()+3600000).toISOString()}),{payloadSha256,...base}=owner.request,action={...base,action:'receive' as const},refresh=async()=>{const {profile}=owner.a.configuration();return Promise.all(owner.a.sourceRequests(grant.sha).map(r=>readOwnerSource(profile,r.proposalSha256,r.commentId,join(f.root,randomUUID()))));};
+ owner.a.reserveAction('formal-first',action,'background',grant.sha,await refresh());
+ const formalAction={...action,formalWorkSha256:hash('fixed formal work')};owner.a.reserveAction('formal-with-binding',formalAction,'background',grant.sha,await refresh());const stage:FormalStage={key:'round-1/review',role:'reviewer',actorRole:'background',candidate,inputSha256:hash('formal input'),systemSha256:hash('role'),materialSha256:hash('material'),directory:join(f.root,'native'),authorityIntent:'formal-with-binding',budgetIntent:'formal-with-binding',action:formalAction,authorization:grant.sha,resources:[]};f.q.formalReviews().prepareStage(op,stage);f.q.formalReviews().dispatched(op,stage.key,await refresh());
+ f.q.formalReviews().returned(op,stage.key,{candidateH:candidate.H,reviewedInputSha256:stage.materialSha256,verdict:'PASS',report:'Explicit storage fixture',findings:[],coverageGaps:[],ownerQuestions:[]},{role:'reviewer',inputSha256:stage.inputSha256,systemSha256:stage.systemSha256,candidate,completeCapture:true,executionKind:'fixture'},{'fixture.txt':Buffer.from('synthetic storage original')});f.q.formalReviews().completeResourcePhase(op,'formal-with-binding');const before=f.q.formalReviews().finish(op,{status:'pass',reviewKey:stage.key,candidate});
+ owner.a.reserveAction('ordinary-after-formal',action,'receiver',grant.sha,await refresh());const path=join(f.root,'plan.json'),plan=JSON.parse(await readFile(path,'utf8'));plan.governance={authorityIntent:'ordinary-after-formal',resourceRequests:[]};await writeFile(path,JSON.stringify(plan));const result=await runReception(path);assert.equal(result.receiver.phase,'returned');assert.equal(await f.count(),1);assert.deepEqual(f.q.formalReviews().state(op).terminal,before.terminal);assert.equal(f.q.receiverState(op).receiver.authorityIntent,'ordinary-after-formal');
+});

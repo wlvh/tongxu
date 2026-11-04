@@ -1,6 +1,7 @@
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
+import {repoPattern,shaPattern,validBranchRef} from './contract.js';
 
 export type FormalCandidate={repository:string;pr:number;H:string;B:string;target:string;requirementsSha256:string};
 export type FormalFinding={id:string;priority:0|1|2;description:string;evidence:string[]};
@@ -13,6 +14,9 @@ const object=(properties:Record<string,unknown>)=>({type:'object',properties,req
 const str={type:'string'},texts={type:'array',items:str};
 export const formalReviewSchema=object({candidateH:str,reviewedInputSha256:str,verdict:{type:'string',enum:['PASS','REWORK_REQUIRED','OWNER_DECISION_REQUIRED']},report:str,findings:{type:'array',items:object({id:str,priority:{type:'integer',enum:[0,1,2]},description:str,evidence:texts})},coverageGaps:texts,ownerQuestions:texts});
 export const formalVerificationSchema=object({candidateH:str,batchSha256:str,report:str,assessments:{type:'array',items:object({id:str,decision:{type:'string',enum:['confirmed','refuted','needs_evidence']},report:str,evidence:texts})}});
+export function validateFormalCandidate(c:FormalCandidate){
+  if(!exactKeys(c,['repository','pr','H','B','target','requirementsSha256'])||!repoPattern.test(c.repository)||!Number.isSafeInteger(c.pr)||c.pr<1||!shaPattern.test(c.H)||!shaPattern.test(c.B)||!validBranchRef(c.target)||!isAuthorityDigest(c.requirementsSha256))throw new Error('formal_candidate_binding_invalid');return structuredClone(c);
+}
 
 export function validateFormalReview(value:unknown,H:string,inputSha256:string):FormalReview{
   const r=value as FormalReview;
@@ -30,13 +34,18 @@ export function formalReviewNext(review:FormalReview){
   return {stage:findings.length?'verify_batch' as const:'needs_evidence' as const,findings,newVerificationRequired:!!findings.length};
 }
 export function formalBatch(candidate:FormalCandidate,review:FormalReview){
+  candidate=validateFormalCandidate(candidate);if(review.candidateH!==candidate.H)throw new Error('formal_batch_wrong_candidate');
   const findings=formalReviewNext(review).findings;if(!findings.length)throw new Error('formal_empty_batch_not_allowed');
   const value={candidate,reviewSha256:hash(canonical(review)),findings};return {...value,sha256:hash(canonical(value))};
 }
 export function validateFormalVerification(value:unknown,batch:ReturnType<typeof formalBatch>):FormalVerification{
-  const r=value as FormalVerification;
-  if(!exactKeys(r,['candidateH','batchSha256','report','assessments'])||r.candidateH!==batch.candidate.H||r.batchSha256!==batch.sha256||!text(r.report)||!Array.isArray(r.assessments)||r.assessments.length!==batch.findings.length||new Set(r.assessments.map(a=>a.id)).size!==batch.findings.length||r.assessments.some(a=>!exactKeys(a,['id','decision','report','evidence'])||!batch.findings.some(f=>f.id===a.id)||!['confirmed','refuted','needs_evidence'].includes(a.decision)||!text(a.report)||!strings(a.evidence,20)))throw new Error('formal_complete_batch_verification_required');
+  const r=validateFormalVerificationReport(value,batch.candidate.H,batch.sha256);
+  if(r.assessments.length!==batch.findings.length||r.assessments.some(a=>!batch.findings.some(f=>f.id===a.id)))throw new Error('formal_complete_batch_verification_required');
   return structuredClone(r);
+}
+export function validateFormalVerificationReport(value:unknown,H:string,batchSha256:string):FormalVerification{
+  const r=value as FormalVerification;
+  if(!exactKeys(r,['candidateH','batchSha256','report','assessments'])||r.candidateH!==H||r.batchSha256!==batchSha256||!isAuthorityDigest(batchSha256)||!text(r.report)||!Array.isArray(r.assessments)||r.assessments.length>20||new Set(r.assessments.map(a=>a.id)).size!==r.assessments.length||r.assessments.some(a=>!exactKeys(a,['id','decision','report','evidence'])||!text(a.id,128)||!['confirmed','refuted','needs_evidence'].includes(a.decision)||!text(a.report)||!strings(a.evidence,20)||a.decision!=='needs_evidence'&&!a.evidence.length))throw new Error('formal_complete_batch_verification_required');return structuredClone(r);
 }
 export function sameFormalCandidate(a:FormalCandidate,b:FormalCandidate){return canonical(a)===canonical(b);}
 export function formalDisagreements(fact:FormalVerification,impact:FormalVerification){
