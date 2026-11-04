@@ -65,7 +65,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   const lease=await acquireWorkspace(plan.workspace,operation,false,grant);
   let session:BoundedCodexSession|undefined;
   const gate=new RepairTools(plan.workspace,operation,grant,lease,plan.nodeExecutable,structuredClone(initial),plan.candidate.H,
-    directory=>testProject(plan.workspace,directory,plan.project!,{refresh:()=>external.refresh(),start:effect=>external.check(effect)}),
+    async directory=>{const result=await testProject(plan.workspace,directory,plan.project!,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});if(!result.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(result);},
     effect=>external.check(effect),()=>external.refresh());
   try{
     external.dispatch();

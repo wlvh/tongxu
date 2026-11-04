@@ -121,7 +121,7 @@ export class IssueImplementationControls{
   }
   async cancel(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     q.issueImplementations().cancel(id,requestId);const state=q.issueImplementations().state(id,requestId);
-    for(const resource of state.plan?.resourceRequests??[]){try{let value=q.resources().status(resource);if(value.pendingResultAttempt)value=await resourceAction(entry.store,resource,'lookup','implementer');if(value.claim?.state==='held')await resourceAction(entry.store,resource,'record-result','implementer');}catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_resource_result_pending');}}
+    for(const resource of state.plan?.resourceRequests??[]){try{let value=q.issueImplementations().terminalResource(id,requestId,resource);if(!value)continue;if(value.pendingResultAttempt)value=await resourceAction(entry.store,resource,'lookup','implementer');if(value.claim?.state==='held')await resourceAction(entry.store,resource,'record-result','implementer');}catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_resource_result_pending');}}
     return this.publicState(q.issueImplementations().state(id,requestId));
   }finally{q.close();}}
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
