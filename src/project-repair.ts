@@ -131,16 +131,20 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}) };
   validateProjectContract(project, grant);
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
+  const sourceMergeBase = await git(r.objects, ['merge-base', r.candidate.B, r.candidate.H]);
   await privateDirectory(root, true); await mkdir(workspace, { mode: 0o700 });
   await writeFile(join(root, 'config.json'), configBytes, { flag: 'wx', mode: 0o600 }); await writeFile(join(root, 'request.json'), requestBytes, { flag: 'wx', mode: 0o600 }); await writeFile(project.testPlan, testBytes, { flag: 'wx', mode: 0o600 });
   save(join(root, 'preparation-intent.json'), { controllerPid: process.pid, requestSha256: hash(requestBytes), configSha256: hash(configBytes), workspace, phase: 'preparing_no_model_dispatch' });
   let preparationStep = 0;
   const prepareGit = (args: string[]) => mutateGit(workspace, args, join(root, 'preparation-git-' + (++preparationStep)));
   try {
-  // Fetch only fixed objects from the explicit local repository. No credential,
-  // hook, config, uncommitted file or remote publishing setup is copied.
+  // Keep both fixed histories: a later full PR review needs B even when it is
+  // not an ancestor of H. Private refs retain them without changing checkout.
+  // No credential, hook, config, uncommitted file or publishing setup is copied.
   await prepareGit(['init', '--template=', '--initial-branch=project-base']);
-  await prepareGit(['fetch', '--no-tags', '--no-recurse-submodules', r.objects, r.candidate.H]);
+  await prepareGit(['fetch', '--no-tags', '--no-recurse-submodules', r.objects, r.candidate.H + ':refs/tongxu/source-head', r.candidate.B + ':refs/tongxu/source-base']);
+  for (const [ref, h] of [['source-head', r.candidate.H], ['source-base', r.candidate.B]]) if (await git(workspace, ['rev-parse', 'refs/tongxu/' + ref + '^{commit}']) !== h) throw new Error('project_fixed_history_changed');
+  if (await git(workspace, ['merge-base', r.candidate.B, r.candidate.H]) !== sourceMergeBase) throw new Error('project_fixed_history_changed');
   await prepareGit(['checkout', '-B', 'project-base', r.candidate.H]); await prepareGit(['switch', '-c', 'repair-project']);
   if ((await git(workspace, ['ls-files', '--stage'])).split('\n').some(line => line.startsWith('160000 '))) throw new Error('project_submodule_material_unavailable');
   const initial = await tree(workspace, true); projectMaterial(initial, project);

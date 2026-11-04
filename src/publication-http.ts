@@ -19,12 +19,16 @@ export async function ordinaryFile(path: string, limit: number): Promise<Buffer>
 export class PublicationHttp {
   private selected?:GhExecutableSelection;
   get executableSelection(){return this.selected?{...this.selected}:undefined;}
-  constructor(readonly directory: string, private executable: string, private executableHash: string, private repository: string, private pr: number, private H: string, private target: string, private readOnly = false, private existingGitHubAuth = true) {}
+  constructor(readonly directory: string, private executable: string, private executableHash: string, private repository: string, private pr: number, private H: string, private target: string, private readOnly = false, private existingGitHubAuth = true,private sourceScope?:{issues:number[];collection:boolean}) {if(sourceScope&&(!readOnly||!Array.isArray(sourceScope.issues)||sourceScope.issues.length>32||sourceScope.issues.some(n=>!Number.isSafeInteger(n)||n<1)||typeof sourceScope.collection!=='boolean'))throw new Error('readonly_source_scope_invalid');}
   private allowed(method: string, endpoint: string) {
     if(this.readOnly&&method!=='GET')throw new Error('readonly_source_mutation_denied');
     const repo = `repos/${this.repository}`, fixed = ['user', repo, `${repo}/pulls/${this.pr}`, `${repo}/git/ref/heads/${encodeURIComponent(this.target)}`];
     if (method === 'GET' && (fixed.includes(endpoint) || new RegExp(`^${repo.replaceAll('.', '\\.')}\/(?:issues\/${this.pr}\/comments|commits\/${this.H}\/statuses)\\?per_page=100&page=(?:[1-9]|10)$`).test(endpoint) || new RegExp(`^${repo.replaceAll('.', '\\.')}\/issues\/comments\/[1-9][0-9]*$`).test(endpoint))) return;
     if(this.readOnly&&method==='GET'&&(new RegExp(`^${repo.replaceAll('.', '\\.')}\/pulls\/${this.pr}\/(?:reviews|comments)\\?per_page=100&page=(?:[1-9]|10)$`).test(endpoint)||new RegExp(`^${repo.replaceAll('.', '\\.')}\/commits\/${this.H}\/check-runs\\?filter=latest&per_page=100&page=(?:[1-9]|10)$`).test(endpoint)))return;
+    if(this.readOnly&&method==='GET'&&this.sourceScope){
+      if(this.sourceScope.issues.some(n=>endpoint===`${repo}/issues/${n}`||new RegExp(`^${repo.replaceAll('.', '\\.')}\/issues\/${n}\/comments\\?per_page=100&page=(?:[1-9]|10)$`).test(endpoint)))return;
+      if(this.sourceScope.collection&&(new RegExp(`^${repo.replaceAll('.', '\\.')}\/pulls\/${this.pr}\/(?:files|commits)\\?per_page=100&page=(?:[1-9]|[1-9][0-9]|100)$`).test(endpoint)||endpoint===`${repo}/issues/${this.pr}`))return;
+    }
     if (method === 'POST' && [`${repo}/issues/${this.pr}/comments`, `${repo}/statuses/${this.H}`].includes(endpoint)) return;
     throw new Error('publication_endpoint_denied');
   }

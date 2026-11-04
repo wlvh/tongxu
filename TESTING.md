@@ -93,3 +93,16 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 ## 8. Lessons Learned
 
 测试曾专门固化以下反例：彼此文件不冲突仍可在组合后失败（`tests/w2/verification.test.ts`）；初始化/控制回执并非最终报告（w4/w6 原生与消息测试）；损坏捕获和原进程未知不能用重发恢复（w7 project-chat）；启动器静态导入可先于完整性检查执行代码（w7 workbench-launch）。维护这些最小反例及其用户路径，避免仅增加更多成功样例而丢掉边界。
+
+
+## 正式 PR 外层流程（Issue #72）
+
+构建后可单独运行 `node --test dist/tests/w5/formal-*.test.js dist/tests/w7/formal-workbench.test.js`。包含同会话写入、发布后新候选自动验证的场景需要已有 `TONGXU_TEST_DOCKER_CONFIG` 和可用 Docker；模型是明确的协议样例。验证内容包括完整 PR/额外调用方、直接 PASS 与仅 P2 的零额外输入、空 finding 缺证据、整批双验证、三轮分歧、未变候选反证回流、同 fact session/thread 修复、实际 Git/测试树、准确发布记录、祖先/分叉 B 下的自动新候选采集及已有材料完整再审、项目查询失效时本地停止、离线冷重开与错误账号/项目/入口拒绝、旧无绑定原请求的明确退化和零新增输入、停止与冷读不重发、在途 H/B/target 变化及原容器结束证据。新候选材料沿原 collect/verify/readPacket/import，不伪造 W2。
+
+共享边界按改动选 authority/resources、w3 receiver、w5、review-records/counters、w7 正常页面与启动器回归。原生协议样例不能称真实 Codex/Claude 演练，HTTP 测试不能称浏览器验收；独立审核、合入、启用和本人接受另记。配置与边界见 [formal_pr_review](docs/formal_pr_review.md)。
+
+`formal-workbench` 的新候选场景从正常项目 HTTP 入口保存 AI 选择，启动原生产10秒定时器并与手工核对对照；检查新轮三个角色使用当时项目设置，覆盖控制器启动后保存、准备前变更、合法默认、不可用等待及其他项目设置不串用。reviewer/fact 的模型与强度核实际原生请求；impact 核新轮冻结选择，旧影响协议样例没有 live 模型目录，不称已验证所选 Claude 模型执行。旧轮请求保持原字节，查看完整报告不新增模型输入。
+
+同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
+
+同一发布后完整再审场景还参数化覆盖父轮在接续前、异步材料准备中、子轮已登记未派发及 reviewer 已发时停止；停止后不新增角色，已发报告保留，冷读不重发。原 store 场景沿两代 previousOperation 验证停止祖先在原效果事务阻回调且不登记派发，未停止的已完成父轮仍合法。反证回流参数化 PASS、合法 owner 和真实覆盖缺口；同会话修复的 needs_owner/no_change 分别保留业务决定/待补证，页面脚本核原问题与原 Issue 交接提示。

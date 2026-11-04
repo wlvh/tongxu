@@ -215,7 +215,7 @@ export class RepairTools {
   private serial = 0;
   private handoffSerial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
     await this.refreshExternal?.();
@@ -238,8 +238,8 @@ export class RepairTools {
     try{readFileSync(join(this.operation,'revoked.json'));throw new Error('repair_revoked');}catch(error:any){if(error.code!=='ENOENT')throw error;}
     if(this.externalGate)this.externalGate(effect);else effect();
   }
-  async call(p: { tool: string; arguments: any; callId: string }) {
-    const current = await this.check();
+  async call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void) {
+    const current = await this.check();beforeRegistration?.();
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(p.callId)) throw new Error('invalid_tool_call_id');
     const calls = join(this.operation, 'calls'); await mkdir(calls, { recursive: true, mode: 0o700 });
     const path = join(calls, p.callId + '.json');
@@ -263,7 +263,8 @@ export class RepairTools {
       try { readFileSync(join(this.operation, 'revoked.json')); throw new Error('repair_revoked'); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
       // The queue extension serializes a stop control with this single atomic
       // replace in the original database transaction, not a check-then-await.
-      if (this.externalGate) this.externalGate(() => renameSync(temporary, target)); else renameSync(temporary, target);
+      const replace=()=>{beforeRegistration?.();renameSync(temporary,target);};
+      if (this.externalGate) this.externalGate(replace); else replace();
       this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
       const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
       save(path, { ...receipt, status: 'applied', response, afterTreeSha256: treeHash(this.expected) }); return response;
@@ -271,7 +272,7 @@ export class RepairTools {
       if (Object.keys(a).length) throw new Error('test_arguments_not_allowed');
       await mkdir(join(this.operation, 'tests'), { recursive: true, mode: 0o700 });
       const directory = join(this.operation, 'tests', 'tool-' + p.callId);
-      output = this.grant.profile === 'project-v1' ? await this.projectTest!(directory) : await testClamp(this.workspace, directory, this.node);
+      output = this.grant.profile === 'project-v1' ? await this.projectTest!(directory,beforeRegistration) : await testClamp(this.workspace, directory, this.node);
     } else throw new Error('unregistered_repair_tool');
     const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
     save(path, { request: p, response, afterTreeSha256: treeHash(this.expected) }); return response;

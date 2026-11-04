@@ -1,3 +1,4 @@
+import {formalReviewResourceKey,formalResourceAdmission} from './formal-review-format.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {hash} from './snapshot.js';
 
@@ -25,8 +26,10 @@ const guards=[
 WHEN NEW.kind='resource_claim_dispatched' AND EXISTS(SELECT 1 FROM events p JOIN events r ON r.kind='authority_action_reserved' AND r.object='authority-intent:'||json_extract(p.data,'$.authorityIntent') WHERE p.kind='resource_request_prepared' AND p.object=NEW.object AND json_extract(r.data,'$.request.action')='publish')
 BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM events a JOIN events b ON b.kind='authority_publication_bound' AND b.object='publication:'||json_extract(NEW.data,'$.originalOperation') WHERE a.kind='member_resource_claim_admitted' AND a.object=NEW.object AND a.id=(SELECT MAX(id) FROM events) AND json_extract(a.data,'$.requestSha256')=json_extract(NEW.data,'$.requestSha256') AND json_extract(a.data,'$.publicationBindingSha256')=json_extract(b.data,'$.bindingSha256') AND EXISTS(SELECT 1 FROM json_each(b.data,'$.resourceRequests') WHERE value=json_extract(NEW.data,'$.requestSha256'))) THEN RAISE(ABORT,'publication_resource_binding_required') END; END`}
 ];
-export function publicationGuardsCurrent(db:DatabaseSync){return (db.prepare('SELECT value FROM meta WHERE key=?').get(publicationConsumerKey) as any)?.value===hash(governedPublicationEffectGuard)&&guards.every(g=>(db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any)?.sql===g.sql);}
+const publicationGuards=(db:DatabaseSync)=>guards.map(g=>g.name==='publication_resource_claim_guard'&&db.prepare('SELECT 1 FROM meta WHERE key=?').get(formalReviewResourceKey)?{...g,sql:g.sql.replace("THEN RAISE(ABORT,'publication_resource_binding_required')","AND NOT "+formalResourceAdmission+" THEN RAISE(ABORT,'publication_resource_binding_required')")}:g);
+export function upgradeFormalPublicationGuard(db:DatabaseSync){const g=guards.find(g=>g.name==='publication_resource_claim_guard')!,old=db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any;if(!old)return;const expected=publicationGuards(db).find(x=>x.name===g.name)!;if(old.sql===expected.sql)return;if(old.sql!==g.sql)throw new Error('publication_guard_changed');db.exec('DROP TRIGGER '+g.name+';'+expected.sql+';');}
+export function publicationGuardsCurrent(db:DatabaseSync){return (db.prepare('SELECT value FROM meta WHERE key=?').get(publicationConsumerKey) as any)?.value===hash(governedPublicationEffectGuard)&&publicationGuards(db).every(g=>(db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any)?.sql===g.sql);}
 export function installPublicationGuards(db:DatabaseSync){
   installPublicationResultGuard(db);
-  for(const g of guards){const old=db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any;if(old&&old.sql!==g.sql)throw new Error('publication_guard_changed');if(!old)db.exec(g.sql);}
+  for(const g of publicationGuards(db)){const old=db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as any;if(old&&old.sql!==g.sql)throw new Error('publication_guard_changed');if(!old)db.exec(g.sql);}
 }

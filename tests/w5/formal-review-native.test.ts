@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdir,readFile,writeFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {fixture} from './repair-fixture.js';
+import {BoundedCodexSession,readRepairSession} from '../../src/repair-native.js';
+import {formalVerificationSchema,formalReviewSchema} from '../../src/formal-review-contract.js';
+import {hash} from '../../src/snapshot.js';
+
+test('bounded original fact turns have immutable prefix originals and keep the same actually owned native context for synthesis',async t=>{
+ const f=await fixture(t,'',false),script=await readFile(f.config.codexExecutable,'utf8');await writeFile(f.config.codexExecutable,script.replace("if(m.params.outputSchema.properties.verdict){","if(m.params.outputSchema.properties.assessments){finish(context.nextReport);return;}if(m.params.outputSchema.properties.verdict){"));
+ const operation=join(f.root,'formal-native');await mkdir(operation);const candidate=JSON.parse(await readFile(f.plan,'utf8')).candidate,system='Explicit bounded formal fact protocol fixture; no actual model.',batchSha256=hash('exact whole batch'),nextReport={candidateH:candidate.H,batchSha256,report:'Full synthetic factual verification, not production acceptance.',assessments:[{id:'F1',decision:'refuted',report:'Fixture counterevidence',evidence:['fixture:source']},{id:'F2',decision:'confirmed',report:'Fixture evidence',evidence:['fixture:caller']}]};
+ const session=await BoundedCodexSession.start({executable:f.config.codexExecutable,directory:join(operation,'fact'),operation,candidate,role:'verifier_fact',system,inputManifestSha256:hash('actual fixed manifest'),scopeSource:'explicit fixture scope',disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,executionKind:'fixture'});t.after(async()=>{await session.close();await rm(f.root,{recursive:true,force:true});});
+ await session.turn(JSON.stringify({candidate,nextReport}),candidate,formalVerificationSchema);const first=await session.snapshotCompletedTurn(),firstRawHash=hash(first.originals['stdout.ndjson']!);assert.equal(first.wholeProcessCompleted,false);assert.equal(first.ownedContextCanContinue,true);assert.equal(first.binding.role,'verifier_fact');assert.equal(first.report.assessments.length,2);
+ await session.turn(JSON.stringify({candidate,nextReport:{...nextReport,report:'Synthesis in this same context after the independent impact report.'}}),candidate,formalVerificationSchema);const second=await session.snapshotCompletedTurn();assert.equal(second.binding.sessionId,first.binding.sessionId);assert.equal(second.binding.threadId,first.binding.threadId);assert.notEqual(second.turnId,first.turnId);assert.equal(second.binding.turnIds.length,2);assert.equal(hash(first.originals['stdout.ndjson']!),firstRawHash);assert.ok(second.originals['stdout.ndjson']!.subarray(0,first.originals['stdout.ndjson']!.length).equals(first.originals['stdout.ndjson']!));
+ await session.close();const closed=await readRepairSession(join(operation,'fact'));assert.equal(closed.turns.length,2);assert.equal(closed.binding.sessionId,first.binding.sessionId);
+});
+
+test('formal reviewer output remains the native reviewer role and a missing-coverage PASS is rejected',async t=>{
+ const f=await fixture(t,'',false),script=await readFile(f.config.codexExecutable,'utf8');await writeFile(f.config.codexExecutable,script.replace("if(m.params.outputSchema.properties.verdict){","if(m.params.outputSchema.properties.reviewedInputSha256){finish(context.nextReport);return;}if(m.params.outputSchema.properties.verdict){"));
+ const operation=join(f.root,'formal-review');await mkdir(operation);const candidate=JSON.parse(await readFile(f.plan,'utf8')).candidate,session=await BoundedCodexSession.start({executable:f.config.codexExecutable,directory:join(operation,'review'),operation,candidate,role:'reviewer',system:'Explicit formal reviewer fixture',inputManifestSha256:hash('manifest'),scopeSource:'fixture:review',disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,executionKind:'fixture'});t.after(async()=>{await session.close();await rm(f.root,{recursive:true,force:true});});
+ const nextReport={candidateH:candidate.H,reviewedInputSha256:hash('complete material'),verdict:'PASS',report:'Explicit incomplete PASS fixture',findings:[],coverageGaps:['The caller was not read'],ownerQuestions:[]};await assert.rejects(session.turn(JSON.stringify({candidate,nextReport}),candidate,formalReviewSchema),/formal_pass_has_unresolved_work/);await assert.rejects(session.snapshotCompletedTurn(),/formal_pass_has_unresolved_work|not_complete/);
+});
