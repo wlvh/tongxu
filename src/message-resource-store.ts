@@ -10,7 +10,7 @@ type Row=Record<string,any>;
 /** Consumer bindings in the original operations/events/blobs. The provider
  * remains the only owner of quantity, competition and accounting. */
 export class MessageResourceRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords,private continuation:(run:string)=>Row|null,private continuationSource:(run:string)=>Row,private prefixProof:(run:string)=>Row,private admission?:(run:string,observations:OwnerObservation[])=>void){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private message:(run:string)=>Row,private authority:(intent:string,observations:OwnerObservation[])=>Row,private resources:()=>ResourceRecords,private continuation:(run:string)=>Row|null,private continuationSource:(run:string)=>Row,private prefixProof:(run:string)=>Row,private admission?:(run:string,observations:OwnerObservation[])=>void,private originalOperationAdmission?:(run:string,operation:string)=>void){}
   private bytes(sha:string){const row=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=row&&Buffer.from(row.bytes);if(!b||hash(b)!==sha)throw new Error('message_resource_original_changed');return b;}
   private blob(bytes:Buffer){const sha=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,bytes);this.bytes(sha);return sha;}
   private event(kind:string,run:string,value:Row){const sha256=this.blob(Buffer.from(canonical(value)));this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('message_resource_'+kind,'message-resource:'+run,JSON.stringify({value,sha256}),now());}
@@ -31,6 +31,7 @@ export class MessageResourceRecords {
     if(old){if(old.operation!==operation||old.authorityIntent!==p.authorityIntent||canonical(old.resourceRequests)!==canonical(resourceRequests))throw new Error('message_original_resource_binding_fixed');return {...this.stateValue(run),requests,duplicate:true};}
     if(op.status!=='complete'||Object.values(result.messageResources??{}).some((x:any)=>x.phase!=='returned'&&!(['partial_returned','interrupted_returned','cancelled_unstarted'].includes(x.phase)&&x.resourceRequests.every((id:string)=>r.settledOutcome(id)))))throw new Error('message_resource_operation_active_or_unknown');
     const value={run,operation,item:op.item,packet:op.packet,authorityIntent:p.authorityIntent,role:action.role,resourceRequests,planSha256:run,registeredAt:now()},bindingSha256=hash(canonical(value));this.event('bound',run,value);
+    this.originalOperationAdmission?.(run,operation);
     result.messageResources={...(result.messageResources??{}),[run]:{bindingSha256,phase:'resources_pending',authorityIntent:p.authorityIntent,resourceRequests}};this.db.prepare("UPDATE operations SET status='messaging',result=? WHERE id=?").run(JSON.stringify(result),operation);
     for(const request of requests)r.prepare(request,observations,action.role);
     return {...this.stateValue(run),requests,duplicate:false};

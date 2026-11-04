@@ -13,6 +13,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { QueueStore } from './queue-store.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
+import type {OriginalImplementationContactHost} from './task-contact-choice.js';
 import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
@@ -158,10 +159,11 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const github=p.githubProjects?new GitHubProjects(dependencies?.githubReader):null;
   const ai=p.aiSettings?await AISettings.open(p.aiSettings,dependencies?.aiProbe,p.projectSecretary?.codexExecutable):null;
   let closing=false,host='';
-  const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot)=>{
+  type ContactContext={sources:WorkbenchPlan['sources'];originalImplementation?:OriginalImplementationContactHost};
+  const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot,contactContext?:ContactContext)=>{
     // Catalogue hashes still cover the original complete files. Only entries
     // belonging to this project's original sources load templates or controls.
-    const controls=plan.controls?await TaskControls.load(plan.controls.path,plan.controls.sha256,p.sources,selectedSources):null;
+    const controls=plan.controls?await TaskControls.load(plan.controls.path,plan.controls.sha256,p.sources,selectedSources,{recipientSources:contactContext?.sources,originalImplementation:contactContext?.originalImplementation,readPreferences}):null;
     const deliveryControls=plan.deliveries||plan.ownerControls?new DeliveryWorkspaceControls(plan.deliveries??[],plan.ownerControls??[],plan.sources,plan.kind==='tongxu-controlled-workbench'):null;
     const deliveryExecution=plan.deliveryExecutions?await DeliveryExecutionControls.load(deliveryControls!,plan.deliveryExecutions.path,plan.deliveryExecutions.sha256,p.ownerControls??[],selectedSources):null;
     const ownerControls=plan.ownerControls?new OwnerControls(plan.ownerControls,plan.sources):null;
@@ -178,14 +180,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   };
   type Local=Awaited<ReturnType<typeof loadLocal>>;
   const locals=new Map<string,{sources:string;value:Promise<Local>}>(),knownRepositories=new Map<string,string>();
-  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>,cacheable=true,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot)=>{
+  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>,cacheable=true,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot,contactContext?:ContactContext)=>{
     if(closing)throw new Error('workbench_closing');const sources=plan.sources.map(s=>s.id).sort().join(','),old=locals.get(key);
     if(old){if(old.sources!==sources)throw new Error('workbench_project_sources_changed');return old.value;}
     // An initially unknown source may recover. Until all bindings are known,
     // reads use temporary non-running controls; no incomplete cache or action
     // is created. Existing running controllers always retain their identity.
-    if(!cacheable)return loadLocal(plan,selectedSources,verify,project,readPreferences);
-    const entry={sources,value:loadLocal(plan,selectedSources,verify,project,readPreferences).then(value=>{if(host&&!closing){value.polling?.start();value.formal?.start();}return value;}).catch(error=>{locals.delete(key);throw error;})};locals.set(key,entry);return entry.value;
+    if(!cacheable)return loadLocal(plan,selectedSources,verify,project,readPreferences,contactContext);
+    const entry={sources,value:loadLocal(plan,selectedSources,verify,project,readPreferences,contactContext).then(value=>{if(host&&!closing){value.polling?.start();value.formal?.start();}return value;}).catch(error=>{locals.delete(key);throw error;})};locals.set(key,entry);return entry.value;
   };
   const projectPlan=async(selection:ReturnType<GitHubProjects['selection']>)=>{
     const repository=selection.repository.fullName.toLowerCase(),allowed=new Set<string>();let unresolvedSourceCount=0,selectedSourcesUnknown=false;
@@ -213,7 +215,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const key=scope.account.id+':'+scope.repository.id;let selected=implementations.get(key);
     if(!selected){selected=IssueImplementationControls.load(p.issueImplementation.path,p.issueImplementation.sha256,scope.repository.fullName,async number=>{
       const url=new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id),result=await github.read(url) as Row;return result.item;
-    },()=>verifyProject(scope)).then(controls=>{if(p.projectSecretary)controls.onFinished(async target=>{if(!closing)await(await openProjectChat()).processSupplements(scope,target);});return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
+    },()=>verifyProject(scope)).then(controls=>{controls.onFinished(async target=>{
+      if(closing)return;
+      // Only the already loaded controls of this verified project can wake.
+      // A read/cold open never starts an action on its own.
+      const local=locals.get('project:'+scope.repository.id);
+      const results=await Promise.allSettled([
+        local?local.value.then(value=>value.controls?.continueOriginalOwner(target)):Promise.resolve(),
+        p.projectSecretary?openProjectChat().then(chat=>chat.processSupplements(scope,target)):Promise.resolve()
+      ]);
+      for(const result of results)if(result.status==='rejected')throw result.reason;
+    });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
     return selected;
   };
   let projectChat:Promise<ProjectChat>|undefined;
@@ -333,7 +345,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
       if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
       const localPlan:WorkbenchPlan={...plan,sources:plan.sources.filter(source=>p.sources.some(original=>original.id===source.id))};
-      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined);
+      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined,{sources:plan.sources,...(selection&&p.issueImplementation?{originalImplementation:{
+        target:async(store,target)=>(await openImplementation(selection)).ownerFeedbackTarget(store,target),
+        proof:async(store,target)=>(await openImplementation(selection)).ownerFeedbackProof(store,target)
+      }}:{})});
       if(selection)github!.assertSelection(selection);
       if(url.pathname.startsWith('/api/formal-review')){
         if(!formal){if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:false,entries:[]});return;}throw new Error('formal_review_not_configured');}

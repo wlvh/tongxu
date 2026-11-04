@@ -66,7 +66,7 @@
         "anchor_id": "CAPABILITY.task_contact",
         "type": "capability",
         "status": "active",
-        "statement": "按 docs/task_contact_choice.md 的有限联系约定，原任务 A 只能从预登记计划选择联系人 B，完整回复沿原记录返回 A；普通报告不触发联系，原结果或资源未处理不推进依赖步骤。该能力不承诺任意在途会话实时插话。实现 src/task-contact-choice.ts。",
+        "statement": "按 docs/task_contact_choice.md 的有限联系约定，原任务 A 只能从预登记计划选择联系人 B，完整回复沿原记录返回 A；普通报告不触发联系，原结果或资源未处理不推进依赖步骤。对已登记原 Issue 实施负责人，可先收 B 问题，安全完成后核当前结果并只读回答，再由原 B 消费；真实模型和本人验收单独核验。该能力不承诺任意在途会话实时插话。实现 src/task-contact-choice.ts 与 src/implementation-owner-feedback.ts。",
         "audience": [
           "business_user",
           "agent",

@@ -8,6 +8,7 @@ import type {TaskRecords} from './task-store.js';
 import type {ResourceRecords,ResourceOutcome} from './resource-store.js';
 import {resourceRequestHash,type ResourceRequest} from './resource-contract.js';
 import type {ImplementationRequest} from './issue-implementation.js';
+import type {ImplementationOwnerTarget} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 
 // Older shadow evaluators must not finish an active implementation or release
@@ -122,6 +123,15 @@ export class IssueImplementations {
   stop(source:string,id:string){return this.transaction(()=>{const f=this.fixed(source,id);if(!f.terminal&&!f.events.some(e=>e.kind==='issue_implementation_stopped'))this.event('stopped',this.key(source,id),{operation:f.selected?.operation??null,existingFilesRetained:true,newModelRequests:0});return this.state(source,id);});}
   problem(source:string,id:string,reason:string){return this.transaction(()=>{this.fixed(source,id);this.event('problem',this.key(source,id),{reason:reason.slice(0,256)});return this.state(source,id);});}
   private operation(id:string){const row=this.db.prepare('SELECT result FROM operations WHERE id=?').get(id) as Row|undefined,value=row&&JSON.parse(row.result??'null')?.implementation;if(!value||this.bytes(value.recordSha256).toString()!==canonical(Object.fromEntries(Object.entries(value).filter(([key])=>key!=='recordSha256'))))throw new Error('implementation_operation_changed');return value;}
+  /** A proven no-change result retains its original packet and operation.
+   * Admit the original readonly message consumer without changing that result,
+   * reusing an implement/test claim, or dropping the existing SQL guard. The
+   * caller has checked the exact inbox owner proof in this same transaction. */
+  admitOwnerContactResources(target:ImplementationOwnerTarget,run:string){
+    this.mode();const s=this.state(target.source,target.requestId),value=this.operation(target.operation);
+    if(s.task!==target.task||s.operation!==target.operation||s.requestSha256!==target.requestSha256||s.stopped||s.phase!=='returned'||s.result?.status!=='no_change'||!s.result.completeCapture||!value.controllerReturned||value.phase!=='returned')throw new Error('owner_contact_original_resource_binding_required');
+    this.event('operation_admitted',target.operation,{resultSha256:value.recordSha256,status:'messaging',readonlyOwnerContactRun:run,originalImplementationRetained:true});
+  }
   resourceGate(action:Row,request:ResourceRequest){
     const value=this.operation(request.operation);
     if(value.phase!=='resources_pending'||!value.resourceRequests.includes(resourceRequestHash(request))||![value.implementIntent,value.testIntent].includes(action.requestId))throw new Error('implementation_resource_action_mismatch');return value;
