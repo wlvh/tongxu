@@ -21,7 +21,7 @@ export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';so
 export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;verifiedAt:string};
 async function runtimeFiles(root:string){
   const result:string[]=[];async function visit(relative:string,suffix:string){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative+'/'+entry.name;if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');if(entry.isDirectory())await visit(name,suffix);else if(entry.isFile()&&name.endsWith(suffix))result.push(name);}}
-  await visit('dist/src','.js');await visit('prompts','.md');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/ai-settings.js','web/workbench/implementation.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
+  await visit('dist/src','.js');await visit('prompts','.md');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/ai-settings.js','web/workbench/implementation.js','web/workbench/reception.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
 }
 /** One explicit local composition, not an updater or a parallel store. */
 export async function inspectWorkbenchRuntime(raw:Buffer){

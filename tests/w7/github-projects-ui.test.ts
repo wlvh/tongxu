@@ -29,7 +29,7 @@ async function page(implementation=false){
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
   const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
   const fetchCalls:Array<{path:string;options:any;resolve:(value:any)=>void;reject:(error:Error)=>void}>=[];
-  const context=createContext({queueMicrotask,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},implementationPanel:()=>new Element('section'),renderProjectChat:()=>{},loadProjectChat:()=>{},setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);if(implementation)runInContext(await readFile(new URL('../../../web/workbench/implementation.js',import.meta.url),'utf8'),context);
+  const context=createContext({queueMicrotask,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},implementationPanel:()=>new Element('section'),renderProjectChat:()=>{},loadProjectChat:()=>{},setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);runInContext(await readFile(new URL('../../../web/workbench/reception.js',import.meta.url),'utf8'),context);if(implementation)runInContext(await readFile(new URL('../../../web/workbench/implementation.js',import.meta.url),'utf8'),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
   const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,fetchCalls,run,state,nodes,document,findFilter};
@@ -145,4 +145,44 @@ for(const supplement of [false,true])for(const switchProject of [false,true])tes
  if(!switchProject){assert.match(p.fetchCalls[1]!.path,/\/start$/);assert.deepEqual(JSON.parse(p.fetchCalls[1]!.options.body),{requestId:request.id});p.fetchCalls[1]!.resolve({ok:true,status:202,json:async()=>({})});await flush();p.fetchCalls[2]!.resolve({ok:true,status:200,json:async()=>({options:[],entries:[]})});}
  await pending;await flush();assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,switchProject?1:2);
  if(switchProject){button.onclick();assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1);}
+});
+
+// These call the actual page controller; visual rendering is checked separately.
+test('registered reception actions stay in their selected project and stale button closures cannot post',async()=>{
+ const p=await page();p.run("gh.selected={id:1,fullName:'fixture/repo1'};state={tasks:[]};render=()=>{};refresh=async()=>{};globalThis.entry={id:'receive-current',packet:2}");
+ const pending=p.run("receptionAction(entry,'start')");assert.equal(p.fetchCalls.length,1);assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Project'],'1');assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),{expectedPacket:2});
+ p.run("gh.selected={id:2,fullName:'fixture/repo2'}");p.fetchCalls[0]!.resolve({ok:false,json:async()=>({error:'old_project_error'})});await pending;assert.equal(p.nodes.get('notice')?.textContent??'','');
+ await p.run("receptionAction(entry,'start','7:1')");assert.equal(p.fetchCalls.length,1);
+});
+
+for(const action of ['check','start'])for(const networkFailure of [false,true])test('reception '+action+' '+(networkFailure?'network':'HTTP')+' failure remains visible after its actual refresh',async()=>{
+ const p=await page();p.run("gh.selected={id:1,fullName:'fixture/repo1'};view='tasks';state={tasks:[]};render=()=>{};globalThis.entry={id:'receive-current',packet:2}");
+ const pending=p.run(`receptionAction(entry,'${action}')`);
+ if(networkFailure)p.fetchCalls[0]!.reject(new Error('network_unavailable'));else p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'reception_control_catalog_changed'})});
+ await flush();assert.equal(p.fetchCalls[1]!.path,'/api/state');p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({tasks:[]})});await pending;
+ assert.match(p.nodes.get('notice')!.textContent,networkFailure?/network_unavailable/:/接收配置已变化/);assert.equal(p.nodes.get('notice')!.hidden,false);assert.equal(p.run('pendingReceptions.size'),0);
+});
+
+for(const switchAt of ['response','refresh'])test('a reception failure arriving across A to B to A during '+switchAt+' cannot notify the reopened project',async()=>{
+ const p=await page();p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'});view='tasks';state={tasks:[]};render=()=>{};globalThis.entry={id:'receive-current',packet:2}");
+ const pending=p.run("receptionAction(entry,'check')");
+ if(switchAt==='refresh'){p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'old_page_failure'})});await flush();assert.equal(p.fetchCalls[1]!.path,'/api/state');}
+ p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'});chooseGithubProject({id:1,fullName:'fixture/repo1'})");
+ if(switchAt==='response')p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'old_page_failure'})});else p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({tasks:[]})});
+ await pending;assert.equal(p.nodes.get('notice')!.textContent,'');assert.equal(p.run('pendingReceptions.size'),0);assert.equal(p.fetchCalls.length,switchAt==='response'?1:2);
+});
+
+test('stopped reception recovery requires an original receiver and keeps active or unreadable work blocked',async()=>{
+ const p=await page();p.run("gh.selected={id:1,fullName:'fixture/repo1'}");
+ for(const example of [
+  {operation:null,phase:'not_started',canRecover:false},
+  {operation:'shadow-only',phase:'not_started',canRecover:false},
+  {operation:'original',phase:'dispatch_registered',canRecover:true},
+  {operation:'original',phase:'dispatch_registered',controllerActive:true,canRecover:false},
+  {operation:'original',phase:'dispatch_registered',available:false,canRecover:false},
+ ]){
+  p.run('state={receptions:['+JSON.stringify({id:'receive-current',source:'selected',available:true,investmentStopped:true,controllerActive:false,...example})+']}');
+  const panel=p.run("receptionPanel({id:'selected'})"),actions=panel.children.find((n:any)=>n.className==='actions'),button=actions.children[1];
+  assert.equal(button.disabled,!example.canRecover,JSON.stringify(example));if(example.canRecover)assert.equal(button.textContent,'查回当前原接收');
+ }
 });
