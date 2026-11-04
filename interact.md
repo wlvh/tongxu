@@ -126,3 +126,15 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 - **Failure / degradation / escalation**：缺审定、准确权限/资源、队列席位或真实环境时保留具体等待原因。条件恢复后，仅完整不变且确证未派发、无执行证据/修改/竞争写者的原准备可以继续首次发送；来源改变、停止、取消或资源未知仍拒绝。已发送未知不另发，已有修改的失败现场不自动接续。部分现场不是完整报告或已结束证明。
 - **Acceptance assertion**：重复点击/冷重开只回原请求；同 ID 改目标拒绝；正确 H1 对应实际测试树和完整捕获，源仓库保持只读；原件损坏拒绝完整回读。普通消息仍只读，实施不授予发布、合并或本人接受。
 - **Evidence**：`src/issue-implementation*.ts`、工作台真实入口和 `tests/project-repair/integration.test.ts`、`tests/w7/github-projects-ui.test.ts`；模型协议样例与真实模型证据分开。详见 [issue_implementation](docs/issue_implementation.md)。
+
+
+### 从单张 PR 启动正式完整审核
+
+<!-- capability-anchor: CAPABILITY.formal_pr_review -->
+- **User goal**：对关联已采用 Issue 的 PR 得到准确版本的正式结论，必要时经过整批验证和授权修复，再审已发布的新版本。
+- **Required context**：私人项目目录、准确候选、采用 Issue/范围、固定完整角色提示、原接收/实施/测试权限及分析/修复/新候选测试资源、真实 CLI 和注册 Docker 配置；当前为 pending_validation，真实外层模型演练与本人接受分别待核。
+- **User action or request**：正常“任务与完整报告”选择 PR，点击“正式 PR 审核”；查看完整报告，按需要停止后续动作或核对发布。
+- **Directly observable result**：新完整 reviewer、同批新 fact/impact、原 fact 综合/有界证据交换、同会话授权修复、本地提交、待发布、新候选采集/验证、新完整审核分别保留。完整 PASS 无 P0/P1 或仅 P2 时直接结束；全批反证在未变候选上追加正式 reviewer 结论，不制造修改。原报告可全文回读。
+- **Failure / degradation / escalation**：空 finding 但覆盖不足仍待补证；三轮分歧后不强行投票；停止、权限或资源不足时不启动后续动作。H/B/target/采用要求改变后旧报告不放行当前 PR；已发未知和失去持有权的原事实会话不换 ID 重发。真正业务取舍沿原 Issue 保存问题和答复，没有获准写入路径时明确待记录。
+- **Acceptance assertion**：本地 H2 不等于远端发布；准确远端 head、对应 PR 修复记录和当前新材料核清后才新审。每轮新 reviewer/new batch 独立，修复确属本批原 fact session/thread；单轮完整捕获不冒称原生进程已经退出。发布返工使用原记录并按同 head 去重；查看、重开和直接 PASS 后新增模型输入为零。
+- **Evidence**：`tests/w5/formal-*.test.ts`、`tests/w7/formal-workbench.test.ts` 及共享领域回归；[正式入口、安装条件与证据范围](docs/formal_pr_review.md)。协议样例、真实 Docker、真实模型和本人接受分别报告。

@@ -16,6 +16,7 @@ import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
 import { repairToolSpecs, projectRepairToolSpecs, exists,regular } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
+import {formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerificationReport} from './formal-review-contract.js';
 import {codexConversation,cliVersion} from './cli-capabilities.js';
 const exec = promisify(execFile);
 const sameOwnedThread=(t:any,b:ResultBinding)=>Boolean(t&&t.id===b.threadId&&t.sessionId===b.sessionId&&t.cwd===b.workspace&&t.cliVersion===resultCliVersion(b)&&t.ephemeral===false&&t.parentThreadId==null&&t.forkedFromId==null);
@@ -26,6 +27,7 @@ export type NativeOptions = {
   role: 'implementer' | 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
   projectSecretary?:true;
+  dispatchGate?:<T>(effect:()=>T)=>T;
   expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
   scopeSource: string; arrangementSource?: string; disabledMcpServers: string[];
@@ -70,6 +72,11 @@ export function assertToolTurnOpen(events: any[], request: any) {
   if (events.some(m => m.params?.threadId === p.threadId && (m.method === 'turn/completed' && m.params?.turn?.id === p.turnId || m.method === 'item/completed' && m.params?.turnId === p.turnId && m.params?.item?.id === p.callId))) throw new Error('native_tool_request_after_terminal');
 }
 function validateNativeReport(report: any, candidate: Candidate, schema: unknown) {
+  // The caller subsequently checks the reference against its fixed original
+  // manifest/batch. Here the common native transport checks the actual schema
+  // and candidate before recording this turn as a complete structured result.
+  if(isDeepStrictEqual(schema,formalReviewSchema)){validateFormalReview(report,candidate.H,report?.reviewedInputSha256);return;}
+  if(isDeepStrictEqual(schema,formalVerificationSchema)){validateFormalVerificationReport(report,candidate.H,report?.batchSha256);return;}
   if(isMessageReplySchema(schema)){
     if(!report||Object.keys(report).sort().join()!=='consumed,messageId,report'||report.messageId!==(schema as any).properties.messageId.enum[0]||typeof report.report!=='string'||!report.report.trim()||!Array.isArray(report.consumed)||report.consumed.length>32||report.consumed.some((x:unknown)=>typeof x!=='string'||!/^[a-f0-9]{64}$/.test(x)))throw new Error('invalid_native_message_receipt');
     return;
@@ -116,6 +123,22 @@ export class BoundedCodexSession {
   get sessionId() { return this.binding.sessionId; }
   get executionBinding(){return structuredClone(this.binding);}
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
+  /** A completed bounded turn can be retained while the same owned fact
+   * context waits for synthesis or an explicit write handoff. These are copies
+   * of original frames, not a fake whole-process completion receipt. Later
+   * turns may append to the native capture; this immutable snapshot does not. */
+  async snapshotCompletedTurn(){
+    if(this.previous||this.o.persistent||this.activeTurn||this.turnRunning||this.pendingTurn||this.boundaryFailure||this.rpc.failure||!this.binding?.turnIds.length)throw new Error('native_original_turn_not_complete');
+    const names=['stdout.ndjson','stdin.ndjson','inputs.json','binding.json','reconciled-tools.json','expected-requests.json','thread.json','executable.json','effective-config.json','launch.json','process.json'];
+    const originals:Record<string,Buffer>={};let size=0;for(const name of names){const bytes=await regular(join(this.o.directory,name),16*1024*1024);size+=bytes.length;if(size>24*1024*1024)throw new Error('native_original_turn_capture_limit');originals[name]=bytes;}
+    const binding=JSON.parse(originals['binding.json']!.toString()) as ResultBinding,pairs=JSON.parse(originals['reconciled-tools.json']!.toString()),inputs=JSON.parse(originals['inputs.json']!.toString()),contract=JSON.parse(originals['expected-requests.json']!.toString()),raw=originals['stdout.ndjson']!,wire=originals['stdin.ndjson']!;
+    const sent=wire.toString().trim().split('\n').map(x=>JSON.parse(x));
+    if(!isDeepStrictEqual(binding,this.binding)||!isDeepStrictEqual(inputs,this.inputs)||!isDeepStrictEqual(pairs,this.pairs)||binding.promptSha256!==hash(JSON.stringify({system:this.o.system,inputs}))||!isDeepStrictEqual(canonicalReplies(sent,raw,pairs,true),canonicalReplies(contract,raw,pairs,false))||pairs.some((x:any)=>!sent.some(m=>isDeepStrictEqual(m,x.response))))throw new Error('native_original_turn_contract_changed');
+    const parsed=parseCodexResult(raw,binding,pairs),turn=parsed.turns.at(-1),input=inputs.at(-1);
+    if(parsed.status!=='final_observed'||!turn?.final||!input||turn.id!==binding.turnIds.at(-1))throw new Error('native_original_turn_not_complete');
+    const report=JSON.parse(turn.final.text);validateNativeReport(report,input.subjectCandidate,input.schema);
+    return {binding:structuredClone(binding),turnId:turn.id,report,input:structuredClone(input),originals,wholeProcessCompleted:false,ownedContextCanContinue:this.controlState().ownedRuntime};
+  }
   controlState(){const ended=this.activeTurn&&this.rpc.events.some(m=>m.method==='turn/completed'&&m.params?.threadId===this.binding.threadId&&m.params?.turn?.id===this.activeTurn);return {operation:this.o.operation,directory:this.o.directory,role:this.o.role,threadId:this.binding?.threadId??null,sessionId:this.binding?.sessionId??null,turnId:ended?null:this.activeTurn,ownedRuntime:!this.closed&&!this.rpc?.exit,currentTurnActive:Boolean(this.activeTurn&&!ended&&!this.closed&&!this.rpc.failure),controlGateInstalled:Boolean(this.o.control),resumeVerified:false,pauseSupported:false,permissionGranted:false};}
   async control(value:NativeControlRequest):Promise<NativeControlReceipt>{
     const request=parseNativeControlRequest(value),requestSha256=hash(canonical(request)),old=this.controlRequests.get(request.id);
@@ -285,7 +308,8 @@ export class BoundedCodexSession {
     save(join(this.o.directory, 'inputs.json'), this.inputs);
     this.binding.promptSha256 = hash(JSON.stringify({ system: this.o.system, inputs: this.inputs }));
     save(join(this.o.directory, `turn-${index}-intent.json`), { subjectCandidate: candidate, inputSha256: hash(input), status: 'send_registered' });
-    this.pendingTurn = this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...codexTurnChoice(this.turnModelChoice), outputSchema: schema });
+    const send=()=>this.request('turn/start', { threadId: this.binding.threadId, input: [{ type: 'text', text: input }], approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...codexTurnChoice(this.turnModelChoice), outputSchema: schema });
+    this.pendingTurn=this.o.dispatchGate?this.o.dispatchGate(send):send();
     let response;
     try { response = await this.pendingTurn; } finally { this.pendingTurn = null; }
     this.activeTurn = response.turn?.id;

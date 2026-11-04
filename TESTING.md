@@ -95,3 +95,10 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 ## 8. Lessons Learned
 
 测试曾专门固化以下反例：彼此文件不冲突仍可在组合后失败（`tests/w2/verification.test.ts`）；初始化/控制回执并非最终报告（w4/w6 原生与消息测试）；损坏捕获和原进程未知不能用重发恢复（w7 project-chat）；启动器静态导入可先于完整性检查执行代码（w7 workbench-launch）。维护这些最小反例及其用户路径，避免仅增加更多成功样例而丢掉边界。
+
+
+## 正式 PR 外层流程（Issue #72）
+
+构建后可单独运行 `node --test dist/tests/w5/formal-*.test.js dist/tests/w7/formal-workbench.test.js`。包含同会话写入、发布后新候选自动验证的场景需要已有 `TONGXU_TEST_DOCKER_CONFIG` 和可用 Docker；模型是明确的协议样例。验证内容包括完整 PR/额外调用方、直接 PASS 与仅 P2 的零额外输入、空 finding 缺证据、整批双验证、三轮分歧、未变候选反证回流、同 fact session/thread 修复、实际 Git/测试树、准确发布记录、祖先/分叉 B 下的自动新候选采集及已有材料完整再审、项目查询失效时本地停止、离线冷重开与错误账号/项目/入口拒绝、旧无绑定原请求的明确退化和零新增输入、停止与冷读不重发、在途 H/B/target 变化及原容器结束证据。新候选材料沿原 collect/verify/readPacket/import，不伪造 W2。
+
+共享边界按改动选 authority/resources、w3 receiver、w5、review-records/counters、w7 正常页面与启动器回归。原生协议样例不能称真实 Codex/Claude 演练，HTTP 测试不能称浏览器验收；独立审核、合入、启用和本人接受另记。配置与边界见 [formal_pr_review](docs/formal_pr_review.md)。
