@@ -75,6 +75,20 @@
         "test_anchor": "tests/w6/task-contact-choice.test.ts",
         "test_status": "automated",
         "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.source_reception",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。协议场景已覆盖，真实原生正常入口尚待验；不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/workbench.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/events/normal-entry.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-04"
       }
     ],
     "capability_boundaries": [

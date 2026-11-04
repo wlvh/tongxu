@@ -29,7 +29,7 @@ async function page(){
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
   const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
   const fetchCalls:Array<{path:string;options:any;resolve:(value:any)=>void;reject:(error:Error)=>void}>=[];
-  const context=createContext({renderProjectChat:()=>{},loadProjectChat:()=>{},setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);
+  const context=createContext({renderProjectChat:()=>{},loadProjectChat:()=>{},setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);runInContext(await readFile(new URL('../../../web/workbench/reception.js',import.meta.url),'utf8'),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
   const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,fetchCalls,run,state,nodes,document,findFilter};
@@ -122,4 +122,12 @@ test('retry after startup metadata failure retries the GitHub entry instead of s
 test('each project and item load-more request carries the cursor returned to that view',async()=>{
   const p=await page();p.run("view='projects';gh.page=1;gh.hasNext=true;gh.nextCursor='projects/cursor A'");const projects=p.run('loadGithubProjects(true)');assert.match(p.calls[0]!.path,/cursor=projects%2Fcursor%20A$/);p.calls[0]!.resolve({connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'},repositories:[],page:2,hasNext:false,nextCursor:null});await projects;
   p.run("chooseGithubProject({id:1,fullName:'fixture/repo1'})");p.calls[1]!.resolve({...data(1,'issues',9),hasNext:true,nextCursor:'issues/cursor A'});p.calls[2]!.resolve(data(1,'pulls',65));await flush();const items=p.run("loadGithubItems('issues',true)");assert.match(p.calls[3]!.path,/cursor=issues%2Fcursor%20A$/);p.calls[3]!.resolve({...data(1,'issues',10),page:2,hasNext:false,nextCursor:null});await items;assert.deepEqual(p.state().issues.items.map((x:any)=>x.number),[9,10]);
+});
+
+// These call the actual page controller; visual rendering is checked separately.
+test('registered reception actions stay in their selected project and stale button closures cannot post',async()=>{
+ const p=await page();p.run("gh.selected={id:1,fullName:'fixture/repo1'};state={tasks:[]};render=()=>{};refresh=async()=>{};globalThis.entry={id:'receive-current',packet:2}");
+ const pending=p.run("receptionAction(entry,'start')");assert.equal(p.fetchCalls.length,1);assert.equal(p.fetchCalls[0]!.options.headers['X-Tongxu-Project'],'1');assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),{expectedPacket:2});
+ p.run("gh.selected={id:2,fullName:'fixture/repo2'}");p.fetchCalls[0]!.resolve({ok:false,json:async()=>({error:'old_project_error'})});await pending;assert.equal(p.nodes.get('notice')?.textContent??'','');
+ await p.run("receptionAction(entry,'start','7:1')");assert.equal(p.fetchCalls.length,1);
 });

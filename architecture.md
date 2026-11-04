@@ -105,7 +105,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 原生完成/报告格式 | `codex-results`、消息消费、秘书历史与页面全文；退出/ack 不能替代完整结果 | `tests/w4/codex-results.test.ts`、`tests/w6/messages.test.ts`、`tests/w7/project-chat.test.ts` |
 | 角色选择/程序能力 | `ai-settings`、消息/修复 worker 的固定输入、适配器和旧运行读回 | `tests/w7/ai-workflow.test.ts`、`tests/w7/additional-cli.test.ts`、`tests/w7/ai-settings.test.ts` |
 | 队列格式/授权/停止条件 | 预开连接、任务阶段、接收/合并、页面控制和原资源占用 | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts`、`tests/w7/scope-controls.test.ts` |
-| 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts` |
+| 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
 按实际影响选择调查和验证，不要求每次变更重跑整张表。

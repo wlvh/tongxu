@@ -19,7 +19,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | `npm run test:pair`、`npm run test:messages`、`npm run test:tasks` | 分别是全部 w6、指定 messages/message-claude/message-continuation 文件、task-intake 单文件。 |
 | `npm run test:workbench`、`npm run test:deliveries` | 分别是全部 w7、w7 的 delivery-* 子集。二者完整入口均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像：相应成果执行/退回场景使用真实隔离测试。完整 `test:workbench` 还需 `/bin/zsh` 执行 `workbench-launch.test.ts`；这项启动器前提不属于仅运行 delivery-* 的 `test:deliveries`。其他本机 HTTP/协议样例不替代真实隔离或浏览器视觉验收。 |
 | `npm run test:authority`、`npm run test:resources`、`npm run test:merge` | 对应 authority/resources/merge 目录；校验本人来源、资源及受管合并的样例，不能证明生产配置已启用。 |
-| `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。 |
+| `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。events 的 normal-entry 场景以原接收/来源/本人/资源协议样例走真实本机 HTTP/SQLite/子进程；不等于真实模型或浏览器验收。 |
 | `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收。三者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；composition、project-repair 的测试文件在加载阶段检查配置，review-records 的 queue-repair 测试也导入强制要求配置的准备文件。 |
 | `npm run test:sessions` | w4 role-prompts 与 session-* 子集。 |
 | `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。二者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；integration 及成员修复都使用 `tests/integration/fixture.ts` 的共享准备流程，在进入该流程时强制检查配置并执行真实隔离验证，不能只按少数文件判断环境要求。 |
@@ -57,6 +57,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 固定 PR 原件 | 非法 scope 不调用外部工具；候选变动保留缺口；恢复不覆盖旧页 | `tests/w1/cli.test.ts`、`tests/w1/collection.test.ts`；见 test:mac |
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
 | 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
+| 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面跨项目请求见 `tests/w7/github-projects-ui.test.ts` |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |

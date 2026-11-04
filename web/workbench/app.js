@@ -472,7 +472,7 @@ function taskView() {
     for (const r of d.inbox) inbox.append(append(el('div',null,'report-row'),append(el('div'),el('strong',r.id+' · '+(phases[r.phase]||r.phase)),el('p',r.actor+' / '+r.tool+' · '+(r.currentMaterial?'对应当前材料':'历史材料'),'small'),r.reason?el('p',r.reason,'small'):null,r.sessionId?el('p','实际会话 '+r.sessionId+' · '+(r.nativeSessionResumed?'准确续接原会话'+(r.resumedFrom?.messageId?' · 原请求 '+r.resumedFrom.messageId:''):'新上下文，未接管外部会话'),'small'):null)));
     panel.append(inbox);
   }
-  append(panel,scopeControlPanel(t),contactControls(t),returnWorkPanel(t),collaborationView(t));
+  append(panel,receptionPanel(t),scopeControlPanel(t),contactControls(t),returnWorkPanel(t),collaborationView(t));
   panel.append(append(el('div', null, 'section-title'), el('h3', '正式接收操作与报告'), el('span', t.operations.length + ' 条记录')));
   if (!t.operations.length) panel.append(el('p', '尚无正式接收操作记录。协作回复不自动成为接收判断。', 'small'));
   [...t.operations].reverse().forEach(o => {
@@ -696,7 +696,7 @@ function render() {
   for(const name of ['projects','github'])document.querySelector('[data-view="'+name+'"]').hidden=!entryInfo?.githubProjects;
   document.querySelector('[data-view="github"]').disabled=!gh.selected;document.querySelector('[data-view="local-history"]').hidden=true;
   $('runtime-version').hidden=!state.runtime;if(state.runtime)$('runtime-version').textContent='本次运行版本 '+state.runtime.sourceHead.slice(0,12)+' · 配置 '+state.runtime.planSha256.slice(0,12)+' · 已匹配固定源码、构建与配置记录';
-  const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length||state.deliveryPreparation?.length?'成果准备与决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null,state.secretaries?.length?'秘书提问':null,state.queueActions?.length?'获准跟进':null,state.sourcePolling?.length?'来源补查':null,state.returnWork?.length?'退回处理':null].filter(Boolean);
+  const abilities=[state.ownerControls?.length?'目标与委托':null,state.organization?.length?'组织方式':null,state.deliveries?.length||state.deliveryPreparation?.length?'成果准备与决定':null,state.taskControls?.length?'任务联系':null,state.scopeControls?.length?'范围停止':null,state.overallReviews?.length?'整体复盘':null,state.secretaries?.length?'秘书提问':null,state.queueActions?.length?'获准跟进':null,state.sourcePolling?.length?'来源补查':null,state.returnWork?.length?'退回处理':null,state.receptions?.length?'独立技术接收':null].filter(Boolean);
   $('access-mode').textContent=state.mode==='read_only'?'只读':'受控入口';$('access-description').textContent=state.mode==='read_only'?'当前页面提供查看与核对；没有批准、合并或派发入口。':'已配置：'+abilities.join('、')+'。实际动作按原范围、权限与资源执行；页面钥匙不代替本人签署。';
   document.querySelector('[data-view="secretary"]').hidden=!state.secretaries?.length&&!state.queueActions?.length&&!state.sourcePolling?.length;
   $('observation-boundary').textContent=state.sourcePolling?.length?'来源是本机原记录；已配置的前台补查按自己的周期核对来源。刷新页面不启动模型，各队列分别观测。':'来源是本机保存的运行记录。刷新只读取已有结果，不启动模型。各队列分别观测。';
@@ -721,7 +721,7 @@ async function refresh() {
     const snapshot = await api('/api/state');if(!current())return;state=snapshot; const at = state.tasks.map(t => t.observedAt).sort().at(-1); $('observed').textContent = (gh.selected?gh.selected.fullName+' · ':'')+'本机读取 · ' + date(at||new Date().toISOString());
     notice(state.project?.unresolvedSourceCount?'有 '+state.project.unresolvedSourceCount+' 项本机来源归属尚未核清；未混入本项目。'+(state.project.controlsDeferred?'相关操作暂缓，来源恢复后刷新即可继续。':''):state.tasks.some(t => !t.available) ? '部分来源无法读取；相关任务已明确标记，未用空数据或旧结论代替。' : ''); render();
   } catch (e) { if(!current())return;notice((state ? '刷新失败，下面仍是上次读取的数据。' : '无法读取当前数据。') + (e.message === 'viewer_key_required' ? '请从本次启动生成的完整本机入口打开。' : '来源返回：' + e.message)); if (!state) $('content').replaceChildren(el('p', '尚未取得真实队列数据。', 'empty')); }
-  finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
+  finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.receptions||[]).some(r=>r.controllerActive)||(state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
 }
 function showWorkbenchReport(){
   const dialog=$('report-dialog');if(dialog.open)return;
