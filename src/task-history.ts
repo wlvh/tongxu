@@ -26,12 +26,28 @@ export class TaskHistoryProjection {
       const s=original.state;
       this.executions[id]={task,request:original.request,run,bindings:s.registration.bindings,
         originalRoleInputs:original.inputs.map(input=>this.input(original,run,input)),
-        reports:s.messages.map((m:Row)=>({id:m.id,recipient:m.sent?.recipient??null,receipt:m.reply,...(m.interruption?{state:m.state,interruption:m.interruption}:{})})),
+        reports:s.messages.map((m:Row)=>({id:m.id,recipient:m.sent?.recipient??null,receipt:this.report(task,run,m.id,m.reply),...(m.interruption?{state:m.state,interruption:m.interruption}:{})})),
         ...(original.interrupted?{interruptedRequestClosed:true,originalRunCompleted:false}:{}),
         nativeControlHistory:s.nativeControls??[],
         nativeSessionResumed:s.runtimes.some((r:Row)=>r.route?.nativeSessionResumed===true)};
       return ref;
     }finally{this.active.delete(id);}
+  }
+  private report(task:string,run:string,messageId:string,receipt:Row|null){
+    if(!receipt)return null;
+    const source={task,run,messageId,name:'task-report',sha256:hash(canonical(receipt))},id=this.id('material',source);
+    if(!this.materials[id])this.materials[id]={source,value:receipt};
+    return {...source,historyRef:id};
+  }
+  sender(value:Row|null):Row|null{
+    if(!value)return null;
+    // Read the exact original capture, without requiring an old report to be
+    // current or importing the sender's unrelated input history.
+    const original=this.load(value.run),s=original.state,m=s.messages.find((m:Row)=>m.id===value.messageId),p=s.plan.participants.find((p:Row)=>p.id===m?.to),r=s.runtimes.find((r:Row)=>r.participant===p?.id);
+    if(original.task!==value.task||p?.item!==value.task||m?.state!=='Reply'||!m.reply?.reportedConsumption||r?.captureVerification?.proof.successfulCapture!==true||s.registration.bindings[p?.id]?.fingerprint!==value.sourceSha256||canonical(r.route)!==canonical(value.route))throw new Error('task_history_sender_identity_changed');
+    const reply=this.report(value.task,value.run,value.messageId,m.reply);
+    if(canonical(value.reply)!==canonical(m.reply)&&canonical(value.reply)!==canonical(reply))throw new Error('task_history_sender_reply_changed');
+    return {...value,reply};
   }
   private input(original:OriginalTaskExecution,run:string,input:Row){
     const sent=original.state.messages.find((m:Row)=>m.id===input.messageId)?.sent,sha256=hash(canonical(input));
@@ -62,12 +78,12 @@ export class TaskHistoryProjection {
   }
   private context(value:Row,task:string):Row{
     if(![1,2].includes(value.schemaVersion)||value.kind!=='tongxu-task-owner-context'||value.task?.item!==task||!Array.isArray(value.previousExecutions))throw new Error('task_history_context_format_unknown');
-    const {historyProjection,previousExecutions,scopeContinuation,...rest}=value;
+    const {historyProjection,previousExecutions,scopeContinuation,sender,...rest}=value;
     // Only the selected, hash-checked task material is opened. A user question
     // or report containing JSON is an opaque string throughout this class.
     const source={task,name:'task-source',sha256:hash(canonical(value.task))},id=this.id('material',source);
     if(!this.materials[id])this.materials[id]={source,value:value.task};
-    return {...rest,task:{item:task,historyRef:id},previousExecutions:previousExecutions.map((e:Row)=>this.execution(e.task??task,e.run,e.request)),
+    return {...rest,task:{item:task,historyRef:id},sender:this.sender(sender),previousExecutions:previousExecutions.map((e:Row)=>this.execution(e.task??task,e.run,e.request)),
       ...(scopeContinuation?{scopeContinuation:this.scope(scopeContinuation)}:{})};
   }
   value(){return {schemaVersion:1,kind:'tongxu-task-history-projection',executions:this.executions,inputs:this.inputs,materials:this.materials};}
