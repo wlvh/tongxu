@@ -112,3 +112,5 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 
 初次 Issue 实施沿 `workbench → issue-implementation-controls → 原 TaskRecords / IssueImplementations / authority / resources → issue-implementation`。固定工作区准备、`RepairTools` 的限定写入/预期树与共享宿主提交原语、注册 Docker 测试和原生捕获复用；执行角色是新的 implementer，不调用 finding/repair 循环。状态与原件留在原队列 operations/events/blobs，没有新队列或批准账本。修改这些共享边界时，除原 repair / resources / authority 外，还核 `tests/project-repair/integration.test.ts` 的正常入口组合和 `tests/w7/github-projects-ui.test.ts` 的项目切换；真实原生验证边界见 [实施说明](docs/issue_implementation.md)。
+
+确证未发的登记沿原固定请求补 bind；已有操作的纯输入准备在原 controller lock 内核原派发、输入、H0 文件/暂存和写者后继续首次发送。`IssueImplementations.unsent` 复用原权限/资源/取消/停止事务检查，dispatch 仍只准一次；原生/工具/修改或未知占用不进入该分支，不承担失败现场恢复。

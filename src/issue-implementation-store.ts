@@ -54,6 +54,7 @@ export class IssueImplementations {
   bind(source:string,id:string,plan:Row){return this.transaction(()=>{
     this.mode();const f=this.fixed(source,id);if(f.selected){if(f.selected.inputPlanSha256!==hash(canonical(plan)))throw new Error('implementation_prepared_plan_is_fixed');return this.state(source,id);}
     if(f.terminal)throw new Error('implementation_request_ended');
+    if(f.events.some(e=>e.kind==='issue_implementation_stopped'))throw new Error('implementation_stopped');
     const op=this.begin(f.request.task,'issue-implementation:'+id);
     if(!op.operation||op.status!=='running'||op.duplicate)throw new Error(op.blocked?.[0]??'implementation_original_operation_unavailable');
     const resourceRequestDefinitions=(plan.budgets??[]).map((budget:Row)=>({schemaVersion:1,ledgerId:budget.ledgerId,repository:plan.actions[budget.action].repository,operation:op.operation,authorityIntent:budget.action==='test'?plan.testIntent:plan.implementIntent,resourceRef:budget.resourceRef,unit:budget.unit,quantity:budget.quantity,role:'implementer',actionSha256:hash(canonical(plan.actions[budget.action]))}));
@@ -69,6 +70,11 @@ export class IssueImplementations {
     if(terminal)this.db.prepare('DELETE FROM claims WHERE operation=? AND generation=?').run(operation,op.generation);
   }
   check(source:string,id:string,observations:OwnerObservation[],effect?:()=>void){return this.transaction(()=>this.checkValue(source,id,observations,effect));}
+  original(source:string,id:string){return this.fixed(source,id).request;}
+  unsent(source:string,id:string,observations:OwnerObservation[]){return this.transaction(()=>{
+    if(this.fixed(source,id).dispatched)throw new Error('implementation_sent_or_unknown_never_resend');
+    return this.checkValue(source,id,observations);
+  });}
   private checkValue(source:string,id:string,observations:OwnerObservation[],effect?:()=>void){
     this.mode();
     const f=this.fixed(source,id),s=f.selected;

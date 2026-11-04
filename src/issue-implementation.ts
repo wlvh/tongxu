@@ -6,13 +6,13 @@ import {save} from './live-process.js';
 import {assembleRolePrompt} from './role-prompts.js';
 import {BoundedCodexSession,implementationSchema,readRepairSession} from './repair-native.js';
 import {prepareProjectRepair,validateProjectContract,projectTestPlan,projectMaterial,projectModelTestResult,testProject,bindProjectTestToCandidate,type ProjectRequest} from './project-repair.js';
-import {regular,exists,tree,treeHash,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,type Grant} from './repair-workspace.js';
+import {regular,exists,git,tree,treeHash,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,type Grant} from './repair-workspace.js';
 import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
 export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest};
-export type ImplementationGate={refresh():Promise<void>;check(effect?:()=>void):void;dispatch():void};
+export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void};
 
 /** The existing fixed-project preparer is used with an empty finding list.
  * Execution below is a new implementer consumer, never the repair/fact loop. */
@@ -23,11 +23,19 @@ export async function prepareIssueImplementation(config:string,request:Implement
   if(await exists(requestPath)){if(hash(await regular(requestPath))!==hash(bytes))throw new Error('issue_implementation_original_changed');}
   else await writeFile(requestPath,bytes,{flag:'wx',mode:0o600});
   const prepared=await prepareProjectRepair(config,requestPath,root);
+  // A registered request may have failed queue admission after preparation.
+  // Re-read its original files; never bind a modified plan merely because the
+  // preparer found an existing directory. Config and request are fixed inputs.
+  const r=request.workspaceRequest,plan=JSON.parse((await regular(prepared.plan)).toString()) as RepairPlan;
+  const expected={...JSON.parse((await regular(config)).toString()),schemaVersion:1,kind:'tongxu-controlled-repair',workspace:join(root,'workspace'),candidate:{kind:'local-git',repository:'local/project-repair',pr:null,H:r.candidate.H,B:r.candidate.H,target:'project-base'},grant:join(root,'grant.json'),findings:[],test:'registered-project-tests-v1',demonstrationFixture:r.demonstrationFixture,project:{sourceCandidate:r.candidate,materialPaths:r.materialPaths,protectedPaths:r.protectedPaths,contract:r.contract,testPlan:join(root,'test-plan.json'),testPlanSha256:r.testPlanSha256,dependencyHash:plan.project?.dependencyHash,generatedDirectories:r.generatedDirectories}};
+  if(canonical(plan)!==canonical(expected))throw new Error('implementation_original_plan_changed');
+  await projectTestPlan(plan.project!);
   return {...prepared,request,kind:'tongxu-issue-implementation' as const};
 }
 
 /** One bounded, nonpersistent implementer turn. Uncertain or failed runs are
- * retained for inspection; this consumer never resumes or sends them again. */
+ * retained for inspection. Only a complete, unchanged input-only preparation
+ * can continue its first dispatch; native/failed writer recovery is excluded. */
 export async function runIssueImplementation(planPath:string,expectedPlanSha256:string,request:ImplementationRequest,operation:string,external:ImplementationGate){
   const planBytes=await regular(planPath),plan=JSON.parse(planBytes.toString()) as RepairPlan;
   if(!Number.isSafeInteger(plan.timeoutMs)||plan.timeoutMs<1000||plan.timeoutMs>900000||!['fixture','native_capture',undefined].includes(plan.executionKind)||!plan.scopeSource||hash(planBytes)!==expectedPlanSha256||plan.findings.length||!plan.project||plan.test!=='registered-project-tests-v1'||plan.project.priorReview||plan.project.queueOperation)throw new Error('issue_implementation_plan_changed');
@@ -36,13 +44,24 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   if(plan.workspace!==grant.workspace||grant.H!==plan.candidate.H||grant.H!==request.workspaceRequest.candidate.H||canonical(grant.allowedPaths)!==canonical(request.workspaceRequest.allowedPaths)||canonical(plan.project.materialPaths)!==canonical(request.workspaceRequest.materialPaths)||canonical(plan.project.protectedPaths)!==canonical(request.workspaceRequest.protectedPaths)||plan.project.contract!==request.workspaceRequest.contract||plan.project.testPlanSha256!==request.workspaceRequest.testPlanSha256)throw new Error('implementation_original_scope_changed');
   const billing=plan.billing;
   if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||!Number.isFinite(Date.parse(billing.observedAt))||hash(await regular(billing.evidence))!==billing.evidenceSha256||Date.now()-Date.parse(billing.observedAt)>24*3600000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
-  if(await exists(operation))throw new Error('implementation_original_operation_must_be_read');
-  await privateDirectory(operation,true);await mkdir(join(operation,'attempt-1'),{mode:0o700});
-  const initial=await tree(plan.workspace,true);if(treeHash(initial)!==grant.treeSha256)throw new Error('implementation_initial_tree_changed');
-  save(join(operation,'initial-tree.json'),initial);
+  external.unsent();
+  if(operation!==join(request.workspaceRequest.executionRoot,'operation'))throw new Error('implementation_original_operation_changed');
+  const initial=await tree(plan.workspace,true);if(treeHash(initial)!==grant.treeSha256||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
   const prompt=await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt}));
-  save(join(operation,'input-manifest.json'),{request,planSha256:expectedPlanSha256,prompt,inputManifestSha256});
-  await external.refresh();external.check();
+  const manifest={request,planSha256:expectedPlanSha256,prompt,inputManifestSha256};
+  const readPreparation=async()=>{
+    await privateDirectory(operation,false);await privateDirectory(join(operation,'attempt-1'),false);
+    if((await readdir(operation)).sort().join()!=='attempt-1,initial-tree.json,input-manifest.json'||(await readdir(join(operation,'attempt-1'))).length)throw new Error('implementation_original_operation_must_be_read');
+    if(canonical(JSON.parse((await regular(join(operation,'input-manifest.json'))).toString()))!==canonical(manifest)||canonical(JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString()))!==canonical(initial))throw new Error('implementation_original_input_changed');
+    if(treeHash(await tree(plan.workspace,true))!==treeHash(initial)||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
+  };
+  if(await exists(operation))await readPreparation();
+  else{
+    await privateDirectory(operation,true);await mkdir(join(operation,'attempt-1'),{mode:0o700});
+    await writeFile(join(operation,'initial-tree.json'),JSON.stringify(initial),{flag:'wx',mode:0o600});
+    await writeFile(join(operation,'input-manifest.json'),JSON.stringify(manifest),{flag:'wx',mode:0o600});
+  }
+  await external.refresh();external.unsent();await readPreparation();
   const lease=await acquireWorkspace(plan.workspace,operation,false,grant);
   let session:BoundedCodexSession|undefined;
   const gate=new RepairTools(plan.workspace,operation,grant,lease,plan.nodeExecutable,structuredClone(initial),plan.candidate.H,

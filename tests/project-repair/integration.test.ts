@@ -13,7 +13,8 @@ import { fixture } from '../w5/repair-fixture.js';
 import { type ProjectRequest,prepareProjectRepair, testProject, reconcileProjectTests, bindProjectTestToCandidate, needsProjectReviewBindingSupplement } from '../../src/project-repair.js';
 import { runRepair } from '../../src/repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from '../../src/issue-implementation.js';
-import { git, tree, treeHash } from '../../src/repair-workspace.js';
+import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
+import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -230,12 +231,12 @@ test('new implementation consumer uses no finding, writes twice, tests the actua
  const implementationRoot=join(f.root,'implementation');
  const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:'new-request',task:'a'.repeat(64),adoptedScope:{adoption:'b'.repeat(64),body:{goals:[body],nonGoals:[],preserve:[],acceptance:['Registered tests'],constraints:['Only allowed files']},bodySha256:hash(canonical({goals:[body],nonGoals:[],preserve:[],acceptance:['Registered tests'],constraints:['Only allowed files']})),source:'explicit fixture scope'},issue:{number:74,body,bodySha256:hash(body),adjudication:'explicit fixture adopted requirement; no real user acceptance'},workspaceRequest:{...f.request,executionRoot:implementationRoot}};
  const prepared=await prepareIssueImplementation(f.configPath,request,implementationRoot),workspace=JSON.parse(await readFile(prepared.plan,'utf8')).workspace,planSha256=hash(await readFile(prepared.plan));let dispatches=0,checks=0;
- const result=await runIssueImplementation(prepared.plan,planSha256,request,prepared.operation,{refresh:async()=>{},check:effect=>{checks++;effect?.();},dispatch:()=>{dispatches++;}});
+ const result=await runIssueImplementation(prepared.plan,planSha256,request,prepared.operation,{refresh:async()=>{},unsent:()=>{},check:effect=>{checks++;effect?.();},dispatch:()=>{dispatches++;}});
  if(result.status!=='completed')assert.fail(JSON.stringify(result));assert.equal(dispatches,1);assert.ok(checks>2);assert.notEqual(result.H1,result.H0);assert.equal(result.tests.passed,true);assert.equal(result.testCandidateBinding.testedTree,await git(workspace,['rev-parse',result.H1+'^{tree}']));
  assert.equal((await readdir(join(prepared.operation,'calls'))).filter(x=>x.endsWith('.json')).length,4);
  const capture=JSON.parse(await readFile(join(prepared.operation,'implementer','binding.json'),'utf8'));assert.equal(capture.role,'implementer');assert.equal(capture.turnIds.length,1);
  assert.deepEqual(await tree(f.objects,true),sourceBefore);assert.equal(await git(f.objects,['rev-parse','HEAD']),f.request.candidate.H);assert.equal(result.formalReview,false);assert.equal(result.published,false);
- const trace=await readFile(f.trace);await assert.rejects(runIssueImplementation(prepared.plan,planSha256,request,prepared.operation,{refresh:async()=>{},check:()=>{},dispatch:()=>{throw Error('must not dispatch');}}),/original_operation_must_be_read/);assert.deepEqual(await readFile(f.trace),trace);
+ const trace=await readFile(f.trace);await assert.rejects(runIssueImplementation(prepared.plan,planSha256,request,prepared.operation,{refresh:async()=>{},unsent:()=>{throw Error('implementation_sent_or_unknown_never_resend');},check:()=>{},dispatch:()=>{throw Error('must not dispatch');}}),/sent_or_unknown_never_resend/);assert.deepEqual(await readFile(f.trace),trace);
 });
 
 
@@ -294,4 +295,88 @@ test('an implementation interrupted after its first registered write retains the
  await f.post('prepare',{requestId:'unknown',issueNumber:74});await f.post('start',{requestId:'unknown'});const unknown=await f.settled('unknown');assert.equal(unknown.phase,'active_or_unknown');assert.ok(unknown.reason);assert.equal(unknown.completeCapture,false);
  const partial=await f.get('/api/implementation-report/implementation/unknown');assert.equal(partial.status,200);assert.equal(partial.value.observationOnly,true);assert.match(partial.value.diff,/fallback/);assert.equal(partial.value.H1,null);
  const trace=await readFile(f.project.trace);await f.post('start',{requestId:'unknown'});await f.settled('unknown');assert.deepEqual(await readFile(f.project.trace),trace);assert.equal((await f.post('cancel',{requestId:'unknown'})).status,503);assert.equal((await f.post('prepare',{requestId:'replacement',issueNumber:74})).status,503);assert.deepEqual(await readFile(f.project.trace),trace);
+});
+
+// Reuse the normal entry, original queue/authority/provider and real Docker
+// fixtures for the two never-dispatched waiting boundaries.
+for(const cold of [false,true])test(`registered implementation completes the same preparation after a busy seat clears (${cold?'cold':'warm'})`,async t=>{
+ const f=await implementationPage(t),body={requestId:'busy-original',issueNumber:74},blocker=f.messages.q.begin(f.messages.item,'ordinary-seat');
+ assert.equal(blocker.status,'running');assert.equal((await f.post('prepare',body)).value.error,'reception_seats_full');
+ const original=f.messages.q.issueImplementations().state('implementation',body.requestId),root=join(f.entry.root,body.requestId),paths=['request.json','plan.json','grant.json','test-plan.json'],bytes=await Promise.all(paths.map(p=>readFile(join(root,p))));
+ assert.equal(original.phase,'registered');assert.equal(original.reason,'reception_seats_full');assert.equal(await readFile(f.project.trace,'utf8'),'');
+ f.messages.q.evaluate(blocker.operation);
+ let post=f.post,settled=f.settled;
+ if(cold){
+  const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+  await fetch(url.origin+'/api/github/projects',{headers});
+  post=async(action,data,extra={})=>{const r=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:r.status,value:await r.json() as any};};
+  settled=async id=>{for(let n=0;n<1000;n++){const s=(await (await fetch(url.origin+'/api/implementation',{headers})).json() as any).entries[0].requests.find((r:any)=>r.id===id);if(!s.controllerActive)return s;await new Promise(r=>setTimeout(r,20));}throw Error('fixture_timeout');};
+ }
+ assert.equal((await post('prepare',body)).value.phase,'prepared');await post('start',{requestId:body.requestId});
+ const done=await settled(body.requestId),fixed=f.messages.q.issueImplementations().state('implementation',body.requestId);
+ assert.equal(done.status,'completed');assert.equal(done.task,original.task);assert.equal(fixed.requestSha256,original.requestSha256);
+ for(let i=0;i<paths.length;i++)assert.deepEqual(await readFile(join(root,paths[i]!)),bytes[i]);
+ assert.equal(f.ledger!.state().claims.length,1);assert.equal(f.ledger!.state().settlements.length,1);
+ const report=await f.get('/api/implementation-report/implementation/'+body.requestId);assert.equal(report.value.H1,done.H1);assert.equal(report.value.completeCapture,true);
+ const trace=await readFile(f.project.trace,'utf8');assert.equal((trace.match(/"kind":"model-input"/g)??[]).length,1);
+ await post('start',{requestId:body.requestId});await settled(body.requestId);assert.equal(await readFile(f.project.trace,'utf8'),trace);
+});
+
+async function unsentImplementation(t:TestContext){
+ const f=await implementationPage(t),id='presend-original',catalog=join(f.project.root,'implementation-catalog.json'),operation=join(f.entry.root,id,'operation');let failed=false;
+ const load=(verify=async()=>{if(!failed&&await exists(join(operation,'input-manifest.json'))){failed=true;throw Error('fixture_source_temporarily_unavailable');}})=>IssueImplementationControls.load(catalog,hashBytes,f.entry.repository,async number=>({number,title:'Optional label fallback',body:f.body,url:'https://github.com/fixture/reception/issues/'+number}),verify);
+ const hashBytes=hash(await readFile(catalog));let controls=await load();t.after(()=>controls.drain());
+ const settled=async()=>{for(let n=0;n<1000;n++){const s=(await controls.state())[0]!.requests.find(r=>r.id===id);if(s&&!s.controllerActive)return s;await new Promise(r=>setTimeout(r,20));}throw Error('fixture_timeout');};
+ await controls.prepare('implementation',{requestId:id,issueNumber:74});await controls.begin('implementation',id);assert.equal((await settled()).reason,'fixture_source_temporarily_unavailable');
+ const original=f.messages.q.issueImplementations().state('implementation',id);assert.equal(original.phase,'prepared');assert.equal(await readFile(f.project.trace,'utf8'),'');
+ assert.equal(await exists(join(original.plan.workspace,'.git','tongxu-writer.json')),false);
+ return {...f,id,operation,original,load,settled,control:()=>controls,reopen:async(verify?:()=>Promise<void>)=>{await controls.drain();controls=await load(verify);return controls;}};
+}
+for(const cold of [false,true])test(`unsent implementation consumes its original prepared input after final source recovery (${cold?'cold':'warm'})`,async t=>{
+ const f=await unsentImplementation(t),manifest=await readFile(join(f.operation,'input-manifest.json')),initial=await readFile(join(f.operation,'initial-tree.json')),claim=f.ledger!.state().claims[0] as any;
+ assert.deepEqual((await readdir(f.operation)).sort(),['attempt-1','initial-tree.json','input-manifest.json']);assert.equal(JSON.parse(claim.result).claim.state,'held');
+ if(cold)await f.reopen();await f.control().begin('implementation',f.id);await f.control().begin('implementation',f.id);
+ const done=await f.settled(),state=f.messages.q.issueImplementations().state('implementation',f.id);assert.equal(done.status,'completed');assert.equal(done.task,f.original.task);assert.equal(state.operation,f.original.operation);assert.equal(state.requestSha256,f.original.requestSha256);
+ assert.deepEqual(await readFile(join(f.operation,'input-manifest.json')),manifest);assert.deepEqual(await readFile(join(f.operation,'initial-tree.json')),initial);
+ const ledger=f.ledger!.state();assert.equal(ledger.claims.length,1);assert.equal(ledger.claims[0]!.id,claim.id);assert.equal(ledger.settlements.length,1);assert.equal(JSON.parse((ledger.claims[0] as any).result).claim.state,'consumed');
+ const report=await f.control().report('implementation',f.id),capture=JSON.parse(await readFile(join(f.operation,'implementer','binding.json'),'utf8'));assert.equal(report.H1,done.H1);assert.equal(report.completeCapture,true);assert.equal(capture.role,'implementer');assert.equal(capture.turnIds.length,1);
+ const trace=await readFile(f.project.trace,'utf8');assert.equal((trace.match(/"kind":"model-input"/g)??[]).length,1);await f.control().begin('implementation',f.id);await f.settled();assert.equal(await readFile(f.project.trace,'utf8'),trace);
+});
+
+test('registered implementation retains fixed plans and rechecks cancellation or stop before bind',async t=>{
+ for(const action of ['cancel','stop','changed-plan'] as const){
+  const f=await implementationPage(t,false),id='registered-'+action,blocker=f.messages.q.begin(f.messages.item,'busy');await f.post('prepare',{requestId:id,issueNumber:74});f.messages.q.evaluate(blocker.operation);
+  const original=f.messages.q.issueImplementations().state('implementation',id),catalog=join(f.project.root,'implementation-catalog.json');
+  if(action==='changed-plan'){const path=join(f.entry.root,id,'plan.json'),p=JSON.parse(await readFile(path,'utf8'));p.timeoutMs++;await writeFile(path,JSON.stringify(p));}
+  const controls=await IssueImplementationControls.load(catalog,hash(await readFile(catalog)),f.entry.repository,async number=>{
+   if(action==='cancel')await controls.cancel('implementation',id);
+   if(action==='stop')await controls.stop('implementation',id);
+   return {number,title:'Updated title must not replace the original task',body:f.body,url:'https://github.com/fixture/reception/issues/'+number};
+  },async()=>{});t.after(()=>controls.drain());
+  await assert.rejects(controls.prepare('implementation',{requestId:id,issueNumber:74}),action==='cancel'?/request_ended/:action==='stop'?/implementation_stopped/:/original_plan_changed/);
+  const after=f.messages.q.issueImplementations().state('implementation',id);assert.equal(after.task,original.task);assert.equal(after.requestSha256,original.requestSha256);assert.equal(after.operation,null);assert.equal(await readFile(f.project.trace,'utf8'),'');
+  if(action==='cancel')assert.equal(after.result.status,'cancelled_unstarted');if(action==='stop')assert.equal(after.stopped,true);
+ }
+});
+
+test('input-only implementation refuses changed material, native evidence, competing writers and cancelled or stopped requests',async t=>{
+ for(const problem of ['manifest','workspace','during-refresh','index','native','lease','cancel','stop'] as const){
+  const f=await unsentImplementation(t),workspace=f.original.plan.workspace,manifestPath=join(f.operation,'input-manifest.json'),originalManifest=await readFile(manifestPath),sourcePath=join(workspace,'src/normalize.mjs'),source=await readFile(sourcePath);
+  if(problem==='manifest'){const value=JSON.parse(originalManifest.toString());value.prompt.system+=' changed';await writeFile(manifestPath,JSON.stringify(value));}
+  if(problem==='workspace'||problem==='index'){await writeFile(sourcePath,'export const unrelated = 1;\n');if(problem==='index'){await git(workspace,['add','src/normalize.mjs']);await writeFile(sourcePath,source);}}
+  if(problem==='native')await writeFile(join(f.operation,'launch.json'),JSON.stringify({status:'launch_registered',pid:null}));
+  if(problem==='lease')await writeFile(join(workspace,'.git','tongxu-writer.json'),JSON.stringify({operation:'another-original',controllerPid:process.pid,generation:'retained',status:'held'}));
+  // Inject after execute has selected the old prepared record: the consumer
+  // must consult the transaction's current terminal/stop fact, not that copy.
+  let verifications=0;
+  await f.reopen(async()=>{if(problem==='cancel')await f.control().cancel('implementation',f.id);if(problem==='stop')await f.control().stop('implementation',f.id);if(problem==='during-refresh'&&++verifications===3)await writeFile(sourcePath,'export const unrelated = 1;\n');});
+  await f.control().begin('implementation',f.id);const state=await f.settled();assert.equal(await readFile(f.project.trace,'utf8'),'');assert.equal(state.completeCapture,false);
+  if(problem==='cancel')assert.equal(state.status,'cancelled_unstarted');else{assert.equal(state.phase,'prepared');assert.ok(state.reason);}
+  const current=f.messages.q.issueImplementations().state('implementation',f.id);assert.equal(current.operation,f.original.operation);assert.equal(current.requestSha256,f.original.requestSha256);
+  const db=new DatabaseSync(join(f.messages.store,'queue.sqlite'));try{assert.equal(db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='issue_implementation_dispatched'").get()!.n,0);}finally{db.close();}
+  if(problem!=='manifest')assert.deepEqual(await readFile(manifestPath),originalManifest);
+  if(problem==='native')assert.equal(await exists(join(f.operation,'launch.json')),true);if(problem==='lease')assert.equal(JSON.parse(await readFile(join(workspace,'.git','tongxu-writer.json'),'utf8')).operation,'another-original');
+  const ledger=f.ledger!.state();assert.equal(ledger.claims.length,1);assert.equal(ledger.settlements.length,problem==='cancel'?1:0);
+  if(problem==='cancel')assert.equal(JSON.parse((ledger.settlements[0] as any).body).state,'cancelled');
+ }
 });

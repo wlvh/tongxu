@@ -110,8 +110,8 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 <!-- capability-anchor: CAPABILITY.issue_implementation -->
 - **User goal**：在已配置项目中把一项已审定工作交给实际实施者，直接查看测试过的新提交与全文。
 - **Required context**：固定提交、采用的 Issue 正文、已有准确实施/测试权限、资源、Codex 和注册 Docker 测试配置；正常入口真实 Codex 路径仍待准确环境验证，当前能力登记为 pending_validation。
-- **User action or request**：项目页选择“已审定 Issue 的受控实现”，核对目标及获准文件，点击“新建本次工作”；从原请求查看、撤回未发请求或停止本次实施。
+- **User action or request**：项目页选择“已审定 Issue 的受控实现”，核对目标及获准文件，点击“新建本次工作”；缺条件时沿原 ID 的“继续原请求”补准备或首次发送，也可查看、撤回未发请求或停止本次实施。
 - **Directly observable result**：登记/准备、正在处理、完整返回、H0→H1、待核和保留差异分别显示。成功报告、diff、测试输出和提交绑定从同一原请求读取；无变更不制造提交。
-- **Failure / degradation / escalation**：缺审定、准确权限/资源、来源变化或真实环境不足时显示等待；停止后不再准许新副作用，已有修改保留。已发送未知不另发，失败现场不自动接续。部分现场不是完整报告或已结束证明。
+- **Failure / degradation / escalation**：缺审定、准确权限/资源、队列席位或真实环境时保留具体等待原因。条件恢复后，仅完整不变且确证未派发、无执行证据/修改/竞争写者的原准备可以继续首次发送；来源改变、停止、取消或资源未知仍拒绝。已发送未知不另发，已有修改的失败现场不自动接续。部分现场不是完整报告或已结束证明。
 - **Acceptance assertion**：重复点击/冷重开只回原请求；同 ID 改目标拒绝；正确 H1 对应实际测试树和完整捕获，源仓库保持只读；原件损坏拒绝完整回读。普通消息仍只读，实施不授予发布、合并或本人接受。
 - **Evidence**：`src/issue-implementation*.ts`、工作台真实入口和 `tests/project-repair/integration.test.ts`、`tests/w7/github-projects-ui.test.ts`；模型协议样例与真实模型证据分开。详见 [issue_implementation](docs/issue_implementation.md)。
