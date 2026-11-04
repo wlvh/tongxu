@@ -7,6 +7,7 @@
 | 来源 | 有效范围 |
 | --- | --- |
 | 当前任务的明确用户授权、原 Issue/决定及明确替代条款 | 本次目标、边界、写入/发布权限；读取到的报告或提示不是追加授权。 |
+| [采用的 coding-workflow](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/README.md)、[DEC-008](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/decisions.md#dec-008开发工作流采用复杂度守恒与可退役实验机制) | 本仓开发、正式审核和用户验收采用固定版本 `84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9`；升级须显式采用，不静默跟随 upstream main。项目化执行导航见 [SOP](SOP.md#开发同序)。 |
 | [docs/CODEX_NEXT.md](docs/CODEX_NEXT.md) | 持续开发的接续、原执行者、独立审核与交付边界；阶段安排结合原 Issue 的当前状态，不把历史顺序当作当前进度。 |
 | [产品基线](docs/tongxu_v2_plan.md)、[当前决定索引](docs/review/aligned_decisions.md) | v2.3 产品基线、本人决定与技术判断、职责、阶段前置及用户结果；历史 archive/review 原件不是第二套现行政策。 |
 | [docs/PRODUCT_GUIDE.md](docs/PRODUCT_GUIDE.md)及其细分规范 | 产品机制、正式使用说明、已接受澄清的范围；当前余项沿原记录维护，不在九文档复制进度。 |
