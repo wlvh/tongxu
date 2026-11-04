@@ -4,6 +4,23 @@
 
 本页只保留稳定动作、权威来源和完成判据；易漂移的命令、字段、测试清单和权限定义留在正式文档。来源遵循 [Authority Map](AGENTS.md#authority-map)。先确认任务、原执行者和当前授权，按实际影响选择相关流程。
 
+## 开发同序
+
+本仓开发采用 [coding-workflow 固定版本 84a7ccd](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/README.md)及 [DEC-008](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/decisions.md#dec-008开发工作流采用复杂度守恒与可退役实验机制)。[AGENTS](AGENTS.md#authority-map)说明权威关系；当前工作以唯一实施 Issue 为准，例如本次接入的 [#69](https://github.com/wlvh/tongxu/issues/69)。以下是项目化导航，完整提示和规则只在采用的固定上游维护。
+
+| 阶段与指定角色 | 输入、动作和产物 | 下一步与完成条件 |
+| --- | --- | --- |
+| 1—4 需求成文 | 网页端 Pro 模型先写只描述用户可观察结果的 FSD；Bridge Agent 对照当前源码及权威文档，给出影响预测和目标状态；Issue Agent 汇入同一 Issue | FSD 不预设实现，Bridge 的触点预测不冒充承诺；实质范围、权限、成本和失败取舍留在 Issue。PR、评论、交接引用它。 |
+| 5—6 编码前审定 | Codex 核需求闭合/验收可判定，Claude Code 核工程量/最小充分；Issue Agent 综合更新正文。高风险时做 Tech Lead Readback，解释正常与失败例子及简化方案 | 两个镜头形成合意 Issue 后开始编码；必要 Readback 帮助理解，不增设签字或第二权威。用户明确的本轮角色调整记回原 Issue。 |
+| 7—8 开发和 Draft | Coding Agent 按 Issue 提取 SU→代码→复用/扩展测试→文档的任务，开发、自审，更新仓库外 PR body 并发布/更新 Draft PR | 真实 base/head、差异、测试与限制对应本次交付；自审不代替正式审核。 |
+| 9 正式完整审核 | 新 Codex 对话隔离作者上下文，对最新准确 head 和完整 PR、Issue及必要上下游材料执行正式审核 | 只给 PASS、REWORK_REQUIRED、OWNER_DECISION_REQUIRED。PASS 结束本轮问题循环，P2记录；空问题列表或局部 PASS 不自动放行。 |
+| 10 整批问题核实与修复 | 本轮全部 P0/P1 一批交新的 Codex 事实验证和新的 Claude Code 影响验证；Claude 意见交本批 Codex 综合，分歧只交换代码、测试、复现和 Issue，最多三轮 | 证据不足保持 REWORK_REQUIRED 并列补证动作。仍需修复时，有明确指令及有效授权后在本批原 Codex 验证会话修复；更新代码/测试/文档/PR记录并推送新 head，每次修复后重新开 Codex 对话回第9步完整审核。 |
+| 11、13 合并后交付与用户验收 | 第11步由网页端 GPT apps 基于最终源码和记录制作可离线 HTML 机制解释，并检查用户可感知变化与文档指引，归档 PR 评论；第13步 GPT 网页版与 Claude Code 对用户验收计划形成合意、归档 PR 评论，再交 Codex 从正常入口实际执行 | 测试、正式审阅、合并、安装、真实路径和本人接受分别留证。第12步继续暂停，不增加关闭前倒查 FSD 环节。真实成果确认仍归 #9。 |
+
+普通原任务连续接续沿 [CODEX_NEXT](docs/CODEX_NEXT.md)；第10步的修复责任按本批原事实验证会话解释，不是全局更换负责人。产品 AI 偏好不替换正式 Codex/Claude 分工；未能执行的角色如实待核，只暂停依赖其结论的动作。
+
+事实已查清后仍有实质业务取舍，才将具体事项及影响补回原 Issue，请 owner 决定，保留答复和理由；其他工作继续。owner 决定后更新 PR 并回第9步。P2 可接受并记录，不因此启动无必要修复。证据交换、模型尝试、写权交接与实际发布返工分开；返工按 [#7 原发布批次口径](https://github.com/wlvh/tongxu/issues/7#issuecomment-6355784555)计，同 head 去重，实际发布返工超过三次时沿原反思入口审视能否简化，不新增计数器。Readback/Owner Decision 是 DEC-008 的实验机制，约三次使用只作复盘提醒，不是新增门槛。
+
 ## Available SOPs
 
 | 流程 | Action：稳定动作 | Authority / Source：入口 | Acceptance：完成判据 |

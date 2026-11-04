@@ -6,6 +6,8 @@
 
 ## 从哪里开始
 
+准备修改同序时，从 [AGENTS 权威关系](AGENTS.md#authority-map)进入 [SOP 开发流程](SOP.md#开发同序)：本仓采用固定版本 coding-workflow，当前要求汇入唯一 Issue；正式完整审核、问题验证与合并后验收分别完成。产品已有能力仍以下方说明为准。
+
 - [项目机制总览与检讨指南：完整流程、在途协调、跨模型联系、审核合入与细节索引](docs/PRODUCT_GUIDE.md) — 不读源码时从这里理解和逐节检讨；流程约定、当前能力与验证记录分别标明。
 - 分别查看[产品应该具备的能力与依据](docs/PRODUCT_GUIDE.md#required-capabilities)和[当前未完成项的原记录入口](docs/PRODUCT_GUIDE.md#unfinished-work)；[实现选择与待讨论扩展](docs/PRODUCT_GUIDE.md#requirement-decisions)不自动变成必做欠账。
 - [产品设计与实施基线](docs/tongxu_v2_plan.md) — 保留原目标、原则和阶段安排；结合后续有效决定阅读，不作为第二份当前状态表。
