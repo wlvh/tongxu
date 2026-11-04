@@ -3,14 +3,14 @@ import type {MessagePlan} from './message-contract.js';
 import type {OwnerObservation} from './authority-source.js';
 import {resourceAction} from './resource-claims.js';
 
-export async function prepareMessageResources(q:QueueStore,run:string,p:MessagePlan,observations:OwnerObservation[]){
+export async function prepareMessageResources(q:QueueStore,run:string,p:MessagePlan,observations:OwnerObservation[],beforeClaim?:()=>Promise<void>){
   if(!p.resourceBudget)return;
   q.messages().admission(run,observations);
   const begun=q.begin(p.participants[0]!.item,'messages-resource:'+run);
   if(!begun.operation)throw new Error('message_original_local_operation_unavailable');
   if(begun.status==='running')q.evaluate(begun.operation);
   const binding=q.messageResources().prepare(run,begun.operation,observations);
-  for(const id of binding.resourceRequests){let state=await resourceAction(q.directory,id,'lookup',binding.role);if(state.state==='prepared_not_sent')state=await resourceAction(q.directory,id,'claim',binding.role);if(state.state!=='held')throw new Error('message_original_resource_unresolved');}
+  for(const id of binding.resourceRequests){let state=await resourceAction(q.directory,id,'lookup',binding.role);if(state.state==='prepared_not_sent'){await beforeClaim?.();state=await resourceAction(q.directory,id,'claim',binding.role);}if(state.state!=='held')throw new Error('message_original_resource_unresolved');}
 }
 export async function refreshMessageResources(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return;const binding=q.messageResources().state(run);
