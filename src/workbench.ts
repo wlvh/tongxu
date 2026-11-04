@@ -1,4 +1,4 @@
-import {FormalReviewControls,type FormalSourceReader} from './formal-review-controls.js';
+import {FormalReviewControls,type FormalSourceReader,type FormalWorkbenchProject} from './formal-review-controls.js';
 import {IssueImplementationControls} from './issue-implementation-controls.js';
 import {ProjectChat} from './project-chat.js';
 import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig} from './ai-settings.js';
@@ -155,7 +155,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const github=p.githubProjects?new GitHubProjects(dependencies?.githubReader):null;
   const ai=p.aiSettings?await AISettings.open(p.aiSettings,dependencies?.aiProbe,p.projectSecretary?.codexExecutable):null;
   let closing=false,host='';
-  const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{})=>{
+  const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject)=>{
     // Catalogue hashes still cover the original complete files. Only entries
     // belonging to this project's original sources load templates or controls.
     const controls=plan.controls?await TaskControls.load(plan.controls.path,plan.controls.sha256,p.sources,selectedSources):null;
@@ -169,19 +169,19 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const polling=plan.eventPolling?await SourceTickLoop.load(plan.eventPolling,plan.sources):null;
     const secretary=plan.secretary?await SecretaryControls.load(plan.secretary.path,plan.secretary.sha256,p.sources,selectedSources):null;
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
-    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify):null;
+    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project):null;
     return {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal};
   };
   type Local=Awaited<ReturnType<typeof loadLocal>>;
   const locals=new Map<string,{sources:string;value:Promise<Local>}>(),knownRepositories=new Map<string,string>();
-  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>,cacheable=true,verify:()=>Promise<void>=async()=>{})=>{
+  const openLocal=(plan:WorkbenchPlan,key='legacy',selectedSources?:ReadonlySet<string>,cacheable=true,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject)=>{
     if(closing)throw new Error('workbench_closing');const sources=plan.sources.map(s=>s.id).sort().join(','),old=locals.get(key);
     if(old){if(old.sources!==sources)throw new Error('workbench_project_sources_changed');return old.value;}
     // An initially unknown source may recover. Until all bindings are known,
     // reads use temporary non-running controls; no incomplete cache or action
     // is created. Existing running controllers always retain their identity.
-    if(!cacheable)return loadLocal(plan,selectedSources,verify);
-    const entry={sources,value:loadLocal(plan,selectedSources,verify).then(value=>{if(host&&!closing){value.polling?.start();value.formal?.start();}return value;}).catch(error=>{locals.delete(key);throw error;})};locals.set(key,entry);return entry.value;
+    if(!cacheable)return loadLocal(plan,selectedSources,verify,project);
+    const entry={sources,value:loadLocal(plan,selectedSources,verify,project).then(value=>{if(host&&!closing){value.polling?.start();value.formal?.start();}return value;}).catch(error=>{locals.delete(key);throw error;})};locals.set(key,entry);return entry.value;
   };
   const projectPlan=async(selection:ReturnType<GitHubProjects['selection']>)=>{
     const repository=selection.repository.fullName.toLowerCase(),allowed=new Set<string>();let unresolvedSourceCount=0,selectedSourcesUnknown=false;
@@ -264,6 +264,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');
         const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId));return;
       }
+      const formalStop=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/stop$/.exec(url.pathname);
+      if(formalStop&&req.method==='POST'){
+        if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
+        const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');
+        if(!p.formalReview)throw new Error('formal_review_not_configured');
+        const account=Number(req.headers['x-tongxu-account']),repository=Number(req.headers['x-tongxu-project']);let legacyProject:FormalWorkbenchProject|undefined;
+        if(github)try{const s=github.selection(account,repository);legacyProject={account:s.account.id,repository:s.repository.id,fullName:s.repository.fullName};}catch{/* New operations carry the original binding; no remote read for cleanup. */}
+        const owned=await locals.get(github?'project:'+repository:'legacy')?.value,formal=owned?.formal??await FormalReviewControls.load(p.formalReview.path,p.formalReview.sha256,p.sources);
+        json(res,200,await formal.stop(formalStop[1]!,body.operation,github?{account,repository}:undefined,legacyProject));return;
+      }
       const selection=github?await github.confirmSelection(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project'])):null;
       const withAI=<T>(fn:()=>T)=>ai&&selection?withAIPreferences(ai.snapshot(selection),fn):fn();
       if(url.pathname.startsWith('/api/implementation')){
@@ -310,17 +321,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
       if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
       const localPlan:WorkbenchPlan={...plan,sources:plan.sources.filter(source=>p.sources.some(original=>original.id===source.id))};
-      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{});
+      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined);
       if(selection)github!.assertSelection(selection);
       if(url.pathname.startsWith('/api/formal-review')){
         if(!formal){if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:false,entries:[]});return;}throw new Error('formal_review_not_configured');}
         if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:true,entries:await formal.state()});return;}
         const report=/^\/api\/formal-review-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([a-f0-9-]{36})$/.exec(url.pathname);if(req.method==='GET'&&report){json(res,200,await formal.report(report[1]!,report[2]!));return;}
-        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|stop|check)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
+        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
         if(action[2]==='prepare'){if(!exactKeys(body,['requestId']))throw new Error('formal_request_invalid');json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId)));return;}
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}
-        if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');json(res,action[2]==='start'?202:200,action[2]==='start'?await withAI(()=>formal.begin(action[1]!,body.operation)):await formal.stop(action[1]!,body.operation));return;
+        if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');json(res,202,await withAI(()=>formal.begin(action[1]!,body.operation)));return;
       }
       if(req.method!=='GET'){
         if(!controls&&!deliveryControls?.writable&&!ownerControls&&!organization&&!overall&&!queueActions&&!secretary&&!returns){json(res,405,{error:'read_only_workbench'});return;}

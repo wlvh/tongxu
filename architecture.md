@@ -120,6 +120,6 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
 
-原 AuthorityRecords/ResourceRecords 通过明确 opt-in 的正式消费者分支接入，`formalWorkSha256` 区分固定正式工作与普通接收；旧接收/repair/publication 拒绝挪用该绑定。原 ReviewRecords 共用发布返工事件及反思入口。`formal-candidate` 在发布核回后沿原 collect/verify/readPacket/import 生产新材料，用真实在运行报告绑定测试权限，并经 W2 原容器结束捕获后结算与导入。没有新余额、恢复队列或通用发布器。
+原 AuthorityRecords/ResourceRecords 通过明确 opt-in 的正式消费者分支接入，`formalWorkSha256` 区分固定正式工作与普通接收；旧接收/repair/publication 拒绝挪用该绑定。原 ReviewRecords 共用发布返工事件及反思入口。`formal-candidate` 在发布核回后沿原 collect/verify/readPacket/import 生产新材料，用真实在运行报告绑定测试权限，并经 W2 原容器结束捕获后结算与导入。没有新余额、恢复队列或通用发布器。项目准备保留固定 H/B 的独立历史和共同祖先供后继完整读取，checkout 仍是 H。正式停止在远端项目确认前消费原请求中的项目身份；旧无绑定请求只接受已发现的本地项目映射，不改写旧输入。
 
 改变这些共享点时核 authority/resources、普通 receiver/repair、发布批次、工作台项目隔离和启动器完整文件清单；具体测试见 TESTING 的 Issue #72 段。页面脚本和全部 dist/src 模块由原运行清单核对。
