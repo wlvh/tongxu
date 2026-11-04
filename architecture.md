@@ -109,3 +109,6 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
 按实际影响选择调查和验证，不要求每次变更重跑整张表。
+
+
+初次 Issue 实施沿 `workbench → issue-implementation-controls → 原 TaskRecords / IssueImplementations / authority / resources → issue-implementation`。固定工作区准备、`RepairTools` 的限定写入/预期树与共享宿主提交原语、注册 Docker 测试和原生捕获复用；执行角色是新的 implementer，不调用 finding/repair 循环。状态与原件留在原队列 operations/events/blobs，没有新队列或批准账本。修改这些共享边界时，除原 repair / resources / authority 外，还核 `tests/project-repair/integration.test.ts` 的正常入口组合和 `tests/w7/github-projects-ui.test.ts` 的项目切换；真实原生验证边界见 [实施说明](docs/issue_implementation.md)。

@@ -460,6 +460,7 @@ function taskView() {
   if (t.composition) append(panel, el('p', subjectText(t.composition.subject)), el('p', '判断对应整个固定组合；锚点 PR 用于定位，不表示任何成员单独放行。受测最终树：' + (t.composition.subject.testedTree || '未取得'), 'small'));
   const facts = el('dl', null, 'facts'); fact(facts, '登记候选 H', t.candidate.H, true); fact(facts, '固定基线 B', t.candidate.B, true); fact(facts, '真实目标', t.candidate.targetRef); fact(facts, '来源观察', date(t.sourceObservedAt)); fact(facts, '本次查看', date(t.observedAt)); fact(facts, '登记范围', t.scope.id + ' / ' + t.scope.version); panel.append(facts);
   if (/^[\w.-]+\/[\w.-]+$/.test(t.candidate.repository) && Number.isSafeInteger(t.candidate.pr)) { const a = el('a', '查看原 PR ↗'); a.href = 'https://github.com/' + t.candidate.repository + '/pull/' + t.candidate.pr; a.target = '_blank'; a.rel = 'noreferrer noopener'; panel.append(a); }
+  for(const entry of state.issueImplementations||[])for(const request of entry.requests)if(request.task===t.candidate.taskId){const row=append(el('div',null,'report-row'),append(el('div'),el('strong',request.status==='completed'?'受控实现已完成，待正式审核':request.stopped?'本次实施已请求停止':'受控实施原记录'),el('p',request.H1?'成果提交 '+request.H1.slice(0,12):request.reason?implementationReason(request.reason):'执行状态仍以原请求记录为准。','small')));const button=el('button',request.completeCapture?'查看原成果与全文':'查看保留现场','outline'),project=implementationKey();button.onclick=()=>openImplementationReport(entry.id,request,project);row.append(button);panel.append(row);}
   if (t.developmentTask) {
     const d = t.developmentTask, phases = {queued:'待处理',prepared:'已装配，尚未发送',waiting:'等待前置',active_or_unknown:'执行中或状态待核',unresolved:'原结果待恢复',returned:'完整回复已保存',cancelled:'已撤销未发送待办',interrupted:'已中断，原请求未完成',interrupted_closed:'已保留中断结果并结束请求'};
     panel.append(el('p', '开发任务保持原身份。只观察了指定文件；关联候选、测试结果与正式接受分别记录。', 'small'));
@@ -651,7 +652,7 @@ function selectedGithubView(){
   if(!gh.selected)return projectsView();
   const page=append(el('div'),intro(gh.selected.fullName,gh.selected.description||'当前项目的 Issues 与 PR；任务与报告从左侧查看，右侧秘书随时提问。',gh.selected.private?'私有项目':'公开项目')),actions=el('div',null,'actions github-project-actions'),back=el('button','切换项目','outline');back.onclick=()=>{void enterView('projects');};append(actions,back,githubLink('打开 GitHub 仓库',gh.selected.url));page.append(actions);
   if(gh.selected.archived)page.append(el('p','这个仓库已归档，仍可查看已有条目。','github-error'));
-  page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
+  page.append(implementationPanel());page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
 }
 async function openGithubItem(kind,item){
   const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
@@ -662,7 +663,7 @@ async function openGithubItem(kind,item){
 function renderGithub(){
   const focused=document.activeElement,filterSelection=view==='projects'&&focused?.id==='github-project-filter'?{start:focused.selectionStart,end:focused.selectionEnd}:null;
   document.querySelector('.side-note').replaceChildren(el('span','', 'dot'),document.createTextNode(gh.selected?.fullName||'选择项目'),el('p',gh.selected?'任务、报告和秘书均使用当前项目。切换只改变查看范围，不取消已发出的执行。':'选择一个项目开始；已有记录保留在各自项目中。'));
-  $('access-mode').textContent='GitHub 只读';$('access-description').textContent='项目选择决定工作范围；实际执行仍按原任务与权限。浏览不会启动模型。';$('observed').textContent=gh.account?(gh.selected?gh.selected.fullName+' · ':'')+'GitHub · '+gh.account.login:'正在检查 GitHub';$('observation-boundary').textContent='Issues 与 PR 来自 GitHub；项目任务和报告来自各自原记录。选择和查看不启动模型。';
+  $('access-mode').textContent=entryInfo?.issueImplementation?'项目读取与受控实施':'GitHub 只读';$('access-description').textContent=entryInfo?.issueImplementation?'GitHub 记录只读；本机实施须由用户选择已配置工作，并满足原权限和资源。':'项目选择决定工作范围；实际执行仍按原任务与权限。浏览不会启动模型。';$('observed').textContent=gh.account?(gh.selected?gh.selected.fullName+' · ':'')+'GitHub · '+gh.account.login:'正在检查 GitHub';$('observation-boundary').textContent='Issues 与 PR 来自 GitHub；项目任务和报告来自各自原记录。选择和查看不启动模型。';
   const runtime=entryInfo?.runtime;$('runtime-version').hidden=!runtime;if(runtime)$('runtime-version').textContent='本次运行版本 '+runtime.sourceHead.slice(0,12);
   document.querySelectorAll('[data-view]').forEach(b=>{b.hidden=['local-history','secretary'].includes(b.dataset.view)||(b.dataset.view!=='projects'&&!gh.selected);if(b.dataset.view==='github')b.disabled=!gh.selected;if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   $('content').replaceChildren(view==='github'?selectedGithubView():projectsView());if(filterSelection){const input=$('github-project-filter');input.focus({preventScroll:true});input.setSelectionRange(filterSelection.start,filterSelection.end);}$('refresh').disabled=gh.loading||(view==='github'&&(gh.issues?.loading||gh.pulls?.loading));

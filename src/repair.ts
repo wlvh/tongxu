@@ -10,7 +10,7 @@ import { runClaude,readClaudeExecution } from './live-claude.js';
 import { recoverStage } from './relay.js';
 import { RepairSession, findingSchema, reviewSchema, readRepairSession } from './repair-native.js';
 import { parseCodexResult } from './codex-results.js';
-import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, checkRepairIndex, type Grant, type Tree } from './repair-workspace.js';
+import { git, mutateGit, exists, regular, tree, treeHash, scopeChanges, acquireWorkspace, releaseWorkspace, testClamp, RepairTools, localCandidate, processState, projectTestNamespace, checkRepairIndex, commitScopedCandidate, type Grant, type Tree } from './repair-workspace.js';
 import type { Candidate } from './live-codex.js';
 import { validateProjectContract, projectTestPlan, projectMaterial, projectModelTestResult, bindProjectTestToCandidate, needsProjectReviewBindingSupplement, testProject, reconcileProjectTests, type ProjectContract } from './project-repair.js';
 
@@ -387,17 +387,8 @@ export async function runRepair(planPath: string, operation: string, reconcileEn
       if (!tests.passed || !changed.length) { factReport = { confirmedFinding: decision, actualTestFailure: modelTests(tests), unchanged: !changed.length }; progress('test_rework_required', { round, tests }); continue; }
       const callRecords = await Promise.all((await readdir(join(operation, 'calls'))).filter(x => x.endsWith('.json')).map(async x => JSON.parse((await regular(join(operation, 'calls', x))).toString())));
       if (!callRecords.some(x => x.request?.tool === 'tongxu_run_tests' && x.response && JSON.parse(x.response.contentItems[0].text).passed === true && JSON.parse(x.response.contentItems[0].text).candidateTreeSha256 === treeHash(current))) throw new Error('agent_did_not_run_current_tests');
-      if (await git(plan.workspace, ['rev-parse', 'HEAD']) !== candidate.H) throw new Error('candidate_changed_before_commit');
-      const diff = await git(plan.workspace, ['diff', '--binary', plan.candidate.H, '--', ...grant.allowedPaths]);
-      const uncommittedDiff = await git(plan.workspace, ['diff', 'HEAD', '--', ...grant.allowedPaths]);
-      save(join(operation, attempt, 'commit-intent-' + round + '.json'), { parent: candidate.H, treeSha256: treeHash(current), allowedPaths: grant.allowedPaths, diffSha256: hash(diff) });
-      if (uncommittedDiff) {
-        await mutateGit(plan.workspace, ['add', '--', ...grant.allowedPaths], join(operation, attempt, 'git-add-' + round));
-        await gate.check();
-        await mutateGit(plan.workspace, ['-c', 'user.name=tongxu controlled repair runner', '-c', 'user.email=runner@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', (project ? 'repair: bounded project correction round ' : 'repair: bounded fixture correction round ') + round], join(operation, attempt, 'git-commit-' + round));
-      }
-      candidate = await currentCandidate();
-      gate.adoptCommittedHead(candidate.H);
+      const committed=await commitScopedCandidate(plan.workspace,operation,attempt,round,candidate,current,grant,gate,(project?'repair: bounded project correction round ':'repair: bounded fixture correction round ')+round);
+      candidate=committed.candidate;const diff=committed.diff;
       const testCandidateBinding = project ? await bindProjectTestToCandidate(plan.workspace, candidate, tests) : undefined;
       save(join(operation, attempt, 'candidate-' + round + '.json'), { candidate, tree: current, diff, tests, testCandidateBinding, repairReport });
       progress('independent_review', { round, candidate });

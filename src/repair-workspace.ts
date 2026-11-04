@@ -12,17 +12,19 @@ import {parse} from 'acorn';
 const exec = promisify(execFile);
 export const safeEnv = { PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1' };
 export const git = async (cwd: string, args: string[]) => (await exec('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', cwd, ...args], { env: safeEnv, maxBuffer: 2 * 1024 * 1024 })).stdout.trim();
-export async function mutateGit(cwd: string, args: string[], directory: string) {
+export async function mutateGit(cwd: string, args: string[], directory: string, startGate?:(effect:()=>void)=>void) {
   await privateDirectory(directory, true);
   const argv = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', cwd, ...args];
   save(join(directory, 'launch.json'), { command: '/usr/bin/git', args: argv, cwd, status: 'launch_registered' });
-  const child = spawn('/usr/bin/git', argv, { env: safeEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const start=()=>spawn('/usr/bin/git',argv,{env:safeEnv,detached:true,stdio:['ignore','pipe','pipe']});let child!:ReturnType<typeof start>;
+  try{if(startGate)startGate(()=>{child=start();});else child=start();if(!child)throw new Error('git_start_gate_did_not_start');}
+  catch(error){save(join(directory,'blocked-before-spawn.json'),{newProcessStarted:false,reason:error instanceof Error?error.message:'git_start_denied'});throw error;}
   save(join(directory, 'process.json'), { pid: child.pid });
   let out = '', err = '', limited = false;
   const kill = () => { if (child.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } };
   const timer = setTimeout(() => { limited = true; kill(); }, 30000);
-  child.stdout.on('data', b => { if (out.length < 2 * 1024 * 1024) out += b; else { limited = true; kill(); } });
-  child.stderr.on('data', b => { if (err.length < 2 * 1024 * 1024) err += b; else { limited = true; kill(); } });
+  child.stdout!.on('data', b => { if (out.length < 2 * 1024 * 1024) out += b; else { limited = true; kill(); } });
+  child.stderr!.on('data', b => { if (err.length < 2 * 1024 * 1024) err += b; else { limited = true; kill(); } });
   child.on('error', () => { limited = true; });
   const exit = await new Promise<{ code: number | null; signal: string | null }>(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   clearTimeout(timer); save(join(directory, 'exit.json'), exit); await writeFile(join(directory, 'stdout.txt'), out, { mode: 0o600 }); await writeFile(join(directory, 'stderr.txt'), err, { mode: 0o600 });
@@ -195,8 +197,8 @@ export async function testClamp(workspace: string, directory: string, node: stri
   let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), failure: string | null = null;
   const kill = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already ended */ } } };
   const timer = setTimeout(() => { failure = 'test_timeout'; kill(); }, 5000);
-  child.stdout.on('data', b => { stdout = Buffer.concat([stdout, b]); if (stdout.length > 1024 * 1024) { failure = 'test_output_limit'; kill(); } });
-  child.stderr.on('data', b => { stderr = Buffer.concat([stderr, b]); if (stderr.length > 1024 * 1024) { failure = 'test_output_limit'; kill(); } });
+  child.stdout!.on('data', b => { stdout = Buffer.concat([stdout, b]); if (stdout.length > 1024 * 1024) { failure = 'test_output_limit'; kill(); } });
+  child.stderr!.on('data', b => { stderr = Buffer.concat([stderr, b]); if (stderr.length > 1024 * 1024) { failure = 'test_output_limit'; kill(); } });
   child.on('error', () => { failure = 'test_spawn_error'; });
   const exit = await new Promise<{ code: number | null; signal: string | null }>(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   clearTimeout(timer); save(join(directory, 'exit.json'), exit);
@@ -227,9 +229,14 @@ export class RepairTools {
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool');
     await checkRepairIndex(this.workspace,this.operation,this.grant.allowedPaths,current);return current;
   }
-  async handoff(sessionId: string) {
+  async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session') {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
-    await writeFile(join(this.operation, 'handoff-' + this.lease.generation + '-' + (++this.handoffSerial) + '.json'), JSON.stringify({ from: 'trusted-preparer', to: sessionId, sessionContinuity: 'same_fact_verifier_session', grant: this.grant, lease: this.lease, verifiedTreeSha256: treeHash(this.expected), backgroundCommands: 'none-active-in-managed-workspace' }), { flag: 'wx', mode: 0o600 }); this.phase = 'write';
+    await writeFile(join(this.operation, 'handoff-' + this.lease.generation + '-' + (++this.handoffSerial) + '.json'), JSON.stringify({ from: 'trusted-preparer', to: sessionId, sessionContinuity, grant: this.grant, lease: this.lease, verifiedTreeSha256: treeHash(this.expected), backgroundCommands: 'none-active-in-managed-workspace' }), { flag: 'wx', mode: 0o600 }); this.phase = 'write';
+  }
+  commitStart(effect:()=>void){
+    if(this.phase==='closed'||!this.grant.allowRepair||readFileSync(join(this.workspace,'.git','tongxu-writer.json'),'utf8')!==JSON.stringify(this.lease))throw new Error('writer_lease_changed');
+    try{readFileSync(join(this.operation,'revoked.json'));throw new Error('repair_revoked');}catch(error:any){if(error.code!=='ENOENT')throw error;}
+    if(this.externalGate)this.externalGate(effect);else effect();
   }
   async call(p: { tool: string; arguments: any; callId: string }) {
     const current = await this.check();
@@ -279,3 +286,22 @@ export const repairToolSpecs = [
 export async function localCandidate(workspace: string, base: string, project = false): Promise<Candidate> { return { kind: 'local-git', repository: project ? 'local/project-repair' : 'local/clamp-fixture', pr: null, H: await git(workspace, ['rev-parse', 'HEAD']), B: base, target: project ? 'project-base' : 'fixture-base' }; }
 
 export const projectRepairToolSpecs = repairToolSpecs.map(t => t.name === 'tongxu_run_tests' ? { ...t, description: 'Run the registered project tests in a separate isolated candidate copy. No command argument is accepted.' } : t);
+
+
+/** Host-owned commit shared by scoped repair and initial implementation.
+ * Caller supplies an already checked tree; every Git write rechecks the same
+ * lease, expected tree/index and external permission gate. */
+export async function commitScopedCandidate(workspace:string,operation:string,attempt:string,round:number,candidate:Candidate,current:Tree,grant:Grant,gate:RepairTools,message:string,author='tongxu controlled repair runner'){
+  await gate.check();
+  if(await git(workspace,['rev-parse','HEAD'])!==candidate.H)throw new Error('candidate_changed_before_commit');
+  const diff=await git(workspace,['diff','--binary',grant.H,'--',...grant.allowedPaths]);
+  const uncommitted=await git(workspace,['diff','HEAD','--',...grant.allowedPaths]);
+  save(join(operation,attempt,'commit-intent-'+round+'.json'),{parent:candidate.H,treeSha256:treeHash(current),allowedPaths:grant.allowedPaths,diffSha256:hash(diff)});
+  if(uncommitted){
+    await mutateGit(workspace,['add','--',...grant.allowedPaths],join(operation,attempt,'git-add-'+round),effect=>gate.commitStart(effect));
+    await gate.check();
+    await mutateGit(workspace,['-c','user.name='+author,'-c','user.email=runner@localhost','-c','commit.gpgSign=false','commit','-m',message],join(operation,attempt,'git-commit-'+round),effect=>gate.commitStart(effect));
+  }
+  const after=await localCandidate(workspace,candidate.B,grant.profile==='project-v1');gate.adoptCommittedHead(after.H);
+  return {candidate:after,diff};
+}

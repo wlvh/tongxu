@@ -23,7 +23,7 @@ const sameOwnedThread=(t:any,b:ResultBinding)=>Boolean(t&&t.id===b.threadId&&t.s
 export type NativeOptions = {
   aiModel?:AIModelChoice;
   executable: string; directory: string; operation: string; candidate: Candidate;
-  role: 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
+  role: 'implementer' | 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
   projectSecretary?:true;
   expectedExecutable?:{sha256:string;realpath?:string;version?:string};
@@ -36,6 +36,9 @@ export type NativeOptions = {
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
+};
+export const implementationSchema = {
+  type:'object',properties:{candidateH:{type:'string'},decision:{type:'string',enum:['implemented','no_change','needs_owner']},report:{type:'string'}},required:['candidateH','decision','report'],additionalProperties:false
 };
 export const reviewSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, verdict: { type: 'string', enum: ['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'] }, report: { type: 'string' }, findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, priority: { type: 'integer', enum: [0, 1, 2] }, description: { type: 'string' } }, required: ['id', 'priority', 'description'], additionalProperties: false } } }, required: ['candidateH', 'verdict', 'report', 'findings'], additionalProperties: false
@@ -71,11 +74,11 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
     if(!report||Object.keys(report).sort().join()!=='consumed,messageId,report'||report.messageId!==(schema as any).properties.messageId.enum[0]||typeof report.report!=='string'||!report.report.trim()||!Array.isArray(report.consumed)||report.consumed.length>32||report.consumed.some((x:unknown)=>typeof x!=='string'||!/^[a-f0-9]{64}$/.test(x)))throw new Error('invalid_native_message_receipt');
     return;
   }
-  const secretary=isDeepStrictEqual(schema,secretarySchema),review=isDeepStrictEqual(schema,reviewSchema);
+  const secretary=isDeepStrictEqual(schema,secretarySchema),review=isDeepStrictEqual(schema,reviewSchema),implementation=isDeepStrictEqual(schema,implementationSchema);
   if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
   if (secretary) {
     if (!Array.isArray(report.observationIds) || !report.observationIds.length || report.observationIds.length > 8 || report.observationIds.some((x: any) => typeof x !== 'string' || !/^[a-f0-9]{64}$/.test(x)) || Object.keys(report).sort().join() !== 'candidateH,observationIds,report') throw new Error('invalid_secretary_report');
-  } else if (review ? !['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'].includes(report.verdict) || !Array.isArray(report.findings) : !['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'].includes(report.decision)) throw new Error('invalid_structured_judgment');
+  } else if (implementation ? !['implemented','no_change','needs_owner'].includes(report.decision) || Object.keys(report).sort().join()!=='candidateH,decision,report' : review ? !['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'].includes(report.verdict) || !Array.isArray(report.findings) : !['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'].includes(report.decision)) throw new Error('invalid_structured_judgment');
   if (review && (report.findings.length > 20 || report.findings.some((f: any) => typeof f?.id !== 'string' || !f.id || ![0, 1, 2].includes(f.priority) || typeof f.description !== 'string' || !f.description.trim()))) throw new Error('invalid_structured_findings');
 }
 // One native transport and capture contract, with separate, fixed role tools.
@@ -107,6 +110,7 @@ export class BoundedCodexSession {
     if (o.role === 'secretary' && (!o.gate || !o.arrangementSource || !o.beforeTurn)) throw new Error('secretary_query_boundary_missing');
     if((o.secretaryContacts||o.secretaryDeliveries||o.secretaryDeliveryReports||o.secretaryWorkbench||o.secretaryScopeFollowupReports||o.secretaryQueueActions||o.secretaryReceptionReports||o.secretaryTaskSources)&&o.role!=='secretary')throw new Error('secretary_contact_role_required');
     if(o.projectSecretary&&(o.role!=='secretary'||o.candidate.kind!=='project-conversation'||!o.gate)||o.candidate.kind==='project-conversation'&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
+    if(o.role==='implementer'&&(!o.gate||!o.projectRepair||o.persistent||o.readonlyMessage||!o.arrangementSource))throw new Error('native_implementation_profile_required');
     const session = new BoundedCodexSession(o);try{await session.initialize();return session;}catch(e){await session.close();throw e;}
   }
   get sessionId() { return this.binding.sessionId; }
@@ -242,7 +246,7 @@ export class BoundedCodexSession {
         const current=await this.request('thread/read',{threadId:b.threadId,includeTurns:true});save(join(o.directory,'resume-history.json'),current);
         if(!sameOwnedThread(current.thread,b)||current.thread.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
       }
-      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
+      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage||o.role==='implementer' ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
       save(join(o.directory, 'binding.json'), this.binding); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
     } catch (e) { await this.close(); throw e; }
   }
@@ -264,6 +268,7 @@ export class BoundedCodexSession {
   }
   private async runTurn(input: string, candidate: Candidate, schema: unknown) {
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
+    if ((this.o.role==='implementer')!==(schema===implementationSchema))throw new Error('native_implementation_output_profile_mismatch');
     if ((this.o.role === 'secretary') !== (schema === secretarySchema)) throw new Error('native_role_output_schema_mismatch');
     if (this.closed || this.boundaryFailure || this.binding.turnIds.length >= 8) throw new Error('native_turn_budget_or_closed');
     if(this.activeTurn||this.pendingTurn)throw new Error('native_turn_already_active');
