@@ -44,7 +44,7 @@ catalog 为 `schemaVersion: 1`、`kind: "tongxu-formal-review-catalog"`、`entri
 - `repair` 的 allowedPaths/materialPaths/protectedPaths、contract、testPlan/testPlanSha256、generatedDirectories、demonstrationFixture。
 - `authorization.receive/implement/test` 原决定摘要；`budgets` 的 phase（analysis/fix/candidate）、ledgerId/resourceRef/unit/quantity。
 
-执行配置沿既有 RepairConfig：实际 Codex/Claude/Node 入口、固定角色策略文件、禁用 MCP、允许指令来源、已有订阅的费用证据及超时。角色完整系统提示和当前 AI 选择在准备时冻结；已有运行不被后来的设置覆盖。原授权、治理接收扩展、正式资源消费者和原账本须由安装者沿既有机制明确启用；加载页面不会授予权限。GitHub 读取使用原注册 EventProfile；未配置时如实拒绝。
+执行配置沿既有 RepairConfig：实际 Codex/Claude/Node 入口、固定角色策略文件、禁用 MCP、允许指令来源、已有订阅的费用证据及超时。角色完整系统提示和当前 AI 选择在准备时冻结；已有运行不被后来的设置覆盖。每个发布后的新轮准备时，前台定时检查与手工核对均读取该控制器所属项目当时的 AI 设置，一次封存审核、事实和影响角色的选择；不沿用首轮或页面打开时的旧快照。保存的选择不可用时明确等待，不静默改用默认程序或参数；未设置角色偏好时继续使用原配置默认值。原授权、治理接收扩展、正式资源消费者和原账本须由安装者沿既有机制明确启用；加载页面不会授予权限。GitHub 读取使用原注册 EventProfile；未配置时如实拒绝。
 
 每轮读分析共用原 receive 资源组；进入写阶段前核完整回合并结算，再用不同 implement 动作的原资源组。新候选自动验证另用 candidate 测试资源组，不能默默增加 analysis 的额度。测试另核准确 test 权限。没有本地余额或自动退款推算。
 
