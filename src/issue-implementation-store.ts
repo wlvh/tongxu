@@ -45,7 +45,7 @@ export class IssueImplementations {
     if(old){if(old.requestSha256!==hash(canonical(request)))throw new Error('implementation_request_id_is_fixed');return this.state(source,request.id);}
     const pending=(this.db.prepare("SELECT object,data FROM events WHERE kind='issue_implementation_registered'").all() as Row[]).filter(e=>JSON.parse(e.data).value.source===source);
     if(pending.length>=32)throw new Error('implementation_request_bound');
-    for(const entry of pending){const record=JSON.parse(entry.data).value,prior=this.fixed(source,record.id);if(!prior.terminal)throw new Error('implementation_original_responsibility_pending');for(const resource of prior.selected?.resourceRequests??[]){const state=this.resources().status(resource);if(!['prepared_not_sent','refused'].includes(state.state)&&!this.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');}}
+    for(const entry of pending){const record=JSON.parse(entry.data).value,prior=this.fixed(source,record.id);if(!prior.terminal)throw new Error('implementation_original_responsibility_pending');for(const resource of prior.selected?.resourceRequests??[]){const state=this.terminalResource(source,record.id,resource);if(state&&!['prepared_not_sent','refused'].includes(state.state)&&!this.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');}}
     const current=this.tasks.current(request.task);
     if(current.manifest.candidate.H!==request.workspaceRequest.candidate.H)throw new Error('implementation_fixed_commit_required');
     this.event('registered',key,{source,id:request.id,task:request.task,packet:current.packet,fingerprint:current.fingerprint,requestSha256:this.blob(request)});
@@ -108,6 +108,16 @@ export class IssueImplementations {
     const result={status:'cancelled_unstarted',requestId:id,task:f.request.task,H0:f.request.workspaceRequest.candidate.H,H1:null,newModelRequests:0,modelExecutionStarted:false,originalsRetained:true},resultSha256=this.blob(result);
     this.event('terminal',this.key(source,id),{operation:f.selected?.operation??null,resultSha256});
     if(f.selected)this.updateOperation(f.selected.operation,{...this.operation(f.selected.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
+  });}
+  terminalResource(source:string,id:string,resource:string){return this.transaction(()=>{
+    const f=this.fixed(source,id);
+    if(!f.terminal||!f.selected?.resourceRequests.includes(resource))throw new Error('implementation_terminal_resource_binding_required');
+    try{return this.resources().status(resource);}catch(error){
+      // bind records future definitions; only start registers resource requests.
+      // An unstarted cancellation may therefore have no original to settle.
+      if(error instanceof Error&&error.message==='original_resource_request_required'&&!f.dispatched&&JSON.parse(this.bytes(f.terminal.resultSha256).toString()).status==='cancelled_unstarted')return null;
+      throw error;
+    }
   });}
   stop(source:string,id:string){return this.transaction(()=>{const f=this.fixed(source,id);if(!f.terminal&&!f.events.some(e=>e.kind==='issue_implementation_stopped'))this.event('stopped',this.key(source,id),{operation:f.selected?.operation??null,existingFilesRetained:true,newModelRequests:0});return this.state(source,id);});}
   problem(source:string,id:string,reason:string){return this.transaction(()=>{this.fixed(source,id);this.event('problem',this.key(source,id),{reason:reason.slice(0,256)});return this.state(source,id);});}
