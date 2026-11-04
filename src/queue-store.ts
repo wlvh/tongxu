@@ -1,3 +1,5 @@
+import {IssueImplementations} from './issue-implementation-store.js';
+import type {ImplementationRequest} from './issue-implementation.js';
 import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication-contract.js';
 import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey,overallConsumerKey,installOverallResultGuard} from './publication-guards.js';
 import {requirePublicationProcessEnded} from './publication-process.js';
@@ -48,7 +50,8 @@ import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-li
 import { TaskInbox } from './task-inbox.js';
 import {TaskScopeFollowups} from './task-scope-followup-store.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
-import { observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
+import type {DevelopmentTask} from './task-contract.js';
+import {type TaskObservation, observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
 import {LocalScopeControls} from './scope-controls.js';
 import {DeliveryRecords} from './delivery-store.js';
@@ -338,6 +341,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   taskLinks(){return this.taskLinkRecords(fn=>this.transaction(fn));}
   private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
   async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.transaction(()=>{this.taskRecords().observe(p,source.observation);this.taskLinkRecords(fn=>fn()).observe(source);});return source;}
+  issueImplementations(){return this.issueImplementationRecords(fn=>this.transaction(fn));}
+  private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
+  registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation){return this.transaction(()=>{
+    const registered=this.taskRecords().observe(definition,observation);if(registered.item!==request.task)throw new Error('implementation_task_definition_mismatch');
+    return this.issueImplementationRecords(fn=>fn()).register(source,request);
+  });}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
   scopeFollowups():TaskScopeFollowups{return this.taskScopeFollowupRecords(fn=>this.transaction(fn));}
   private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));}
@@ -690,9 +699,10 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{
       if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);
       if(dispatch){
-        if(action.request.action==='implement')this.memberRepairResourceGate(action,request);
+        const implementation=this.issueImplementationResource(action,request);
+        if(action.request.action==='implement'&&!implementation)this.memberRepairResourceGate(action,request);
         const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
-        const test=action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
+        const test=!implementation&&action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
         const publication=action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
         if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
@@ -712,6 +722,11 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const row=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(request.operation) as Row|undefined;if(!row)throw new Error('receiver_resource_binding_required');
     const b=JSON.parse(row.data),{op,receiver}=this.receiverOperation(request.operation),p=JSON.parse(this.blob(b.planSha256).toString());
     if(receiver||op.status!=='complete'||b.packet!==op.packet||b.authorityIntent!==action.requestId||b.actionSha256!==action.requestSha256||!b.resourceRequests.includes(resourceRequestHash(request))||canonical(p.governance?.resourceRequests)!==canonical(b.resourceRequests))throw new Error('receiver_resource_binding_changed');this.receiverGate(op);return b;
+  }
+  private issueImplementationResource(action:Row,request:ResourceRequest){
+    const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(request.operation) as Row|undefined;
+    if(!op||!JSON.parse(op.result??'null')?.implementation)return null;
+    return this.issueImplementationRecords(fn=>fn()).resourceGate(action,request);
   }
   private memberRepairResourceGate(action:Row,request:ResourceRequest){
     const row=this.db.prepare("SELECT data FROM events WHERE kind='member_repair_resource_bound' AND object=? ORDER BY id DESC LIMIT 1").get(request.operation) as Row|undefined;
@@ -734,6 +749,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private resourceExecution(operation:string,action:Row,claimedAt:string):ResourceOutcome {
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,result=parse(op,'result');
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
+    if(result?.implementation)return this.issueImplementationRecords(fn=>fn()).outcome(operation,action);
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate'){
       const overall=this.overallForAction(operation,action.request.payloadSha256,action.requestId);
