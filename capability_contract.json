@@ -75,6 +75,20 @@
         "test_anchor": "tests/w6/task-contact-choice.test.ts",
         "test_status": "automated",
         "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.issue_implementation",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按已采用 Issue #74 及 docs/issue_implementation.md，在已配置项目从已审定 Issue 显式新建一次 Codex 受控实现：固定H0、准确实施/测试授权与原资源、获准已有文件和注册测试，成功由宿主形成H1并回读全文。重复与未知不重发；实现不等于正式审核、发布或本人接受。程序路径与真实Docker组合已验证；正常入口真实Codex仍待准确环境验证，当前不标active。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/project-repair/integration.test.ts",
+        "test_status": "component_verified_native_pending",
+        "since": "2026-11-04"
       }
     ],
     "capability_boundaries": [

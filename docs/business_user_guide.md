@@ -15,6 +15,7 @@
 | 启动本机工作台 | `npm run workbench -- --plan ABS_PLAN`；[local_workbench](local_workbench.md)、[github_project_entry](github_project_entry.md)。安装清单入口为 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`。 |
 | 按项目提问/读取历史 | 工作台右侧秘书；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
 | 选择本机程序、模型和角色 | “AI 与角色设置”；[local_ai_roles](local_ai_roles.md)、[cli_capabilities](cli_capabilities.md)。 |
+| 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功H1不表示正式审核/发布；真实Codex路径仍待准确环境核验。 |
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
