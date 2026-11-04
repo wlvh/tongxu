@@ -103,6 +103,8 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 
 共享边界按改动选 authority/resources、w3 receiver、w5、review-records/counters、w7 正常页面与启动器回归。原生协议样例不能称真实 Codex/Claude 演练，HTTP 测试不能称浏览器验收；独立审核、合入、启用和本人接受另记。配置与边界见 [formal_pr_review](docs/formal_pr_review.md)。
 
+`formal-workbench` 的新候选场景从正常项目 HTTP 入口保存 AI 选择，启动原生产10秒定时器并与手工核对对照；检查新轮三个角色使用当时项目设置，覆盖控制器启动后保存、准备前变更、合法默认、不可用等待及其他项目设置不串用。reviewer/fact 的模型与强度核实际原生请求；impact 核新轮冻结选择，旧影响协议样例没有 live 模型目录，不称已验证所选 Claude 模型执行。旧轮请求保持原字节，查看完整报告不新增模型输入。
+
 同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
 
 同一发布后完整再审场景还参数化覆盖父轮在接续前、异步材料准备中、子轮已登记未派发及 reviewer 已发时停止；停止后不新增角色，已发报告保留，冷读不重发。原 store 场景沿两代 previousOperation 验证停止祖先在原效果事务阻回调且不登记派发，未停止的已完成父轮仍合法。反证回流参数化 PASS、合法 owner 和真实覆盖缺口；同会话修复的 needs_owner/no_change 分别保留业务决定/待补证，页面脚本核原问题与原 Issue 交接提示。
