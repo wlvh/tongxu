@@ -345,12 +345,19 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   formalReviews(){return this.formalReviewRecords(fn=>this.transaction(fn));}
   private formalReviewRecords(transaction:<T>(f:()=>T)=>T){return new FormalReviews(this.db,transaction,new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),item=>this.authorityItem(item),(item,run)=>this.beginCurrent(item,run),id=>this.evaluateCurrent(id));}
   issueImplementations(){return this.issueImplementationRecords(fn=>this.transaction(fn));}
+  implementationOwnerSnapshot(target:import('./implementation-owner-feedback.js').ImplementationOwnerTarget):import('./implementation-owner-feedback.js').ImplementationOwnerSnapshot{
+    const records=this.issueImplementationRecords(fn=>fn()),state=records.state(target.source,target.requestId),request=records.original(target.source,target.requestId),definition=this.taskRecords().definition(state.task);
+    let resourcesSettled=true;for(const id of state.plan?.resourceRequests??[])try{if(!this.resourceRecords(fn=>fn()).settledOutcome(id))resourcesSettled=false;}catch{resourcesSettled=false;}
+    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
+    return {target,state,request,definition,family:records.requests(target.source),resourcesSettled,currentAdoption:authority.forScope(definition.context.scope.id,{item:state.task,target:definition.target}).currentAdoption};
+  }
   private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
   registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation){return this.transaction(()=>{
     const registered=this.taskRecords().observe(definition,observation);if(registered.item!==request.task)throw new Error('implementation_task_definition_mismatch');
     return this.issueImplementationRecords(fn=>fn()).register(source,request);
   });}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
+  static async observeOwnerContact(directory:string,task:string,key:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');const inbox=q.taskInboxRecords(fn=>fn());return {record:inbox.ownerContact(task,key),applicability:inbox.ownerContactApplicability(task,key)};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   scopeFollowups():TaskScopeFollowups{return this.taskScopeFollowupRecords(fn=>this.transaction(fn));}
   private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));}
   private taskInboxRecords(transaction:<T>(f:()=>T)=>T):TaskInbox{
@@ -363,7 +370,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       context:(task,actor,tool)=>this.coordinationRecords(fn=>fn()).ownerContext(task,actor,tool),
       bind:(id,plan,sha,mapping)=>this.coordinationRecords(fn=>fn()).bindMessages(id,plan,sha,mapping),
       feedback:(id,task,run,message)=>this.coordinationRecords(fn=>fn()).ownerFeedback(id,task,run,message)
-    },task=>this.taskScopeFollowupRecords(fn=>fn()).context(task),task=>this.taskScopeFollowupRecords(fn=>fn()).assertFamilyIdle(task));
+    },task=>this.taskScopeFollowupRecords(fn=>fn()).context(task),task=>this.taskScopeFollowupRecords(fn=>fn()).assertFamilyIdle(task),target=>this.implementationOwnerSnapshot(target));
   }
 
   async refreshMessageTaskSources(run:string){
@@ -685,7 +692,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private messageResourceResult(run:string):boolean{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned','interrupted_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}
   private messageRecords(transaction:<T>(fn:()=>T)=>T): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,transaction,this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant,effect)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run,effect);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>this.messageResourceResult(run)); }
   messageResources(){return this.messageResourceRecords(fn=>this.transaction(fn));}
-  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{this.coordinationRecords(fn=>fn()).messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run);},undefined,run=>this.messageResourceResult(run));return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run),(run,observations)=>{m.admission(run,observations);});}
+  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{this.coordinationRecords(fn=>fn()).messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run);},undefined,run=>this.messageResourceResult(run));return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run),(run,observations)=>{m.admission(run,observations);},(run,operation)=>{const row=this.db.prepare('SELECT result FROM operations WHERE id=?').get(operation) as Row;if(JSON.parse(row.result??'null')?.implementation){const target=this.taskInboxRecords(fn=>fn()).ownerContactResourceTarget(run,operation);this.issueImplementationRecords(fn=>fn()).admitOwnerContactResources(target,run);}});}
   coordination(): CoordinationRecords {return this.coordinationRecords(fn=>this.transaction(fn));}
   private coordinationRecords(transaction:<T>(f:()=>T)=>T):CoordinationRecords {
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});
@@ -731,7 +738,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private formalResource(action:Row,request:ResourceRequest){const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(request.operation) as Row|undefined;if(action.request.formalWorkSha256===undefined)return null;if(!op||!JSON.parse(op.result??'null')?.formalReview)throw new Error('formal_specific_consumer_required');return this.formalReviewRecords(fn=>fn()).resourceGate(action,request);}
   private issueImplementationResource(action:Row,request:ResourceRequest){
     const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(request.operation) as Row|undefined;
-    if(!op||!JSON.parse(op.result??'null')?.implementation)return null;
+    if(!['implement','test'].includes(action.request.action)||!op||!JSON.parse(op.result??'null')?.implementation)return null;
     return this.issueImplementationRecords(fn=>fn()).resourceGate(action,request);
   }
   private memberRepairResourceGate(action:Row,request:ResourceRequest){
@@ -756,7 +763,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,result=parse(op,'result');
     if(action.request.formalWorkSha256!==undefined)return this.formalReviewRecords(fn=>fn()).outcome(operation,action);
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
-    if(result?.implementation)return this.issueImplementationRecords(fn=>fn()).outcome(operation,action);
+    if(result?.implementation&&['implement','test'].includes(action.request.action))return this.issueImplementationRecords(fn=>fn()).outcome(operation,action);
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate'){
       const overall=this.overallForAction(operation,action.request.payloadSha256,action.requestId);

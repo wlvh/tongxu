@@ -9,11 +9,13 @@ import {DatabaseSync} from 'node:sqlite';
 import nodeTest, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile, chmod, readdir, rm, cp } from 'node:fs/promises';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve, basename, dirname } from 'node:path';
 import { fixture } from '../w5/repair-fixture.js';
 import { type ProjectRequest,prepareProjectRepair, testProject, reconcileProjectTests, bindProjectTestToCandidate, needsProjectReviewBindingSupplement } from '../../src/project-repair.js';
 import { runRepair } from '../../src/repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from '../../src/issue-implementation.js';
+import {prepareTaskOwner} from '../../src/tasks.js';
+import {TaskControls} from '../../src/task-controls.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
@@ -22,6 +24,9 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 import { parseDockerConfig } from '../../src/docker-sandbox.js';
 import { dependencyDigest } from '../../src/sandbox.js';
+import {parseDevelopmentTask} from '../../src/task-contract.js';
+import {observeTaskWorkspace} from '../../src/task-source.js';
+import {runTaskContactChoice,observeTaskContactChoice,cancelTaskChoiceOwnerContact,type TaskContactChoice} from '../../src/task-contact-choice.js';
 const configPath = process.env.TONGXU_TEST_DOCKER_CONFIG;
 if (!configPath) throw new Error('TONGXU_TEST_DOCKER_CONFIG is required for the real project test suite');
 const docker = parseDockerConfig(JSON.parse(await readFile(configPath, 'utf8')));
@@ -272,6 +277,119 @@ async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,a
  const r=await fetch(f.url.origin+'/api/project-secretary/'+action,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};
 }
 
+async function originalOwnerContact(t:TestContext,resources=true,outcome='implemented',holdQuestion=false){
+ const f=await implementationPage(t,resources),id='original-feedback-writer';
+ // Explicit fixture capacities, configured before any original request/claim.
+ for(const [path,sql] of [[join(f.messages.store,'queue.sqlite'),"UPDATE meta SET value='2' WHERE key='seats'"],...(f.ledger?[[join(f.ledger.root,'original-fixture.sqlite'),'UPDATE capacity SET n=4']]:[])]){const d=new DatabaseSync(path!);d.exec(sql!);d.close();}
+ const questionHeld=join(f.project.root,'feedback-question-held'),questionRelease=join(f.project.root,'feedback-question-release');
+ const held=join(f.project.root,'feedback-held'),release=join(f.project.root,'feedback-release'),writer=await readFile(f.project.config.codexExecutable,'utf8'),needle="else if(stage==='tongxu_replace_file'){";
+ assert.ok(writer.includes(needle));await writeFile(f.project.config.codexExecutable,outcome==='no_change'?writer.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){"+`fs.writeFileSync(${JSON.stringify(held)},JSON.stringify({pid:process.pid,noChange:true}));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);finish({candidateH:context.candidate.H,decision:'no_change',report:'Actual no-change protocol fixture, no tool write or new commit.'});}},20);return;`):writer.replace(needle,needle+`if(!fs.existsSync(${JSON.stringify(release)})){fs.writeFileSync(${JSON.stringify(held)},JSON.stringify({pid:process.pid,write:v}));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);tool('tongxu_run_tests',{});}},20);return;}`));
+ const prepared=await f.post('prepare',{requestId:id,issueNumber:74});assert.equal(prepared.status,200,JSON.stringify(prepared));const a=f.messages.q.issueImplementations().state('implementation',id),workspace=join(f.project.root,'feedback-b-source');await cp(f.project.objects,workspace,{recursive:true});
+ const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'independent-feedback-b',repository:f.entry.repository,title:'Independent B asks exact A',goal:'Investigate independently and obtain current original-owner feedback before dependent work',acceptance:['Full actual reply and current contract; no writing permission'],source:'Explicit F11 bounded fixture',issue:null,context:f.entry.context,workspace,base:f.entry.base,target:'main',paths:['src/normalize.mjs']}))),b=f.messages.q.tasks().observe(definition,await observeTaskWorkspace(definition));
+ const model=await readFile(f.messages.codex,'utf8'),old="'明确标记的进程夹具；核对了固定 sample.js 与前序报告，未调用真实模型。回复 '+x.messageId",replacement=`(()=>{const c=JSON.parse(x.material.find(m=>m.name==='task-owner-context.json').text);if(x.messageId==='feedback-ask'){${holdQuestion?`fs.writeFileSync(${JSON.stringify(questionHeld)},'actual B input held');while(!fs.existsSync(${JSON.stringify(questionRelease)})){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);}`:''}const p=x.body.match(/"planSha256":"([a-f0-9]{64})"/);return JSON.stringify({kind:'tongxu-task-contact-request',planSha256:p[1],contactId:'original-a',report:'B needs the exact current normalize contract from original A.'});}const sender=c.sender&&c.historyProjection.materials[c.sender.reply.historyRef].value.report;if(x.messageId==='feedback-answer')return 'Actual readonly A received '+JSON.parse(sender).report+' Current head '+c.ownerFeedback.effectiveHead+'; original task '+c.ownerFeedback.logicalOwner;return 'B consumed actual A reply: '+sender+'; current head '+c.ownerFeedback.effectiveHead;})()`;assert.ok(model.includes(old));const changed=model.replace(old,replacement);await writeFile(f.messages.codex,changed);
+ const adoption=f.messages.q.authority().forScope(f.entry.context.scope.id,{item:b.item,target:'main'}).currentAdoption,authorization=await f.owner.adopt({kind:'delegate',adoption,roles:['coordinator'],targets:['main'],actions:['coordinate'],paths:[],resourceRefs:f.ledger?[f.ledger.profile.resources[0]!.ref]:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const participant=(task:string,actor:string)=>({id:actor,item:task,tool:'codex' as const,role:'issue_owner' as const,parent:null,executable:f.messages.codex,executableSha256:hash(changed),disabledMcpServers:[],allowedInstructionSources:[]}),request=(task:string,name:string,actor:string,question:string)=>({schemaVersion:1 as const,kind:'tongxu-task-owner-request' as const,id:name,task,source:'Explicit F11 current owner contact',question,from:null,participant:participant(task,actor),executionKind:'fixture' as const,authorityIntent:'intent-'+name,...(f.ledger?{resourceBudget:[{ledgerId:f.ledger.profile.ledgerId,resourceRef:f.ledger.profile.resources[0]!.ref,unit:f.ledger.profile.resources[0]!.unit,quantity:1}]}:{}),billing:f.messages.plan.billing,timeoutMs:holdQuestion?60000:10000});
+ const target={source:'implementation',requestId:id,task:a.task,operation:a.operation,requestSha256:a.requestSha256},plan:TaskContactChoice={schemaVersion:2,kind:'tongxu-task-owner-choice',authorization:{coordinate:authorization.sha},initial:request(b.item,'feedback-ask','B','Investigate your fixed independent source and ask original A if current shared behavior is unknown.'),contacts:[{id:'original-a',title:'Original writing responsibility A',originalImplementation:target,request:request(a.task,'feedback-answer','A','Answer the exact B question using the original implementation and current committed source.'),followup:request(b.item,'feedback-continue','B','Consume the actual current A response and continue with exact evidence; no writing permission.')} ]};
+ const path=join(f.project.root,'implementation-catalog.json'),controls=await IssueImplementationControls.load(path,hash(await readFile(path)),f.entry.repository,async number=>({number,title:'Original adopted issue',body:f.body,url:'https://github.com/fixture/reception/issues/'+number}),async()=>{});t.after(()=>controls.drain());
+ const host={target:(store:string,target:typeof plan.contacts[number]['originalImplementation'])=>controls.ownerFeedbackTarget(store,target!),proof:(store:string,target:typeof plan.contacts[number]['originalImplementation'])=>controls.ownerFeedbackProof(store,target!)};
+ const start=async()=>{await f.post('start',{requestId:id});for(let n=0;n<3000;n++){try{const v=JSON.parse(await readFile(held,'utf8'));process.kill(v.pid,0);return v;}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}await new Promise(r=>setTimeout(r,20));}throw new Error('original_feedback_fixture_not_held');};
+ t.after(async()=>{try{if(holdQuestion)await writeFile(questionRelease,'release B on cleanup');await writeFile(release,'release original fixture on cleanup');}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}});return {...f,writerId:id,target,plan,b,definition,controls,host,start,held,questionHeld,releaseQuestion:()=>writeFile(questionRelease,'release actual B question'),release:()=>writeFile(release,'release original fixture'),raw:()=>Buffer.from(canonical(plan))};
+}
+
+test('original owner contact waits for actual writer H1, uses distinct governed readonly messages and returns current feedback to B',async t=>{
+ const f=await originalOwnerContact(t),q=f.messages.q;await f.start();try{const before=q.tasks().current(f.b.item);
+ const waiting=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(waiting.completed,false);assert.equal(waiting.newModelRequests,1);assert.match(waiting.waiting!,/owner_feedback_original_pending_or_unknown/);
+ assert.equal(q.taskInbox().status(f.target.task).length,0);assert.equal(f.ledger!.state().claims.length,2);const view=await observeTaskContactChoice(f.messages.store,f.raw());assert.equal(view.complete,false);assert.equal(view.steps.at(-1).deliveryRegistered,false);
+ await f.release();const implementation=await f.settled(f.writerId);assert.equal(implementation.status,'completed');const done=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(done.completed,true,done.waiting??'');assert.equal(done.newModelRequests,2);assert.equal(q.tasks().current(f.b.item).fingerprint,before.fingerprint);
+ const full=await observeTaskContactChoice(f.messages.store,f.raw(),true);assert.equal(full.complete,true,full.waiting??'');assert.ok('ownerFeedback' in full&&full.ownerFeedback);assert.equal(full.ownerFeedback.current,true);assert.equal(full.ownerFeedback.source.effectiveHead,implementation.H1);assert.ok(full.steps.at(-1).report.reportText.includes(implementation.H1));
+ const original=q.issueImplementations().state('implementation',f.writerId);assert.equal(original.result.H1,implementation.H1);assert.equal(f.ledger!.state().claims.length,4);assert.equal(f.ledger!.state().settlements.length,4);const trace=await readFile(f.messages.trace);
+ const replay=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(replay.newModelRequests,0);assert.equal(replay.completed,true);assert.deepEqual(await readFile(f.messages.trace),trace);
+ const later={...f.plan.initial,id:'feedback-later',authorityIntent:'intent-feedback-later'};q.taskInbox().enqueue(Buffer.from(canonical(later)));const prepared=await prepareTaskOwner(f.messages.store,f.b.item,later.id),context=JSON.parse(await readFile(join(dirname(prepared.plan),'context.json'),'utf8')),reports=Object.values(context.historyProjection.materials).filter((m:any)=>m.source.name==='original-implementation-report') as any[];assert.equal(context.previousExecutions.length,2);assert.equal(reports.length,1);assert.equal(reports[0].source.task,f.target.task);assert.equal(reports[0].source.operation,f.target.operation);assert.deepEqual(reports[0].value,original.result.report);assert.deepEqual(await readFile(f.messages.trace),trace);
+ }finally{await f.release();}
+});
+
+async function originalOwnerPage(t:TestContext,outcome='implemented',holdQuestion=false){
+ const f=await originalOwnerContact(t,true,outcome,holdQuestion);await f.app.close();
+ const request=join(f.project.root,'feedback-choice.json');await writeFile(request,f.raw());
+ const catalogPath=join(f.project.root,'feedback-controls.json'),current=f.messages.q.tasks().current(f.b.item),catalog={schemaVersion:1,kind:'tongxu-task-controls',contacts:[{id:'owner-feedback',title:'Ask current original owner',source:'independent-b',packet:current.packet,sourceSha256:current.fingerprint,request:{path:request,sha256:hash(await readFile(request))}}]};await writeFile(catalogPath,canonical(catalog));
+ const plan=JSON.parse(await readFile(f.planPath,'utf8'));plan.sources=[{id:'independent-b',title:'Independent B',store:f.messages.store,item:f.b.item}];plan.controls={path:catalogPath,sha256:hash(await readFile(catalogPath))};assert.equal(plan.projectSecretary,undefined);await writeFile(f.planPath,canonical(plan));
+ const open=async()=>{const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github}),close=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await close();}};t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/state')=>{const r=await fetch(url.origin+path,{headers});return {status:r.status,value:await r.json() as any};},post=async(path:string,body:unknown={})=>{const r=await fetch(url.origin+path,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};};await get('/api/github/projects');return {app,url,get,post};};
+ const app=await open(),wait=async(predicate:(v:any)=>boolean,read=app.get)=>{const until=Date.now()+50000;while(Date.now()<until){const v=await read();assert.equal(v.status,200,JSON.stringify(v));if(predicate(v.value))return v.value;await new Promise(r=>setTimeout(r,20));}throw new Error('original_feedback_page_timeout');};
+ const start=async()=>{assert.equal((await app.post('/api/implementation/implementation/start',{requestId:f.writerId})).status,202);for(let n=0;n<1500;n++){try{return JSON.parse(await readFile(f.held,'utf8'));}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}await new Promise(r=>setTimeout(r,20));}throw new Error('original_feedback_writer_timeout');};
+ const startExternal=async()=>{await f.controls.begin('implementation',f.writerId);for(let n=0;n<1500;n++){try{return JSON.parse(await readFile(f.held,'utf8'));}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}await new Promise(r=>setTimeout(r,20));}throw new Error('original_feedback_writer_timeout');};
+ return {...f,page:app,open,wait,start,startExternal};
+}
+
+test('normal owner feedback page automatically returns actual H1 answer to B without secretary or extra dispatch',async t=>{
+ const f=await originalOwnerPage(t);await f.start();try{
+ const before=await f.page.get();assert.equal(before.status,200,JSON.stringify(before));assert.equal(before.value.taskControls.length,1);assert.equal(before.value.tasks.length,2);assert.equal(before.value.secretaries,undefined);
+ assert.equal((await f.page.post('/api/task-control/owner-feedback/start')).status,202);
+ const waiting=await f.wait(v=>v.taskControls[0].contactChoice?.ownerFeedback&&!v.taskControls[0].controllerActive);assert.equal(waiting.taskControls[0].phase,'waiting');assert.equal(waiting.taskControls[0].currentMaterial,true);assert.equal(f.messages.q.taskInbox().status(f.target.task).length,0);assert.equal(f.ledger!.state().claims.length,2);
+ await f.release();const done=await f.wait(v=>v.taskControls[0].contactChoice?.complete&&!v.taskControls[0].controllerActive);assert.equal(done.taskControls[0].phase,'returned');const h1=done.issueImplementations[0].requests[0].H1;assert.ok(h1);const report=await f.page.get('/api/task-control-report/owner-feedback');assert.equal(report.status,200,JSON.stringify(report));assert.equal(report.value.complete,true);assert.match(report.value.steps.at(-1).report.reportText,/B consumed actual A reply/);assert.ok(report.value.steps.at(-1).report.reportText.includes(h1));assert.equal(report.value.ownerFeedback.source.newReadonlyContext,true);assert.equal(report.value.ownerFeedback.source.nativeSessionResumed,false);assert.equal(f.ledger!.state().claims.length,4);assert.equal(f.ledger!.state().settlements.length,4);
+ const trace=await readFile(f.messages.trace);assert.equal((await f.page.post('/api/task-control/owner-feedback/start')).status,202);await f.wait(v=>!v.taskControls[0].controllerActive);assert.deepEqual(await readFile(f.messages.trace),trace);
+ }finally{await f.release();}
+});
+
+test('original owner feedback waiting cancellation is durable and never dispatches A after writer success or cold replay',async t=>{
+ const f=await originalOwnerPage(t);await f.start();try{
+ assert.equal((await f.page.post('/api/task-control/owner-feedback/start')).status,202);await f.wait(v=>v.taskControls[0].contactChoice?.ownerFeedback&&!v.taskControls[0].controllerActive);
+ const cancelled=await f.page.post('/api/task-control/owner-feedback/cancel');assert.equal(cancelled.status,200,JSON.stringify(cancelled));assert.equal(cancelled.value.result.cancelled,true);assert.equal(f.messages.q.taskInbox().status(f.target.task).length,0);
+ await f.release();await f.wait(v=>v.issueImplementations[0].requests[0].phase==='returned'&&!v.issueImplementations[0].requests[0].controllerActive);assert.equal(f.ledger!.state().claims.length,2);const trace=await readFile(f.messages.trace);await f.page.app.close();const cold=await f.open();const view=await cold.get();assert.equal(view.status,200);assert.equal(view.value.taskControls[0].phase,'cancelled');assert.equal((await cold.post('/api/task-control/owner-feedback/start')).status,202);await f.wait(v=>!v.taskControls[0].controllerActive,cold.get);assert.deepEqual(await readFile(f.messages.trace),trace);assert.equal(f.ledger!.state().claims.length,2);
+ }finally{await f.release();}
+});
+
+test('original owner feedback cold read starts no input and explicit continue returns the same captured B question',async t=>{
+ const f=await originalOwnerPage(t);await f.startExternal();try{
+ await f.page.post('/api/task-control/owner-feedback/start');await f.wait(v=>v.taskControls[0].contactChoice?.ownerFeedback&&!v.taskControls[0].controllerActive);
+ await f.page.app.close();await f.release();for(let n=0;n<1000;n++){if(f.messages.q.issueImplementations().state('implementation',f.writerId).result)break;await new Promise(r=>setTimeout(r,20));}assert.equal(f.messages.q.issueImplementations().state('implementation',f.writerId).result.status,'completed');const trace=await readFile(f.messages.trace),cold=await f.open();for(let n=0;n<2;n++){const view=await cold.get();assert.equal(view.status,200);assert.equal(view.value.taskControls[0].phase,'waiting');assert.equal(view.value.taskControls[0].currentMaterial,true);}assert.deepEqual(await readFile(f.messages.trace),trace);assert.equal(f.ledger!.state().claims.length,2);
+ const begun=await cold.post('/api/task-control/owner-feedback/start');assert.equal(begun.status,202,JSON.stringify(begun));const done=await f.wait(v=>v.taskControls[0].phase==='returned'&&!v.taskControls[0].controllerActive,cold.get);assert.equal(done.taskControls[0].contactChoice.steps.length,3);assert.equal(f.ledger!.state().claims.length,4);assert.equal(f.ledger!.state().settlements.length,4);
+ }finally{await f.release();}
+});
+
+test('original owner feedback rejects changed raw tree, cached index, writer lease and native capture without additional input',async t=>{
+ const f=await originalOwnerContact(t);await f.start();try{
+ await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});await f.release();await f.settled(f.writerId);const s=f.messages.q.issueImplementations().state('implementation',f.writerId),workspace=s.plan.workspace,path=join(workspace,'src/normalize.mjs'),bytes=await readFile(path),trace=await readFile(f.messages.trace);await f.host.proof(f.messages.store,f.target);
+ const blocked=async()=>{const result=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(result.completed,false);assert.equal(result.newModelRequests,0);assert.deepEqual(await readFile(f.messages.trace),trace);assert.equal(f.messages.q.taskInbox().status(f.target.task).length,0);};
+ await writeFile(path,Buffer.concat([bytes,Buffer.from('// changed outside original result\n')]));await blocked();await git(workspace,['add','src/normalize.mjs']);await writeFile(path,bytes);await blocked();await git(workspace,['reset','--','src/normalize.mjs']);
+ const lease=join(workspace,'.git','tongxu-writer.json');await writeFile(lease,'{"fixture":"unknown writer"}');await blocked();await rm(lease);
+ const capture=join(s.plan.operationRoot,'implementer','stderr.txt'),old=await readFile(capture);await writeFile(capture,Buffer.concat([old,Buffer.from('changed original capture')]));await blocked();await writeFile(capture,old);
+ const proof=await f.host.proof(f.messages.store,f.target);assert.equal(proof.H,s.result.H1);const done=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(done.completed,true,done.waiting??'');assert.equal(done.newModelRequests,2);
+ }finally{await f.release();}
+});
+
+test('normal original owner feedback accepts proven no-change H0 without inventing a commit',async t=>{
+ const f=await originalOwnerPage(t,'no_change');await f.start();try{
+ await f.page.post('/api/task-control/owner-feedback/start');await f.wait(v=>v.taskControls[0].contactChoice?.ownerFeedback&&!v.taskControls[0].controllerActive);await f.release();const done=await f.wait(v=>v.taskControls[0].phase==='returned'&&!v.taskControls[0].controllerActive),original=done.issueImplementations[0].requests[0];assert.equal(original.status,'no_change');assert.equal(original.H1,null);const report=(await f.page.get('/api/task-control-report/owner-feedback')).value;assert.equal(report.ownerFeedback.source.effectiveHead,original.H0);assert.equal(report.ownerFeedback.source.H1,null);assert.ok(report.steps.at(-1).report.reportText.includes(original.H0));const database=new DatabaseSync(join(f.messages.store,'queue.sqlite'));try{const before=database.prepare('SELECT result FROM operations WHERE id=?').get(f.target.operation) as any;assert.equal(JSON.parse(before.result).implementation.resultSha256,hash(canonical(f.messages.q.issueImplementations().state('implementation',f.writerId).result)));assert.throws(()=>database.prepare("UPDATE operations SET result='{}',status='complete' WHERE id=?").run(f.target.operation),/original_issue_implementation_consumer_required/);assert.equal((database.prepare('SELECT result FROM operations WHERE id=?').get(f.target.operation) as any).result,before.result);}finally{database.close();}assert.equal(f.ledger!.state().claims.length,4);assert.equal(f.ledger!.state().settlements.length,4);
+ }finally{await f.release();}
+});
+
+for(const state of ['stopped','issue-changed'])test('original owner feedback '+state+' after H1 cannot submit a readonly owner answer',async t=>{
+ const f=await originalOwnerContact(t);await f.start();try{
+ await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});await f.release();await f.settled(f.writerId);const trace=await readFile(f.messages.trace);
+ let host=f.host;if(state==='stopped')f.messages.q.control(f.entry.context.scope.id,'investment','stopped','explicit fixture stop before owner answer');else{const path=join(f.project.root,'implementation-catalog.json'),controls=await IssueImplementationControls.load(path,hash(await readFile(path)),f.entry.repository,async number=>({number,title:'Changed Issue',body:f.body+' changed original requirement',url:'https://github.com/fixture/reception/issues/'+number}),async()=>{});t.after(()=>controls.drain());host={target:(store,target)=>controls.ownerFeedbackTarget(store,target!),proof:(store,target)=>controls.ownerFeedbackProof(store,target!)};}
+ const blocked=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:host});assert.equal(blocked.completed,false);assert.equal(blocked.newModelRequests,0);assert.match(blocked.waiting!,state==='stopped'?/stopped/:/requirement_changed/);assert.deepEqual(await readFile(f.messages.trace),trace);assert.equal(f.ledger!.state().claims.length,2);assert.equal(f.ledger!.state().settlements.length,2);
+ }finally{await f.release();}
+});
+
+test('original owner completion while B is still answering waits once and cannot lose or duplicate the original contact',async t=>{
+ const f=await originalOwnerPage(t,'implemented',true);await f.start();try{
+ await f.page.post('/api/task-control/owner-feedback/start');for(let n=0;n<500;n++){if(await exists(f.questionHeld))break;await new Promise(r=>setTimeout(r,20));}assert.equal(await exists(f.questionHeld),true);await f.release();const during=await f.wait(v=>v.issueImplementations[0].requests[0].phase==='returned');assert.equal(during.taskControls[0].controllerActive,true);assert.equal(f.messages.q.taskInbox().status(f.target.task).length,0);await f.releaseQuestion();const done=await f.wait(v=>v.taskControls[0].phase==='returned'&&!v.taskControls[0].controllerActive&&!v.issueImplementations[0].requests[0].controllerActive);assert.equal(done.taskControls[0].contactChoice.steps.length,3);assert.equal(f.ledger!.state().claims.length,4);assert.equal(f.ledger!.state().settlements.length,4);assert.equal(f.messages.q.taskInbox().status(f.target.task).length,1);
+ }finally{await f.releaseQuestion();await f.release();}
+});
+
+for(const cut of ['before-a','before-b-return'])test('original owner feedback cancellation '+cut+' retains earlier captures and cancels only the next unsent segment',async t=>{
+ const f=await originalOwnerContact(t);await f.start();try{
+ await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});await f.release();await f.settled(f.writerId);let count=0;const stopped=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host,beforeStep:()=>{if(++count===(cut==='before-a'?4:7))throw new Error('explicit_fixture_pause_before_next_input');}});assert.equal(stopped.completed,false);assert.equal(stopped.waiting,'explicit_fixture_pause_before_next_input');assert.equal(stopped.newModelRequests,cut==='before-a'?0:1);const claims=f.ledger!.state().claims.length,trace=await readFile(f.messages.trace);
+ const cancellation=await cancelTaskChoiceOwnerContact(f.messages.store,f.raw(),'explicit fixture cancel original next unsent');assert.ok(cancellation);assert.equal(cancellation.cancelled,true);const replay=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(replay.completed,false);assert.equal(replay.waiting,'owner_contact_cancelled');assert.equal(replay.newModelRequests,0);assert.deepEqual(await readFile(f.messages.trace),trace);assert.equal(f.ledger!.state().claims.length,claims);assert.equal(f.ledger!.state().settlements.length,claims);const view=await observeTaskContactChoice(f.messages.store,f.raw(),true);assert.equal(view.steps[0].report.completeCapture,true);assert.ok('ownerFeedback' in view&&view.ownerFeedback?.cancelled);
+ }finally{await f.release();}
+});
+
+test('dynamic original implementation recipients require the exact owner mode before any model dispatch',async t=>{
+ const f=await originalOwnerContact(t),raw=f.raw(),current=f.messages.q.tasks().current(f.b.item),path=join(f.project.root,'recipient-mode-request.json'),catalogPath=join(f.project.root,'recipient-mode-catalog.json'),sources=[{id:'independent-b',store:f.messages.store,item:f.b.item}],recipientSources=[...sources,{id:'managed-a',store:f.messages.store,item:f.target.task}];
+ const check=async(plan:TaskContactChoice)=>{await writeFile(path,canonical(plan));await writeFile(catalogPath,canonical({schemaVersion:1,kind:'tongxu-task-controls',contacts:[{id:'bounded-contact',title:'Exact dynamic target',source:sources[0]!.id,packet:current.packet,sourceSha256:current.fingerprint,request:{path,sha256:hash(await readFile(path))}}]}));return TaskControls.load(catalogPath,hash(await readFile(catalogPath)),sources,new Set(recipientSources.map(s=>s.id)),{recipientSources,originalImplementation:f.host});};
+ const legacy=JSON.parse(raw.toString());legacy.schemaVersion=1;delete legacy.authorization;delete legacy.contacts[0].originalImplementation;await assert.rejects(check(legacy),/task_choice_recipient_not_selected/);assert.equal((await f.messages.calls()).filter((x:any)=>x.kind==='input').length,0);const exact=await check(f.plan);t.after(()=>exact.drain());assert.equal(exact.manifest().contacts.length,1);assert.equal((await f.messages.calls()).filter((x:any)=>x.kind==='input').length,0);
+});
+
 test('normal project entry creates an adopted Issue task, checks original authority/resources and reads H1/full result without a second dispatch',async t=>{
  const f=await implementationPage(t),before=await tree(f.project.objects,true),body={requestId:'normal-first',issueNumber:74};
  assert.equal((await f.get('/api/state')).value.tasks.length,0);const options=await f.get();assert.equal(options.status,200);assert.equal(options.value.options[0].issues[0].number,74);
@@ -333,7 +451,7 @@ for(const supplement of [false,true])for(const cold of [false,true])test(`regist
  f.messages.q.evaluate(blocker.operation);
  let post=f.post,settled=f.settled,get=f.get;
  if(cold){
-  await f.app.close();const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+  await f.app.close();const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github}),close=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await close();}};t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
   await fetch(url.origin+'/api/github/projects',{headers});
   post=async(action,data,extra={})=>{const r=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:r.status,value:await r.json() as any};};
   get=async(path='/api/implementation')=>{const r=await fetch(url.origin+path,{headers});return {status:r.status,value:await r.json() as any};};
@@ -371,7 +489,7 @@ for(const cold of [false,true])test(`cancelled implementation before resource re
  assert.equal(await readFile(f.project.trace,'utf8'),'');assert.equal(f.ledger!.state().claims.length,0);assert.equal(f.ledger!.state().settlements.length,0);
  let post=f.post,settled=f.settled;
  if(cold){
-  const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+  const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github}),close=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await close();}};t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
   await fetch(url.origin+'/api/github/projects',{headers});
   post=async(action,data,extra={})=>{const r=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:r.status,value:await r.json() as any};};
   settled=async request=>{for(let n=0;n<1000;n++){const state=(await(await fetch(url.origin+'/api/implementation',{headers})).json() as any).entries[0].requests.find((r:any)=>r.id===request);if(!state.controllerActive)return state;await new Promise(r=>setTimeout(r,20));}throw Error('fixture_timeout');};
