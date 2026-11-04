@@ -57,7 +57,7 @@ test('check-only changes and temporary source loss never dispatch or replace the
 
 test('normal entry refuses stopped, revoked or unavailable-resource new receptions without replacing prior evidence',async t=>{
  const f=await normal(t,true),before=await f.count();await f.observed.source.change({comments:[{id:83,user:{id:15},body:'A new material packet needs fresh admission.'}]});await f.post('check');const state=await f.get(),packet=state.tasks[0].currentPacket;
- f.q.control('scope','investment','stopped','explicit fixture stop through original control');await f.post('start',{expectedPacket:packet});assert.equal((await f.settled()).entry.problem,'new_investment_stopped');assert.equal(await f.count(),before);assert.equal((await f.get()).receptions[0].investmentStopped,true);
+ f.q.control('scope','investment','stopped','explicit fixture stop through original control');await f.post('start',{expectedPacket:packet});assert.equal((await f.settled()).entry.problem,'owner_action_stopped');assert.equal(await f.count(),before);assert.equal((await f.get()).receptions[0].investmentStopped,true);
  f.q.control('scope','investment','open','explicit fixture reopen without an Owner-stop override');
  const db=new DatabaseSync(join(f.ledger!.root,'original-fixture.sqlite'));try{db.exec('UPDATE capacity SET n=0');}finally{db.close();}
  await f.post('start',{expectedPacket:packet});const denied=await f.settled();assert.match(denied.entry.problem,/resource/);assert.equal(await f.count(),before);assert.equal(f.ledger!.state().claims.length,1);

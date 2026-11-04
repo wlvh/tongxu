@@ -1,5 +1,5 @@
 const pendingReceptions=new Set();
-const receptionReason=value=>({new_investment_stopped:'当前范围停止新增投入，原操作与报告保留。',target_occupied_or_unknown:'同一目标仍被原工作占用或结果未知；请先核原工作，不能另起竞争接收。',reception_seats_full:'已配置的接收席位仍被原工作占用；先等待或核对其真实状态。',reception_material_changed_refresh_required:'来源已形成另一份材料，请刷新后核对新的接收对象。',reception_control_template_binding_invalid:'本入口的接收配置与选定任务不一致，尚未执行。',reception_control_catalog_changed:'接收配置已变化，请沿原安装记录核对。',owner_confirmation_already_reserved:'原一次确认已经用于先前操作，不能沿用到这份新材料；需当前操作的准确授权。'}[value]||readableReason(value));
+const receptionReason=value=>({owner_action_stopped:'当前范围的原授权已停止新增动作；原工作与报告保留。',new_investment_stopped:'当前范围停止新增投入，原操作与报告保留。',target_occupied_or_unknown:'同一目标仍被原工作占用或结果未知；请先核原工作，不能另起竞争接收。',reception_seats_full:'已配置的接收席位仍被原工作占用；先等待或核对其真实状态。',reception_material_changed_refresh_required:'来源已形成另一份材料，请刷新后核对新的接收对象。',reception_control_template_binding_invalid:'本入口的接收配置与选定任务不一致，尚未执行。',reception_control_catalog_changed:'接收配置已变化，请沿原安装记录核对。',owner_confirmation_already_reserved:'原一次确认已经用于先前操作，不能沿用到这份新材料；需当前操作的准确授权。'}[value]||readableReason(value));
 const receptionProject=()=>gh.selected?gh.account?.id+':'+gh.selected.id:'legacy';
 async function receptionAction(entry,action,expectedProject=receptionProject()){
   if(expectedProject!==receptionProject())return;
