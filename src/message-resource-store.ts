@@ -71,10 +71,10 @@ export class MessageResourceRecords {
     Object.assign(stage,{phase:'interrupted_returned',proofSha256:this.blob(Buffer.from(canonical(proof))),finishedAt:now(),originalRunCompleted:false});this.db.prepare("UPDATE operations SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),op.id);this.event('interrupted_returned',run,{operation:op.id,proofSha256,originalRunCompleted:false});return {...this.stateValue(run),duplicate:false};
   });}
   private unstartedProof(run:string){
-    const m=this.message(run);if(!m.plan.nativeControls||m.messages.length!==1||m.messages.some((x:Row)=>x.sent)||m.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true))throw new Error('message_original_zero_input_not_proven');
+    const m=this.message(run);if(m.messages.length!==1||m.messages.some((x:Row)=>x.sent)||m.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true))throw new Error('message_original_zero_input_not_proven');
     return {run,executionKind:m.plan.executionKind,originalRunCompleted:false,modelInputs:0,messages:[],captures:m.runtimes.filter((r:Row)=>r.started).map((r:Row)=>({participant:r.participant,attempt:r.attempt,originals:r.ended.originals,proof:r.ended.proof}))};
   }
-  /** Only factual cancellation of a verified, ended zero-input owned run.
+  /** Only factual cancellation of a verified, ended zero-input single-message run.
    * Provider accounting remains authoritative; this does not refund a claim. */
   cancelUnstarted(run:string){return this.transaction(()=>{
     const b=this.binding(run),{op,result}=this.operation(b.operation),stage=result.messageResources?.[run],proof=this.unstartedProof(run),proofSha256=hash(canonical(proof));
