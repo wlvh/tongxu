@@ -57,7 +57,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 固定 PR 原件 | 非法 scope 不调用外部工具；候选变动保留缺口；恢复不覆盖旧页 | `tests/w1/cli.test.ts`、`tests/w1/collection.test.ts`；见 test:mac |
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
 | 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
-| 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面跨项目请求见 `tests/w7/github-projects-ui.test.ts` |
+| 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写；同项目拒绝经刷新仍可见，停止后从原按钮零输入查回同操作 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面同项目失败/跨项目迟到回复和停止准入见 `tests/w7/github-projects-ui.test.ts`，两组复用原页面 fixture |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |

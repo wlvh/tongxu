@@ -70,11 +70,11 @@
 <!-- capability-anchor: CAPABILITY.source_reception -->
 - **User goal**：从所选项目的原任务补查新材料，进入准确的独立技术接收并查看完整原报告。
 - **Required context**：已登记并验证的固定候选、来源配置、`receptionControls`、原接收模板、receive 权限与资源。安装者一次固定配置，用户无需逐轮写计划或搬报告。
-- **User action or request**：任务页点击“补查来源”，核当前材料后点击“接收当前材料”；完成后“查看原接收全文”。
+- **User action or request**：任务页点击“补查来源”，核当前材料后点击“接收当前材料”；已有原接收时用“查回当前原接收”，完成后“查看原接收全文”。
 - **Directly observable result**：来源补查零模型输入；新材料进入原 packet，旧输入/报告保持不变。明确接收为当前操作准备授权和资源，复用原接收执行器，页面分别显示未开始、在处理、原接收状态、返回和等待原因。完整报告仍由原捕获校验后提供。
-- **Failure / degradation / escalation**：旧一次确认不能复用到新操作；缺资源、停止、撤销或来源失效时拒绝新增输入。H/B/目标变化等待重新固定候选。未知或已发操作沿原 operation 查回，不换 ID、不自动退款。
+- **Failure / degradation / escalation**：旧一次确认不能复用到新操作；缺资源、停止、撤销或来源失效时拒绝新增输入。H/B/目标变化等待重新固定候选。同项目请求失败的原因在本次刷新后仍可见，迟到回复不污染另一项目。未知或已发接收沿原 operation 查回；停止新增投入不阻止读取/关联原结果，不换 ID、不自动退款。
 - **Acceptance assertion**：重复点击、仅 checks 更新、刷新或重开不新增模型输入，结束后读回同一操作的全文；技术接收不是正式 PR PASS 或本人接受。
-- **Evidence**：`tests/events/normal-entry.test.ts` 与既有 `tests/w3/receiver-authority.test.ts`。新入口目前以明确协议样例验证，真实原生正常用户路径待验；[使用说明](docs/source_reception_entry.md)。
+- **Evidence**：`tests/events/normal-entry.test.ts`、`tests/w7/github-projects-ui.test.ts` 与既有 `tests/w3/receiver-authority.test.ts`。新入口目前以明确协议样例验证，真实原生正常用户路径待验；[使用说明](docs/source_reception_entry.md)。
 
 ## 3. Cross-cutting User-visible Invariants
 
