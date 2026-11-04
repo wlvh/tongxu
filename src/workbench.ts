@@ -225,9 +225,9 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject,p.issueImplementation?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
-      read:async(scope,target,compiled)=>(await openImplementation(scope)).readSupplement(target,compiled),
+      read:async(scope,target,compiled,text)=>(await openImplementation(scope)).readSupplement(target,compiled,text),
       work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
-      cancel:async(scope,target,id)=>{try{await(await openImplementation(scope)).cancel(target.source,id);}catch(error){if((error as Error).message!=='implementation_request_not_registered')throw error;}}
+      cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined).catch(error=>{projectChat=undefined;throw error;});
   };
   const initial=p.githubProjects?null:await openLocal(p);
