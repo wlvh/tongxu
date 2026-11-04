@@ -2,6 +2,7 @@ import {messageFixture} from '../w6/message-fixture.js';
 import {messageAuthority} from '../w6/message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {startWorkbench} from '../../src/workbench.js';
+import type {SupplementTarget} from '../../src/project-chat.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {canonical} from '../../src/comparison.js';
 import {DatabaseSync} from 'node:sqlite';
@@ -249,7 +250,7 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal'){
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false){
  const project=await implementationProject(t),messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
  const context=messages.q.status().items.find((item:any)=>item.id===messages.item).context;
  const scope=await owner.adopt({kind:'adopt_scope',scopeId:context.scope.id,scopeVersion:'implementation-scope',body:{goals:['Implement optional label fallback'],nonGoals:['No publication or merge'],preserve:['Untitled and all original evidence'],acceptance:['Registered tests and committed exact tree'],constraints:['Only explicit existing source file']},previousAdoption:owner.scope.sha});
@@ -260,11 +261,15 @@ async function implementationPage(t:TestContext,resources=true,resourceMode='nor
  const github:GitHubReaderFactory=async()=>({query:async op=>({status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repository],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:{...repository,...(op==='issue'?{item:{...issue,body:sourceBody}}:op==='issues'||op==='pulls'?{items:{nodes:op==='issues'?[{...issue,body:sourceBody}]:[],pageInfo:{hasNextPage:false,endCursor:null}}}:{})}}})})});
  const resource=ledger?.profile.resources[0],entry={id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:project.request.allowedPaths,materialPaths:project.request.materialPaths,protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
  const catalogPath=join(project.root,'implementation-catalog.json');await writeFile(catalogPath,JSON.stringify({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}));
- const planPath=join(project.root,'implementation-workbench.json');await writeFile(planPath,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Implementation fixture',goal:'Run one adopted Issue through normal entry',sources:[],githubProjects:true,issueImplementation:{path:catalogPath,sha256:hash(await readFile(catalogPath))}}));
- const app=await startWorkbench(planPath,undefined,{githubReader:github});t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/implementation')=>{const result=await fetch(url.origin+path,{headers});return {status:result.status,value:await result.json() as any};},post=async(action:string,data:unknown,extra:Record<string,string>={})=>{const result=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:result.status,value:await result.json() as any};};
+ const planPath=join(project.root,'implementation-workbench.json');await writeFile(planPath,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Implementation fixture',goal:'Run one adopted Issue through normal entry',sources:[],githubProjects:true,issueImplementation:{path:catalogPath,sha256:hash(await readFile(catalogPath))},...(withSecretary?{projectSecretary:{root:join(project.root,'project-chats'),codexExecutable:project.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}:{})}));
+ const app=await startWorkbench(planPath,undefined,{githubReader:github});const originalClose=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await originalClose();}};t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/implementation')=>{const result=await fetch(url.origin+path,{headers});return {status:result.status,value:await result.json() as any};},post=async(action:string,data:unknown,extra:Record<string,string>={})=>{const result=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:result.status,value:await result.json() as any};};
  await fetch(url.origin+'/api/github/projects',{headers});
  const settled=async(id:string)=>{for(let i=0;i<1000;i++){const state=(await get()).value.entries[0].requests.find((r:any)=>r.id===id);if(state&&!state.controllerActive)return state;await new Promise(r=>setTimeout(r,20));}throw new Error('implementation_fixture_timeout');};
  return {project,messages,owner,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
+}
+
+async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){
+ const r=await fetch(f.url.origin+'/api/project-secretary/'+action,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};
 }
 
 test('normal project entry creates an adopted Issue task, checks original authority/resources and reads H1/full result without a second dispatch',async t=>{
@@ -308,26 +313,50 @@ test('an implementation interrupted after its first registered write retains the
 
 // Reuse the normal entry, original queue/authority/provider and real Docker
 // fixtures for the two never-dispatched waiting boundaries.
-for(const cold of [false,true])test(`registered implementation completes the same preparation after a busy seat clears (${cold?'cold':'warm'})`,async t=>{
- const f=await implementationPage(t),body={requestId:'busy-original',issueNumber:74},blocker=f.messages.q.begin(f.messages.item,'ordinary-seat');
- assert.equal(blocker.status,'running');assert.equal((await f.post('prepare',body)).value.error,'reception_seats_full');
+for(const supplement of [false,true])for(const cold of [false,true])test(`registered ${supplement?'supplement':'implementation'} completes the same preparation after a busy seat clears (${cold?'cold':'warm'})`,async t=>{
+ const f=await implementationPage(t,true,'normal',supplement);let body={requestId:'busy-original',issueNumber:74},parent:any,target:SupplementTarget|undefined;
+ const conversationId='88888888-8888-4888-8888-888888888888',requestId='77777777-7777-4777-8777-777777777777',text='Verify the committed fallback and add the bounded supplemental source comment.';
+ if(supplement){
+  const db=new DatabaseSync(join(f.ledger!.root,'original-fixture.sqlite'));try{db.exec('UPDATE capacity SET n=2');}finally{db.close();}
+  const binary=f.project.config.codexExecutable,script=await readFile(binary,'utf8');await writeFile(binary,script.replace("text:'export function normalizeLabel(value,fallback=", "text:(context.request?.continuation?'// confirmed supplemental edit\\n':'')+'export function normalizeLabel(value,fallback="));
+  assert.equal((await f.post('prepare',body)).status,200);await f.post('start',{requestId:body.requestId});parent=await f.settled(body.requestId);assert.equal(parent.status,'completed');
+  const {title,...identity}=(await f.get('/api/project-secretary')).value.supplementTargets[0];target=identity;
+ }
+ const blocker=f.messages.q.begin(f.messages.item,'ordinary-seat');assert.equal(blocker.status,'running');
+ if(supplement){
+  body={requestId:'supplement-'+requestId,issueNumber:74};assert.equal((await supplementPost(f,'supplement',{requestId,conversationId,target,text})).status,202);
+  for(let n=0;n<1000;n++){if(f.messages.q.issueImplementations().requests('implementation').some(r=>r.id===body.requestId))break;await new Promise(r=>setTimeout(r,20));}
+ }else assert.equal((await f.post('prepare',body)).value.error,'reception_seats_full');
  const original=f.messages.q.issueImplementations().state('implementation',body.requestId),root=join(f.entry.root,body.requestId),paths=['request.json','plan.json','grant.json','test-plan.json'],bytes=await Promise.all(paths.map(p=>readFile(join(root,p))));
- assert.equal(original.phase,'registered');assert.equal(original.reason,'reception_seats_full');assert.equal(await readFile(f.project.trace,'utf8'),'');
+ assert.equal(original.phase,'registered');assert.equal(original.operation,null);assert.equal(original.supplement,supplement);const request=f.messages.q.issueImplementations().original('implementation',body.requestId);
+ if(supplement){assert.equal(original.H0,parent.H1);assert.equal(original.logicalOwner,parent.task);assert.equal(request.continuation!.supplement.text,text);}else assert.equal(original.reason,'reception_seats_full');
  f.messages.q.evaluate(blocker.operation);
- let post=f.post,settled=f.settled;
+ let post=f.post,settled=f.settled,get=f.get;
  if(cold){
-  const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+  await f.app.close();const app=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>app.close());const url=new URL(app.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
   await fetch(url.origin+'/api/github/projects',{headers});
   post=async(action,data,extra={})=>{const r=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:r.status,value:await r.json() as any};};
-  settled=async id=>{for(let n=0;n<1000;n++){const s=(await (await fetch(url.origin+'/api/implementation',{headers})).json() as any).entries[0].requests.find((r:any)=>r.id===id);if(!s.controllerActive)return s;await new Promise(r=>setTimeout(r,20));}throw Error('fixture_timeout');};
+  get=async(path='/api/implementation')=>{const r=await fetch(url.origin+path,{headers});return {status:r.status,value:await r.json() as any};};
+  settled=async id=>{for(let n=0;n<1000;n++){const s=(await get()).value.entries[0].requests.find((r:any)=>r.id===id);if(!s.controllerActive)return s;await new Promise(r=>setTimeout(r,20));}throw Error('fixture_timeout');};
  }
- assert.equal((await post('prepare',body)).value.phase,'prepared');await post('start',{requestId:body.requestId});
+ const prepared=await post('prepare',body);assert.equal(prepared.value.phase,'prepared',JSON.stringify(prepared));await post('start',{requestId:body.requestId});
  const done=await settled(body.requestId),fixed=f.messages.q.issueImplementations().state('implementation',body.requestId);
- assert.equal(done.status,'completed');assert.equal(done.task,original.task);assert.equal(fixed.requestSha256,original.requestSha256);
+ assert.equal(done.status,'completed',JSON.stringify(done));assert.equal(done.task,original.task);assert.equal(fixed.requestSha256,original.requestSha256);assert.deepEqual(f.messages.q.issueImplementations().original('implementation',body.requestId),request);
  for(let i=0;i<paths.length;i++)assert.deepEqual(await readFile(join(root,paths[i]!)),bytes[i]);
- assert.equal(f.ledger!.state().claims.length,1);assert.equal(f.ledger!.state().settlements.length,1);
- const report=await f.get('/api/implementation-report/implementation/'+body.requestId);assert.equal(report.value.H1,done.H1);assert.equal(report.value.completeCapture,true);
- const trace=await readFile(f.project.trace,'utf8');assert.equal((trace.match(/"kind":"model-input"/g)??[]).length,1);
+ assert.equal(f.ledger!.state().claims.length,supplement?2:1);assert.equal(f.ledger!.state().settlements.length,supplement?2:1);
+ const report=await get('/api/implementation-report/implementation/'+body.requestId);assert.equal(report.value.H1,done.H1);assert.equal(report.value.completeCapture,true);
+ if(supplement){
+  assert.equal(done.H0,parent.H1);assert.notEqual(done.H1,parent.H1);assert.equal(done.logicalOwner,parent.task);
+  const input=await readFile(join(fixed.plan.operationRoot,'implementer','inputs.json'),'utf8');assert.ok(input.includes(text));assert.ok(input.includes(parent.H1));
+  const view=(await get('/api/project-secretary/conversations/'+conversationId)).value;assert.equal(view.supplements[0].original.report.report,fixed.result.report.report);
+  const catalog=join(f.project.root,'implementation-catalog.json'),controls=await IssueImplementationControls.load(catalog,hash(await readFile(catalog)),f.entry.repository,async number=>({number,title:'Original issue',body:f.body,url:'https://github.com/fixture/reception/issues/'+number}),async()=>{});t.after(()=>controls.drain());
+  for(const changed of [{...target!,task:'f'.repeat(64)},{...target!,operation:'different-operation'}]){
+   await assert.rejects(controls.workSupplement(changed,body.requestId,text,()=>{}),/compiled_target_changed/);await assert.rejects(controls.cancelSupplement(changed,body.requestId,text),/compiled_target_changed/);await assert.rejects(controls.readSupplement(changed,body.requestId,text),/compiled_target_changed/);
+  }
+  await assert.rejects(controls.workSupplement(target!,body.requestId,text+' changed',()=>{}),/compiled_target_changed/);await assert.rejects(controls.cancelSupplement(target!,body.requestId,text+' changed'),/compiled_target_changed/);await assert.rejects(controls.readSupplement(target!,body.requestId,text+' changed'),/compiled_target_changed/);
+  assert.equal((await controls.readSupplement(target!,body.requestId,text)).completeCapture,true);await controls.workSupplement(target!,body.requestId,text,()=>{});await controls.drain();
+ }
+ const trace=await readFile(f.project.trace,'utf8');assert.equal((trace.match(/"kind":"model-input"/g)??[]).length,supplement?2:1);
  await post('start',{requestId:body.requestId});await settled(body.requestId);assert.equal(await readFile(f.project.trace,'utf8'),trace);
 });
 
@@ -429,4 +458,77 @@ test('input-only implementation refuses changed material, native evidence, compe
   if(problem==='cancel')assert.equal(JSON.parse((ledger.settlements[0] as any).body).state,'cancelled');
   if(problem==='cancel'){const next=await f.control().prepare('implementation',{requestId:'after-held-cancel',issueNumber:74});assert.equal(next.phase,'prepared');assert.equal(f.ledger!.state().claims.length,1);assert.equal(f.ledger!.state().settlements.length,1);assert.equal(await readFile(f.project.trace,'utf8'),'');}
  }
+});
+
+
+for(const resources of [false,true])test('project secretary saves a busy writer supplement and only after real H1 returns the same responsibility full report in a new context: '+resources,async t=>{
+ const f=await implementationPage(t,resources,'normal',true),first='original-implementation';
+ if(f.ledger){const db=new DatabaseSync(join(f.ledger.root,'original-fixture.sqlite'));try{db.exec('UPDATE capacity SET n=2');}finally{db.close();}}
+ const binary=f.project.config.codexExecutable,script=await readFile(binary,'utf8');
+ // Preserve the existing first implementation, then make a distinct, harmless
+ // registered source edit when this fixture receives a continuation request.
+ await writeFile(binary,script.replace("text:'export function normalizeLabel(value,fallback=", "text:(context.request?.continuation?'// confirmed supplemental edit\\n':'')+'export function normalizeLabel(value,fallback=").replace("tool('tongxu_read_file',{path:'src/normalize.mjs'});","setTimeout(()=>tool('tongxu_read_file',{path:'src/normalize.mjs'}),700);"));
+ assert.equal((await f.post('prepare',{requestId:first,issueNumber:74})).status,200);
+ const targets=await f.get('/api/project-secretary'),target=targets.value.supplementTargets[0];assert.ok(target);const {title,...identity}=target;
+ const conversationId='11111111-1111-4111-8111-111111111111',requestId='22222222-2222-4222-8222-222222222222',body={conversationId,requestId,target:identity,text:'请核对刚完成的可选fallback，并保留默认Untitled；补充一条受控源码说明。'};
+ const chatPost=async(action:string,value:unknown)=>{const response=await fetch(f.url.origin+'/api/project-secretary/'+action,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(value)});return {status:response.status,value:await response.json() as any};};
+ await f.post('start',{requestId:first});for(let n=0;n<100;n++){if((await readFile(f.project.trace,'utf8')).includes('model-input'))break;await new Promise(r=>setTimeout(r,20));}
+ assert.equal((await f.get()).value.entries[0].requests.find((r:any)=>r.id===first).controllerActive,true);
+ // A is in its real bounded native fixture turn; receiving does not compete.
+ assert.equal((await chatPost('supplement',body)).status,202);assert.equal((await chatPost('supplement',body)).value.duplicate,true);const saved=await f.get('/api/project-secretary/conversations/'+conversationId);assert.equal(saved.value.supplements.length,1);assert.equal(saved.value.supplements[0].compiledRequest,null);
+ const changed=await chatPost('supplement',{...body,text:'cannot replace original'});assert.equal(changed.status,503);
+ const original=await f.settled(first);assert.equal(original.status,'completed',JSON.stringify(original));assert.ok(original.H1);
+ const next='supplement-'+requestId;const result=await f.settled(next);assert.equal(result.status,'completed',JSON.stringify(result));assert.notEqual(result.H1,original.H1);assert.equal(result.H0,original.H1);
+ const rows=f.messages.q.issueImplementations().requests('implementation'),old=rows.find(r=>r.id===first)!,child=rows.find(r=>r.id===next)!,request=f.messages.q.issueImplementations().original('implementation',next);assert.equal(request.continuation!.logicalOwner,old.task);assert.equal(request.continuation!.originalTarget.operation,old.operation);assert.equal(request.continuation!.predecessor.H1,original.H1);assert.equal(request.continuation!.history[0]!.report.report,(await f.get('/api/implementation-report/implementation/'+first)).value.report.report);
+ const input=await readFile(join(child.plan.operationRoot,'implementer','inputs.json'),'utf8');assert.ok(input.includes(body.text));assert.ok(input.includes(original.H1));assert.notEqual(child.result.sessionId,old.result.sessionId);
+ const returned=await f.get('/api/project-secretary/conversations/'+conversationId);assert.equal(returned.value.supplements[0].original.report.report,child.result.report.report);assert.equal(returned.value.supplements[0].original.completeCapture,true);if(f.ledger){assert.equal(f.ledger.state().claims.length,2);assert.equal(f.ledger.state().settlements.length,2);assert.notDeepEqual(old.plan.resourceRequests,child.plan.resourceRequests);}
+ const traceBefore=await readFile(f.project.trace);
+ await writeFile(join(child.plan.workspace,'src/normalize.mjs'),(await readFile(join(child.plan.workspace,'src/normalize.mjs'),'utf8'))+'// later external change; never a new adopted output\n');
+ const stale=await f.get('/api/project-secretary/conversations/'+conversationId);assert.equal(stale.value.supplements[0].original.report.report,child.result.report.report);assert.equal(stale.value.supplements[0].original.reason,'project_supplement_committed_result_changed');
+ await f.app.close();const reopened=await startWorkbench(f.planPath,undefined,{githubReader:f.github});t.after(()=>reopened.close());const u=new URL(reopened.url),headers={...f.headers,Authorization:'Bearer '+u.hash.slice(1)};await fetch(u.origin+'/api/github/projects',{headers});const recovered=await(await fetch(u.origin+'/api/project-secretary/conversations/'+conversationId,{headers})).json() as any;assert.equal(recovered.supplements[0].original.report.report,child.result.report.report);assert.equal(recovered.supplements[0].original.operation,child.operation);assert.deepEqual(await readFile(f.project.trace),traceBefore);
+});
+
+for(const action of ['stop','cancel'])test('saved supplement cannot continue an original '+action+' and unsent cancellation preserves the received original',async t=>{
+ const f=await implementationPage(t,false,'normal',true),id='original-before-'+action;await f.post('prepare',{requestId:id,issueNumber:74});
+ const target=(await f.get('/api/project-secretary')).value.supplementTargets[0],{title,...identity}=target,conversationId='33333333-3333-4333-8333-333333333333',requestId='44444444-4444-4444-8444-444444444444',body={conversationId,requestId,target:identity,text:'保留并等待准确原任务。'};
+ const send=async(name:string,value:unknown,project='1')=>{const r=await fetch(f.url.origin+'/api/project-secretary/'+name,{method:'POST',headers:{...f.headers,'X-Tongxu-Project':project,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(value)});return {status:r.status,value:await r.json() as any};};
+ assert.equal((await send('supplement',body,'2')).status,503);assert.equal((await send('supplement',body)).status,202);await f.post(action,{requestId:id});
+ assert.equal((await send('continue-supplements',{target:identity})).status,202);let view=(await f.get('/api/project-secretary/conversations/'+conversationId)).value;assert.equal(view.supplements[0].compiledRequest,null);assert.equal(view.supplements[0].original.ready,false);assert.equal(f.messages.q.issueImplementations().requests('implementation').length,1);
+ assert.equal((await send('cancel-supplement',{requestId})).status,200);assert.equal((await send('cancel-supplement',{requestId})).value.duplicate,true);view=(await f.get('/api/project-secretary/conversations/'+conversationId)).value;assert.equal(view.supplements[0].text,body.text);assert.equal(view.supplements[0].cancelled,true);assert.equal((await readFile(f.project.trace,'utf8')).includes('model-input'),false);
+});
+
+test('cancelled received intent cannot race its compilation into a new dispatch',async t=>{
+ const f=await implementationPage(t,false,'normal',true),id='prior-success';await f.post('prepare',{requestId:id,issueNumber:74});await f.post('start',{requestId:id});assert.equal((await f.settled(id)).status,'completed');
+ const target=(await f.get('/api/project-secretary')).value.supplementTargets[0],{title,...identity}=target,requestId='55555555-5555-4555-8555-555555555555',conversationId='66666666-6666-4666-8666-666666666666';
+ let entered!:()=>void,release!:()=>void,work!:Promise<string>;const entering=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r),original=IssueImplementationControls.prototype.workSupplement;
+ IssueImplementationControls.prototype.workSupplement=function(...args){work=(async()=>{entered();await gate;return original.apply(this,args);})();return work;};t.after(()=>{release();IssueImplementationControls.prototype.workSupplement=original;});
+ const send=async(name:string,body:unknown)=>{const r=await fetch(f.url.origin+'/api/project-secretary/'+name,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};};
+ const before=await readFile(f.project.trace);assert.equal((await send('supplement',{requestId,conversationId,target:identity,text:'该收件在编译前撤回。'})).status,202);await entering;
+ assert.equal((await send('cancel-supplement',{requestId})).status,200);release();await assert.rejects(work,/project_supplement_cancelled_or_changed/);assert.deepEqual(await readFile(f.project.trace),before);assert.equal(f.messages.q.issueImplementations().requests('implementation').length,1);assert.equal((await f.get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0].cancelled,true);
+});
+
+
+test('a supplement ID collision cannot start or cancel an unrelated ordinary preparation',async t=>{
+ const f=await implementationPage(t,false,'normal',true),id='collision-original';await f.post('prepare',{requestId:id,issueNumber:74});await f.post('start',{requestId:id});assert.equal((await f.settled(id)).status,'completed');
+ const {title,...target}=(await f.get('/api/project-secretary')).value.supplementTargets[0],requestId='99999999-9999-4999-8999-999999999999',conversationId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',child='supplement-'+requestId;
+ assert.equal((await f.post('prepare',{requestId:child,issueNumber:74})).status,200);const records=f.messages.q.issueImplementations(),before=records.state('implementation',child),request=records.original('implementation',child),trace=await readFile(f.project.trace);assert.equal(request.continuation,undefined);
+ let entered!:()=>void,release!:()=>void,work!:Promise<string>;const entering=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r),original=IssueImplementationControls.prototype.workSupplement;
+ IssueImplementationControls.prototype.workSupplement=function(...args){work=(async()=>{entered();await gate;return original.apply(this,args);})();return work;};t.after(()=>{release();IssueImplementationControls.prototype.workSupplement=original;});
+ const body={requestId,conversationId,target,text:'This supplement belongs to A, never to the unrelated same-ID request.'};assert.equal((await supplementPost(f,'supplement',body)).status,202);await entering;
+ const cancel=await supplementPost(f,'cancel-supplement',{requestId});assert.equal(cancel.status,503);assert.equal(cancel.value.error,'project_supplement_compiled_target_changed');
+ release();await assert.rejects(work,/project_supplement_compiled_target_changed/);const view=(await f.get('/api/project-secretary/conversations/'+conversationId)).value;
+ assert.equal(view.supplements[0].cancelled,false);assert.equal(view.supplements[0].original.reason,'project_supplement_compiled_target_changed');assert.equal((await supplementPost(f,'supplement',body)).value.duplicate,true);assert.equal((await supplementPost(f,'continue-supplements',{target})).status,503);
+ assert.deepEqual(records.state('implementation',child),before);assert.deepEqual(records.original('implementation',child),request);assert.deepEqual(await readFile(f.project.trace),trace);
+});
+
+test('an accurately bound registered supplement can be cancelled after the predecessor workspace changes',async t=>{
+ const f=await implementationPage(t,false,'normal',true),id='cancel-stale-predecessor';await f.post('prepare',{requestId:id,issueNumber:74});await f.post('start',{requestId:id});assert.equal((await f.settled(id)).status,'completed');
+ const {title,...target}=(await f.get('/api/project-secretary')).value.supplementTargets[0],requestId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',conversationId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',child='supplement-'+requestId,records=f.messages.q.issueImplementations(),blocker=f.messages.q.begin(f.messages.item,'cancel-seat');assert.equal(blocker.status,'running');
+ await supplementPost(f,'supplement',{requestId,conversationId,target,text:'Cancel this accurate unsent supplement without changing the original.'});
+ for(let n=0;n<1000;n++){if(records.requests('implementation').some(r=>r.id===child))break;await new Promise(r=>setTimeout(r,20));}
+ const original=records.state('implementation',child),trace=await readFile(f.project.trace);assert.equal(original.phase,'registered');
+ const path=join(records.state('implementation',id).plan.workspace,'src/normalize.mjs');await writeFile(path,(await readFile(path,'utf8'))+'// external later edit retained\n');
+ assert.equal((await f.post('prepare',{requestId:child,issueNumber:74})).value.error,'project_supplement_committed_result_changed');
+ assert.equal((await supplementPost(f,'cancel-supplement',{requestId})).status,200);assert.equal(records.state('implementation',child).result.status,'cancelled_unstarted');assert.equal(records.state('implementation',child).requestSha256,original.requestSha256);assert.deepEqual(await readFile(f.project.trace),trace);assert.match(await readFile(path,'utf8'),/external later edit retained/);
+ f.messages.q.evaluate(blocker.operation);
 });

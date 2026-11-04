@@ -135,10 +135,10 @@ test('implementation UI keeps one request through duplicate clicks and does not 
  start.onclick();await flush();assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1,'a stale project-1 button cannot create work under project 2');
 });
 
-for(const switchProject of [false,true])test(`registered implementation UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
- const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false};
+for(const supplement of [false,true])for(const switchProject of [false,true])test(`registered ${supplement?'supplement':'implementation'} UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
+ const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false,supplement};
  p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);
- const buttons:any[]=[];const collect=(n:any)=>{if(n.tag==='button')buttons.push(n);for(const child of n.children??[])collect(child);};collect(p.run('implementationPanel()'));
+ const buttons:any[]=[],labels:string[]=[];const collect=(n:any)=>{if(n.tag==='button')buttons.push(n);if(n.tag==='strong')labels.push(n.textContent);for(const child of n.children??[])collect(child);};collect(p.run('implementationPanel()'));assert.ok(labels.some(text=>text.startsWith((supplement?'原任务补充 · Issue #':'Issue #')+'74 · 已登记，待补准备')));
  const button=buttons.find(b=>b.textContent==='继续原请求'),pending=button.onclick();button.onclick();assert.equal(p.fetchCalls.length,1);assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),{requestId:request.id,issueNumber:74});
  if(switchProject)p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");
  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared',id:request.id})});await flush();

@@ -37,11 +37,11 @@
 <!-- capability-anchor: CAPABILITY.project_secretary -->
 - **User goal**：在当前项目内询问事实、限制和下一步，重开后可查完整历史。
 - **Required context**：所选项目、已配置 `projectSecretary`、可用 Codex 受限工具路径；不要求先登记开发任务。
-- **User action or request**：输入问题并发送；完成后继续追问，或停止当前持有的执行。
+- **User action or request**：输入问题并发送；完成后继续追问，或停止当前持有的执行。若已配置 #74 的原实施任务，可在“发送给”选原任务保存补充，原任务/秘书忙时仍可收件。
 - **Directly observable result**：显示等待、完整回答及来源或明确失败。追问把已核历史交给新原生上下文；页面不是对旧会话的任意接管。相同请求的重复提交不重复发送。
 - **Failure / degradation / escalation**：原执行待返回或未知时不并发重发；超时/停止保留原问题和未完成状态。捕获被改后答案不可用，也不能作为追问依据。登录/模型不可用只阻相应动作。
-- **Acceptance assertion**：重开读取历史新增模型输入为零；已中断/部分输出不被标成完整回答；停止准确对应原请求。请求接收成功还不表示模型已完成。
-- **Evidence**：`src/project-chat.ts`、`src/project-chat-contract.ts`；`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts`；正式说明见 [project_secretary_chat](docs/project_secretary_chat.md)。这些测试使用明确协议样例，不能代替真实模型验收。
+- **Acceptance assertion**：补充接收与送达分别显示，原回合成功并形成 H1、完整捕获及资源结果可核后，才由同一逻辑负责人在新原生上下文处理；失败/停止/未知/未提交成果不自动续写。完整报告直接回原会话，不覆盖旧秘书答案；取消未发补充与停止原实施分别操作。重开读取历史新增模型输入为零；已中断/部分输出不被标成完整回答；停止准确对应原请求。请求接收成功还不表示模型已完成。
+- **Evidence**：`src/project-chat.ts`、`src/project-chat-contract.ts`；`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts`；正式说明见 [project_secretary_chat](docs/project_secretary_chat.md)。这些测试使用明确协议样例，不能代替真实模型验收。补充写作者组合的正常入口、H1/资源、取消与原报告回流见 `tests/project-repair/integration.test.ts` 和 [补充说明](docs/project_task_supplements.md)。
 
 ### D. 保存角色选择并用于新执行
 
@@ -78,7 +78,7 @@
 ## 4. Known Limits and Human Escalation
 
 <!-- capability-anchor: BOUNDARY.secretary_scope -->
-已有政策要求秘书不做技术任务；当前右侧秘书更具体地只开放六种项目查询工具，没有通用开发派发。旧任务秘书可有已登记联系动作，不能把两者功能互相挪用。工具来源见 `project-chat-contract.ts` 和 `secretary-tools.ts`。
+已有政策要求秘书不做技术任务；当前右侧秘书的模型只开放六种项目查询工具；页面另可为已登记实施责任持久收件，并经既有实施消费者处理，未开放通用开发派发。旧任务秘书可有已登记联系动作，不能把两者功能互相挪用。工具来源见 `project-chat-contract.ts` 和 `secretary-tools.ts`。
 
 <!-- capability-anchor: BOUNDARY.runtime_minimum -->
 Node 最低要求与实际能力核查见运行环境规范；版本满足不表示所有外部 CLI、Docker 或提供程序均已配置。没有真实隔离配置时暂停验证动作；没有本人来源时暂停依赖授权的控制。更换工具、补费用或扩大范围由当前有权决定的人处理，不通过页面标识绕过。
