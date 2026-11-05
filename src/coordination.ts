@@ -9,6 +9,8 @@ import { coordinationPlanId,parseCoordinationPlan } from './coordination-contrac
 import { parseCoordinationExecution,coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority } from './coordination-execution-contract.js';
 import {authorizeCoordinationMessage} from './coordination-authority.js';
 import { runMessages } from './messages.js';
+import {assembleRolePrompt} from './role-prompts.js';
+import {messagePolicy} from './message-runtime.js';
 import type { MessagePlan } from './message-contract.js';
 async function directory(path:string){try{await privateDirectory(path,true);}catch(e:any){if(e.code!=='EEXIST')throw e;await privateDirectory(path,false);}}
 async function fixedFile(path:string,bytes:Buffer){try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}if(!(await regular(path,512*1024)).equals(bytes))throw new Error('coordination_prepared_file_changed');}
@@ -30,6 +32,25 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
     };
     const perform=async(taskId:string,purpose:'investigate'|'consume')=>{
       try{
+        if(purpose==='investigate'&&!records.dispatchSelection(id,taskId,purpose)){
+          const task=plan.tasks.find(t=>t.id===taskId)!,check=await q.refreshSelectedTaskSources([task.item]),assembly=await assembleRolePrompt('issue_owner',messagePolicy);
+          for(const ref of request.actors.find(a=>a.id===task.actor)!.allowedInstructionSources)if(hash(await regular(ref.path,128*1024))!==ref.sha256)throw new Error('instruction_source_changed');
+          check();
+          const original=records.independentHistory(id,taskId,execution.requestSha256,hash(canonical(assembly)));
+          if(original){
+            const result=await runMessages(store,original.planPath,true,original.run),current=await q.refreshSelectedTaskSources([task.item]),currentAssembly=await assembleRolePrompt('issue_owner',messagePolicy);
+            for(const ref of request.actors.find(a=>a.id===task.actor)!.allowedInstructionSources)if(hash(await regular(ref.path,128*1024))!==ref.sha256)throw new Error('instruction_source_changed');
+            current();
+            const checked=records.independentHistory(id,taskId,execution.requestSha256,hash(canonical(currentAssembly)));
+            if(canonical(checked)!==canonical(original))throw new Error('coordination_historical_source_changed');
+            prepared[taskId+':'+purpose]={task:taskId,purpose,run:original.run,planPath:original.planPath,historicalReuse:original};
+            if(!result.completed||result.resourcesSettled!==true)throw new Error('coordination_historical_result_or_resources_unresolved');
+            const message=result.messages.find(m=>m.id===original.messageId);
+            if(!message?.reply?.finalSha256)throw new Error('coordination_historical_complete_reply_required');
+            results[taskId+':'+purpose]={...result,historicalReuse:{...original,finalSha256:message.reply.finalSha256,readCurrentRevision:false}};
+            return;
+          }
+        }
         const selected=await select(taskId,purpose);if(prepareOnly)return;
         if(request.delegatedCoordination){let sent=false;try{sent=q.messages().status(selected.run).messages.some(m=>Boolean(m.sent));}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}if(!sent){const fixed=records.dispatchSelection(id,taskId,purpose)!;await authorizeCoordinationMessage(q,request.delegatedCoordination,JSON.parse(fixed.plan.toString()),JSON.parse(fixed.context.toString()).bindings[taskId]);}}
         const result=await runMessages(store,selected.planPath,false,selected.run,request.refreshUnsent?request.billing:undefined);newModelRequests+=result.newModelRequests;results[taskId+':'+purpose]=result;if(!result.completed)return;
@@ -49,7 +70,7 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
     if(!prepareOnly){
       // One bounded follow-up per task, only when another task actually
       // produced a precise required result after the initial input froze.
-      for(const task of plan.tasks){if(!results[task.id+':investigate']?.completed||errors[task.id+':investigate'])continue;const states=task.stages.map(s=>records.stage(id,task.id,s)),pending=states.some(s=>s.blockers.some(b=>b.startsWith('capability_not_consumed:'))),missing=states.some(s=>s.blockers.some(b=>b.startsWith('capability_missing:')));if(pending&&!missing)await perform(task.id,'consume');}
+      for(const task of plan.tasks){if(!results[task.id+':investigate']?.completed||results[task.id+':investigate']?.historicalReuse||errors[task.id+':investigate'])continue;const states=task.stages.map(s=>records.stage(id,task.id,s)),pending=states.some(s=>s.blockers.some(b=>b.startsWith('capability_not_consumed:'))),missing=states.some(s=>s.blockers.some(b=>b.startsWith('capability_missing:')));if(pending&&!missing)await perform(task.id,'consume');}
     }
     const state=records.status(id);return {coordination:id,execution:execution.identity,prepared,results,errors,state,newModelRequests,readonlyTasksCompleted:!prepareOnly&&Object.keys(errors).length===0&&Object.values(results).every(r=>r.completed)&&plan.tasks.every(t=>results[t.id+':investigate']?.completed),implementationCompleted:false,writingPermissionGranted:false,manualReportCopyRequired:false};
   }finally{if(lock){lock.exec('ROLLBACK');lock.close();}q.close();}
