@@ -47,6 +47,7 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
             if(!result.completed||result.resourcesSettled!==true)throw new Error('coordination_historical_result_or_resources_unresolved');
             const message=result.messages.find(m=>m.id===original.messageId);
             if(!message?.reply?.finalSha256)throw new Error('coordination_historical_complete_reply_required');
+            records.validateFeedback(original.planId,original.run,original.messageId);
             results[taskId+':'+purpose]={...result,historicalReuse:{...original,finalSha256:message.reply.finalSha256,readCurrentRevision:false}};
             return;
           }

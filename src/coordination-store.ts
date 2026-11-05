@@ -152,13 +152,19 @@ export class CoordinationRecords {
     if(message?.state!=='Reply'||message.reply?.reportedConsumption!==true||runtime?.captureVerification?.proof.successfulCapture!==true)throw new Error('coordination_complete_original_reply_required');
     const input=source.submitted(message.to).find(x=>x.messageId===messageId);if(!input||hash(message.reply.finalText)!==message.reply.finalSha256)throw new Error('coordination_reply_input_missing');return {source,message,runtime,input};
   }
-  feedback(id:string,run:string,messageId:string){return this.transaction(()=>{
+  private checkedFeedback(id:string,run:string,messageId:string){
     const f=this.fixed(id),bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===run)?.data,mapping=bound?.mapping.find((m:Row)=>m.messageId===messageId);if(!mapping)throw new Error('coordination_original_message_binding_required');
     const {source,message,input}=this.verifiedReply(run,messageId),context=source.materials['coordination-context.json'];
     if(!context||hash(context)!==bound.contextSha256||!input.replyReferences.includes(bound.contextSha256))throw new Error('coordination_original_context_changed');
     const feedback=JSON.parse(message.reply.report);
     if(!exactKeys(feedback,['kind','task','revision','parts','report'])||feedback.kind!=='tongxu-coordination-feedback'||feedback.task!==mapping.task||feedback.revision!==f.plan.revision||typeof feedback.report!=='string'||!feedback.report.trim()||!Array.isArray(feedback.parts)||feedback.parts.length>16||new Set(feedback.parts.map((p:Row)=>p?.id)).size!==feedback.parts.length)throw new Error('coordination_feedback_shape_invalid');
     for(const part of feedback.parts){const expected=f.plan.shared.find(p=>p.id===part.id&&p.feedbackFrom.includes(mapping.task));if(!exactKeys(part,['id','hash','position','report'])||!expected||part.hash!==f.registration.parts[part.id]||!['agreed','conflict','unknown'].includes(part.position)||typeof part.report!=='string'||!part.report.trim())throw new Error('coordination_feedback_part_mismatch');}
+    return {f,mapping,message,feedback};
+  }
+  /** Validate the original report without recording feedback for any revision. */
+  validateFeedback(id:string,run:string,messageId:string){return this.transaction(()=>{this.checkedFeedback(id,run,messageId);});}
+  feedback(id:string,run:string,messageId:string){return this.transaction(()=>{
+    const {f,mapping,message,feedback}=this.checkedFeedback(id,run,messageId);
     const reportSha256=this.blob(Buffer.from(message.reply.finalText));for(const part of feedback.parts){const entry={task:mapping.task,part:part.id,partHash:part.hash,position:part.position,run,messageId,reportSha256,partReport:part.report},old=f.events.find(e=>e.kind==='coordination_feedback'&&e.data.run===run&&e.data.messageId===messageId&&e.data.part===part.id);if(old){if(canonical(old.data)!==canonical(entry))throw new Error('coordination_feedback_original_changed');}else this.event(id,'feedback',entry);}
     return {planId:id,task:mapping.task,run,messageId,reportSha256,recordedRevision:f.plan.revision,currentRevision:this.latest(f.plan.name)!.plan.revision,writingPermissionGranted:false};
   });}
