@@ -13,9 +13,12 @@
 | 导入与查看队列 | `node dist/src/cli.js queue`；[w3_shadow_queue](w3_shadow_queue.md)。普通影子评估不等于独立模型接收。 |
 | 原生元数据隔离自检 | `node dist/src/native-cli.js inspect`；[w4_native_inspection](w4_native_inspection.md)。此专用入口要求 Linux/bubblewrap，不调用模型；它与正常项目秘书/消息入口分开。 |
 | 启动本机工作台 | `npm run workbench -- --plan ABS_PLAN`；[local_workbench](local_workbench.md)、[github_project_entry](github_project_entry.md)。安装清单入口为 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`。 |
-| 按项目提问/读取历史 | 工作台右侧秘书；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
+| 按项目提问/读取历史 | 工作台右侧秘书；选择“发送给”可保存已登记原任务的补充，参见 [project_task_supplements](project_task_supplements.md)；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
 | 选择本机程序、模型和角色 | “AI 与角色设置”；[local_ai_roles](local_ai_roles.md)、[cli_capabilities](cli_capabilities.md)。 |
+| 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功H1不表示正式审核/发布；真实Codex路径仍待准确环境核验。 |
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
+| 来源补查后独立接收 | 选择项目 → 原任务 → “来源补查与独立技术接收”；[source_reception_entry](source_reception_entry.md)。安装者须先固定候选、来源、接收权限与资源；真实原生正常入口待验。 |
+| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；真实模型外层演练仍待配置验证。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
 
@@ -27,14 +30,14 @@
 
 ## 2. Typical Uses
 
-选择当前项目后查看 Issues、PR、任务和报告；向秘书询问材料显示什么并核回答来源。已有授权任务需补查或处理 RETURN 时，从原任务已登记入口推进。可观察行为和失败断言见 [interact](../interact.md)。
+选择当前项目后查看 Issues、PR、任务和报告；向秘书询问材料显示什么并核回答来源。已有授权任务需补查或处理 RETURN 时，从原任务已登记入口推进。已配置的 PR 可从任务页启动正式审核：整批问题和完整报告由程序转交；查看具体缺口或业务取舍，并可停止。局部修复、待发布、待正式结论与正式 PASS 含义不同；成果仍沿 #9 确认真实使用结果。可观察行为和失败断言见 [interact](../interact.md)。
 
 源码使用者先满足环境要求、安装依赖并构建，再运行 CLI 帮助或正式命令。工作台需要有效的私人计划；`ABS_PLAN`/`ABS_RUNTIME` 是占位路径，不是附带文件。正常安装入口由安装者交付，源码 checkout 不含所有人可直接运行的桌面启动文件。
 
 ## 3. Capability and Responsibility Boundaries
 
 <!-- capability-anchor: BOUNDARY.secretary_scope -->
-秘书负责查询、解释和明确装配过的跟进；当前右侧项目对话没有通用新开发派发、写代码、测试或合并工具。AI 设置只决定新执行的偏好，不增加任务、文件、费用或合并权限。当前秘书使用 Codex 受限工具路径；其他程序能处理材料消息不等于支持全部角色。
+秘书负责查询、解释和明确装配过的跟进；当前右侧项目秘书模型没有通用新开发派发、写代码、测试或合并工具。页面可为已登记任务保存补充，成功结束后的处理由原有权限与资源约束的实施消费者负责，不给秘书写权。AI 设置只决定新执行的偏好，不增加任务、文件、费用或合并权限。当前秘书使用 Codex 受限工具路径；其他程序能处理材料消息不等于支持全部角色。
 
 <!-- capability-anchor: RESPONSIBILITY.owner_decision -->
 技术判断、发布状态、实际合并和用户接受分开。本人来源或委托未配置时限制相应动作，仍可使用适用查询。未完成的广泛验收沿 [PRODUCT_GUIDE 原记录入口](PRODUCT_GUIDE.md#unfinished-work)查证，页面可用不表示全部完成。
@@ -57,6 +60,9 @@
 1. **查看新项目资料**：选择可访问仓库，读 Issue/PR 全文；没有本地任务也能浏览。账号变化后旧选择失效，网络/权限错误明确显示。证据：`tests/w7/github-projects.test.ts`。
 2. **秘书连续提问**：问“原报告有哪些限制”，完成后追问；页面显示全文和来源，重开不重复发问。中断保留不完整状态。证据：`tests/w7/project-chat.test.ts` 的本机 HTTP/协议样例。
 3. **原任务联系其他负责人**：在预登记计划中，A 可选择允许的 B，B 全文交回 A；普通 A 报告不触发联系。缺原件/资源未处理时保留等待原因。证据：`tests/w6/task-contact-choice.test.ts`。
+
+<!-- capability-anchor: CAPABILITY.source_reception -->
+4. **来源出现新反例**：原候选评论新增“空输入仍会出错”，打开原任务并补查来源。新评论进入当前材料，旧接收只针对历史材料；点击接收后按当前授权和资源处理，完成后打开原报告全文。重复打开不重发；原接收已登记但结果待核时，使用“查回当前原接收”，停止新增投入后仍可核原结果。仅 checks 变化不会新建不必要的接收；候选 H/B/目标变了要先重新固定候选。此入口的自动场景使用明确模型/来源/账本样例，真实模型正常路径仍待验，不能代填本人验收。
 
 ## 6. Reading Results
 

@@ -51,8 +51,8 @@
       {
         "anchor_id": "CAPABILITY.project_secretary",
         "type": "capability",
-        "status": "active",
-        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。",
+        "status": "pending_validation",
+        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；此写作者组合的真实原生路径待验。",
         "audience": [
           "business_user",
           "agent",
@@ -75,6 +75,48 @@
         "test_anchor": "tests/w6/task-contact-choice.test.ts",
         "test_status": "automated",
         "since": "2026-11-03"
+      },
+      {
+        "anchor_id": "CAPABILITY.issue_implementation",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按已采用 Issue #74 及 docs/issue_implementation.md，在已配置项目从已审定 Issue 显式新建一次 Codex 受控实现：固定H0、准确实施/测试授权与原资源、获准已有文件和注册测试，成功由宿主形成H1并回读全文。重复与未知不重发；实现不等于正式审核、发布或本人接受。程序路径与真实Docker组合已验证；正常入口真实Codex仍待准确环境验证，当前不标active。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/project-repair/integration.test.ts",
+        "test_status": "component_verified_native_pending",
+        "since": "2026-11-04"
+      },
+      {
+        "anchor_id": "CAPABILITY.source_reception",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。协议场景已覆盖，真实原生正常入口尚待验；不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/workbench.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/events/normal-entry.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-04"
+      },
+      {
+        "anchor_id": "CAPABILITY.formal_pr_review",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与 Claude 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w5/formal-round.test.ts",
+        "test_status": "component_validation_native_pending",
+        "since": "2026-11-04"
       }
     ],
     "capability_boundaries": [

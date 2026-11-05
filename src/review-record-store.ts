@@ -27,7 +27,7 @@ export class ReviewRecords {
     private publication: (id: string) => Row,private repairGate?:(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer}|undefined,observations:OwnerObservation[])=>void,
     private memberSource?:(operation:string,reference:unknown,current:boolean)=>Row,
     private overallGate?:(operation:string,plan:Buffer,observations:OwnerObservation[])=>void,
-    private belongsToChain?:(operation:string,source:Row)=>boolean) {}
+    private belongsToChain?:(operation:string,source:Row)=>boolean,private formalSource?:(operation:string)=>Row) {}
   private repairSource(id:string,plan:Row,current:boolean):Row{
     if(plan.memberReturn!==undefined){if(!this.memberSource)throw new Error('member_repair_source_consumer_required');return this.memberSource(id,plan.memberReturn,current);}
     const s=this.source(id,current);return {...s,kind:'individual-return',reception:s.receiver};
@@ -173,10 +173,14 @@ export class ReviewRecords {
     // or changed original result. QueueStore verifies publication blobs too.
     if(canonical(JSON.parse(this.bytes(x.repair.resultSha256).toString()))!==canonical(x.repair.result))throw new Error('review_original_changed');
     this.bytes(x.repair.evidenceSha256);
-    const r=x.repair.result,chain=chainKey(source),key=`published-repair:${chain}`,known=this.events(key,'repair_batch_published'),duplicate=known.find(e=>e.data.H===r.after.H);
+    const r=x.repair.result;return this.recordPublishedBatch(source,{operation:id,publicationOperation,publicationId:p.document.publicationId,H:r.after.H,beforeH:r.before.H,comment:p.stages.comment.verified.remote,status:p.stages.status.verified.remote,evidenceSha256:x.repair.evidenceSha256});
+  }
+  formalFixAllowed(id:string){this.requireMode();if(!this.formalSource)throw new Error('formal_review_record_consumer_required');if(this.reflectionDue(chainKey(this.formalSource(id))))throw new Error('simplification_reflection_due');}
+  publishedFormalRepair(id:string){return this.transaction(()=>{this.requireMode();if(!this.formalSource)throw new Error('formal_review_record_consumer_required');const s=this.formalSource(id);if(!s.published||s.state.terminal?.result.status!=='awaiting_publication')throw new Error('formal_actual_publication_required');return this.recordPublishedBatch(s,{operation:id,publicationOperation:id,publicationId:'formal-fix:'+s.published.recordSha256,H:s.published.H,beforeH:s.published.beforeH,source:'verified_formal_fix_remote_and_pr_body',evidenceSha256:s.published.captureSha256});});}
+  private recordPublishedBatch(source:Row,data:Row){
+    const chain=chainKey(source),key=`published-repair:${chain}`,known=this.events(key,'repair_batch_published'),duplicate=known.find(e=>e.data.H===data.H);
     if(duplicate)return {...duplicate.data,duplicate:true,reflectionDue:this.reflectionDue(chain)};
-    const entry={operation:id,publicationOperation,publicationId:p.document.publicationId,H:r.after.H,beforeH:r.before.H,scope:source.context.scope,chain,ordinal:known.length+1,comment:p.stages.comment.verified.remote,status:p.stages.status.verified.remote,evidenceSha256:x.repair.evidenceSha256};
-    this.event('repair_batch_published',key,entry);
+    const entry={...data,scope:source.context.scope,chain,ordinal:known.length+1};this.event('repair_batch_published',key,entry);
     const through=this.events(`reflection:${chain}`,'simplification_reflection_response').at(-1)?.data.throughOrdinal??0;
     if(entry.ordinal-through>3&&!this.reflectionDue(chain))this.event('simplification_reflection_due',`reflection:${chain}`,{trigger:entry,afterOrdinal:through,source:'adopted #7 more than three actually published repair batches',kind:'existing_web_gpt_simplification',status:'awaiting_responsible_response_and_authorized_existing_entry',modelDispatched:false,newPermissionGranted:false});
     return {...entry,duplicate:false,reflectionDue:this.reflectionDue(chain)};

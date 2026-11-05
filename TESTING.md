@@ -19,7 +19,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | `npm run test:pair`、`npm run test:messages`、`npm run test:tasks` | 分别是全部 w6、指定 messages/message-claude/message-continuation 文件、task-intake 单文件。 |
 | `npm run test:workbench`、`npm run test:deliveries` | 分别是全部 w7、w7 的 delivery-* 子集。二者完整入口均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像：相应成果执行/退回场景使用真实隔离测试。完整 `test:workbench` 还需 `/bin/zsh` 执行 `workbench-launch.test.ts`；这项启动器前提不属于仅运行 delivery-* 的 `test:deliveries`。其他本机 HTTP/协议样例不替代真实隔离或浏览器视觉验收。 |
 | `npm run test:authority`、`npm run test:resources`、`npm run test:merge` | 对应 authority/resources/merge 目录；校验本人来源、资源及受管合并的样例，不能证明生产配置已启用。 |
-| `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。 |
+| `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。events 的 normal-entry 场景以原接收/来源/本人/资源协议样例走真实本机 HTTP/SQLite/子进程；不等于真实模型或浏览器验收。 |
 | `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收。三者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；composition、project-repair 的测试文件在加载阶段检查配置，review-records 的 queue-repair 测试也导入强制要求配置的准备文件。 |
 | `npm run test:sessions` | w4 role-prompts 与 session-* 子集。 |
 | `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。二者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；integration 及成员修复都使用 `tests/integration/fixture.ts` 的共享准备流程，在进入该流程时强制检查配置并执行真实隔离验证，不能只按少数文件判断环境要求。 |
@@ -56,7 +56,9 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | --- | --- | --- |
 | 固定 PR 原件 | 非法 scope 不调用外部工具；候选变动保留缺口；恢复不覆盖旧页 | `tests/w1/cli.test.ts`、`tests/w1/collection.test.ts`；见 test:mac |
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
+| 项目补充与原实施 | A运行时收件，成功H1/资源后以新上下文消费并回原会话；取消/停止不续写，冷重开零输入 | `tests/project-repair/integration.test.ts` 新补充场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
 | 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
+| 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写；同项目拒绝经刷新仍可见，停止后从原按钮零输入查回同操作 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面同项目失败/跨项目迟到回复和停止准入见 `tests/w7/github-projects-ui.test.ts`，两组复用原页面 fixture |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |
@@ -64,6 +66,12 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 启动与依赖 | 旧 Node/缺 SQLite 能力拒绝；程序升级不成为版本白名单；应用资产变化先于导入拒绝 | `tests/w7/workbench-launch.test.ts`、`tests/w4/external-dependencies.test.ts` |
 
 可稳定复现的 bug 优先保留修复前失败输入，再修实现；无法自动复现时保存失败证据与原因。先复用或扩展现有测试，只有独立覆盖缺口才增加新测试。无 test diff 时说明具体既有覆盖及重跑结果；文档-only 检查不能冒充运行验证。跨模块变化要有实际组合场景，各层分别通过不够。
+
+初次 Issue 实施的受影响组合沿 `tests/project-repair/integration.test.ts` 运行，需上表同一真实 Docker 配置/镜像；包含正常项目 HTTP 入口、原授权/资源、两次合法写入、实际注册测试和宿主 H1，模型为明确程序样例。页面脚本场景在 `tests/w7/github-projects-ui.test.ts`。真实浏览器与正常入口真实 Codex 分开留证，不能以这些组件场景代填。
+
+该组合还覆盖两处确证未发等待：席位忙登记后释放、最终来源刷新失败只留下原输入；热重试/冷重开均沿原 ID、任务和材料到 H1，原资源只领取/结算一次。补准备前取消/停止、输入或文件/暂存变化、原生启动证据和竞争写者仍须零派发；已发未知继续只查原现场。页面脚本核 registered 的同 ID 补准备、重复点击和项目切换。扩展原 fixture，不另建恢复测试框架。 同一忙席位场景参数化普通请求/补充请求，核 H1/原责任/补充原文、热/新服务实例补准备和原会话完整回流；同名普通请求碰撞时开始与取消均拒绝、原请求与输入计数不变。正确绑定读回及同 ID 改目标/原文的拒绝沿该场景验证。
+
+同一场景覆盖配置资源但尚未 start 即取消，热/新服务实例的新请求可至 H1，原项保持零资源登记/领取/模型输入；已领取取消沿原结果结算，未知及损坏资源原件仍阻下一项。新消费者的两次写入/H1 场景参数化测试打印未选定文件：原日志保留全文，工具回复与全部模型输入均不含原文；旧 project repair 的同类隐私场景继续回归。
 
 ## 5. Side Effects and Isolation
 
@@ -87,3 +95,16 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 ## 8. Lessons Learned
 
 测试曾专门固化以下反例：彼此文件不冲突仍可在组合后失败（`tests/w2/verification.test.ts`）；初始化/控制回执并非最终报告（w4/w6 原生与消息测试）；损坏捕获和原进程未知不能用重发恢复（w7 project-chat）；启动器静态导入可先于完整性检查执行代码（w7 workbench-launch）。维护这些最小反例及其用户路径，避免仅增加更多成功样例而丢掉边界。
+
+
+## 正式 PR 外层流程（Issue #72）
+
+构建后可单独运行 `node --test dist/tests/w5/formal-*.test.js dist/tests/w7/formal-workbench.test.js`。包含同会话写入、发布后新候选自动验证的场景需要已有 `TONGXU_TEST_DOCKER_CONFIG` 和可用 Docker；模型是明确的协议样例。验证内容包括完整 PR/额外调用方、直接 PASS 与仅 P2 的零额外输入、空 finding 缺证据、整批双验证、三轮分歧、未变候选反证回流、同 fact session/thread 修复、实际 Git/测试树、准确发布记录、祖先/分叉 B 下的自动新候选采集及已有材料完整再审、项目查询失效时本地停止、离线冷重开与错误账号/项目/入口拒绝、旧无绑定原请求的明确退化和零新增输入、停止与冷读不重发、在途 H/B/target 变化及原容器结束证据。新候选材料沿原 collect/verify/readPacket/import，不伪造 W2。
+
+共享边界按改动选 authority/resources、w3 receiver、w5、review-records/counters、w7 正常页面与启动器回归。原生协议样例不能称真实 Codex/Claude 演练，HTTP 测试不能称浏览器验收；独立审核、合入、启用和本人接受另记。配置与边界见 [formal_pr_review](docs/formal_pr_review.md)。
+
+`formal-workbench` 的新候选场景从正常项目 HTTP 入口保存 AI 选择，启动原生产10秒定时器并与手工核对对照；检查新轮三个角色使用当时项目设置，覆盖控制器启动后保存、准备前变更、合法默认、不可用等待及其他项目设置不串用。reviewer/fact 的模型与强度核实际原生请求；impact 核新轮冻结选择，旧影响协议样例没有 live 模型目录，不称已验证所选 Claude 模型执行。旧轮请求保持原字节，查看完整报告不新增模型输入。
+
+同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
+
+同一发布后完整再审场景还参数化覆盖父轮在接续前、异步材料准备中、子轮已登记未派发及 reviewer 已发时停止；停止后不新增角色，已发报告保留，冷读不重发。原 store 场景沿两代 previousOperation 验证停止祖先在原效果事务阻回调且不登记派发，未停止的已完成父轮仍合法。反证回流参数化 PASS、合法 owner 和真实覆盖缺口；同会话修复的 needs_owner/no_change 分别保留业务决定/待补证，页面脚本核原问题与原 Issue 交接提示。

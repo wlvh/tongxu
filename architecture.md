@@ -105,7 +105,26 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 原生完成/报告格式 | `codex-results`、消息消费、秘书历史与页面全文；退出/ack 不能替代完整结果 | `tests/w4/codex-results.test.ts`、`tests/w6/messages.test.ts`、`tests/w7/project-chat.test.ts` |
 | 角色选择/程序能力 | `ai-settings`、消息/修复 worker 的固定输入、适配器和旧运行读回 | `tests/w7/ai-workflow.test.ts`、`tests/w7/additional-cli.test.ts`、`tests/w7/ai-settings.test.ts` |
 | 队列格式/授权/停止条件 | 预开连接、任务阶段、接收/合并、页面控制和原资源占用 | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts`、`tests/w7/scope-controls.test.ts` |
-| 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts` |
+| 原实施结果到秘书补充 | project-chat 只保存意图与原请求关联；issue-implementation-controls 从已核H1和原责任编译受控后续实施，复用原QueueStore/Authority/Resource，不新增发送事实账本 | `tests/project-repair/integration.test.ts`、`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
+| 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
 按实际影响选择调查和验证，不要求每次变更重跑整张表。
+
+
+初次 Issue 实施沿 `workbench → issue-implementation-controls → 原 TaskRecords / IssueImplementations / authority / resources → issue-implementation`。固定工作区准备、`RepairTools` 的限定写入/预期树与共享宿主提交原语、注册 Docker 测试和原生捕获复用；执行角色是新的 implementer，不调用 finding/repair 循环。测试工具复用 `projectModelTestResult`，核执行健康后只传控制器事实，原日志不进入模型。取消及后续准入区分未来资源定义与实际登记：仅确证未派发的取消终态可无原申请，已有领取/未知/损坏仍沿原资源记录处理。状态与原件留在原队列 operations/events/blobs，没有新队列或批准账本。修改这些共享边界时，除原 repair / resources / authority 外，还核 `tests/project-repair/integration.test.ts` 的正常入口组合和 `tests/w7/github-projects-ui.test.ts` 的项目切换；真实原生验证边界见 [实施说明](docs/issue_implementation.md)。
+
+确证未发的登记沿原固定请求补 bind；已有操作的纯输入准备在原 controller lock 内核原派发、输入、H0 文件/暂存和写者后继续首次发送。`IssueImplementations.unsent` 复用原权限/资源/取消/停止事务检查，dispatch 仍只准一次；原生/工具/修改或未知占用不进入该分支，不承担失败现场恢复。
+
+
+### 正式 PR 外层流程的影响传播
+
+`formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
+
+工作台向原正式控制器传入绑定已核项目身份的 AI 设置读取回调；新请求封存时读取当前 AISettings 快照，一次捕获三个角色，定时接续与手工准备使用同一来源。回调不缓存启动时选择，也不改写已有请求；保存选择不可用沿原等待记录处理。调整此装配时核 `tests/w7/formal-workbench.test.ts` 的真实定时器、手工核对、设置变化/默认/不可用和跨项目场景。
+
+正式当前性检查把冻结 Issue/采用范围与要求摘要及原 AuthorityRecords 当前采用绑定，host 刷新后消费实际采用来源，PASS 终结事务再次核对。此检查不依赖已返回阶段的执行权或已结算资源；采用改变时保留旧报告并等待新准入，不修改原输入。正式后继登记和中央 check/effect 事务沿固定 previousOperation 核父祖先停止，公开状态继承同一停止；正常已完成但未停止的父轮不需保留旧运行 claim，已发结果仍可保存。反证正式结论复用原 owner/PASS 判定，修复 needs_owner 也消费既有 owner 出口。
+
+原 AuthorityRecords/ResourceRecords 通过明确 opt-in 的正式消费者分支接入，`formalWorkSha256` 区分固定正式工作与普通接收；旧接收/repair/publication 拒绝挪用该绑定。原 ReviewRecords 共用发布返工事件及反思入口。`formal-candidate` 在发布核回后沿原 collect/verify/readPacket/import 生产新材料，用真实在运行报告绑定测试权限，并经 W2 原容器结束捕获后结算与导入。没有新余额、恢复队列或通用发布器。项目准备保留固定 H/B 的独立历史和共同祖先供后继完整读取，checkout 仍是 H。正式停止在远端项目确认前消费原请求中的项目身份；旧无绑定请求只接受已发现的本地项目映射，不改写旧输入。
+
+改变这些共享点时核 authority/resources、普通 receiver/repair、发布批次、工作台项目隔离和启动器完整文件清单；具体测试见 TESTING 的 Issue #72 段。页面脚本和全部 dist/src 模块由原运行清单核对。

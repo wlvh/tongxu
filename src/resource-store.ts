@@ -33,7 +33,7 @@ export class ResourceRecords {
     this.event('resource_profile_configured','resource-profile:'+p.ledgerId,{ledgerId:p.ledgerId,profileSha256:h,originalSha256:hash(raw),executionKind:p.executionKind,capabilityVerified:false});return {ledgerId:p.ledgerId,profileSha256:h,duplicate:false,credentialState:'not_observed',resourceBalanceStored:false};
   });}
   configuration(id:string){return this.transaction(()=>this.profile(id));}
-  private fixed(id:string){const events=this.events(id),prepared=events.find(e=>e.kind==='resource_request_prepared');if(!prepared)throw new Error('original_resource_request_required');const request=JSON.parse(this.bytes(prepared.data.requestSha256).toString()) as ResourceRequest,p=this.profile(request.ledgerId);parseResourceRequest(request,p);if(resourceRequestHash(request)!==id)throw new Error('resource_request_identity_changed');return {request,profile:p,prepared:prepared.data,events};}
+  private fixed(id:string){const events=this.events(id),prepared=events.find(e=>e.kind==='resource_request_prepared');if(!prepared)throw new Error(events.length?'resource_original_missing_or_changed':'original_resource_request_required');const request=JSON.parse(this.bytes(prepared.data.requestSha256).toString()) as ResourceRequest,p=this.profile(request.ledgerId);parseResourceRequest(request,p);if(resourceRequestHash(request)!==id)throw new Error('resource_request_identity_changed');return {request,profile:p,prepared:prepared.data,events};}
   private statusOf(id:string){
     const f=this.fixed(id),sent=f.events.filter(e=>e.kind==='resource_claim_dispatched'),replies=f.events.filter(e=>e.kind==='resource_reply_observed'),present=replies.filter(e=>e.data.reply.result.state==='present'),last=present.at(-1),refusal=replies.findLast(e=>e.data.command==='claim'&&e.data.reply.result.state==='refused'),outcome=f.events.find(e=>e.kind==='resource_execution_outcome'),settlement=f.events.filter(e=>e.kind==='resource_result_dispatched');
     for(const e of replies)if(canonical(JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(this.bytes(e.data.rawSha256))))!==canonical(e.data.reply))throw new Error('resource_saved_reply_changed');
@@ -70,14 +70,19 @@ export class ResourceRecords {
   });}
   private matchAction(request:ResourceRequest,action:Row){
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(request.operation) as Row;
+    const result=op&&JSON.parse(op.result??'null'),claim=op&&this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row|undefined;
+    if(action.request.formalWorkSha256!==undefined){
+      const prepared=this.db.prepare("SELECT data FROM events WHERE kind='formal_review_stage_prepared' AND object=? AND json_extract(data,'$.value.stage.authorityIntent')=?").get(op.id,request.authorityIntent) as Row|undefined,stage=prepared&&JSON.parse(prepared.data).value.stage;
+      if(!result?.formalReview||op.status!=='running'||claim?.operation!==op.id||claim?.generation!==op.generation||action.request.item!==op.item||action.binding?.packet!==op.packet||action.role!==request.role||stage?.actorRole!==action.role||action.requestSha256!==request.actionSha256||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||!stage||canonical(stage.action)!==canonical(action.request)||!stage.resources.some((r:ResourceRequest)=>resourceRequestHash(r)===resourceRequestHash(request)))throw new Error('formal_resource_exact_consumer_required');return;
+    }
     if(!op||action.requestSha256!==request.actionSha256||action.role!==request.role||!action.request.resourceRefs.includes(request.resourceRef)||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||action.request.item!==op.item||action.binding?.packet!==op.packet)throw new Error('resource_original_action_or_operation_mismatch');
-    const result=JSON.parse(op.result??'null'),stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
-    const claim=this.db.prepare('SELECT * FROM claims WHERE target=?').get(op.target) as Row;
-    const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim.generation===op.generation;
+    const stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
+    const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim?.generation===op.generation;
     const message=result?.messageResources?.[action.request.payloadSha256],ownMessage=action.request.action==='coordinate'&&op.status==='messaging'&&message?.phase==='resources_pending'&&message.authorityIntent===request.authorityIntent&&message.resourceRequests?.includes(resourceRequestHash(request));
-    if(JSON.parse((this.db.prepare('SELECT candidate FROM items WHERE id=?').get(op.item) as Row).candidate).kind==='development-task'&&!ownMessage)throw new Error('task_resource_requires_bound_consumer');
-    if(!ownMerge&&!ownMessage&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
-    if(claim&&!ownMerge)throw new Error('resource_target_execution_active_or_unknown');
+    const ownImplementation=['implement','test'].includes(action.request.action)&&op.status==='running'&&result?.implementation?.phase==='resources_pending'&&[result.implementation.implementIntent,result.implementation.testIntent].includes(request.authorityIntent)&&result.implementation.resourceRequests.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim?.generation===op.generation;
+    if(JSON.parse((this.db.prepare('SELECT candidate FROM items WHERE id=?').get(op.item) as Row).candidate).kind==='development-task'&&!ownMessage&&!ownImplementation)throw new Error('task_resource_requires_bound_consumer');
+    if(!ownMerge&&!ownMessage&&!ownImplementation&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');
+    if(claim&&!ownMerge&&!ownImplementation)throw new Error('resource_target_execution_active_or_unknown');
   }
   requireHeldForExecution(id:string,operation:string,intent:string){return this.transaction(()=>{
     const f=this.fixed(id),s=this.statusOf(id),last=f.events.findLast(e=>e.kind==='resource_reply_observed');

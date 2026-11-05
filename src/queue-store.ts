@@ -1,3 +1,6 @@
+import {FormalReviews} from './formal-review-store.js';
+import {IssueImplementations} from './issue-implementation-store.js';
+import type {ImplementationRequest} from './issue-implementation.js';
 import {parsePublicationPlan,publicationAuthorityPayloadSha} from './publication-contract.js';
 import {publicationGuardsCurrent,installPublicationResultGuard,publicationConsumerKey,overallConsumerKey,installOverallResultGuard} from './publication-guards.js';
 import {requirePublicationProcessEnded} from './publication-process.js';
@@ -48,7 +51,8 @@ import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-li
 import { TaskInbox } from './task-inbox.js';
 import {TaskScopeFollowups} from './task-scope-followup-store.js';
 import { TaskRecords,taskOperationGuard } from './task-store.js';
-import { observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
+import type {DevelopmentTask} from './task-contract.js';
+import {type TaskObservation, observeTaskWorkspace,assertTaskObservationCurrentSync } from './task-source.js';
 import { CollaborationView } from './collaboration-view.js';
 import {LocalScopeControls} from './scope-controls.js';
 import {DeliveryRecords} from './delivery-store.js';
@@ -338,6 +342,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   taskLinks(){return this.taskLinkRecords(fn=>this.transaction(fn));}
   private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
   async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.transaction(()=>{this.taskRecords().observe(p,source.observation);this.taskLinkRecords(fn=>fn()).observe(source);});return source;}
+  formalReviews(){return this.formalReviewRecords(fn=>this.transaction(fn));}
+  private formalReviewRecords(transaction:<T>(f:()=>T)=>T){return new FormalReviews(this.db,transaction,new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),item=>this.authorityItem(item),(item,run)=>this.beginCurrent(item,run),id=>this.evaluateCurrent(id));}
+  issueImplementations(){return this.issueImplementationRecords(fn=>this.transaction(fn));}
+  private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
+  registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation){return this.transaction(()=>{
+    const registered=this.taskRecords().observe(definition,observation);if(registered.item!==request.task)throw new Error('implementation_task_definition_mismatch');
+    return this.issueImplementationRecords(fn=>fn()).register(source,request);
+  });}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
   scopeFollowups():TaskScopeFollowups{return this.taskScopeFollowupRecords(fn=>this.transaction(fn));}
   private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));}
@@ -688,16 +700,19 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
     const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
     return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{
-      if(action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);
+      const formal=this.formalResource(action,request);
+      if(!formal&&action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);
       if(dispatch){
-        if(action.request.action==='implement')this.memberRepairResourceGate(action,request);
-        const receiver=action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
-        const test=action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
-        const publication=action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
-        if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
+        const implementation=!formal&&this.issueImplementationResource(action,request);
+        if(action.request.action==='implement'&&!implementation&&!formal)this.memberRepairResourceGate(action,request);
+        const receiver=formal&&action.request.action==='receive'?formal:action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
+        const test=!formal&&!implementation&&action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
+        const publication=!formal&&action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
+        if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(formal?{formalStageKey:formal.key,formalStageSha256:formal.planSha256,formalAuthorityIntent:formal.authorityIntent}:receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
     },(request,record,dispatch)=>{
       const action=a.reservedAction(request.authorityIntent);
+      if(record.source==='verified_formal_review_capture'){const original=this.formalReviewRecords(fn=>fn()).outcome(request.operation,action);if(original.state!==record.outcome.state||hash(original.proof)!==record.outcome.evidenceSha256)throw new Error('formal_resource_original_outcome_changed');if(dispatch&&action.request.action==='publish')this.event('publication_resource_result_admitted','resource:'+resourceRequestHash(request),{originalOperation:request.operation,outcomeSha256:record.outcomeSha256,formalSource:true});return;}
       if(record.source==='verified_overall_review_capture'){
         const original=this.overallForAction(request.operation,action.request.payloadSha256,action.requestId);if(!original)throw new Error('overall_original_action_binding_required');const proof=this.overallResourceOutcome(original,action,'1970-01-01T00:00:00Z');
         if(proof.state!==record.outcome.state||hash(proof.proof)!==record.outcome.evidenceSha256)throw new Error('overall_resource_original_outcome_changed');
@@ -712,6 +727,12 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const row=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(request.operation) as Row|undefined;if(!row)throw new Error('receiver_resource_binding_required');
     const b=JSON.parse(row.data),{op,receiver}=this.receiverOperation(request.operation),p=JSON.parse(this.blob(b.planSha256).toString());
     if(receiver||op.status!=='complete'||b.packet!==op.packet||b.authorityIntent!==action.requestId||b.actionSha256!==action.requestSha256||!b.resourceRequests.includes(resourceRequestHash(request))||canonical(p.governance?.resourceRequests)!==canonical(b.resourceRequests))throw new Error('receiver_resource_binding_changed');this.receiverGate(op);return b;
+  }
+  private formalResource(action:Row,request:ResourceRequest){const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(request.operation) as Row|undefined;if(action.request.formalWorkSha256===undefined)return null;if(!op||!JSON.parse(op.result??'null')?.formalReview)throw new Error('formal_specific_consumer_required');return this.formalReviewRecords(fn=>fn()).resourceGate(action,request);}
+  private issueImplementationResource(action:Row,request:ResourceRequest){
+    const op=this.db.prepare('SELECT result FROM operations WHERE id=?').get(request.operation) as Row|undefined;
+    if(!op||!JSON.parse(op.result??'null')?.implementation)return null;
+    return this.issueImplementationRecords(fn=>fn()).resourceGate(action,request);
   }
   private memberRepairResourceGate(action:Row,request:ResourceRequest){
     const row=this.db.prepare("SELECT data FROM events WHERE kind='member_repair_resource_bound' AND object=? ORDER BY id DESC LIMIT 1").get(request.operation) as Row|undefined;
@@ -733,7 +754,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   }
   private resourceExecution(operation:string,action:Row,claimedAt:string):ResourceOutcome {
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,result=parse(op,'result');
+    if(action.request.formalWorkSha256!==undefined)return this.formalReviewRecords(fn=>fn()).outcome(operation,action);
     if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
+    if(result?.implementation)return this.issueImplementationRecords(fn=>fn()).outcome(operation,action);
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate'){
       const overall=this.overallForAction(operation,action.request.payloadSha256,action.requestId);
@@ -794,7 +817,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const p=JSON.parse(plan.toString()),g=p.governance,configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(g!==undefined)throw new Error('receiver_authority_profile_missing');return null;}
     if(!this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()||!g||Object.keys(g).sort().join()!=='authorityIntent,resourceRequests'||typeof g.authorityIntent!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(g.authorityIntent)||!Array.isArray(g.resourceRequests)||g.resourceRequests.length>32||new Set(g.resourceRequests).size!==g.resourceRequests.length||g.resourceRequests.some((id:unknown)=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id)))throw new Error('receiver_authority_consumer_binding_required');
-    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
     if(p.kind!=='tongxu-queue-receiver'||p.item!==op.item||p.store!==this.directory||!['receiver','background'].includes(action.role)||action.request.action!=='receive'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.binding?.fingerprint!==this.packet(op.packet).fingerprint||action.request.paths.length||(action.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('receiver_exact_authority_mismatch');
     const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,op.id,g.authorityIntent):resources.status(id));
     if(claims.some((r:Row)=>r.request.operation!==op.id||r.request.authorityIntent!==g.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('receiver_original_resource_operation_mismatch');
@@ -827,7 +850,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if(candidate.repository.toLowerCase()!==c.repository.toLowerCase()||candidate.pr!==c.pr||context.scope.id!==s.id||context.scope.version!==s.version)return false;
       const original=parseQueueContextBlob(this.blob(this.packet(op.packet).context_hash));
       return canonical(original.scope)===canonical(s);
-    });
+    },operation=>this.formalReviewRecords(fn=>fn()).sourceForReviewRecords(operation));
   }
   reconcilePublishedRepairBatches(operation:string) {
     // Older queues can still publish. Enabling review records remains explicit;
@@ -892,7 +915,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(governance!==undefined)throw new Error('queue_repair_authority_profile_missing');return;}
     if(!governance||Object.keys(governance).sort().join()!=='authorityIntent,resourceRequests'||typeof governance.authorityIntent!=='string'||!Array.isArray(governance.resourceRequests)||governance.resourceRequests.length>32||new Set(governance.resourceRequests).size!==governance.resourceRequests.length||governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!/^[a-f0-9]{64}$/.test(r)))throw new Error('queue_repair_authority_consumer_binding_required');
-    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=authority.refreshReservedAction(governance.authorityIntent,observations);
+    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=authority.refreshReservedAction(governance.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
     if(!['implementer','background'].includes(action.role)||action.request.action!=='implement'||action.request.item!==op.item||action.binding?.packet!==op.packet||!Array.isArray(request.allowedPaths)||request.allowedPaths.some((path:unknown)=>typeof path!=='string'||!action.request.paths.includes(path))||(action.executionKind==='fixture')!==(config.executionKind==='fixture'))throw new Error('queue_repair_exact_authority_mismatch');
     const resources=this.resourceRecords(fn=>fn()),held=governance.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,operation,governance.authorityIntent):resources.status(id));
     if(held.some((r:Row)=>r.request.operation!==operation||r.request.authorityIntent!==governance.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('queue_repair_original_resource_operation_mismatch');
@@ -937,7 +960,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(!publicationGuardsCurrent(this.db))throw new Error('governed_publication_not_enabled');
     const {state,op,receiver}=this.publicationCurrent(id),p=parsePublicationPlan(this.blob(state.prepared.planSha256)),g=p.governance;
     if(p.operation!==id||p.store!==this.directory||!g)throw new Error('publication_authority_binding_required');
-    const a=new AuthorityRecords(this.db,fn=>fn(),item=>this.authorityItem(item)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    const a=new AuthorityRecords(this.db,fn=>fn(),item=>this.authorityItem(item)),action=a.refreshReservedAction(g.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
     if(action.role!=='background'||action.request.action!=='publish'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.request.payloadSha256!==publicationAuthorityPayloadSha(p,state.prepared.documentSha256)||action.request.paths.length||action.executionKind!=='github'||a.configuration().profile.executorId!==p.actor.id)throw new Error('publication_exact_authority_required');
     const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map(r=>held?resources.requireHeldForExecution(r,id,g.authorityIntent):resources.status(r));
     if(claims.some(r=>r.request.operation!==id||r.request.authorityIntent!==g.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!=='background'))throw new Error('publication_original_resource_mismatch');
@@ -1181,7 +1204,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.event('receiver_supplement_registered', id, result);
       return { ...result, duplicate: false, currentPacket: packetId, modelDispatched: false };
   }
-  import(packet: Packet): Row {
+  import(packet: Packet): Row {return this.importPacket(packet);}
+  importFormalCandidate(packet:Packet,operation:string):Row{return this.importPacket(packet,operation);}
+  private importPacket(packet:Packet,formalContinuation?:string):Row {
     return this.transaction(() => {
       if ((this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value !== packet.candidate.repository.toLowerCase()) throw new Error('queue_repository_mismatch');
       if(packet.summary.composition){this.requireCompositionMode();if(canonical(composeSubject(JSON.parse(packet.blobs.get(packet.reportHash)!.toString()),h=>{const b=packet.blobs.get(h);if(!b)throw new Error('composition_original_missing');return b;}))!==canonical(packet.summary.composition))throw new Error('composition_import_changed');}
@@ -1200,7 +1225,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       // Raw-byte novelty, equal times, new report IDs and one advancing dimension
       // cannot prove reconciliation. Keep raw hashes as evidence, not freshness.
       const jointlyNewer = incoming.every((value, i) => value && (!watermark[i] || value > watermark[i]));
-      const conflict = Boolean(previous && (item.observation_conflict
+      const originalContinuation=formalContinuation!==undefined&&this.formalReviewRecords(fn=>fn()).candidateContinuation(formalContinuation,packet,item.current_packet);
+      const conflict = !originalContinuation && Boolean(previous && (item.observation_conflict
         ? !jointlyNewer
         : order.includes(null) || (order.includes(-1) && order.includes(1)) || (order.every(n => n === 0) && previousBase !== packet.fingerprint)));
       const older = Boolean(previous && !conflict && order.includes(-1));
@@ -1331,7 +1357,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const prior=this.db.prepare("SELECT data FROM events WHERE kind='queue_ranked_evaluation_started' AND object=?").get('selection:'+run) as Row|undefined;
       if(prior)return {...parse(prior,'data'),duplicate:true};
       if(!this.db.prepare("SELECT 1 FROM meta WHERE key='bounded_event_source_profile'").get())throw new Error('bounded_event_source_not_configured');
-      const original=this.db.prepare("SELECT id FROM operations WHERE status='running' ORDER BY started_at,id LIMIT 1").get() as Row|undefined;
+      const original=this.db.prepare("SELECT id FROM operations WHERE status='running' AND json_type(result,'$.formalReview') IS NOT 'object' ORDER BY started_at,id LIMIT 1").get() as Row|undefined;
       if(original)return {operation:original.id,duplicate:true,recovery:'evaluate_original_operation',modelTasksStarted:0};
       const ranking=this.schedulingCurrent();
       const selected=ranking.selected;if(!selected)return {selected:null,waiting:ranking.items.map(r=>({item:r.item,stage:r.stage,reasons:r.reasons})),modelTasksStarted:0};
@@ -1340,8 +1366,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.event('queue_ranked_evaluation_started','selection:'+run,record);return record;
     });
   }
-  evaluate(id: string): Row {
-    return this.transaction(() => {
+  evaluate(id:string):Row{return this.transaction(()=>this.evaluateCurrent(id));}
+  private evaluateCurrent(id:string):Row{
       const op = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row | undefined;
       if (!op) throw new Error('operation_not_found');
       if (op.status === 'repairing') throw new Error('original_repair_pending');
@@ -1362,7 +1388,6 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       this.db.prepare('DELETE FROM claims WHERE target=? AND operation=? AND generation=?').run(op.target, id, op.generation);
       this.event('shadow_evaluation_completed', id, { packet: op.packet, generation: op.generation });
       return { operation: id, ...result };
-    });
   }
   receiverEvidence(id: string): Row {
     return this.transaction(() => {
