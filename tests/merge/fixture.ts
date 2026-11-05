@@ -13,12 +13,13 @@ import { randomUUID } from 'node:crypto';
 import { resourceRequestHash,type ResourceRequest } from '../../src/resource-contract.js';
 import type { ManagedMergeBinding } from '../../src/merge-contract.js';
 import { prepareManagedMerge } from '../../src/managed-merge.js';
+import type { MergeProfile } from '../../src/merge-provider.js';
 
 const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));let commentId=7200000000;
-export async function ready(t:test.TestContext,mode='normal'){
-  const f=await setup(t);const received=await runReception(f.path);return readyFromReception(t,f,received,mode);
+export async function ready(t:test.TestContext,mode='normal',credentialKind?:MergeProfile['credentialKind']){
+  const f=await setup(t);const received=await runReception(f.path);return readyFromReception(t,f,received,mode,undefined,credentialKind);
 }
-export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>){
+export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind']){
   const operation=received.operation;
   f.q.enableSupplements();f.q.reviewRecords().enable();f.q.enableCompositions();f.q.enableReceiverCorrections();
   const sources:Record<string,any>={},sourcePath=join(f.root,'owner-provider-data.json'),exe=join(f.root,'owner-provider.mjs');
@@ -38,8 +39,18 @@ export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType
   const confirmation=adopt({kind:'confirm_action',adoption:scope.sha,performerRole:'background',request:action,expiresAt:new Date(Date.now()+3600000).toISOString()}),observations=[scope.observation,confirmation.observation],intent='fixture-managed-merge';a.reserveAction(intent,action,'background',confirmation.sha,observations);
   const request:ResourceRequest={schemaVersion:1,ledgerId:ledger.profile.ledgerId,repository:c.repository,operation,authorityIntent:intent,resourceRef:'existing-fixture-slot',unit:'fixture-task',quantity:1,role:'background',actionSha256:actionHash(action)};
   const binding:ManagedMergeBinding={schemaVersion:1,operation,item:f.item,packet:r.result.packet,repository:c.repository,repositoryId:99,pr:c.pr,H:c.H,B:c.B,targetRef:c.targetRef,T:r.result.tree,receptionOperation:operation,judgmentId:r.receiver.judgmentId,receptionBindingHash:r.receiver.bindingHash,authorityIntent:intent,resourceRequests:[resourceRequestHash(request)],scope:{id:action.scopeId,version:action.scopeVersion,bodySha256:action.scopeBodySha256},arrangement:{id:e.context.arrangement.id,version:e.context.arrangement.version},subjectSha256:null,integrationReference:r.receiver.integrationSha256??null,method:'merge'};
-  const publisher=await publisherFixture(t,binding,mode,actualFixtureMerge);f.q.merges().configure(bytes(publisher.profile));
+  const publisher=await publisherFixture(t,binding,mode,actualFixtureMerge,credentialKind);f.q.merges().configure(bytes(publisher.profile));
   const plan=bytes({binding,resources:[request]});await prepareManagedMerge(f.store,plan);
   const fresh=async()=>{const values=[];for(const ref of a.sourceRequests(confirmation.sha))values.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(f.root,'fresh-owner-'+randomUUID())));return values;};
   return {...f,receiverPlan:f.plan,operation,binding,request,publisher,ledger,a,scope,confirmation,adopt,observations,sourcePath,plan,fresh};
+}
+
+/** Explicit API/credential-class fixtures; not real deployment identity proof. */
+export function rulesetOnly(f:Awaited<ReturnType<typeof ready>>){
+  const {publisher:p,binding:b}=f,root='/repos/'+b.repository;
+  const protection=`${root}/branches/${encodeURIComponent(b.targetRef)}/protection`,administration=`${root}/actions/permissions`,rules=`${root}/rules/branches/${encodeURIComponent(b.targetRef)}?per_page=100&page=1`;
+  p.setReply(protection,{message:'Branch not protected'},404);
+  p.setReply(administration,{enabled:false});
+  p.setReply(rules,[{type:'pull_request',ruleset_id:7,parameters:{required_approving_review_count:0,require_extra_approval_for_unattributed_changes:true}},{type:'deletion',ruleset_id:7},{type:'non_fast_forward',ruleset_id:7}]);
+  return {protection,administration,rules};
 }
