@@ -119,7 +119,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 ### 正式 PR 外层流程的影响传播
 
-`formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
+`formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；正式影响角色按冻结选择可由 `formal-kimi` 复用 `ExtraCliSession` 执行，核实际 profile、准确单次输入边界、完整 ACP 和进程退出后登记原阶段。最后异步 host 刷新后同步核档案/会话，再由原 effect 登记并立即写输入，不增加原队列或资源记录之外的执行通道；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
 
 工作台向原正式控制器传入绑定已核项目身份的 AI 设置读取回调；新请求封存时读取当前 AISettings 快照，一次捕获三个角色，定时接续与手工准备使用同一来源。回调不缓存启动时选择，也不改写已有请求；保存选择不可用沿原等待记录处理。调整此装配时核 `tests/w7/formal-workbench.test.ts` 的真实定时器、手工核对、设置变化/默认/不可用和跨项目场景。
 

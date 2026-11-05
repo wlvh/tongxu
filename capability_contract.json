@@ -108,7 +108,7 @@
         "anchor_id": "CAPABILITY.formal_pr_review",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与 Claude 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
+        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与默认 Claude 或已冻结选择的 Kimi 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
         "audience": [
           "business_user",
           "agent",

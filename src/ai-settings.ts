@@ -27,7 +27,7 @@ const aiRoleUsage:Record<AIRole,{view:string;entry:string;interaction:string}>={
   issue_owner:{view:'tasks',entry:'任务与报告：选择原任务，再使用已登记的联系或补查入口',interaction:'程序发送该任务的完整材料和前序报告，角色返回完整消息；当前联系角色没有任意文件或命令工具。没有已登记任务时不能仅靠保存设置启动。'},
   reviewer:{view:'retrospective',entry:'判断与复盘：准备并运行已登记的整体复盘；独立再审也由原修复链触发',interaction:'新的独立上下文阅读固定源码和证据并返回判断。该只读审核不持有写入权限，也不把未执行的测试写成本轮实测。'},
   verifier_fact:{view:'tasks',entry:'任务与报告：在对应 RETURN 的核实与修复入口启动',interaction:'原执行器先开放限定文件读取和测试；写入责任及授权成立后才开放替换文件工具。新候选交独立审核，不自批。'},
-  verifier_impact:{view:'tasks',entry:'任务与报告：由已启动的核实与修复链交给独立影响角色',interaction:'收到原候选、事实报告和固定材料后独立返回影响报告；该阶段没有写入或任意网络工具。'},
+  verifier_impact:{view:'tasks',entry:'任务与报告：正式 PR 批次验证或已接入的原局部核实链',interaction:'正式 PR 用固定候选和整批材料独立核影响，可选已检测 Kimi；初次不输入事实结论。完整原文交原事实会话综合；无写入或任意网络工具，局部链沿各自支持范围。'},
   acceptance:{view:'deliveries',entry:'成果与验收：选择原成果和已登记的验证方案',interaction:'程序装配成果证据，由验收角色解释并返回完整报告；不代替本人接受。这里的选择不修改旧 PR 技术接收器的固定计划。'}
 };
 export type AISettingChoice=AIModelChoice&{providerId:string};
