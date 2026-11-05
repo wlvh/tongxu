@@ -15,6 +15,7 @@ import { type ProjectRequest,prepareProjectRepair, testProject, reconcileProject
 import { runRepair } from '../../src/repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from '../../src/issue-implementation.js';
 import {prepareTaskOwner} from '../../src/tasks.js';
+import {runMessages} from '../../src/messages.js';
 import {TaskControls} from '../../src/task-controls.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
@@ -361,6 +362,42 @@ for(const changed of [false,true])test(`original owner feedback bound billing wa
  await f.page.app.close();if(changed)f.changeIssue(f.body+' changed after original owner binding');const cold=await f.open();await cold.get();assert.deepEqual(await readFile(f.messages.trace),calls);assert.equal((await cold.post('/api/task-control/owner-feedback/start')).status,202);
  const done=await f.wait(v=>!v.taskControls[0].controllerActive&&v.taskControls[0].lastControllerReturn?.stage==='execution',cold.get),c=done.taskControls[0];assert.equal(c.lastControllerReturn.newModelRequests,changed?0:2);assert.equal(c.lastControllerReturn.reason,changed?'owner_feedback_adopted_requirement_changed':null);assert.equal(f.ledger!.state().claims.length,claims+(changed?0:2));assert.equal(f.ledger!.state().settlements.length,claims+(changed?0:2));assert.deepEqual(f.messages.q.taskInbox().ownerContact(f.b.item,before.ownerFeedback.key),binding);
  if(changed){assert.deepEqual(await readFile(f.messages.trace),calls);assert.notEqual(c.contactChoice.steps.at(-1).phase,'returned');assert.equal((await cold.post('/api/task-control/owner-feedback/start')).status,202);await f.wait(v=>!v.taskControls[0].controllerActive&&v.taskControls[0].lastControllerReturn?.newModelRequests===0,cold.get);assert.deepEqual(await readFile(f.messages.trace),calls);assert.equal(f.ledger!.state().claims.length,claims);}else{assert.equal(c.contactChoice.complete,true);assert.match((await cold.get('/api/task-control-report/owner-feedback')).value.steps.at(-1).report.reportText,/B consumed actual A reply/);}
+ }finally{await f.release();}
+});
+for(const segment of ['A','B'])for(const changed of [false,true])test(`original owner feedback shared consumers require current proof for queued ${segment} with ${changed?'changed':'unchanged'} Issue`,async t=>{
+ const f=await originalOwnerPage(t);await f.startExternal();try{
+ await finishOriginalOwner(f);const currentBilling={...f.messages.plan.billing};let steps=0;
+ // Let billing genuinely expire before this segment, after the preceding
+ // segment has completed. No message/inbox/claim is rewritten to pause it.
+ if(segment==='A')currentBilling.observedAt=new Date(Date.now()-3600000).toISOString();
+ const paused=await runTaskContactChoice(f.messages.store,f.raw(),currentBilling,{originalImplementation:f.host,beforeStep:()=>{if(segment==='B'&&++steps===7)currentBilling.observedAt=new Date(Date.now()-3600000).toISOString();}});
+ assert.equal(paused.completed,false);assert.equal(paused.newModelRequests,segment==='A'?0:1);
+ const before=await observeTaskContactChoice(f.messages.store,f.raw(),true),index=segment==='A'?1:2,selected=before.steps[index].run,task=segment==='A'?f.target.task:f.b.item,id=segment==='A'?'feedback-answer':'feedback-continue';
+ assert.ok(selected);assert.ok('ownerFeedback' in before&&before.ownerFeedback);const binding=f.messages.q.taskInbox().ownerContact(f.b.item,before.ownerFeedback.key),trace=await readFile(f.messages.trace),ledger=f.ledger!.state(),proof=await f.host.proof(f.messages.store,f.target);
+ if(changed){const body=f.body+' changed after '+segment+' was enqueued';f.changeIssue(body);f.changeContactIssue(body);await assert.rejects(f.host.proof(f.messages.store,f.target),/owner_feedback_adopted_requirement_changed/);}
+ const p=await prepareTaskOwner(f.messages.store,task,id);assert.equal(p.run,selected);
+ const taskArgs=[resolve('dist/src/task-cli.js'),'work','--store',f.messages.store,'--task',task,'--limit','1'];
+ for(let repeat=0;repeat<2;repeat++){
+  const worker=JSON.parse((await exec(process.execPath,taskArgs)).stdout);assert.equal(worker.newModelRequests,0);assert.equal(worker.runs[0].run,selected);assert.equal(worker.runs[0].dispatchBlockedReason,'owner_contact_current_source_checker_required');
+  const message=JSON.parse((await exec(process.execPath,[resolve('dist/src/message-cli.js'),'run','--store',f.messages.store,'--plan',p.plan])).stdout);assert.equal(message.newModelRequests,0);assert.equal(message.dispatchBlockedReason,'owner_contact_current_source_checker_required');
+ }
+ const noOp=await runMessages(f.messages.store,p.plan,false,p.run,undefined,undefined,async()=>{});assert.equal(noOp.newModelRequests,0);assert.ok('dispatchBlockedReason' in noOp);assert.equal(noOp.dispatchBlockedReason,'owner_contact_current_source_checker_required');
+ const forged=await runMessages(f.messages.store,p.plan,false,p.run,undefined,undefined,async()=>({...proof,target:{...proof.target,requestId:'unrelated-original'}}));assert.equal(forged.newModelRequests,0);assert.ok('dispatchBlockedReason' in forged);assert.equal(forged.dispatchBlockedReason,'owner_feedback_actual_source_proof_required');
+ assert.deepEqual(await readFile(f.messages.trace),trace);assert.deepEqual(f.ledger!.state().claims,ledger.claims);assert.deepEqual(f.ledger!.state().settlements,ledger.settlements);assert.deepEqual(f.messages.q.taskInbox().ownerContact(f.b.item,before.ownerFeedback.key),binding);
+ const cold=await f.open();await cold.get();assert.deepEqual(await readFile(f.messages.trace),trace);
+ if(changed){const blocked=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(blocked.newModelRequests,0);assert.equal(blocked.waiting,'owner_feedback_adopted_requirement_changed');}
+ else{
+  // The generic worker can contend for this same run, but has no source
+  // capability. It cannot acquire resources/input even if it wins the lock.
+  const racing=await Promise.all([runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host}),exec(process.execPath,taskArgs).catch(e=>{assert.match(e.stderr,/message_controller_active/);return null;})]);
+  const done=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:f.host});assert.equal(done.completed,true,done.waiting??'');assert.equal(racing[0].newModelRequests+done.newModelRequests,segment==='A'?2:1);
+  assert.equal(f.ledger!.state().claims.length-ledger.claims.length,segment==='A'?2:1);assert.equal(f.ledger!.state().settlements.length-ledger.settlements.length,segment==='A'?2:1);
+  const view=await observeTaskContactChoice(f.messages.store,f.raw(),true);assert.equal(view.complete,true);assert.match(view.steps[2].report.reportText,/B consumed actual A reply/);
+  const completedTrace=await readFile(f.messages.trace),replay=JSON.parse((await exec(process.execPath,taskArgs)).stdout);assert.equal(replay.newModelRequests,0);assert.deepEqual(await readFile(f.messages.trace),completedTrace);
+ }
+ if(segment==='B'){
+  const answer=await prepareTaskOwner(f.messages.store,f.target.task,'feedback-answer'),replay=await runMessages(f.messages.store,answer.plan,false,answer.run);assert.equal(replay.completed,true);assert.equal(replay.resourcesSettled,true);assert.equal(replay.newModelRequests,0);
+ }
  }finally{await f.release();}
 });
 for(const boundary of ['before-claim','before-send'])test('original owner feedback rechecks Issue '+boundary+' without losing existing claims',async t=>{

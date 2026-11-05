@@ -12,6 +12,7 @@ import { assembleRolePrompt } from './role-prompts.js';
 import { messagePolicy,ReadonlyDialog,OwnedReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec,type MessageNativeHandle } from './message-runtime.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import {prepareMessageResources,refreshMessageResources,completeMessageResources,cancelUnstartedMessageResources,messageResourcesSettled} from './message-resources.js';
+import type {ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 async function ensurePrivate(path:string){try{await privateDirectory(path,true);}catch(e:any){if(e.code!=='EEXIST')throw e;await privateDirectory(path,false);}}
 async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise<OwnerObservation[]>{
@@ -32,7 +33,7 @@ async function replay(q:QueueStore,run:string,directory:string){
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly:boolean|'cancel-unstarted'=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void,beforeNewInput?:()=>Promise<void>){
+export async function runMessages(store:string,planPath:string,recoverOnly:boolean|'cancel-unstarted'=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void,beforeNewInput?:()=>Promise<ImplementationOwnerProof|void>){
   const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
   // The caller may have selected a frozen operation before handing us a path.
   // Compare before opening the queue or creating/starting any runtime, and use
@@ -65,7 +66,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly:boole
     const runtimes=new Map<string,ReadonlyDialog|OwnedReadonlyDialog>(),specs=new Map<string,RuntimeSpec>(),turnObservations=new Map<string,OwnerObservation[]>(),turnSourceChecks=new Map<string,()=>void>();let sent=0,activeMessage:string|null=null,dispatchBlockedReason:string|null=null;
     // Only prospective investment/input uses this gate. Capture replay and
     // factual resource settlement above remain available after source changes.
-    const checkNewInput=async()=>{try{await beforeNewInput?.();}catch(e){dispatchBlockedReason=e instanceof Error?e.message:'message_new_input_source_unavailable';throw e;}};
+    const checkNewInput=async()=>{try{q.taskInbox().checkOwnerContactSource(run,await beforeNewInput?.());}catch(e){dispatchBlockedReason=e instanceof Error?e.message:'message_new_input_source_unavailable';throw e;}};
     const checkLiveSources=()=>{for(const runtime of runtimes.values())if(runtime instanceof ReadonlyDialog)runtime.assertCanForward();};
     try{
       await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));const admission=await observations(q,p,directory);await checkNewInput();await prepareMessageResources(q,run,p,admission,checkNewInput);
