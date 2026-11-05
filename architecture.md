@@ -56,7 +56,7 @@
 
 工作台计划使用 `schemaVersion: 1` 和 `kind` 区分本机/受控模式，`parseWorkbenchPlan` 核来源、路径、摘要和所选控制。任务、消息、授权、集成和成果各有 `*-contract.ts` 解析器，不能用一个领域的版本号解释全部对象。
 
-请求解析和核权后，原输入/输出保存为文件或数据库原件，派生报告用摘要引用。`task-contact-choice.ts` 只接受绑定计划摘要的预登记联系人：A 的完整回复及资源已处理后才选择 B，B 的完整回复再交回 A；普通报告或畸形选择不会触发任意联系。完整原文、材料消费确认、进程结束和资源状态分别核验。
+请求解析和核权后，原输入/输出保存为文件或数据库原件，派生报告用摘要引用。`task-contact-choice.ts` 只接受绑定计划摘要的预登记联系人：A 的完整回复及资源已处理后才选择 B，B 的完整回复再交回 A；普通报告或畸形选择不会触发任意联系。完整原文、材料消费确认、进程结束和资源状态分别核验。 `implementation-owner-feedback` 从原 Issue 实施结果核当前提交、完整捕获和原责任身份；`TaskInbox` 的原 B 事件保存等待、绑定与撤回，新的 A 只读请求及 B 后续仍进入原消息执行器。工作台只给联系入口识别同项目的动态实施收件人，原实施完成回调接续已收件的准确联系；冷读不发。H0/no_change 的消息资源阶段由原实施消费者明确准入，原结果和保护触发器保留，coordinate 与 implement/test 分别核权及结算。
 
 `capability_contract.json` 是文档承诺登记；当前代码没有从它生成 CLI、HTTP 路由、模型工具或运行授权。
 
@@ -106,6 +106,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 角色选择/程序能力 | `ai-settings`、消息/修复 worker 的固定输入、适配器和旧运行读回 | `tests/w7/ai-workflow.test.ts`、`tests/w7/additional-cli.test.ts`、`tests/w7/ai-settings.test.ts` |
 | 队列格式/授权/停止条件 | 预开连接、任务阶段、接收/合并、页面控制和原资源占用 | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts`、`tests/w7/scope-controls.test.ts` |
 | 原实施结果到秘书补充 | project-chat 只保存意图与原请求关联；issue-implementation-controls 从已核H1和原责任编译受控后续实施，复用原QueueStore/Authority/Resource，不新增发送事实账本 | `tests/project-repair/integration.test.ts`、`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
+| B 问题到原实施负责人再回 B | `implementation-owner-feedback` 核原完整结果/当前提交，TaskInbox 原事件与 TaskHistoryProjection 保存准确身份和单份全文；TaskControls/工作台精确唤醒已收件联系。`runMessages` 在原捕获恢复之后，从原 run→TaskInbox 请求识别 ownerContact，A及回B的新执行必须取得现有签发、匹配原目标的当前来源 proof；普通消息不新增此要求。宿主复用原 Issue reader，无 reader 的通用消费者明确拒绝新投入/输入；MessageResources 在实际领取前复核，发送前再读当前 Issue并保留本地同步门。已发捕获/资源清理不受新输入检查阻断；no_change 不造新提交 | `tests/project-repair/integration.test.ts` 原负责人联系组合、原秘书补充回归，`tests/w6/task-intake.test.ts`、`tests/w6/task-contact-choice.test.ts`、`tests/w6/message-resources.test.ts`、`tests/w7/github-projects-ui.test.ts` |
+| 零输入消息的资源取消 | 原 `MessageResourceRecords` 统一判断取消阶段是否还有未清投资：精确从未领取的申请无供应方结算义务，held仍结原claim；此判定供消息包装层、旧阶段再准入与TaskInbox投影/未发关闭使用，不改变全局settledOutcome或执行held门。取消和原claim最后登记共享队列事务，普通coordinate也不能从已关闭阶段回落取得新claim；申请与原件保留 | `tests/w6/message-resources.test.ts` 的原资源竞争/已发/未知场景，`tests/project-repair/integration.test.ts` before-claim正常HTTP及before-send回归 |
 | 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 

@@ -12,6 +12,7 @@ import { assembleRolePrompt } from './role-prompts.js';
 import { messagePolicy,ReadonlyDialog,OwnedReadonlyDialog,inspectDialogCapture,inspectUnstartedDialog,type RuntimeSpec,type MessageNativeHandle } from './message-runtime.js';
 import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import {prepareMessageResources,refreshMessageResources,completeMessageResources,cancelUnstartedMessageResources,messageResourcesSettled} from './message-resources.js';
+import type {ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 async function ensurePrivate(path:string){try{await privateDirectory(path,true);}catch(e:any){if(e.code!=='EEXIST')throw e;await privateDirectory(path,false);}}
 async function observations(q:QueueStore,p:MessagePlan,directory:string):Promise<OwnerObservation[]>{
@@ -32,7 +33,7 @@ async function replay(q:QueueStore,run:string,directory:string){
   const state=r.status(run);return {...state,directory,completed:errors.length===0&&completed(state),recoveryErrors:errors,newModelRequests:0,recovery:'original_captures_only'};
 }
 /** One finite program entry; no daemon and no access to arbitrary App chats. */
-export async function runMessages(store:string,planPath:string,recoverOnly:boolean|'cancel-unstarted'=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void){
+export async function runMessages(store:string,planPath:string,recoverOnly:boolean|'cancel-unstarted'=false,expectedRun?:string,currentBilling?:MessagePlan['billing'],onOwnedRuntime?:(participant:string,handle:MessageNativeHandle|null)=>void,beforeNewInput?:()=>Promise<ImplementationOwnerProof|void>){
   const raw=await regular(planPath,256*1024),p=parseMessagePlan(raw),run=messagePlanId(p);
   // The caller may have selected a frozen operation before handing us a path.
   // Compare before opening the queue or creating/starting any runtime, and use
@@ -62,10 +63,13 @@ export async function runMessages(store:string,planPath:string,recoverOnly:boole
     for(const m of p.material){const b=await regular(m.path,512*1024);if(hash(b)!==m.sha256)throw new Error('message_material_changed');new TextDecoder('utf8',{fatal:true}).decode(b);materials[m.name]=b;}
     for(const a of p.participants){const assembly=await assembleRolePrompt(a.role,messagePolicy);promptObjects[a.id]=assembly;assemblies[a.id]=Buffer.from(canonical(assembly));}
     records.register(raw,materials,assemblies);const frozen=records.frozen(run);if(canonical(Object.fromEntries(Object.entries(frozen.assemblies).map(([n,b])=>[n,hash(b)])))!==canonical(Object.fromEntries(Object.entries(assemblies).map(([n,b])=>[n,hash(b)]))))throw new Error('message_frozen_role_prompt_changed');
-    const runtimes=new Map<string,ReadonlyDialog|OwnedReadonlyDialog>(),specs=new Map<string,RuntimeSpec>(),turnObservations=new Map<string,OwnerObservation[]>(),turnSourceChecks=new Map<string,()=>void>();let sent=0,activeMessage:string|null=null;
+    const runtimes=new Map<string,ReadonlyDialog|OwnedReadonlyDialog>(),specs=new Map<string,RuntimeSpec>(),turnObservations=new Map<string,OwnerObservation[]>(),turnSourceChecks=new Map<string,()=>void>();let sent=0,activeMessage:string|null=null,dispatchBlockedReason:string|null=null;
+    // Only prospective investment/input uses this gate. Capture replay and
+    // factual resource settlement above remain available after source changes.
+    const checkNewInput=async()=>{try{q.taskInbox().checkOwnerContactSource(run,await beforeNewInput?.());}catch(e){dispatchBlockedReason=e instanceof Error?e.message:'message_new_input_source_unavailable';throw e;}};
     const checkLiveSources=()=>{for(const runtime of runtimes.values())if(runtime instanceof ReadonlyDialog)runtime.assertCanForward();};
     try{
-      await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await prepareMessageResources(q,run,p,await observations(q,p,directory));
+      await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));const admission=await observations(q,p,directory);await checkNewInput();await prepareMessageResources(q,run,p,admission,checkNewInput);
       for(const m of p.messages){activeMessage=m.id;await q.refreshMessageTaskSources(run);await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);records.check(run,await observations(q,p,directory),m.id);
         const participant=p.participants.find(a=>a.id===m.to)!;
         if(!runtimes.has(m.to)){
@@ -75,7 +79,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly:boole
             beforeTurnSendSync:()=>{checkLiveSources();const check=turnSourceChecks.get(participant.id);if(!check)throw new Error('message_task_source_check_required');check();records.check(run,turnObservations.get(participant.id)??[],activeMessage??undefined);},
             control:{beforeControl:async request=>{
               if(request.action==='interrupt'){controlObservations.set(request.id,[]);return;}
-              await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);controlObservations.set(request.id,await observations(q,p,directory));controlSourceChecks.set(request.id,await q.refreshMessageTaskSources(run));
+              await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);controlObservations.set(request.id,await observations(q,p,directory));controlSourceChecks.set(request.id,await q.refreshMessageTaskSources(run));await checkNewInput();
             },beforeControlSendSync:(request,send)=>{const observed=controlObservations.get(request.id),check=controlSourceChecks.get(request.id);if(!observed||request.action==='steer'&&!check)throw new Error('message_native_control_observation_required');if(request.action==='steer')check!();records.nativeControlIntent(run,participant.id,request,observed);records.nativeControlSend(run,participant.id,request,observed,send,request.action==='steer'?check:undefined);}}
           }):await ReadonlyDialog.open(spec);runtimes.set(m.to,runtime);records.record(run,m.to,runtime.address());
           if(runtime instanceof OwnedReadonlyDialog){const handle=runtime.handle();onOwnedRuntime?.(participant.id,{...handle,control:async(option,expected)=>{const result=await handle.control(option,expected);records.record(run,participant.id,result);return result;}});}
@@ -84,7 +88,7 @@ export async function runMessages(store:string,planPath:string,recoverOnly:boole
         const sender=m.from===null?null:state.runtimes.find((r:Row)=>r.participant===m.from)?.route;if(m.from!==null&&!sender)throw new Error('message_sender_route_missing');
         const materialConsumption=(p.consumeMaterial??[]).map(name=>({name,sha256:hash(frozen.materials[name]!)})),references=[...upstream.map(x=>x.receipt.finalSha256),...materialConsumption.map(m=>m.sha256)];
         const envelope={schemaVersion:1,kind:'tongxu-addressed-role-message',run,messageId:m.id,origin:m.from===null?'operator_fixed_plan':'program_forwarding_original_role_reply',from:sender,to:runtime.route,body:m.body,binding:state.registration.bindings[m.to],material:Object.entries(frozen.materials).map(([name,b])=>({name,sha256:hash(b),text:b.toString()})),upstream,replyReferences:references,...(materialConsumption.length?{materialConsumptionReferences:materialConsumption}:{}),responseContract:{messageId:m.id,consumed:references,report:'complete substantive report; full raw final also saved'},permissions:{tools:[],write:false,publish:false,merge:false,formalJudgment:false}};
-        const final=await runtime.send(envelope,async()=>{await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);const observed=await observations(q,p,directory),check=await q.refreshMessageTaskSources(run);turnObservations.set(participant.id,observed);turnSourceChecks.set(participant.id,check);check();records.intent(run,m.id,Buffer.from(canonical(envelope)),observed);sent++;},proof=>records.record(run,m.to,proof),()=>{checkLiveSources();const check=turnSourceChecks.get(participant.id);if(!check)throw new Error('message_task_source_check_required');check();records.check(run,turnObservations.get(participant.id)??[],m.id);});checkLiveSources();records.record(run,m.to,final);
+        const final=await runtime.send(envelope,async()=>{await checkParent();records.observeBilling(run,await billing(p,currentBilling));await refreshMessageResources(q,run,p);const observed=await observations(q,p,directory),check=await q.refreshMessageTaskSources(run);turnObservations.set(participant.id,observed);turnSourceChecks.set(participant.id,check);await checkNewInput();check();records.intent(run,m.id,Buffer.from(canonical(envelope)),observed);sent++;},proof=>records.record(run,m.to,proof),()=>{checkLiveSources();const check=turnSourceChecks.get(participant.id);if(!check)throw new Error('message_task_source_check_required');check();records.check(run,turnObservations.get(participant.id)??[],m.id);});checkLiveSources();records.record(run,m.to,final);
         if(!final.data.reportedConsumption)throw new Error('message_reply_did_not_confirm_input_consumption');
       }
     }catch(e){records.problem(run,activeMessage,e instanceof Error?e.message:'message_delivery_unknown');}
@@ -94,6 +98,6 @@ export async function runMessages(store:string,planPath:string,recoverOnly:boole
       for(const [id,runtime] of runtimes){onOwnedRuntime?.(id,null);try{await runtime.close();const submitted=records.submitted(run,id);if(!submitted.length){records.record(run,id,await inspectUnstartedDialog(specs.get(id)!));continue;}const inspected=await inspectDialogCapture(specs.get(id)!,submitted,records.nativeControlRequests(run,id));for(const proof of inspected.proofs)records.record(run,id,proof);records.record(run,id,inspected.ended);if(inspected.error)records.problem(run,null,inspected.error);}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_capture_unresolved');}}
       for(const [id,spec] of specs)if(!runtimes.has(id)){try{records.record(run,id,await inspectUnstartedDialog(spec));}catch(e){records.problem(run,null,e instanceof Error?e.message:'message_bootstrap_unknown');}}
     }
-    const result=records.status(run),resources=await completeMessageResources(q,run,p,completed(result));return {...result,completed:completed(result),newModelRequests:sent,directory,resources,resourcesSettled:messageResourcesSettled(q,run,p)};
+    const result=records.status(run),resources=await completeMessageResources(q,run,p,completed(result));return {...result,completed:completed(result),newModelRequests:sent,directory,resources,resourcesSettled:messageResourcesSettled(q,run,p),dispatchBlockedReason};
   }finally{if(parentLock){parentLock.exec('ROLLBACK');parentLock.close();}if(lock){lock.exec('ROLLBACK');lock.close();}q.close();}
 }

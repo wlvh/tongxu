@@ -52,6 +52,12 @@ export class ResourceRecords {
   }
   status(id:string){return this.transaction(()=>this.statusOf(id));}
   settledOutcome(id:string){return this.transaction(()=>{const s=this.statusOf(id);if(!s.outcome)return false;this.validateOutcome(s);return ['consumed','released'].includes(s.state)&&Boolean(s.claim?.outcomeSha256)&&s.claim.outcomeSha256===s.outcome.outcomeSha256;});}
+  /** Cancellation only: no provider investment ever dispatched, with an intact
+   * original lookup. This is not a settlement or permission to execute. */
+  unclaimedForCancellation(id:string,operation:string,intent:string){return this.transaction(()=>{
+    const f=this.fixed(id),s=this.statusOf(id),last=f.events.findLast(e=>e.kind==='resource_reply_observed'),problem=f.events.findLast(e=>e.kind==='resource_problem');
+    return f.request.operation===operation&&f.request.authorityIntent===intent&&s.state==='prepared_not_sent'&&s.claimAttempts===0&&s.claim===null&&s.outcome===null&&s.resultAttempts===0&&!s.pendingResultAttempt&&last?.data.command==='lookup'&&last.data.reply.result.state==='absent'&&(!problem||problem.id<last.id);
+  });}
   prepare(request:ResourceRequest,observations:OwnerObservation[],callerRole:AuthorityRole){return this.transaction(()=>{
     const p=this.profile(request.ledgerId);parseResourceRequest(request,p);const id=resourceRequestHash(request);
     if(request.role!==callerRole)throw new Error('resource_trusted_role_mismatch');
@@ -79,6 +85,10 @@ export class ResourceRecords {
     const stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
     const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim?.generation===op.generation;
     const message=result?.messageResources?.[action.request.payloadSha256],ownMessage=action.request.action==='coordinate'&&op.status==='messaging'&&message?.phase==='resources_pending'&&message.authorityIntent===request.authorityIntent&&message.resourceRequests?.includes(resourceRequestHash(request));
+    // This check is also the last transactional claim gate. A cancelled
+    // message must not fall back to generic coordinate on a complete operation,
+    // even before its TaskInbox cancellation is recorded.
+    if(action.request.action==='coordinate'&&message&&!ownMessage)throw new Error('message_resource_phase_no_longer_pending');
     const ownImplementation=['implement','test'].includes(action.request.action)&&op.status==='running'&&result?.implementation?.phase==='resources_pending'&&[result.implementation.implementIntent,result.implementation.testIntent].includes(request.authorityIntent)&&result.implementation.resourceRequests.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim?.generation===op.generation;
     if(JSON.parse((this.db.prepare('SELECT candidate FROM items WHERE id=?').get(op.item) as Row).candidate).kind==='development-task'&&!ownMessage&&!ownImplementation)throw new Error('task_resource_requires_bound_consumer');
     if(!ownMerge&&!ownMessage&&!ownImplementation&&(op.status!=='complete'||!stage||result?.[stage]))throw new Error('resource_claim_requires_unstarted_exact_action');

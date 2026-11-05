@@ -61,6 +61,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写；同项目拒绝经刷新仍可见，停止后从原按钮零输入查回同操作 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面同项目失败/跨项目迟到回复和停止准入见 `tests/w7/github-projects-ui.test.ts`，两组复用原页面 fixture |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
+| 联系原实施负责人 | A 实际在途时收 B 问题，完成 H1 或证明未变 H0 后只读回答并由原 B 消费；正常页面自动接续、撤回、自然费用等待后冷读零输入与显式继续；绑定后、领取前/发送前需求变化及已发后原捕获恢复；已排队A/回B经tasks或messages CLI、空/伪造checker在来源变化/未变时均零新增，正常宿主与CLI竞争仍只消费一次；来源/暂存/捕获变化拒绝 | `tests/project-repair/integration.test.ts` 的 original owner feedback 场景（真实 Docker、协议模型），`tests/w6/message-resources.test.ts` 的旧运行/待结资源不受新输入门槛阻断，`tests/w7/github-projects-ui.test.ts` |
+| 已登记但从未领取的未发撤回 | before-claim需求变化后正常HTTP撤回、重复/冷开/继续零新增，原申请保留、阶段/待办结束、后续同责任可准备；取消先于claim最后登记时普通coordinate也拒绝领取，旧取消阶段不挡新合法消息；曾派发但证明未启动/失claim回执仍核原事实，held只结原claim | 扩展同一 `tests/project-repair/integration.test.ts` before-claim场景及 `tests/w6/message-resources.test.ts` 原provider/消息fixture，不新增测试平台 |
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |
 | 阶段前置 | 精确生产者材料与消费证据齐备才开始依赖阶段；独立调查不被错误阻断 | `tests/coordination/contract.test.ts`、`tests/coordination/feedback.test.ts` |
 | 启动与依赖 | 旧 Node/缺 SQLite 能力拒绝；程序升级不成为版本白名单；应用资产变化先于导入拒绝 | `tests/w7/workbench-launch.test.ts`、`tests/w4/external-dependencies.test.ts` |

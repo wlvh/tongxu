@@ -60,7 +60,7 @@
 - **User goal**：A 需要 B 的具体反馈时转交完整材料，回复回到原 A 的责任链。
 - **Required context**：原任务与联系计划、允许联系人、固定输入、资源和有效授权；不能只凭保存了 AI 设置开始。
 - **User action or request**：从原任务支持的联系入口启动，A 决定是否选择已登记联系人。
-- **Directly observable result**：普通 A 报告直接结束该路径；合法选择才发送 B，再把 B 全文交 A。页面能查看各阶段原文、等待原因和是否完成。
+- **Directly observable result**：普通 A 报告直接结束该路径；合法选择才发送 B，再把 B 全文交 A。页面能查看各阶段原文、等待原因和是否完成。 已登记的原实施者仍在写入时，可收 B 的问题，待其安全结束后以新的只读上下文取得当前答复，再交回原 B；页面区分收件、等待交付与完整答复已消费。
 - **Failure / degradation / escalation**：畸形/越界联系人、缺完整捕获或资源未处理时不推进后续发送；原操作未知不换 ID 重试。
 - **Acceptance assertion**：A→B→A 的每步对应计划和准确原件；“已收到控制回执”与“完整回复已消费”分别判断。不能据此宣称任意在途会话实时插话均可用。
 - **Evidence**：`src/task-contact-choice.ts`、`src/messages.ts`；`tests/w6/task-contact-choice.test.ts`、`tests/w6/message-continuation.test.ts`；[task_contact_choice](docs/task_contact_choice.md)。

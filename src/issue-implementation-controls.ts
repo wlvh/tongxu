@@ -1,4 +1,3 @@
-import {readRepairSession} from './repair-native.js';
 import {mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -17,6 +16,7 @@ import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectRequest} from './project-repair.js';
 import type {SupplementTarget} from './project-chat.js';
+import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
 type Issue={number:number;title:string;body:string;url:string};
@@ -132,12 +132,19 @@ export class IssueImplementationControls{
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const state=q.issueImplementations().state(id,requestId);if(!state.result){if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
-    if(state.result.completeCapture){
-      const capture=await readRepairSession(join(state.plan.operationRoot,'implementer')),manifest=JSON.parse((await regular(join(state.plan.operationRoot,'input-manifest.json'))).toString()),{inputManifestSha256,...original}=manifest;
-      if(hash(canonical(original))!==inputManifestSha256||capture.binding.inputManifestSha256!==inputManifestSha256||capture.binding.role!=='implementer'||capture.binding.sessionId!==state.result.sessionId||manifest.planSha256!==state.plan.sha256||canonical(manifest.request)!==canonical(state.plan.request)||canonical(JSON.parse(capture.turns.at(-1)!.final!.text))!==canonical(state.result.report))throw new Error('implementation_original_capture_changed');
-    }
-    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,...state.result};
+    return readImplementationResult(state);
   }finally{q.close();}}
+  async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){
+    if(!implementationOwnerTarget(target))throw new Error('owner_feedback_target_invalid');await this.catalog();await this.verify();const entry=this.entry(target.source);if(entry.store!==store)throw new Error('owner_feedback_target_queue_mismatch');
+    const q=await QueueStore.open(store);try{const s=q.implementationOwnerSnapshot(target);if(s.state.task!==target.task||s.state.operation!==target.operation||s.state.requestSha256!==target.requestSha256||s.definition.repository.toLowerCase()!==entry.repository.toLowerCase()||canonical(s.definition.context.scope)!==canonical(entry.context.scope))throw new Error('owner_feedback_original_target_changed');return {target,logicalOwner:s.state.logicalOwner};}finally{q.close();}
+  }
+  async ownerFeedbackProof(store:string,target:ImplementationOwnerTarget):Promise<ImplementationOwnerProof>{
+    await this.ownerFeedbackTarget(store,target);const q=await QueueStore.open(store);try{
+      const snapshot=q.implementationOwnerSnapshot(target),issue=await this.read(snapshot.request.issue.number);
+      if(hash(issue.body)!==snapshot.request.issue.bodySha256)throw new Error('owner_feedback_adopted_requirement_changed');
+      const proof=await readImplementationOwnerProof(snapshot);q.tasks().observe(proof.definition,proof.observation);return proof;
+    }finally{q.close();}
+  }
   private async checkSupplementPredecessor(source:string,request:ImplementationRequest,current=true){
     const continuation=request.continuation!;
     const target=continuation.originalTarget,entry=this.entry(source),q=await QueueStore.open(entry.store);try{
