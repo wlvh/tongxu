@@ -17,7 +17,7 @@ import {prepareResourceRequest,resourceAction} from './resource-claims.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectRequest} from './project-repair.js';
-import type {SupplementTarget} from './project-chat.js';
+import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
@@ -53,7 +53,7 @@ export class IssueImplementationControls{
       throw error;
     }
   }
-  private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;uniqueFirst?:boolean}){
+  private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
     await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
     const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined;
@@ -83,6 +83,7 @@ export class IssueImplementationControls{
       followup?.beforeRegistration();q.registerIssueImplementation(id,request,definition,observation,work?currentAdoption=>{
         work.beforeRegistration();if(currentAdoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');if(work.uniqueFirst){const existing=this.projectWorkOriginal(q,id,entry,body.issueNumber,currentAdoption!);if(existing&&existing.id!==body.requestId)throw new Error('implementation_project_work_original_exists');}
       }:undefined);
+      work?.afterRegistration();
       const current=q.tasks().current(task),candidate=current.manifest.candidate,authority=q.authority(),baseline=authority.forScope(current.context.scope.id,{item:task,target:definition.target}),adoption=baseline.currentAdoption;
       if(!adoption||adoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');
       const adoptedScope=authority.inspectRecordedDecision(adoption).proposal as Row,scopeBodySha256=hash(canonical(adoptedScope.body));
@@ -100,30 +101,50 @@ export class IssueImplementationControls{
     });
     if(matches.length>1)throw new Error('implementation_project_work_original_ambiguous');return matches[0]??null;
   }
+  private projectWorkState(q:QueueStore,entry:Entry,issueNumber:number,request:ProjectWorkRequest){
+    const {origin,original}=request;if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');
+    const requestId=original?.requestId??origin.requestId,state=q.issueImplementations().requests(entry.id).find(s=>s.id===requestId);
+    if(!state){if(original)throw new Error('project_work_original_not_registered');return null;}
+    const fixed=q.issueImplementations().original(entry.id,requestId),definition=q.tasks().definition(fixed.task);
+    if(fixed.continuation||state.issue!==issueNumber||definition.repository.toLowerCase()!==entry.repository.toLowerCase()||definition.target!==entry.target||
+      (original?.linked?requestId===origin.requestId:requestId!==origin.requestId||canonical(fixed.origin??null)!==canonical(origin)))throw new Error('project_work_original_mismatch');
+    return state;
+  }
   /** Only a saved user work request calls this host consumer. Original task
    * registration remains the final serial check, including concurrent chats. */
-  async coordinateProjectWork(id:string,issueNumber:number,origin:ProjectWorkOrigin,checkpoint:(link:{requestId:string;linked:boolean})=>void){
-    if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');await this.catalog();await this.verify();const entry=this.entry(id);
+  async coordinateProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void){
+    const {origin}=request;if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');await this.catalog();await this.verify();const entry=this.entry(id);
     for(let attempt=0;attempt<2;attempt++){
-      const q=await QueueStore.open(entry.store);let previous:Row|null;try{previous=this.projectWorkOriginal(q,id,entry,issueNumber);}finally{q.close();}
-      const link={requestId:previous?.id??origin.requestId,linked:!!previous&&previous.id!==origin.requestId};checkpoint(link);
-      try{await this.prepareSelected(id,{requestId:link.requestId,issueNumber},undefined,{...(link.linked?{}:{origin}),beforeRegistration:()=>checkpoint(link),uniqueFirst:!previous});}
+      const q=await QueueStore.open(entry.store);let previous:Row|null,link:ProjectWorkLink;try{
+        previous=this.projectWorkState(q,entry,issueNumber,request)??this.projectWorkOriginal(q,id,entry,issueNumber);
+        link={requestId:previous?.id??origin.requestId,linked:!!previous&&previous.id!==origin.requestId};
+        if(previous)this.projectWorkState(q,entry,issueNumber,{origin,original:link});
+      }finally{q.close();}
+      checkpoint(previous?link:undefined);
+      let prepared:Row;try{prepared=await this.prepareSelected(id,{requestId:link.requestId,issueNumber},undefined,{...(link.linked?{}:{origin}),beforeRegistration:()=>checkpoint(),afterRegistration:()=>checkpoint(link),uniqueFirst:!previous});}
       catch(error){if((error as Error).message==='implementation_project_work_original_exists'&&attempt===0)continue;throw error;}
-      checkpoint(link);await this.begin(id,link.requestId);return link;
+      checkpoint(link);if(!prepared.status&&!prepared.stopped)await this.begin(id,link.requestId);return link;
     }
     throw new Error('implementation_project_work_original_changed');
   }
-  async readProjectWork(id:string,requestId:string){
-    const q=await QueueStore.open(this.entry(id).store);let s:Row,resourcesSettled=false;try{s=q.issueImplementations().state(id,requestId);if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,requestId,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
-    const report=s.result?.completeCapture?await this.report(id,requestId):null;
-    return {...this.publicState(s),operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false};
+  async readProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row,resourcesSettled=false;try{const checked=this.projectWorkState(q,entry,issueNumber,request);if(!checked)return null;s=checked;if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,s.id,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
+    const requestId=s.id;
+    // Capture liveness alongside the resource snapshot. Reading the complete
+    // report may yield while the controller settles resources and exits.
+    const state=this.publicState(s),report=s.result?.completeCapture?await this.report(id,requestId):null;
+    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false};
   }
-  async cancelProjectWork(id:string,requestId:string){
-    const q=await QueueStore.open(this.entry(id).store);let s:Row|undefined;try{s=q.issueImplementations().requests(id).find(s=>s.id===requestId);}finally{q.close();}
+  async cancelProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
+    // Even without a saved chat link, inspect the queue after the cancellation
+    // fence. Registration may have committed in the other database. A matching
+    // ID is only a lookup hint; the immutable target/origin must also match.
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}
     if(!s)return {cancelled:true,originalRegistered:false,newModelInputs:0};
     if(s.result&&s.result.status!=='cancelled_unstarted')throw new Error('project_work_original_already_ended');
-    return {cancelled:true,originalRegistered:true,original:await this.cancel(id,requestId),newModelInputs:0};
+    return {cancelled:true,originalRegistered:true,original:await this.cancel(id,s.id),newModelInputs:0};
   }
+  async stopProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}if(!s)throw new Error('project_work_original_not_registered');return this.stop(id,s.id);}
   private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??null,stopped:s.stopped,completeCapture:s.result?.completeCapture===true};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
