@@ -401,10 +401,22 @@ for(const segment of ['A','B'])for(const changed of [false,true])test(`original 
  }finally{await f.release();}
 });
 for(const boundary of ['before-claim','before-send'])test('original owner feedback rechecks Issue '+boundary+' without losing existing claims',async t=>{
- const f=await originalOwnerContact(t);await f.start();try{
+ const f=await originalOwnerPage(t);await f.startExternal();try{
  await finishOriginalOwner(f);let proofs=0;const host={...f.host,proof:async(store:string,target:typeof f.target)=>{if(++proofs===(boundary==='before-claim'?3:4))f.changeContactIssue(f.body+' changed at '+boundary);return f.host.proof(store,target);}};
  const blocked=await runTaskContactChoice(f.messages.store,f.raw(),undefined,{originalImplementation:host});assert.equal(proofs,boundary==='before-claim'?3:4);assert.equal(blocked.waiting,'owner_feedback_adopted_requirement_changed');assert.equal(blocked.newModelRequests,0);assert.equal((await f.messages.calls()).filter(x=>x.kind==='input').length,1);assert.equal(f.ledger!.state().claims.length,boundary==='before-claim'?2:3);assert.equal(f.ledger!.state().settlements.length,2);
  if(boundary==='before-send'){const view=await observeTaskContactChoice(f.messages.store,f.raw(),true),run=view.steps[1].run!,state=f.messages.q.messages().status(run);assert.equal(state.messages[0]!.sent,null);assert.equal(state.runtimes[0]!.ended.proof.knownUnstarted,true);assert.equal((await cancelTaskChoiceOwnerContact(f.messages.store,f.raw(),'cancel exact proven unstarted owner input after source changed'))!.cancelled,true);assert.equal(f.ledger!.state().claims.length,3);assert.equal(f.ledger!.state().settlements.length,3);}
+ if(boundary==='before-claim'){
+  const q=f.messages.q,view=await observeTaskContactChoice(f.messages.store,f.raw(),true);assert.ok('ownerFeedback' in view&&view.ownerFeedback);
+  const run=view.steps[1].run!,binding=q.messageResources().state(run),id=binding.resourceRequests[0],original=q.resources().status(id),trace=await readFile(f.messages.trace),ledger=f.ledger!.state(),implementation=q.issueImplementations().state('implementation',f.writerId).result;
+  assert.equal(original.state,'prepared_not_sent');assert.equal(original.claimAttempts,0);assert.equal(original.claim,null);assert.equal(original.outcome,null);
+  for(let n=0;n<2;n++){const cancelled=await f.page.post('/api/task-control/owner-feedback/cancel');assert.equal(cancelled.status,200,JSON.stringify(cancelled));assert.equal(cancelled.value.result.cancelled,true);}
+  await f.page.app.close();const cold=await f.open();assert.equal((await cold.post('/api/task-control/owner-feedback/cancel')).value.result.cancelled,true);
+  assert.equal(q.taskInbox().ownerContact(f.b.item,view.ownerFeedback.key)!.cancelled,true);assert.equal(q.taskInbox().status(f.target.task).find(x=>x.id==='feedback-answer')!.phase,'cancelled');assert.equal(q.taskInbox().messageClosedUnstarted(run),true);
+  assert.equal(q.messageResources().state(run).phase,'cancelled_unstarted');assert.equal(q.messageResources().state(run).operationStatus,'complete');assert.equal(q.messageResources().settled(run),true);assert.deepEqual(q.resources().status(id),original);assert.equal(q.resources().settledOutcome(id),false);
+  assert.equal((await cold.post('/api/task-control/owner-feedback/start')).status,202);await f.wait(v=>!v.taskControls[0].controllerActive,cold.get);
+  assert.deepEqual(await readFile(f.messages.trace),trace);assert.deepEqual(f.ledger!.state(),ledger);assert.deepEqual(q.issueImplementations().state('implementation',f.writerId).result,implementation);
+  const next={...f.plan.contacts[0]!.request,id:'after-cancelled-feedback',authorityIntent:'intent-after-cancelled-feedback'};q.taskInbox().enqueue(Buffer.from(canonical(next)));const prepared=await prepareTaskOwner(f.messages.store,f.target.task,next.id);assert.ok(prepared.run);assert.notEqual(prepared.run,run);assert.deepEqual(await readFile(f.messages.trace),trace);
+ }
  }finally{await f.release();}
 });
 test('original owner feedback replays sent A after Issue change and never repeats its input',async t=>{

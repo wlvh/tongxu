@@ -18,6 +18,18 @@ export class MessageResourceRecords {
   private operation(id:string){const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as Row;if(!op)throw new Error('message_resource_operation_required');return {op,result:JSON.parse(op.result)};}
   private stateValue(run:string){const b=this.binding(run),{op,result}=this.operation(b.operation),stage=result.messageResources?.[run];if(!stage||stage.bindingSha256!==b.bindingSha256||stage.authorityIntent!==b.authorityIntent||canonical(stage.resourceRequests)!==canonical(b.resourceRequests))throw new Error('message_resource_operation_changed');return {...b,phase:stage.phase,operationStatus:op.status};}
   state(run:string){return this.transaction(()=>this.stateValue(run));}
+  private settledValue(run:string){
+    const b=this.stateValue(run),r=this.resources(),m=this.message(run);
+    if(!['returned','partial_returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)||!b.resourceRequests.length||b.resourceRequests.length!==m.plan.resourceBudget?.length)return false;
+    if(b.phase==='cancelled_unstarted'){
+      const stage=this.operation(b.operation).result.messageResources[run],proofSha256=hash(canonical(this.unstartedProof(run)));
+      if(stage.proofSha256!==proofSha256)throw new Error('message_resource_result_changed');this.bytes(proofSha256);
+    }
+    return b.resourceRequests.every((id:string)=>r.settledOutcome(id)||b.phase==='cancelled_unstarted'&&r.unclaimedForCancellation(id,b.operation,b.authorityIntent));
+  }
+  /** No unresolved investment in this original message stage. Only cancellation
+   * can close a never-claimed request without a provider settlement. */
+  settled(run:string){return this.transaction(()=>this.settledValue(run));}
   prepare(run:string,operation:string,observations:OwnerObservation[]){return this.transaction(()=>{
     // Binding a resource request is an investment boundary. Serialize this
     // current admission check and its binding with cancellation in one DB
@@ -29,7 +41,7 @@ export class MessageResourceRecords {
     const requests=p.resourceBudget.map((b:Row)=>parseResourceRequest({schemaVersion:1,ledgerId:b.ledgerId,repository:action.request.repository,operation,authorityIntent:p.authorityIntent,resourceRef:b.resourceRef,unit:b.unit,quantity:b.quantity,role:action.role,actionSha256:action.requestSha256},r.configuration(b.ledgerId))),resourceRequests=requests.map(resourceRequestHash);
     let old:Row|null=null;try{old=this.binding(run);}catch(e){if(!(e instanceof Error)||e.message!=='message_resource_binding_required')throw e;}
     if(old){if(old.operation!==operation||old.authorityIntent!==p.authorityIntent||canonical(old.resourceRequests)!==canonical(resourceRequests))throw new Error('message_original_resource_binding_fixed');return {...this.stateValue(run),requests,duplicate:true};}
-    if(op.status!=='complete'||Object.values(result.messageResources??{}).some((x:any)=>x.phase!=='returned'&&!(['partial_returned','interrupted_returned','cancelled_unstarted'].includes(x.phase)&&x.resourceRequests.every((id:string)=>r.settledOutcome(id)))))throw new Error('message_resource_operation_active_or_unknown');
+    if(op.status!=='complete'||Object.entries(result.messageResources??{}).some(([previous,x]:[string,any])=>x.phase!=='returned'&&!(['partial_returned','interrupted_returned','cancelled_unstarted'].includes(x.phase)&&this.settledValue(previous))))throw new Error('message_resource_operation_active_or_unknown');
     const value={run,operation,item:op.item,packet:op.packet,authorityIntent:p.authorityIntent,role:action.role,resourceRequests,planSha256:run,registeredAt:now()},bindingSha256=hash(canonical(value));this.event('bound',run,value);
     this.originalOperationAdmission?.(run,operation);
     result.messageResources={...(result.messageResources??{}),[run]:{bindingSha256,phase:'resources_pending',authorityIntent:p.authorityIntent,resourceRequests}};this.db.prepare("UPDATE operations SET status='messaging',result=? WHERE id=?").run(JSON.stringify(result),operation);
@@ -77,13 +89,13 @@ export class MessageResourceRecords {
   /** Only factual cancellation of a verified, ended zero-input single-message run.
    * Provider accounting remains authoritative; this does not refund a claim. */
   cancelUnstarted(run:string){return this.transaction(()=>{
-    const b=this.binding(run),{op,result}=this.operation(b.operation),stage=result.messageResources?.[run],proof=this.unstartedProof(run),proofSha256=hash(canonical(proof));
+    const b=this.stateValue(run),{op,result}=this.operation(b.operation),stage=result.messageResources?.[run],proof=this.unstartedProof(run),proofSha256=hash(canonical(proof));
     if(stage?.bindingSha256!==b.bindingSha256)throw new Error('message_resource_operation_changed');
     if(stage.phase==='cancelled_unstarted'){if(stage.proofSha256!==proofSha256)throw new Error('message_resource_result_changed');return {...this.stateValue(run),duplicate:true};}
     if(op.status!=='messaging'||stage.phase!=='resources_pending')throw new Error('message_resource_unstarted_operation_required');
-    // Refused, absent or unknown claims are not settled by this path. Leave
-    // their original operation retryable instead of committing a dead end.
-    for(const id of b.resourceRequests)this.resources().requireHeldForExecution(id,b.operation,b.authorityIntent);
+    // Never-claimed requests have no provider result to record. Once a claim
+    // was dispatched, preserve the existing held/unknown accounting path.
+    const r=this.resources();for(const id of b.resourceRequests)if(!r.unclaimedForCancellation(id,b.operation,b.authorityIntent))r.requireHeldForExecution(id,b.operation,b.authorityIntent);
     Object.assign(stage,{phase:'cancelled_unstarted',proofSha256:this.blob(Buffer.from(canonical(proof))),finishedAt:now(),originalRunCompleted:false});this.db.prepare("UPDATE operations SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),op.id);this.event('cancelled_unstarted',run,{operation:op.id,proofSha256,modelInputs:0,resourceRefunded:false});return {...this.stateValue(run),duplicate:false};
   });}
   outcome(operation:string,action:Row,claimedAt:string):ResourceOutcome {

@@ -10,7 +10,7 @@ export async function prepareMessageResources(q:QueueStore,run:string,p:MessageP
   if(!begun.operation)throw new Error('message_original_local_operation_unavailable');
   if(begun.status==='running')q.evaluate(begun.operation);
   const binding=q.messageResources().prepare(run,begun.operation,observations);
-  for(const id of binding.resourceRequests){let state=await resourceAction(q.directory,id,'lookup',binding.role);if(state.state==='prepared_not_sent'){await beforeClaim?.();state=await resourceAction(q.directory,id,'claim',binding.role);}if(state.state!=='held')throw new Error('message_original_resource_unresolved');}
+  for(const id of binding.resourceRequests){let state=await resourceAction(q.directory,id,'lookup',binding.role);if(state.state==='prepared_not_sent'){await beforeClaim?.();if(q.messageResources().state(run).phase!=='resources_pending')throw new Error('message_resource_phase_no_longer_pending');state=await resourceAction(q.directory,id,'claim',binding.role);}if(state.state!=='held')throw new Error('message_original_resource_unresolved');}
 }
 export async function refreshMessageResources(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return;const binding=q.messageResources().state(run);
@@ -43,10 +43,10 @@ export async function cancelUnstartedMessageResources(q:QueueStore,run:string,p:
   if(!p.resourceBudget)throw new Error('message_fixed_resource_budget_required');
   const original=q.messageResources().state(run);for(const id of original.resourceRequests)await resourceAction(q.directory,id,'lookup',original.role);
   const b=q.messageResources().cancelUnstarted(run),results=[];
-  for(const id of b.resourceRequests){try{results.push(q.resources().settledOutcome(id)?q.resources().status(id):await resourceAction(q.directory,id,'record-result',b.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
+  for(const id of b.resourceRequests){try{const r=q.resources();results.push(r.settledOutcome(id)||r.unclaimedForCancellation(id,b.operation,b.authorityIntent)?r.status(id):await resourceAction(q.directory,id,'record-result',b.role));}catch(e){results.push({id,state:'result_pending_or_unknown',reason:e instanceof Error?e.message:'message_resource_result_unavailable'});}}
   return results;
 }
 export function messageResourcesSettled(q:QueueStore,run:string,p:MessagePlan){
   if(!p.resourceBudget)return true;
-  try{const b=q.messageResources().state(run);return ['returned','partial_returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>q.resources().settledOutcome(id));}catch{return false;}
+  try{return q.messageResources().settled(run);}catch{return false;}
 }
