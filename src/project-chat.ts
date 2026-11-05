@@ -25,7 +25,8 @@ const activePhase=(phase:string)=>['registered','running','unknown'].includes(ph
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
 export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
-export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,origin:ProjectWorkOrigin,checkpoint:(link:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,requestId:string):Promise<Row>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,requestId:string):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,requestId:string):Promise<Row>};
+export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
+export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
 type Active={promise:Promise<void>;session?:BoundedCodexSession;stop:boolean;timedOut?:boolean};
 
 /** One durable conversation history. Existing task queues and native capture
@@ -105,30 +106,33 @@ export class ProjectChat{
     return {conversationId:b.conversationId,requestId:b.requestId,duplicate:false,registered:true,newModelInputs:null};
   }
   private workRow(id:string){return this.db.prepare('SELECT * FROM task_work_requests WHERE id=?').get(id) as Row|undefined;}
+  private workRequest(row:Row,intent:Row):ProjectWorkRequest{return {origin:{kind:'project_secretary_work_request',conversationId:row.conversation,requestId:row.id,text:row.question},original:intent.original_request?{requestId:intent.original_request,linked:!!intent.linked}:null};}
   private async workOptions(scope:ProjectChatScope){try{return {available:!!this.work,options:this.work?await this.work.options(scope):[],reason:this.work?null:'project_work_not_configured'};}catch(e){return {available:false,options:[],reason:reason(e)};}}
   private async workState(scope:ProjectChatScope,conversation:string){
-    const rows=this.db.prepare('SELECT w.*,m.question FROM task_work_requests w JOIN messages m ON m.id=w.id WHERE m.conversation=? ORDER BY m.rowid').all(conversation) as Row[];
-    return Promise.all(rows.map(async r=>{let original:Row|null=null,problem=r.problem;try{if(r.original_request&&this.work)original=await this.work.read(scope,JSON.parse(r.target),r.original_request);}catch(e){problem=problem??reason(e);}return {id:r.id,text:r.question,target:JSON.parse(r.target),originalRequestId:r.original_request,linkedExisting:!!r.linked,newTextDeliveredToExisting:false,coordinated:!!r.coordinated,cancelRequested:!!r.cancel_requested,problem,original,receivedIsNotDelivered:true};}));
+    const rows=this.db.prepare('SELECT w.*,m.question,m.conversation FROM task_work_requests w JOIN messages m ON m.id=w.id WHERE m.conversation=? ORDER BY m.rowid').all(conversation) as Row[];
+    return Promise.all(rows.map(async r=>{let original:Row|null=null,problem=r.problem;try{if(this.work)original=await this.work.read(scope,JSON.parse(r.target),this.workRequest(r,r));}catch(e){problem=problem??reason(e);}return {id:r.id,text:r.question,target:JSON.parse(r.target),originalRequestId:original?.id??null,linkedExisting:!!original&&!!r.linked,newTextDeliveredToExisting:false,coordinated:!!original,cancelRequested:!!r.cancel_requested,problem,original,receivedIsNotDelivered:true};}));
   }
   async coordinateWork(scope:ProjectChatScope,id:string,checkActive:()=>void=()=>{}){
     if(!chatId(id)||!this.work||!this.accepting)throw new Error('project_work_not_configured');const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row|undefined,intent=this.workRow(id);
     if(!row||!intent)throw new Error('project_work_request_required');this.conversationRow(scope,row.conversation);const target=JSON.parse(intent.target) as ProjectWorkTarget;
     const check=()=>{checkActive();const current=this.workRow(id);if(!this.accepting||!current||current.target!==intent.target||current.cancel_requested)throw new Error('project_work_cancelled_or_changed');};
     check();await this.verify(scope);check();if(!(await this.work.options(scope)).some(t=>canonical({source:t.source,issueNumber:t.issueNumber})===canonical(target)))throw new Error('project_work_target_not_supported');
-    const checkpoint=(link:ProjectWorkLink)=>{check();this.transaction(()=>{check();this.db.prepare('UPDATE task_work_requests SET original_request=?,linked=?,coordinated=1,problem=NULL WHERE id=?').run(link.requestId,link.linked?1:0,id);});};
-    try{const link=await this.work.coordinate(scope,target,{kind:'project_secretary_work_request',conversationId:row.conversation,requestId:id,text:row.question},checkpoint);return {requestId:id,originalRequestId:link.requestId,linkedExisting:link.linked,newTextDeliveredToExisting:false,original:await this.work.read(scope,target,link.requestId),registrationIsNotImplementation:true};}
+    // A fence-only checkpoint precedes registration. Persist a link only once
+    // the original queue has registered and verified that exact relationship.
+    const checkpoint=(link?:ProjectWorkLink)=>{check();if(!link)return;this.transaction(()=>{check();const current=this.workRow(id)!;if(current.original_request&&(current.original_request!==link.requestId||!!current.linked!==link.linked))throw new Error('project_work_original_is_fixed');this.db.prepare('UPDATE task_work_requests SET original_request=?,linked=?,coordinated=1,problem=NULL WHERE id=?').run(link.requestId,link.linked?1:0,id);});};
+    try{const link=await this.work.coordinate(scope,target,this.workRequest(row,intent),checkpoint);return {requestId:id,originalRequestId:link.requestId,linkedExisting:link.linked,newTextDeliveredToExisting:false,original:await this.work.read(scope,target,{origin:this.workRequest(row,intent).origin,original:link}),registrationIsNotImplementation:true};}
     catch(e){this.db.prepare('UPDATE task_work_requests SET problem=? WHERE id=?').run(reason(e),id);throw e;}
   }
   async stopWork(scope:ProjectChatScope,id:string){
-    if(!chatId(id)||!this.work)throw new Error('project_work_request_required');const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row|undefined,intent=this.workRow(id);if(!row||!intent?.original_request)throw new Error('project_work_original_not_registered');this.conversationRow(scope,row.conversation);
-    return this.work.stop(scope,JSON.parse(intent.target),intent.original_request);
+    if(!chatId(id)||!this.work)throw new Error('project_work_request_required');const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row|undefined,intent=this.workRow(id);if(!row||!intent)throw new Error('project_work_original_not_registered');this.conversationRow(scope,row.conversation);
+    return this.work.stop(scope,JSON.parse(intent.target),this.workRequest(row,intent));
   }
   async cancelWork(scope:ProjectChatScope,id:string){
     if(!chatId(id)||!this.work)throw new Error('project_work_request_required');const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row|undefined,intent=this.workRow(id);if(!row||!intent)throw new Error('project_work_request_required');this.conversationRow(scope,row.conversation);
     // Persist the cancellation fence first. Queue registration checks it while
     // holding its own transaction; cancellation then serializes in that queue.
     this.transaction(()=>this.db.prepare('UPDATE task_work_requests SET cancel_requested=1 WHERE id=?').run(id));
-    try{const result=await this.work.cancel(scope,JSON.parse(intent.target),intent.original_request??id);this.db.prepare('UPDATE task_work_requests SET problem=NULL WHERE id=?').run(id);return {requestId:id,...result};}catch(e){this.db.prepare('UPDATE task_work_requests SET problem=? WHERE id=?').run(reason(e),id);throw e;}
+    try{const current=this.workRow(id)!,result=await this.work.cancel(scope,JSON.parse(current.target),this.workRequest(row,current));this.db.prepare('UPDATE task_work_requests SET problem=NULL WHERE id=?').run(id);return {requestId:id,...result};}catch(e){this.db.prepare('UPDATE task_work_requests SET problem=? WHERE id=?').run(reason(e),id);throw e;}
   }
   private supplementRows(conversation:string){return this.db.prepare('SELECT * FROM task_supplements WHERE conversation=? ORDER BY rowid').all(conversation) as Row[];}
   private async supplementState(scope:ProjectChatScope,conversation:string){

@@ -238,10 +238,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined,p.issueImplementation?{
       options:async scope=>(await openImplementation(scope)).options().flatMap(entry=>entry.issues.map(issue=>({source:entry.id,issueNumber:issue.number,title:'Issue #'+issue.number+' · '+issue.goal}))),
-      coordinate:async(scope,target,origin,checkpoint)=>(await openImplementation(scope)).coordinateProjectWork(target.source,target.issueNumber,origin,checkpoint),
-      read:async(scope,target,requestId)=>(await openImplementation(scope)).readProjectWork(target.source,requestId),
-      cancel:async(scope,target,requestId)=>(await openImplementation(scope)).cancelProjectWork(target.source,requestId),
-      stop:async(scope,target,requestId)=>(await openImplementation(scope)).stop(target.source,requestId)
+      coordinate:async(scope,target,request,checkpoint)=>(await openImplementation(scope)).coordinateProjectWork(target.source,target.issueNumber,request,checkpoint),
+      read:async(scope,target,request)=>(await openImplementation(scope)).readProjectWork(target.source,target.issueNumber,request),
+      cancel:async(scope,target,request)=>(await openImplementation(scope)).cancelProjectWork(target.source,target.issueNumber,request),
+      stop:async(scope,target,request)=>(await openImplementation(scope)).stopProjectWork(target.source,target.issueNumber,request)
     }:undefined).catch(error=>{projectChat=undefined;throw error;});
   };
   const initial=p.githubProjects?null:await openLocal(p);
