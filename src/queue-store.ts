@@ -364,7 +364,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});
     return new TaskInbox(this.db,transaction,this.directory,this.taskRecords(),run=>{
       const state=m.status(run);let resourcesSettled=!state.plan.resourceBudget,resourcePhase:string|null=null;
-      if(state.plan.resourceBudget)try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());resourcePhase=b.phase;resourcesSettled=['returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{}
+      if(state.plan.resourceBudget)try{const resources=this.messageResourceRecords(fn=>fn()),b=resources.state(run);resourcePhase=b.phase;resourcesSettled=['returned','interrupted_returned','cancelled_unstarted'].includes(b.phase)&&resources.settled(run);}catch{}
       return {state:{...state,resourcesSettled,resourcePhase},inputs:state.plan.participants.flatMap(p=>m.submitted(run,p.id))};
     },(task,link)=>this.taskLinkRecords(fn=>fn()).material(task,link),(task,link)=>{this.taskLinkRecords(fn=>fn()).requireCurrent(task,link);},task=>this.taskLinkRecords(fn=>fn()).state(task),(task,ref)=>this.publicationReturnRecords(fn=>fn()).material(task,ref),{
       context:(task,actor,tool)=>this.coordinationRecords(fn=>fn()).ownerContext(task,actor,tool),
