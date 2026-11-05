@@ -195,6 +195,18 @@ export class TaskInbox {
     const links=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
     if(!links.length)return [];if(links.length!==1)throw new Error('task_contact_binding_ambiguous');const selected=JSON.parse(links[0]!.data).value,f=this.entry(links[0]!.object,selected.id);return f.request.from?[f.request.from.task]:[];
   }
+  /** The original selected request, not the caller's entrypoint, determines
+   * whether a new input requires current original-Issue evidence. */
+  checkOwnerContactSource(run:string,proof:ImplementationOwnerProof|void){
+    const rows=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
+    if(!rows.length)return;if(rows.length!==1)throw new Error('task_contact_binding_ambiguous');
+    const selected=JSON.parse(rows[0]!.data).value,request=this.entry(rows[0]!.object,selected.id).request;
+    if(!request.ownerContact)return;
+    if(!proof)throw new Error('owner_contact_current_source_checker_required');
+    const record=this.ownerContact(request.ownerContact.task,request.ownerContact.key);
+    if(!record?.compiled||record.cancelled||!this.ownerSnapshot)throw new Error('owner_contact_cancelled_or_missing');
+    requireIssuedImplementationOwnerProof(proof);checkImplementationOwnerSnapshot(this.ownerSnapshot(record.target),proof);
+  }
   associationStatus(run:string){
     const rows=this.db.prepare("SELECT object,data FROM events WHERE kind='task_inbox_selected' AND json_extract(data,'$.value.run')=?").all(run) as Row[];if(!rows.length)return null;if(rows.length!==1)throw new Error('task_contact_binding_ambiguous');
     const value=JSON.parse(rows[0]!.data).value,f=this.entry(rows[0]!.object,value.id),selected=this.selection(f.selected),association=JSON.parse(selected.context.toString()).candidateAssociation?.association;if(!association)return null;

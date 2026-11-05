@@ -45,7 +45,7 @@ export async function workTaskOwner(store:string,task:string,limit=4,currentBill
     const next=rows.find(x=>!['returned','cancelled','interrupted_closed'].includes(x.phase));
     if(!next)return {task,runs,pending:[],...recovery(),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
     if(next.phase==='waiting')return {task,runs,pending:[next],...recovery(),newModelRequests:runs.reduce((n,r)=>n+r.newModelRequests,0),workerEnded:true};
-    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling),coordination=result.completed?await reconcileTaskCoordination(store,task,next.id):null;runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true),...(coordination?{coordination}:{})});
+    const p=await prepareTaskOwner(store,task,next.id),result=await runMessages(store,p.plan,false,p.run,currentBilling),coordination=result.completed?await reconcileTaskCoordination(store,task,next.id):null;runs.push({id:next.id,run:p.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests,nativeSessionResumed:result.runtimes.some(r=>r.route?.nativeSessionResumed===true),...('dispatchBlockedReason' in result&&result.dispatchBlockedReason?{dispatchBlockedReason:result.dispatchBlockedReason}:{}),...(coordination?{coordination}:{})});
     if(coordination)checked.add(next.id);
     if(!result.completed||!result.resourcesSettled)break;
   }

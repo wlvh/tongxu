@@ -61,7 +61,7 @@ async function reserveCoordinate(store:string,p:TaskContactChoice,r:TaskOwnerReq
  * executor own identities, sends, resources, captures and recovery. */
 export async function runTaskContactChoice(store:string,raw:Buffer,currentBilling?:MessagePlan['billing'],options:TaskContactChoiceOptions={}){
   const p=parseTaskContactChoice(raw),initial=initialContactChoiceRequest(p),steps:Step[]=[];
-  const run=async(template:TaskOwnerRequest,from:TaskOwnerRequest['from'],beforeNewInput?:()=>Promise<void>)=>{
+  const run=async(template:TaskOwnerRequest,from:TaskOwnerRequest['from'],beforeNewInput?:()=>Promise<ImplementationOwnerProof>)=>{
     options.beforeStep?.();const r={...template,from},q=await QueueStore.open(store);try{options.beforeStep?.();q.taskInbox().enqueue(Buffer.from(canonical(r)));}finally{q.close();}
     const selected=await (options.readPreferences?withAIPreferences(options.readPreferences(),()=>prepareTaskOwner(store,r.task,r.id)):prepareTaskOwner(store,r.task,r.id));options.beforeStep?.();await reserveCoordinate(store,p,r,selected);
     const result=await runMessages(store,selected.plan,false,selected.run,currentBilling,(_id,handle)=>options.onOwnedRuntime?.(r,selected.run,handle),beforeNewInput),step:Step={task:r.task,id:r.id,run:selected.run,completed:result.completed,resourcesSettled:result.resourcesSettled,newModelRequests:result.newModelRequests};steps.push(step);
@@ -82,7 +82,7 @@ export async function runTaskContactChoice(store:string,raw:Buffer,currentBillin
       if(record.compiled)recipient=record.compiled.request;
       else{const proof=await options.originalImplementation!.proof(store,contact.originalImplementation);q=await QueueStore.open(store);try{recipient=q.taskInbox().bindOwnerContact(initial.task,owner.key,proof);}finally{q.close();}}
     }
-    const currentOwner=contact.originalImplementation?async()=>{await options.originalImplementation!.proof(store,contact.originalImplementation!);}:undefined;
+    const currentOwner=contact.originalImplementation?()=>options.originalImplementation!.proof(store,contact.originalImplementation!):undefined;
     const b=await run(recipient,a.from,currentOwner);if(!b.result.completed||!b.result.resourcesSettled)return summary(false,chosen,('dispatchBlockedReason' in b.result?b.result.dispatchBlockedReason:null)??'original_contact_result_or_resources_unresolved');
     b.step.coordination=await reconcileTaskCoordination(store,contact.request.task,contact.request.id);
     if(contact.originalImplementation)await options.originalImplementation!.proof(store,contact.originalImplementation);

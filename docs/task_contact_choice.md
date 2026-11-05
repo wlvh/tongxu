@@ -35,4 +35,6 @@ A 的安全成功可以是实际 `completed` 的 H1，也可以是完整 `no_cha
 
 已绑定但未提交输入的联系，恢复时仍读取当前原 Issue；程序在新消息资源准备、实际新领取及新输入发送前复核来源，同时保留本地原结果、文件、捕获与发送事务的同步检查。远端读取与本地事务不是跨系统原子快照。来源在领取前已失效时不新增输入或领取；若原领取完成后来源才变化，则阻止输入，保留该原领取，沿确证未发取消核清，不能改称没有发生过。已发送、送达或未知的原运行先重放原捕获并核原资源，来源后来变化不会阻止事实恢复；完整结果仍可读，但交给 B 的新输入继续受当前来源检查约束。
 
+共享消息执行器从原 run 对应的 TaskInbox 请求识别 `ownerContact`，A 回答与已排队的回 B 输入都必须取得原机制签发、匹配准确原实施目标的当前来源证明；空回调或自行拼出的 proof 不能放行。通用 `tasks work`、`messages run` 没有可信 Issue reader 时，新增输入和领取均为零，并返回 `owner_contact_current_source_checker_required`（tasks 的本次 run 使用 `dispatchBlockedReason`，messages 在结果同名字段中返回）。即使 Issue 实际未变，缺少读取能力也不能当作已确认；应从原工作台联系入口明确继续。CLI 仍可读取原捕获、核清已发/Unknown 和原资源，不因后来来源变化阻断事实恢复。
+
 实现与组合证据在 `tests/project-repair/integration.test.ts` 的 original owner feedback 场景，以及原有限联系、消息和页面套件。组合中的 Git、SQLite、子进程和登记的 Docker 测试实际执行，模型和外部来源为明确样例；这不替代正常安装的真实模型路径或本人验收。
