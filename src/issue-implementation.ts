@@ -1,3 +1,4 @@
+import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {mkdir,writeFile,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
@@ -11,13 +12,13 @@ import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
-export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
+export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
 export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void};
 
 /** The existing fixed-project preparer is used with an empty finding list.
  * Execution below is a new implementer consumer, never the repair/fact loop. */
 export async function prepareIssueImplementation(config:string,request:ImplementationRequest,root:string){
-  if(request.schemaVersion!==1||request.kind!=='tongxu-issue-implementation'||!request.id||!/^[a-f0-9]{64}$/.test(request.task)||!Number.isSafeInteger(request.issue?.number)||request.issue.number<1||typeof request.issue.body!=='string'||hash(request.issue.body)!==request.issue.bodySha256||!request.issue.adjudication?.trim()||!request.adoptedScope||hash(canonical(request.adoptedScope.body))!==request.adoptedScope.bodySha256||!request.adoptedScope.source||request.workspaceRequest.findings.length||request.workspaceRequest.executionRoot!==root)throw new Error('issue_implementation_request_invalid');
+  if(request.schemaVersion!==1||request.kind!=='tongxu-issue-implementation'||!request.id||!/^[a-f0-9]{64}$/.test(request.task)||!Number.isSafeInteger(request.issue?.number)||request.issue.number<1||typeof request.issue.body!=='string'||hash(request.issue.body)!==request.issue.bodySha256||!request.issue.adjudication?.trim()||!request.adoptedScope||hash(canonical(request.adoptedScope.body))!==request.adoptedScope.bodySha256||!request.adoptedScope.source||request.workspaceRequest.findings.length||request.workspaceRequest.executionRoot!==root||request.origin!==undefined&&!projectWorkOrigin(request.origin,request.id))throw new Error('issue_implementation_request_invalid');
   const requestPath=join(root+'-request.json');
   const bytes=Buffer.from(canonical(request.workspaceRequest));
   if(await exists(requestPath)){if(hash(await regular(requestPath))!==hash(bytes))throw new Error('issue_implementation_original_changed');}

@@ -98,6 +98,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `queue-store.ts` 集成多领域状态与触发器，修改时容易漏掉预开连接、旧格式和原件消费者；`workbench.ts` 装配多个入口，须查配置关闭和跨项目边界。这里记录维护风险，不预设拆服务任务。通用新开发派发及未完成产品范围沿 [PRODUCT_GUIDE](docs/PRODUCT_GUIDE.md#unfinished-work)的原记录入口跟进，不另建进度账本。
 
+项目秘书明确工作模式从原用户消息固定 `workTarget`，仅该次原生请求及宿主 gate 注册空参数协调工具。`ProjectChat` 的消息关联保存意图，`IssueImplementationControls` 复用原准备/开始与真实报告；完整 `origin` 随新实施请求进入原输入清单，旧输入不回填。原队列最后登记事务核当前采用与准确已有责任，取消意图在此复核；并发新聊天不能多建同一工作。原消息/TaskInbox 与成果/权限/资源事实没有迁到聊天表。
+
 ## Change propagation
 
 | 变更类型 | 需要继续调查的影响面 | 相应验证 |
@@ -106,6 +108,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 角色选择/程序能力 | `ai-settings`、消息/修复 worker 的固定输入、适配器和旧运行读回 | `tests/w7/ai-workflow.test.ts`、`tests/w7/additional-cli.test.ts`、`tests/w7/ai-settings.test.ts` |
 | 队列格式/授权/停止条件 | 预开连接、任务阶段、接收/合并、页面控制和原资源占用 | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts`、`tests/w7/scope-controls.test.ts` |
 | 原实施结果到秘书补充 | project-chat 只保存意图与原请求关联；issue-implementation-controls 从已核H1和原责任编译受控后续实施，复用原QueueStore/Authority/Resource，不新增发送事实账本 | `tests/project-repair/integration.test.ts`、`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
+| 秘书明确工作到原实施者 | project-chat-contract/repair-native 逐请求双层工具限制，ProjectChat 原意图/取消与 IssueImplementationControls 原输入/最后登记/直接控制；旧问答和补充保持 | `tests/project-repair/integration.test.ts` 秘书工作场景，`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
 | 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
