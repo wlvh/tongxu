@@ -3,6 +3,7 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,mkdir,access,readdir} from 'node:fs/promises';
+import {readFileSync,readdirSync,existsSync} from 'node:fs';
 import {join,dirname,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {parse as parseToml} from 'smol-toml';
@@ -97,7 +98,7 @@ export class ExtraCliSession{
       if(!word(self.session?.sessionId))throw Error('acp_session_identity_missing');self.options=self.session.configOptions??[];save(join(directory,'session.json'),self.session);self.catalog=acpModels(self.session);
       if(!fixture)self.catalog=self.catalog.filter(m=>tool==='gemini'||(tool==='kimi'?self.profile.allowedModelPrefixes.includes(m.id):self.profile.allowedModelPrefixes.some(p=>m.id.startsWith(p))));
       if(!self.catalog.length)throw Error('ai_subscription_not_confirmed');
-      await self.verifyProfile();
+      await self.verifyProfile(true);
       if(tool==='opencode'){
         const modes=self.session.modes?.availableModes??[];if(!modes.some((m:any)=>m.id==='tongxu'))throw Error('external_cli_readonly_profile_missing');await self.rpc.request('session/set_mode',{sessionId:self.session.sessionId,modeId:'tongxu'});
       }
@@ -127,24 +128,41 @@ export class ExtraCliSession{
     if(this.rpc.failure)throw Error(this.rpc.failure);
     checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);
   }
-  async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void){
+  async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void,beforeDispatch?:()=>Promise<void>){
     for(const [p,sha]of Object.entries(this.profile.files))if(hash(await read(join(this.directory,p)))!==sha)throw Error('external_cli_profile_changed');
-    await this.verifyProfile();checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);const index=this.rpc.events.length;
-    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,beforeSendSync);
+    await this.verifyProfile();await beforeDispatch?.();
+    // The host refresh can yield. Recheck the actual local profile and session
+    // synchronously before the original dispatch registration and input write.
+    for(const [p,sha]of Object.entries(this.profile.files)){const b=readFileSync(join(this.directory,p));if(b.length>1024*1024||hash(b)!==sha)throw Error('external_cli_profile_changed');}
+    this.verifyProfileSync();this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');const index=this.rpc.events.length;
+    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,()=>{this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');beforeSendSync?.();});
     const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();this.assertCanForward();
     const requestId=this.rpc.events.find(m=>!m.method&&m.result===result)?.id;if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');return {final:parsed,requestId};
   }
-  private async verifyProfile(){
-    if(this.fixture||this.tool!=='kimi')return;
+  private async verifyProfile(bootstrap=false){
+    const deadline=Date.now()+2000;
+    while(!this.verifyProfileSync(bootstrap)){
+      if(Date.now()>=deadline)throw Error('external_cli_readonly_profile_missing');
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+  }
+  /** Only an absent bootstrap record may wait. Wrong or multiple profiles,
+   * configuration changes and any tool/agent admission still fail immediately. */
+  private verifyProfileSync(allowPending=false){
+    if(this.fixture||this.tool!=='kimi')return true;
     const home=process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code');
-    if(hash(await read(join(home,'config.toml')))!==this.profile.configurationSha256)throw Error('external_cli_configuration_changed');
+    const configuration=readFileSync(join(home,'config.toml'));if(configuration.length>1024*1024)throw Error('external_cli_configuration_limit');
+    if(hash(configuration)!==this.profile.configurationSha256)throw Error('external_cli_configuration_changed');
     const id=this.session.sessionId;if(!/^session_[a-zA-Z0-9-]+$/.test(id))throw Error('external_cli_readonly_profile_missing');
-    const paths:string[]=[];for(const entry of await readdir(join(home,'sessions'),{withFileTypes:true})){if(entry.isDirectory()){const p=join(home,'sessions',entry.name,id,'agents/main/wire.jsonl');if(await present(p))paths.push(p);}}
-    if(paths.length!==1)throw Error('external_cli_readonly_profile_missing');const raw=await readFile(paths[0]!);if(raw.length>16*1024*1024)throw Error('external_cli_profile_limit');
+    const paths:string[]=[];if(existsSync(join(home,'sessions')))for(const entry of readdirSync(join(home,'sessions'),{withFileTypes:true})){if(entry.isDirectory()){const p=join(home,'sessions',entry.name,id,'agents/main/wire.jsonl');if(existsSync(p))paths.push(p);}}
+    if(!paths.length&&allowPending)return false;
+    if(paths.length!==1)throw Error('external_cli_readonly_profile_missing');const raw=readFileSync(paths[0]!);if(raw.length>16*1024*1024)throw Error('external_cli_profile_limit');
     const rows=raw.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)),profile=rows.filter(r=>r.type==='profile.bind'&&r.agentId==='main').at(-1);
+    if(!profile&&allowPending)return false;
     if(!profile||profile.systemPrompt?.trim()!==this.system.trim()||!Array.isArray(profile.activeToolNames)||profile.activeToolNames.length||!Array.isArray(profile.subagents)||profile.subagents.length||!Array.isArray(profile.agentsMdPaths)||profile.agentsMdPaths.length)throw Error('external_cli_readonly_profile_missing');
     save(join(this.directory,'profile-observed.json'),{source:paths[0],profileName:profile.profileName,systemPromptSha256:hash(profile.systemPrompt.trim()),activeToolNames:profile.activeToolNames,subagents:profile.subagents,agentsMdPaths:profile.agentsMdPaths,modelAlias:profile.modelAlias,thinkingEffort:profile.thinkingEffort});
     if(this.choice&&(profile.modelAlias!==this.choice.model||this.choice.effort!==null&&profile.thinkingEffort!==this.choice.effort))throw Error('ai_selected_model_not_applied');
+    return true;
   }
   async close(){if(!this.rpc)return;try{if(this.session?.sessionId&&this.initial?.agentCapabilities?.sessionCapabilities?.close)await this.rpc.request('session/close',{sessionId:this.session.sessionId},3000);}catch{}await this.rpc.close();}
 }
@@ -160,7 +178,7 @@ export function parseAcpPrompt(events:any[],sessionId:string,result:any,choice?:
 }
 export async function probeAdditionalProgram(tool:AdditionalProgram,path:string,directory:string):Promise<AIProvider>{
   const result:AIProvider={id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:null,available:false,reason:null,authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:directory};let session:ExtraCliSession|undefined;
-  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.defaults={model:acpOptions(session.session.configOptions,'model')?.currentValue??session.session.models?.currentModelId??null,effort:acpOptions(session.session.configOptions,'thought_level')?.currentValue??null,source:'acp_session'};result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;}
+  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.defaults={model:acpOptions(session.session.configOptions,'model')?.currentValue??session.session.models?.currentModelId??null,effort:acpOptions(session.session.configOptions,'thought_level')?.currentValue??null,source:'acp_session'};result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;result.capabilities.impactReports=tool==='kimi';}
   catch(e){result.reason=e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'external_cli_probe_unavailable';}
   finally{await session?.close();}
   save(join(directory,'catalog.json'),result);return result;

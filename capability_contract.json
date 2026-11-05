@@ -52,7 +52,7 @@
         "anchor_id": "CAPABILITY.project_secretary",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。当前实现是 Codex 受限查询路径，非通用开发派发。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；此写作者组合的真实原生路径待验。",
+        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。普通问答是 Codex 受限查询；用户明确选定本项目已审定工作时，该次请求增加一个空参数协调工具，完整原话进入原实施者输入、准确已有责任不重派，状态与完整结果从同一原记录回读；非通用开发派发，真实原生路径另验。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；此写作者组合的真实原生路径待验。",
         "audience": [
           "business_user",
           "agent",
@@ -66,7 +66,7 @@
         "anchor_id": "CAPABILITY.task_contact",
         "type": "capability",
         "status": "active",
-        "statement": "按 docs/task_contact_choice.md 的有限联系约定，原任务 A 只能从预登记计划选择联系人 B，完整回复沿原记录返回 A；普通报告不触发联系，原结果或资源未处理不推进依赖步骤。该能力不承诺任意在途会话实时插话。实现 src/task-contact-choice.ts。",
+        "statement": "按 docs/task_contact_choice.md 的有限联系约定，原任务 A 只能从预登记计划选择联系人 B，完整回复沿原记录返回 A；普通报告不触发联系，原结果或资源未处理不推进依赖步骤。对已登记原 Issue 实施负责人，可先收 B 问题，安全完成后核当前结果并只读回答，再由原 B 消费；真实模型和本人验收单独核验。该能力不承诺任意在途会话实时插话。实现 src/task-contact-choice.ts 与 src/implementation-owner-feedback.ts。",
         "audience": [
           "business_user",
           "agent",
@@ -108,7 +108,7 @@
         "anchor_id": "CAPABILITY.formal_pr_review",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与 Claude 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
+        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与默认 Claude 或已冻结选择的 Kimi 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
         "audience": [
           "business_user",
           "agent",
@@ -117,6 +117,20 @@
         "test_anchor": "tests/w5/formal-round.test.ts",
         "test_status": "component_validation_native_pending",
         "since": "2026-11-04"
+      },
+      {
+        "anchor_id": "CAPABILITY.coordination_independent_history",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按原Issue9 F12及docs/task_coordination.md的限定结果，既有有限协调入口仅为新旧两侧均无共享、登记产物或依赖且实际输入/程序/提示未变的独立任务回读原完整已结束结果；原消费/捕获/资源核清，historicalReuse保留旧出处，不伪称读过新安排或产生当前反馈/执行权。当前固定选择优先，最近匹配原件未知或损坏不补位重发。实现src/coordination.ts、src/coordination-store.ts；不完成其余F12、真实模型或本人接受。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/coordination/feedback.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-05"
       }
     ],
     "capability_boundaries": [
@@ -138,7 +152,7 @@
         "anchor_id": "BOUNDARY.secretary_scope",
         "type": "capability_boundary",
         "status": "active",
-        "statement": "按 docs/tongxu_v2_plan.md 和 prompts/runtime_contract.md 的秘书职责边界，秘书不做技术任务、不签署本人接受、不自行扩大权限。当前右侧项目秘书仅开放 src/project-chat-contract.ts 中六种只读查询；旧任务秘书仅有自身已登记的有限动作，不因此取得通用开发、测试或合并入口。",
+        "statement": "按 docs/tongxu_v2_plan.md 和 prompts/runtime_contract.md 的秘书职责边界，秘书不做技术任务、不签署本人接受、不自行扩大权限。普通右侧问答仅开放六种只读查询；明确选定的已审定工作请求仅增加一个宿主固定目标的协调工具，原实施权限/资源仍独立核验；旧任务秘书仅有自身已登记的有限动作，不因此取得通用开发、测试或合并入口。",
         "audience": [
           "business_user",
           "agent",

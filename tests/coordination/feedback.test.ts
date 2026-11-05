@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile,writeFile } from 'node:fs/promises';
+import { readFile,writeFile,unlink,mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { messageFixture } from '../w6/message-fixture.js';
 import { runMessages } from '../../src/messages.js';
 import { hash } from '../../src/snapshot.js';
 import { coordinationPlanId,type CoordinationPlan } from '../../src/coordination-contract.js';
 import { messagePlanId } from '../../src/message-contract.js';
 import { runCoordination } from '../../src/coordination.js';
+import {messageAuthority} from '../w6/message-authority-fixture.js';
+import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
+import {authorizeCoordinationMessage} from '../../src/coordination-authority.js';
 
 async function fixture(t:test.TestContext,mode='complete'){
   const f=await messageFixture(t,mode),other=await f.packet({pr:2}),plan:CoordinationPlan={schemaVersion:1,kind:'tongxu-task-coordination',name:'two-explicit-fixture-tasks',revision:'r1',previous:null,source:'Explicit fixture coordination; no native model or permission',authorityIntent:null,mode:'parallel',actors:[{id:'reviewer',tool:'codex'},{id:'impact',tool:'claude'},{id:'original-a',tool:'codex'},{id:'original-b',tool:'codex'}],tasks:[{id:'A',item:f.item,actor:'reviewer',originActor:'original-a',dispatch:'same_tool_new',stages:['investigate','implement'],independentPaths:['src/a.ts'],workspace:null,publishBranch:null,outputs:[{id:'A-report',stage:'investigate',kind:'message_report'}]},{id:'B',item:other.item,actor:'impact',originActor:'original-b',dispatch:'other_tool_new',stages:['investigate','implement'],independentPaths:['src/b.ts'],workspace:null,publishBranch:null,outputs:[]}],shared:[{id:'api',tasks:['A','B'],paths:['src/api.ts'],contract:'Explicit fixture contract: preserve x response.',feedbackFrom:['A','B'],blockedStages:['implement']},{id:'storage',tasks:['A','B'],paths:['src/storage.ts'],contract:'Explicit fixture storage contract.',feedbackFrom:['A','B'],blockedStages:['implement']}],dependencies:[]};
@@ -24,6 +28,101 @@ async function executionFiles(f:Awaited<ReturnType<typeof fixture>>,plan:Coordin
   const request={schemaVersion:1,kind:'tongxu-coordination-readonly-execution',source:'Explicit finite two-task fixture; no real model or permissions',executionKind:'fixture',actors,taskBodies:Object.fromEntries(plan.tasks.map(t=>[t.id,'Inspect the fixed shared contract and distinguish confirmed facts from unresolved ownership.'])),authorityIntents:Object.fromEntries(plan.tasks.map(t=>[t.id,null])),billing:f.plan.billing,timeoutMs:f.plan.timeoutMs,refreshUnsent:false};
   const planPath=join(f.root,'coordination-plan.json'),requestPath=join(f.root,'coordination-execution.json');await writeFile(planPath,JSON.stringify(plan));await writeFile(requestPath,JSON.stringify(request));return {planPath,requestPath,request};
 }
+
+for(const variant of ['kind','task','revision'] as const)test('a rejected original '+variant+' cannot become history or fall back to older success',async t=>{
+  const f=await fixture(t),plan=structuredClone(f.coordinationPlan);f.plan.timeoutMs=2000;
+  // The same executable returns a valid older result and an invalid newer one.
+  const fields={kind:["kind:'tongxu-coordination-feedback'","kind:c.revision==='rejected-original'?'wrong-feedback-kind':'tongxu-coordination-feedback'"],task:['task:task.id',"task:c.revision==='rejected-original'?'wrong-task':task.id"],revision:['revision:c.revision',"revision:c.revision==='rejected-original'?'wrong-revision':c.revision"]},[from,to]=fields[variant],script=(await readFile(f.codex,'utf8')).replace(from!,to!);
+  await writeFile(f.codex,script);await writeFile(f.claude,script);for(const actor of f.plan.participants)actor.executableSha256=hash(script);
+  plan.previous=f.coordination;plan.revision='older-success';plan.shared=[];for(const task of plan.tasks)task.outputs=[];
+  const files=await executionFiles(f,plan),older=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(older.readonlyTasksCompleted,true,JSON.stringify(older.errors));
+  const next=structuredClone(plan);next.previous=older.coordination;next.revision='rejected-original';await writeFile(files.planPath,JSON.stringify(next));
+  // Preserve an existing current selection rather than substituting old history.
+  const id=coordinationPlanId(next);f.records.register(Buffer.from(JSON.stringify(next)));const execution=f.records.execution(id,await readFile(files.requestPath)),context=f.records.context(id),directory=join(f.store,'coordination-'+id,'dispatch-'+hash(JSON.stringify(['A','investigate'])),'attempt-1'),selectedPlan=JSON.parse(await readFile(older.prepared['A:investigate'].planPath,'utf8'));
+  selectedPlan.source=files.request.source+'; coordination '+id+' task A investigate';selectedPlan.material=[{name:'coordination-context.json',path:join(directory,'context.json'),sha256:context.sha256}];const bytes=Buffer.from(JSON.stringify(selectedPlan));f.records.selectDispatch(id,'A','investigate',execution.requestSha256,bytes,context.sha256);await mkdir(directory,{recursive:true,mode:0o700});await writeFile(join(directory,'context.json'),context.bytes);await writeFile(join(directory,'plan.json'),bytes);
+  const rejected=await runCoordination(f.store,files.planPath,files.requestPath),original=rejected.results['A:investigate'],message=original.messages[0];assert.equal(rejected.readonlyTasksCompleted,false);assert.equal(rejected.errors['A:investigate'],'coordination_feedback_shape_invalid');assert.equal(rejected.newModelRequests,1);assert.equal(original.completed,true);assert.equal(original.resourcesSettled,true);
+  const trace=await readFile(f.trace),events=()=>f.q.status().events.filter((e:any)=>['coordination_feedback','coordination_output','coordination_consumed'].includes(e.kind)||e.kind.startsWith('resource_')||e.kind.startsWith('message_resource_')),before=events(),same=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(same.readonlyTasksCompleted,false);assert.equal(same.errors['A:investigate'],'coordination_feedback_shape_invalid');assert.equal(same.newModelRequests,0);
+  const last=structuredClone(next);last.previous=id;last.revision='must-keep-nearest-rejection';await writeFile(files.planPath,JSON.stringify(last));
+  for(let cold=0;cold<2;cold++){
+    const result=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(result.readonlyTasksCompleted,false);assert.equal(result.errors['A:investigate'],'coordination_feedback_shape_invalid');assert.equal(result.newModelRequests,0);assert.equal(result.implementationCompleted,false);assert.equal(result.writingPermissionGranted,false);
+    const historical=result.prepared['A:investigate'].historicalReuse;assert.equal(historical.planId,id);assert.equal(historical.run,original.run);assert.notEqual(historical.run,older.results['A:investigate'].run);assert.equal(historical.messageId,message.id);assert.equal(historical.contextSha256,rejected.prepared['A:investigate'].contextSha256);assert.equal(f.records.dispatchSelection(result.coordination,'A','investigate'),null);assert.equal(f.q.messages().status(original.run).messages[0]!.reply!.finalText,message.reply.finalText);assert.deepEqual(await readFile(historical.planPath),bytes);assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(events(),before);
+  }
+});
+test('readonly feedback validation accepts conflict and unknown without recording feedback',async t=>{
+  for(const position of ['conflict','unknown']){
+    const f=await fixture(t),script=(await readFile(f.codex,'utf8')).replace("position:'agreed'","position:'"+position+"'");await writeFile(f.codex,script);await writeFile(f.claude,script);for(const actor of f.plan.participants)actor.executableSha256=hash(script);await f.write();
+    // This changed fixture executable belongs to a new exact message plan.
+    const context=f.records.context(f.coordination);f.records.bindMessages(f.coordination,await readFile(f.path),context.sha256,[{task:'A',messageId:'A-feedback'},{task:'B',messageId:'B-feedback'}]);
+    const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));const events=f.q.status().events;
+    f.records.validateFeedback(f.coordination,result.run,'A-feedback');assert.deepEqual(f.q.status().events,events);f.records.feedback(f.coordination,result.run,'A-feedback');assert.equal(f.records.status(f.coordination).parts[0]!.feedback[0]!.reply.position,position);assert.equal(f.records.stage(f.coordination,'A','implement').phasePrerequisitesMet,false);
+  }
+});
+test('settled governed history preserves original provider state and resource events',async t=>{
+  const f=await fixture(t),ledger=await ledgerFixture(t),spec=ledger.profile.resources[0]!,authority=await messageAuthority(f),plan=structuredClone(f.coordinationPlan);f.plan.timeoutMs=2000;f.q.resources().configure(Buffer.from(JSON.stringify(ledger.profile)));
+  plan.previous=f.coordination;plan.revision='serial-governed-independent';plan.shared=[];for(const task of plan.tasks)task.outputs=[];plan.mode='unified_owner';plan.tasks[1]!.actor='reviewer';plan.tasks[1]!.originActor='reviewer';plan.tasks[1]!.dispatch='owner_backlog';const db=new DatabaseSync(join(ledger.root,'original-fixture.sqlite'));db.prepare('UPDATE capacity SET n=2').run();db.close();
+  const delegated=await authority.adopt({kind:'delegate',adoption:authority.scope.sha,roles:['coordinator'],targets:['fixture'],actions:['coordinate'],paths:[],resourceRefs:[spec.ref],expiresAt:new Date(Date.now()+3600000).toISOString()}),files=await executionFiles(f,plan),delegation={authorization:delegated.sha,adoption:authority.scope.sha,resources:[{ledgerId:ledger.profile.ledgerId,resourceRef:spec.ref,unit:spec.unit,quantity:1}]};await writeFile(files.requestPath,JSON.stringify({...files.request,delegatedCoordination:delegation}));
+  const first=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(first.readonlyTasksCompleted,true,JSON.stringify(first.errors));assert.equal(first.results['A:investigate'].resourcesSettled,true);
+  const next=structuredClone(plan);next.previous=first.coordination;next.revision='same-governed-work';await writeFile(files.planPath,JSON.stringify(next));const trace=await readFile(f.trace),provider=ledger.state(),events=()=>f.q.status().events.filter((e:any)=>['coordination_feedback','coordination_output','coordination_consumed'].includes(e.kind)||e.kind.startsWith('resource_')||e.kind.startsWith('message_resource_')),before=events();
+  for(let cold=0;cold<2;cold++){const result=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(result.readonlyTasksCompleted,true,JSON.stringify(result.errors));assert.equal(result.newModelRequests,0);assert.equal(result.results['A:investigate'].historicalReuse.run,first.results['A:investigate'].run);assert.equal(result.results['A:investigate'].historicalReuse.readCurrentRevision,false);assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(ledger.state(),provider);assert.deepEqual(events(),before);}
+});
+test('only an unchanged fully independent report is historical across revisions; affected exact producers are read and consumed again',async t=>{
+  const f=await fixture(t),third=await f.packet({pr:3}),fourth=await f.packet({pr:4}),plan=structuredClone(f.coordinationPlan);
+  plan.previous=f.coordination;plan.revision='four-tasks';plan.mode='stage_serial';plan.tasks[0]!.id='A1';plan.tasks[0]!.outputs=[{id:'A1-result',stage:'investigate',kind:'message_report'}];plan.tasks[1]!.id='B1';plan.tasks[1]!.outputs=[{id:'B1-result',stage:'investigate',kind:'message_report'}];
+  plan.actors.push({id:'activation',tool:'codex'},{id:'unrelated',tool:'codex'});
+  for(const [id,item,actor] of [['A2',third.item,'activation'],['A3',fourth.item,'unrelated']])plan.tasks.push({id:id!,item:item!,actor:actor!,originActor:actor!,dispatch:'owner_backlog',stages:['investigate','implement'],independentPaths:['independent/'+id+'.ts'],workspace:null,publishBranch:null,outputs:[]});
+  for(const p of plan.shared){p.tasks=['A1','B1','A2'];p.feedbackFrom=['A1','B1','A2'];}
+  plan.dependencies=[{task:'B1',stage:'implement',producer:'A1',capability:'A1-result'},{task:'A2',stage:'implement',producer:'B1',capability:'B1-result'}];
+  const files=await executionFiles(f,plan),first=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(first.readonlyTasksCompleted,true,JSON.stringify(first.errors));assert.equal(first.newModelRequests,6);
+  const old=first.results['A3:investigate'],again=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(again.newModelRequests,0);
+  const next=structuredClone(plan);next.previous=first.coordination;next.revision='shared-api-changed';next.shared[0]!.contract+=' Only the shared API changed.';await writeFile(files.planPath,JSON.stringify(next));
+  const changed=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(changed.readonlyTasksCompleted,true,JSON.stringify(changed.errors));assert.equal(changed.newModelRequests,5);assert.equal(changed.implementationCompleted,false);assert.equal(changed.writingPermissionGranted,false);
+  const a3=changed.results['A3:investigate'];assert.equal(a3.run,old.run);assert.equal(a3.historicalReuse.planId,first.coordination);assert.equal(a3.historicalReuse.revision,plan.revision);assert.equal(a3.historicalReuse.finalSha256,old.messages[0].reply.finalSha256);assert.equal(a3.historicalReuse.readCurrentRevision,false);assert.equal(a3.newModelRequests,0);assert.equal(a3.resourcesSettled,true);
+  assert.equal(f.records.dispatchSelection(changed.coordination,'A3','investigate'),null);assert.ok(!f.q.status().events.some((e:any)=>e.object==='coordination:'+changed.coordination&&['coordination_feedback','coordination_output','coordination_consumed'].includes(e.kind)&&JSON.parse(e.data).value.task==='A3'));
+  for(const id of ['B1','A2','A3'])assert.equal(f.records.stage(changed.coordination,id,'implement').phasePrerequisitesMet,true);
+  const trace=await readFile(f.trace),cold=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(cold.readonlyTasksCompleted,true);assert.equal(cold.newModelRequests,0);assert.equal(cold.results['A3:investigate'].run,old.run);assert.deepEqual(await readFile(f.trace),trace);
+});
+test('local work changes and an already selected current input cannot be replaced by historical reuse',async t=>{
+  for(const mode of ['body','task','actor','program','physical-program','binding','output','shared','dependency','selected'] as const){
+    const f=await fixture(t),plan=structuredClone(f.coordinationPlan);plan.previous=f.coordination;plan.revision='independent';plan.shared=[];for(const task of plan.tasks)task.outputs=[];
+    const files=await executionFiles(f,plan),first=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(first.newModelRequests,2);assert.equal(first.readonlyTasksCompleted,true);
+    const next=structuredClone(plan);next.previous=first.coordination;next.revision='change-'+mode;
+    if(mode==='task')next.tasks[0]!.independentPaths.push('another.ts');
+    if(mode==='actor'){next.actors.push({id:'new-a',tool:'codex'});next.tasks[0]!.actor='new-a';}
+    if(mode==='output')next.tasks[0]!.outputs=[{id:'new-output',stage:'investigate',kind:'message_report'}];
+    if(mode==='shared')next.shared=[structuredClone(f.coordinationPlan.shared[0]!)];
+    if(mode==='dependency'){next.tasks[1]!.outputs=[{id:'B-report',stage:'investigate',kind:'message_report'}];next.dependencies=[{task:'A',stage:'implement',producer:'B',capability:'B-report'}];}
+    if(mode==='binding')await f.packet({pr:1,H:await f.newHead()});
+    const current=await executionFiles(f,next);if(mode==='body'){current.request.taskBodies.A+=' A new actual question.';await writeFile(current.requestPath,JSON.stringify(current.request));}
+    if(mode==='program'||mode==='physical-program'){const code=await readFile(f.codex,'utf8')+'\n// Explicit fixture program update.\n';await writeFile(f.codex,code);if(mode==='program')current.request.actors.find(a=>a.id===next.tasks[0]!.actor)!.executableSha256=hash(code);await writeFile(current.requestPath,JSON.stringify(current.request));}
+    if(mode==='selected'){
+      // An original preparation made before this consumer knew historical reuse
+      // remains authoritative. Use the existing selection API and exact files.
+      const id=coordinationPlanId(next);f.records.register(Buffer.from(JSON.stringify(next)));const execution=f.records.execution(id,await readFile(current.requestPath)),context=f.records.context(id),directory=join(f.store,'coordination-'+id,'dispatch-'+hash(JSON.stringify(['A','investigate'])),'attempt-1'),old=JSON.parse(await readFile(first.prepared['A:investigate'].planPath,'utf8'));
+      old.source=current.request.source+'; coordination '+id+' task A investigate';old.material=[{name:'coordination-context.json',path:join(directory,'context.json'),sha256:context.sha256}];const bytes=Buffer.from(JSON.stringify(old));f.records.selectDispatch(id,'A','investigate',execution.requestSha256,bytes,context.sha256);await mkdir(directory,{recursive:true,mode:0o700});await writeFile(join(directory,'context.json'),context.bytes);await writeFile(join(directory,'plan.json'),bytes);
+    }
+    if(mode==='binding'){const trace=await readFile(f.trace);await assert.rejects(runCoordination(f.store,current.planPath,current.requestPath),/common_current_scope_required/);assert.deepEqual(await readFile(f.trace),trace);continue;}
+    const result=await runCoordination(f.store,current.planPath,current.requestPath);assert.equal(result.readonlyTasksCompleted,true,mode+': '+JSON.stringify(result.errors));assert.ok(result.newModelRequests>=1,mode);assert.ok(!result.results['A:investigate'].historicalReuse,mode);assert.notEqual(result.results['A:investigate'].run,first.results['A:investigate'].run,mode);
+  }
+});
+test('an unresolved historical original never becomes completion or a substitute input',async t=>{
+  for(const mode of ['missing-plan','unknown'] as const){
+    const f=await fixture(t,mode==='unknown'?'hang':'complete'),plan=structuredClone(f.coordinationPlan);plan.previous=f.coordination;plan.revision='first-independent';plan.shared=[];for(const task of plan.tasks)task.outputs=[];
+    const files=await executionFiles(f,plan),first=await runCoordination(f.store,files.planPath,files.requestPath);assert.equal(first.newModelRequests,2);
+    if(mode==='missing-plan')await unlink(first.prepared['A:investigate'].planPath);
+    const next=structuredClone(plan);next.previous=first.coordination;next.revision='no-local-change';await writeFile(files.planPath,JSON.stringify(next));const trace=await readFile(f.trace),blocked=await runCoordination(f.store,files.planPath,files.requestPath);
+    assert.equal(blocked.readonlyTasksCompleted,false,mode);assert.equal(blocked.newModelRequests,0);assert.ok(blocked.errors['A:investigate']);assert.equal(f.records.dispatchSelection(blocked.coordination,'A','investigate'),null);assert.deepEqual(await readFile(f.trace),trace);
+  }
+});
+test('a complete historical reply with an unconfirmed original resource outcome is not counted as complete or reinvested',async t=>{
+  const f=await fixture(t),ledger=await ledgerFixture(t,'lost-after-result'),spec=ledger.profile.resources[0]!,authority=await messageAuthority(f),plan=structuredClone(f.coordinationPlan);f.q.resources().configure(Buffer.from(JSON.stringify(ledger.profile)));
+  plan.previous=f.coordination;plan.revision='governed-independent';plan.shared=[];for(const task of plan.tasks)task.outputs=[];
+  const delegated=await authority.adopt({kind:'delegate',adoption:authority.scope.sha,roles:['coordinator'],targets:['fixture'],actions:['coordinate'],paths:[],resourceRefs:[spec.ref],expiresAt:new Date(Date.now()+3600000).toISOString()}),files=await executionFiles(f,plan);
+  const delegation={authorization:delegated.sha,adoption:authority.scope.sha,resources:[{ledgerId:ledger.profile.ledgerId,resourceRef:spec.ref,unit:spec.unit,quantity:1}]};await writeFile(files.requestPath,JSON.stringify({...files.request,authorityIntents:{A:null,B:null},delegatedCoordination:delegation}));
+  const prepared=await runCoordination(f.store,files.planPath,files.requestPath,true),a=prepared.prepared['A:investigate'],raw=JSON.parse(await readFile(a.planPath,'utf8')),context=JSON.parse((await readFile(join(a.planPath,'../context.json'))).toString());
+  await authorizeCoordinationMessage(f.q,delegation,raw,context.bindings.A);const completed=await runMessages(f.store,a.planPath);assert.equal(completed.completed,true);assert.equal(completed.resourcesSettled,false);
+  const next=structuredClone(plan);next.previous=prepared.coordination;next.revision='same-work-unsettled';await writeFile(files.planPath,JSON.stringify(next));const trace=await readFile(f.trace),claims=ledger.state().claims.length,settlements=ledger.state().settlements.length,result=await runCoordination(f.store,files.planPath,files.requestPath);
+  assert.equal(result.newModelRequests,0);assert.equal(result.readonlyTasksCompleted,false);assert.match(result.errors['A:investigate']!,/historical_result_or_resources_unresolved/);assert.equal(ledger.state().claims.length,claims);assert.equal(ledger.state().settlements.length,settlements);assert.deepEqual(await readFile(f.trace),trace);
+});
 test('missing shared feedback holds implementation while independent investigation proceeds; actual complete role replies supply feedback, not write permission',async t=>{
   const f=await fixture(t);assert.equal(f.records.stage(f.coordination,'A','investigate').phasePrerequisitesMet,true);assert.equal(f.records.stage(f.coordination,'A','implement').phasePrerequisitesMet,false);
   const result=await runMessages(f.store,f.path);assert.equal(result.completed,true,JSON.stringify(result.problems));assert.equal(result.newModelRequests,2);

@@ -34,6 +34,7 @@
 | 查看权限与执行授权分开 | `workbench.ts` 的临时查看标识只保护本机入口；`authority-source.ts`、`authority-store.ts` 核本人来源、范围和委托。复制报告或 owner JSON 不能产生授权。见 `tests/authority/authority.test.ts`。 |
 | 已发送或原进程未知时先查原执行，不自动重发 | `project-chat.ts`、`managed-merge.ts` 查原捕获、PID 与响应；缺失进程证明保留 `unknown`。失去回执、换页面或升级 CLI 不等于从未发送。见 `tests/w7/project-chat.test.ts`、`tests/merge/managed.test.ts`。 |
 | 新动作重核阶段条件；新安排不追溯改变旧输入 | `coordination.ts`、`task-store.ts`、`scope-controls.ts` 和具体控制入口执行检查。生产者材料或停止条件不满足时暂停依赖动作。见 `tests/coordination/feedback.test.ts`、`tests/w7/scope-controls.test.ts`。 |
+| 完全独立的旧只读结果保持原出处 | `coordination.ts` 在新选择前调用 `CoordinationRecords.independentHistory`，仅为两侧均无共享、登记产物和依赖的未变任务走原消息的 recoverOnly。实际程序、角色提示、源与完整捕获/资源仍核对；不写当前反馈或授予执行权。公开语义见 `docs/task_coordination.md`。 |
 | 模型偏好不增加权限，已固定运行不追溯换绑 | `ai-settings.ts` 的项目偏好经执行边界保存；`ai-execution.ts` 和适配器核支持能力。错误模型/强度或不支持组合应拒绝，不静默换程序。见 `tests/w7/ai-settings.test.ts`、`tests/w7/ai-workflow.test.ts`。 |
 
 这些是有范围的实现与已有政策约束，不是对恶意宿主或全部未来 CLI 的保证。提示中的职责规则仍需执行层限制；`prompts/tool_policy.json` 自身标为设计约定，不能证明全部工具已经安装。
@@ -56,7 +57,7 @@
 
 工作台计划使用 `schemaVersion: 1` 和 `kind` 区分本机/受控模式，`parseWorkbenchPlan` 核来源、路径、摘要和所选控制。任务、消息、授权、集成和成果各有 `*-contract.ts` 解析器，不能用一个领域的版本号解释全部对象。
 
-请求解析和核权后，原输入/输出保存为文件或数据库原件，派生报告用摘要引用。`task-contact-choice.ts` 只接受绑定计划摘要的预登记联系人：A 的完整回复及资源已处理后才选择 B，B 的完整回复再交回 A；普通报告或畸形选择不会触发任意联系。完整原文、材料消费确认、进程结束和资源状态分别核验。
+请求解析和核权后，原输入/输出保存为文件或数据库原件，派生报告用摘要引用。`task-contact-choice.ts` 只接受绑定计划摘要的预登记联系人：A 的完整回复及资源已处理后才选择 B，B 的完整回复再交回 A；普通报告或畸形选择不会触发任意联系。完整原文、材料消费确认、进程结束和资源状态分别核验。 `implementation-owner-feedback` 从原 Issue 实施结果核当前提交、完整捕获和原责任身份；`TaskInbox` 的原 B 事件保存等待、绑定与撤回，新的 A 只读请求及 B 后续仍进入原消息执行器。工作台只给联系入口识别同项目的动态实施收件人，原实施完成回调接续已收件的准确联系；冷读不发。H0/no_change 的消息资源阶段由原实施消费者明确准入，原结果和保护触发器保留，coordinate 与 implement/test 分别核权及结算。
 
 `capability_contract.json` 是文档承诺登记；当前代码没有从它生成 CLI、HTTP 路由、模型工具或运行授权。
 
@@ -98,6 +99,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `queue-store.ts` 集成多领域状态与触发器，修改时容易漏掉预开连接、旧格式和原件消费者；`workbench.ts` 装配多个入口，须查配置关闭和跨项目边界。这里记录维护风险，不预设拆服务任务。通用新开发派发及未完成产品范围沿 [PRODUCT_GUIDE](docs/PRODUCT_GUIDE.md#unfinished-work)的原记录入口跟进，不另建进度账本。
 
+项目秘书明确工作模式从原用户消息固定 `workTarget`，仅该次原生请求及宿主 gate 注册空参数协调工具。`ProjectChat` 的消息关联保存意图，`IssueImplementationControls` 复用原准备/开始与真实报告；完整 `origin` 随新实施请求进入原输入清单，旧输入不回填。原队列最后登记事务核当前采用与准确已有责任，取消意图在此复核；并发新聊天不能多建同一工作。原消息/TaskInbox 与成果/权限/资源事实没有迁到聊天表。
+
 ## Change propagation
 
 | 变更类型 | 需要继续调查的影响面 | 相应验证 |
@@ -106,6 +109,9 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 角色选择/程序能力 | `ai-settings`、消息/修复 worker 的固定输入、适配器和旧运行读回 | `tests/w7/ai-workflow.test.ts`、`tests/w7/additional-cli.test.ts`、`tests/w7/ai-settings.test.ts` |
 | 队列格式/授权/停止条件 | 预开连接、任务阶段、接收/合并、页面控制和原资源占用 | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts`、`tests/w7/scope-controls.test.ts` |
 | 原实施结果到秘书补充 | project-chat 只保存意图与原请求关联；issue-implementation-controls 从已核H1和原责任编译受控后续实施，复用原QueueStore/Authority/Resource，不新增发送事实账本 | `tests/project-repair/integration.test.ts`、`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
+| B 问题到原实施负责人再回 B | `implementation-owner-feedback` 核原完整结果/当前提交，TaskInbox 原事件与 TaskHistoryProjection 保存准确身份和单份全文；TaskControls/工作台精确唤醒已收件联系。`runMessages` 在原捕获恢复之后，从原 run→TaskInbox 请求识别 ownerContact，A及回B的新执行必须取得现有签发、匹配原目标的当前来源 proof；普通消息不新增此要求。宿主复用原 Issue reader，无 reader 的通用消费者明确拒绝新投入/输入；MessageResources 在实际领取前复核，发送前再读当前 Issue并保留本地同步门。已发捕获/资源清理不受新输入检查阻断；no_change 不造新提交 | `tests/project-repair/integration.test.ts` 原负责人联系组合、原秘书补充回归，`tests/w6/task-intake.test.ts`、`tests/w6/task-contact-choice.test.ts`、`tests/w6/message-resources.test.ts`、`tests/w7/github-projects-ui.test.ts` |
+| 零输入消息的资源取消 | 原 `MessageResourceRecords` 统一判断取消阶段是否还有未清投资：精确从未领取的申请无供应方结算义务，held仍结原claim；此判定供消息包装层、旧阶段再准入与TaskInbox投影/未发关闭使用，不改变全局settledOutcome或执行held门。取消和原claim最后登记共享队列事务，普通coordinate也不能从已关闭阶段回落取得新claim；申请与原件保留 | `tests/w6/message-resources.test.ts` 的原资源竞争/已发/未知场景，`tests/project-repair/integration.test.ts` before-claim正常HTTP及before-send回归 |
+| 秘书明确工作到原实施者 | project-chat-contract/repair-native 逐请求双层工具限制，ProjectChat 原意图/取消与 IssueImplementationControls 原输入/最后登记/直接控制；旧问答和补充保持 | `tests/project-repair/integration.test.ts` 秘书工作场景，`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
 | 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
@@ -119,7 +125,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 ### 正式 PR 外层流程的影响传播
 
-`formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
+`formal-review-controls` 是正常任务页的可信目录消费者，沿原 QueueStore operation/events/blobs 装配 `formal-review-material`、`formal-review` 和 `formal-review-host`。完整不可变 PR 材料及按需调用方读取与可写文件范围分开；新完整审核/整批独立验证使用原 native/Claude 捕获；正式影响角色按冻结选择可由 `formal-kimi` 复用 `ExtraCliSession` 执行，核实际 profile、准确单次输入边界、完整 ACP 和进程退出后登记原阶段。最后异步 host 刷新后同步核档案/会话，再由原 effect 登记并立即写输入，不增加原队列或资源记录之外的执行通道；综合及授权修复保持原事实会话。单轮原日志快照不替代进程退出证据。
 
 工作台向原正式控制器传入绑定已核项目身份的 AI 设置读取回调；新请求封存时读取当前 AISettings 快照，一次捕获三个角色，定时接续与手工准备使用同一来源。回调不缓存启动时选择，也不改写已有请求；保存选择不可用沿原等待记录处理。调整此装配时核 `tests/w7/formal-workbench.test.ts` 的真实定时器、手工核对、设置变化/默认/不可用和跨项目场景。
 

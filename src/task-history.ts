@@ -49,6 +49,16 @@ export class TaskHistoryProjection {
     if(canonical(value.reply)!==canonical(m.reply)&&canonical(value.reply)!==canonical(reply))throw new Error('task_history_sender_reply_changed');
     return {...value,reply};
   }
+  ownerFeedback(value:Row|null,oldProjection?:Row):Row|null{
+    if(!value)return null;
+    if(value.kind!=='tongxu-original-implementation-owner-feedback'||!value.originalTarget?.task||!value.originalTarget?.operation||!value.originalResultSha256)throw new Error('task_history_owner_feedback_format_unknown');
+    let report=value.originalReport;
+    if(report?.historyRef){if(report.task!==value.originalTarget.task||report.operation!==value.originalTarget.operation||report.request!==value.originalTarget.requestId||report.resultSha256!==value.originalResultSha256||report.name!=='original-implementation-report')throw new Error('task_history_owner_feedback_original_changed');const entry=oldProjection?.materials?.[report.historyRef];if(!entry||canonical(entry.source)!==canonical(Object.fromEntries(Object.entries(report).filter(([k])=>k!=='historyRef')))||hash(canonical(entry.value))!==report.sha256)throw new Error('task_history_owner_feedback_original_changed');report=entry.value;}
+    if(!report||typeof report!=='object'||Array.isArray(report))throw new Error('task_history_owner_feedback_format_unknown');
+    const source={task:value.originalTarget.task,operation:value.originalTarget.operation,request:value.originalTarget.requestId,name:'original-implementation-report',resultSha256:value.originalResultSha256,sha256:hash(canonical(report))},id=this.id('material',source);
+    if(!this.materials[id])this.materials[id]={source,value:report};
+    return {...value,originalReport:{...source,historyRef:id}};
+  }
   private input(original:OriginalTaskExecution,run:string,input:Row){
     const sent=original.state.messages.find((m:Row)=>m.id===input.messageId)?.sent,sha256=hash(canonical(input));
     if(input.run!==run||!sent||sent.inputSha256!==sha256)throw new Error('task_history_input_identity_changed');
@@ -78,12 +88,12 @@ export class TaskHistoryProjection {
   }
   private context(value:Row,task:string):Row{
     if(![1,2].includes(value.schemaVersion)||value.kind!=='tongxu-task-owner-context'||value.task?.item!==task||!Array.isArray(value.previousExecutions))throw new Error('task_history_context_format_unknown');
-    const {historyProjection,previousExecutions,scopeContinuation,sender,...rest}=value;
+    const {historyProjection,previousExecutions,scopeContinuation,sender,ownerFeedback,...rest}=value;
     // Only the selected, hash-checked task material is opened. A user question
     // or report containing JSON is an opaque string throughout this class.
     const source={task,name:'task-source',sha256:hash(canonical(value.task))},id=this.id('material',source);
     if(!this.materials[id])this.materials[id]={source,value:value.task};
-    return {...rest,task:{item:task,historyRef:id},sender:this.sender(sender),previousExecutions:previousExecutions.map((e:Row)=>this.execution(e.task??task,e.run,e.request)),
+    return {...rest,task:{item:task,historyRef:id},sender:this.sender(sender),previousExecutions:previousExecutions.map((e:Row)=>this.execution(e.task??task,e.run,e.request)),...(ownerFeedback?{ownerFeedback:this.ownerFeedback(ownerFeedback,historyProjection)}:{}),
       ...(scopeContinuation?{scopeContinuation:this.scope(scopeContinuation)}:{})};
   }
   value(){return {schemaVersion:1,kind:'tongxu-task-history-projection',executions:this.executions,inputs:this.inputs,materials:this.materials};}

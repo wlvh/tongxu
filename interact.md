@@ -37,11 +37,11 @@
 <!-- capability-anchor: CAPABILITY.project_secretary -->
 - **User goal**：在当前项目内询问事实、限制和下一步，重开后可查完整历史。
 - **Required context**：所选项目、已配置 `projectSecretary`、可用 Codex 受限工具路径；不要求先登记开发任务。
-- **User action or request**：输入问题并发送；完成后继续追问，或停止当前持有的执行。若已配置 #74 的原实施任务，可在“发送给”选原任务保存补充，原任务/秘书忙时仍可收件。
-- **Directly observable result**：显示等待、完整回答及来源或明确失败。追问把已核历史交给新原生上下文；页面不是对旧会话的任意接管。相同请求的重复提交不重复发送。
+- **User action or request**：输入问题并发送；完成后继续追问，或停止当前持有的执行。已配置已审定实施时，“发送给”可明确选择办理对应工作，秘书实际协调到原消费者；普通提问不自动派工。已有原任务可保存补充，原任务/秘书忙时仍可收件。
+- **Directly observable result**：显示等待、完整回答及来源或明确失败；明确工作模式另显示原实施状态和核验后的完整报告，秘书回答完成不代填工作完成。追问把已核历史交给新原生上下文；页面不是对旧会话的任意接管。相同请求的重复提交不重复发送。
 - **Failure / degradation / escalation**：原执行待返回或未知时不并发重发；超时/停止保留原问题和未完成状态。捕获被改后答案不可用，也不能作为追问依据。登录/模型不可用只阻相应动作。
 - **Acceptance assertion**：补充接收与送达分别显示，原回合成功并形成 H1、完整捕获及资源结果可核后，才由同一逻辑负责人在新原生上下文处理；失败/停止/未知/未提交成果不自动续写。完整报告直接回原会话，不覆盖旧秘书答案；取消未发补充与停止原实施分别操作。重开读取历史新增模型输入为零；已中断/部分输出不被标成完整回答；停止准确对应原请求。请求接收成功还不表示模型已完成。
-- **Evidence**：`src/project-chat.ts`、`src/project-chat-contract.ts`；`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts`；正式说明见 [project_secretary_chat](docs/project_secretary_chat.md)。这些测试使用明确协议样例，不能代替真实模型验收。补充写作者组合的正常入口、H1/资源、取消与原报告回流见 `tests/project-repair/integration.test.ts` 和 [补充说明](docs/project_task_supplements.md)。
+- **Evidence**：`src/project-chat.ts`、`src/project-chat-contract.ts`；`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts`；正式说明见 [project_secretary_chat](docs/project_secretary_chat.md)。这些测试使用明确协议样例，不能代替真实模型验收。新工作原话输入、准确已有责任/并发、H1/资源、取消与补充的正常入口组合见 `tests/project-repair/integration.test.ts` 和 [补充说明](docs/project_task_supplements.md)。
 
 ### D. 保存角色选择并用于新执行
 
@@ -60,7 +60,7 @@
 - **User goal**：A 需要 B 的具体反馈时转交完整材料，回复回到原 A 的责任链。
 - **Required context**：原任务与联系计划、允许联系人、固定输入、资源和有效授权；不能只凭保存了 AI 设置开始。
 - **User action or request**：从原任务支持的联系入口启动，A 决定是否选择已登记联系人。
-- **Directly observable result**：普通 A 报告直接结束该路径；合法选择才发送 B，再把 B 全文交 A。页面能查看各阶段原文、等待原因和是否完成。
+- **Directly observable result**：普通 A 报告直接结束该路径；合法选择才发送 B，再把 B 全文交 A。页面能查看各阶段原文、等待原因和是否完成。 已登记的原实施者仍在写入时，可收 B 的问题，待其安全结束后以新的只读上下文取得当前答复，再交回原 B；页面区分收件、等待交付与完整答复已消费。
 - **Failure / degradation / escalation**：畸形/越界联系人、缺完整捕获或资源未处理时不推进后续发送；原操作未知不换 ID 重试。
 - **Acceptance assertion**：A→B→A 的每步对应计划和准确原件；“已收到控制回执”与“完整回复已消费”分别判断。不能据此宣称任意在途会话实时插话均可用。
 - **Evidence**：`src/task-contact-choice.ts`、`src/messages.ts`；`tests/w6/task-contact-choice.test.ts`、`tests/w6/message-continuation.test.ts`；[task_contact_choice](docs/task_contact_choice.md)。
@@ -76,6 +76,16 @@
 - **Acceptance assertion**：重复点击、仅 checks 更新、刷新或重开不新增模型输入，结束后读回同一操作的全文；技术接收不是正式 PR PASS 或本人接受。
 - **Evidence**：`tests/events/normal-entry.test.ts`、`tests/w7/github-projects-ui.test.ts` 与既有 `tests/w3/receiver-authority.test.ts`。新入口目前以明确协议样例验证，真实原生正常用户路径待验；[使用说明](docs/source_reception_entry.md)。
 
+### G. 回读独立任务的历史结论
+
+<!-- capability-anchor: CAPABILITY.coordination_independent_history -->
+- **User goal**：相关共享工作变化时，完全独立且未变的任务沿原完整结论继续，不重复调用模型。
+- **Required context**：原有限协调计划、准确 previous 链和执行配置；新旧任务均无共享、登记产物或生产/消费依赖，实际本地输入、程序及提示相同，原捕获/消费/资源完整。
+- **User action or request**：仍从既有 coordination CLI 运行本次固定计划，无新开关或另写报告。
+- **Directly observable result**：结果中的 `historicalReuse` 保留原版本及完整报告出处，新增模型输入0；`readonlyTasksCompleted` 可表示有核实过的这份历史结论，不表示读过新安排。受影响任务仍实际重核和消费准确产物。
+- **Failure / degradation / escalation**：本版已固定选择优先；最近匹配原件缺失、未知、损坏或资源未清继续等待，不改选择、不查找更老成功项补位、不换运行重发。改变本地工作条件时沿原新读准入处理。
+- **Acceptance assertion / Evidence**：四任务样例首次6、共享变化5且独立A3新增0，重复/冷读0；`tests/coordination/feedback.test.ts` 含实际进程和资源失回执反例。`implementationCompleted` 与写权仍false，不完成其余F12或本人接受；详见 [task_coordination](docs/task_coordination.md)。
+
 ## 3. Cross-cutting User-visible Invariants
 
 <!-- capability-anchor: BOUNDARY.unknown_no_resend -->
@@ -89,7 +99,7 @@
 ## 4. Known Limits and Human Escalation
 
 <!-- capability-anchor: BOUNDARY.secretary_scope -->
-已有政策要求秘书不做技术任务；当前右侧秘书的模型只开放六种项目查询工具；页面另可为已登记实施责任持久收件，并经既有实施消费者处理，未开放通用开发派发。旧任务秘书可有已登记联系动作，不能把两者功能互相挪用。工具来源见 `project-chat-contract.ts` 和 `secretary-tools.ts`。
+已有政策要求秘书不做技术任务；普通右侧问答只开放六种项目查询；用户明确选定已审定工作时，该请求才增加一个固定目标协调工具；页面另可为已登记实施责任持久收件，并经既有实施消费者处理，未开放通用开发派发。旧任务秘书可有已登记联系动作，不能把两者功能互相挪用。工具来源见 `project-chat-contract.ts` 和 `secretary-tools.ts`。
 
 <!-- capability-anchor: BOUNDARY.runtime_minimum -->
 Node 最低要求与实际能力核查见运行环境规范；版本满足不表示所有外部 CLI、Docker 或提供程序均已配置。没有真实隔离配置时暂停验证动作；没有本人来源时暂停依赖授权的控制。更换工具、补费用或扩大范围由当前有权决定的人处理，不通过页面标识绕过。
@@ -133,7 +143,7 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 <!-- capability-anchor: CAPABILITY.formal_pr_review -->
 - **User goal**：对关联已采用 Issue 的 PR 得到准确版本的正式结论，必要时经过整批验证和授权修复，再审已发布的新版本。
 - **Required context**：私人项目目录、准确候选、采用 Issue/范围、固定完整角色提示、原接收/实施/测试权限及分析/修复/新候选测试资源、真实 CLI 和注册 Docker 配置；当前为 pending_validation，真实外层模型演练与本人接受分别待核。
-- **User action or request**：正常“任务与完整报告”选择 PR，点击“正式 PR 审核”；查看完整报告，按需要停止后续动作或核对发布。
+- **User action or request**：正常“任务与完整报告”选择 PR，点击“正式 PR 审核”；查看完整报告，按需要停止后续动作或核对发布。新请求前可在项目 AI 设置为影响核实者选择已检测可用的 Kimi；未选仍用原 Claude，已冻结请求不随偏好改变。
 - **Directly observable result**：新完整 reviewer、同批新 fact/impact、原 fact 综合/有界证据交换、同会话授权修复、本地提交、待发布、新候选采集/验证、新完整审核分别保留。完整 PASS 无 P0/P1 或仅 P2 时直接结束；全批反证在未变候选上追加正式 reviewer 结论，不制造修改。原报告可全文回读。
 - **Failure / degradation / escalation**：空 finding 但覆盖不足仍待补证；三轮分歧后不强行投票；停止、权限或资源不足时不启动后续动作。H/B/target/采用要求改变后旧报告不放行当前 PR；已发未知和失去持有权的原事实会话不换 ID 重发。真正业务取舍沿原 Issue 保存问题和答复，没有获准写入路径时明确待记录。
 - **Acceptance assertion**：本地 H2 不等于远端发布；准确远端 head、对应 PR 修复记录和当前新材料核清后才新审。每轮新 reviewer/new batch 独立，修复确属本批原 fact session/thread；单轮完整捕获不冒称原生进程已经退出。发布返工使用原记录并按同 head 去重；查看、重开和直接 PASS 后新增模型输入为零。

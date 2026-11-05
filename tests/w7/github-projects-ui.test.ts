@@ -186,3 +186,13 @@ test('stopped reception recovery requires an original receiver and keeps active 
   assert.equal(button.disabled,!example.canRecover,JSON.stringify(example));if(example.canRecover)assert.equal(button.textContent,'查回当前原接收');
  }
 });
+
+for(const mode of ['waiting','cancelled','stale','complete'])test('original owner feedback page explains '+mode+' without mistaking collection for delivery',async()=>{
+ const p=await page(),complete=mode==='complete',cancelled=mode==='cancelled',stale=mode==='stale';
+ const control={id:'feedback',title:'联系原负责人',source:'b',available:true,currentMaterial:!stale,phase:complete?'returned':cancelled?'cancelled':'waiting',controllerActive:false,executionKind:'fixture',contactChoice:{complete,selectedContact:'original-a',options:[{id:'original-a',title:'原负责人 A',tool:'codex',actor:'A',question:'确认当前接口'}],steps:[{id:'b-question',phase:'returned'},{id:'a-answer',phase:cancelled?'cancelled':'waiting'}],ownerFeedback:{bound:complete||stale,cancelled,current:!stale}}};
+ p.run('state={taskControls:['+JSON.stringify(control)+']};gh.selected={id:1,fullName:"fixture/repo1"}');
+ const panel=p.run("contactControls({id:'b',controls:[]})"),all:any[]=[];const visit=(n:any)=>{all.push(n);for(const c of n.children??[])visit(c);};visit(panel);const words=all.map(n=>n.textContent).join(' '),buttons=all.filter(n=>n.tag==='button');
+ assert.match(words,cancelled?/原联系已撤回/:complete?/完整答复已交给原 B/:stale?/对应材料已变化/:/B 的问题已登记/);
+ const start=buttons.find(b=>b.textContent===(complete?'已取得完整回复':'继续原联系'));assert.ok(start);assert.equal(start.disabled,complete||cancelled||stale);
+ if(mode==='waiting')assert.ok(buttons.some(b=>b.textContent==='撤回未发送请求'));
+});

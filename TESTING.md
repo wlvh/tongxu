@@ -58,9 +58,12 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
 | 项目补充与原实施 | A运行时收件，成功H1/资源后以新上下文消费并回原会话；取消/停止不续写，冷重开零输入 | `tests/project-repair/integration.test.ts` 新补充场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
 | 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
+| 秘书办理已审定工作 | 实际受限工具调用、完整origin输入、H1/同源报告、新聊天准确责任复用、并发登记、普通模式/参数拒绝、错来源、取消登记竞争/登记后关联保存中断、忙席位、旧取消项不改绑、同名目标/origin不符的读控拒绝、晚取消拒绝后的持续回流及冷重开零输入 | `tests/project-repair/integration.test.ts` 的 secretary work 场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
 | 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写；同项目拒绝经刷新仍可见，停止后从原按钮零输入查回同操作 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面同项目失败/跨项目迟到回复和停止准入见 `tests/w7/github-projects-ui.test.ts`，两组复用原页面 fixture |
 | 模型偏好进入执行 | 新选择随原 worker 输入固定，旧计划不改绑；不支持程序/模型拒绝 | `tests/w7/ai-workflow.test.ts`、`tests/w7/ai-settings.test.ts`、`tests/w7/additional-cli.test.ts` |
 | 有限联系 | 普通报告不发 B，合法选择才 A→B→A；不完整结果不推进 | `tests/w6/task-contact-choice.test.ts`；见 test:pair |
+| 联系原实施负责人 | A 实际在途时收 B 问题，完成 H1 或证明未变 H0 后只读回答并由原 B 消费；正常页面自动接续、撤回、自然费用等待后冷读零输入与显式继续；绑定后、领取前/发送前需求变化及已发后原捕获恢复；已排队A/回B经tasks或messages CLI、空/伪造checker在来源变化/未变时均零新增，正常宿主与CLI竞争仍只消费一次；来源/暂存/捕获变化拒绝 | `tests/project-repair/integration.test.ts` 的 original owner feedback 场景（真实 Docker、协议模型），`tests/w6/message-resources.test.ts` 的旧运行/待结资源不受新输入门槛阻断，`tests/w7/github-projects-ui.test.ts` |
+| 已登记但从未领取的未发撤回 | before-claim需求变化后正常HTTP撤回、重复/冷开/继续零新增，原申请保留、阶段/待办结束、后续同责任可准备；取消先于claim最后登记时普通coordinate也拒绝领取，旧取消阶段不挡新合法消息；曾派发但证明未启动/失claim回执仍核原事实，held只结原claim | 扩展同一 `tests/project-repair/integration.test.ts` before-claim场景及 `tests/w6/message-resources.test.ts` 原provider/消息fixture，不新增测试平台 |
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |
 | 阶段前置 | 精确生产者材料与消费证据齐备才开始依赖阶段；独立调查不被错误阻断 | `tests/coordination/contract.test.ts`、`tests/coordination/feedback.test.ts` |
 | 启动与依赖 | 旧 Node/缺 SQLite 能力拒绝；程序升级不成为版本白名单；应用资产变化先于导入拒绝 | `tests/w7/workbench-launch.test.ts`、`tests/w4/external-dependencies.test.ts` |
@@ -68,6 +71,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 可稳定复现的 bug 优先保留修复前失败输入，再修实现；无法自动复现时保存失败证据与原因。先复用或扩展现有测试，只有独立覆盖缺口才增加新测试。无 test diff 时说明具体既有覆盖及重跑结果；文档-only 检查不能冒充运行验证。跨模块变化要有实际组合场景，各层分别通过不够。
 
 初次 Issue 实施的受影响组合沿 `tests/project-repair/integration.test.ts` 运行，需上表同一真实 Docker 配置/镜像；包含正常项目 HTTP 入口、原授权/资源、两次合法写入、实际注册测试和宿主 H1，模型为明确程序样例。页面脚本场景在 `tests/w7/github-projects-ui.test.ts`。真实浏览器与正常入口真实 Codex 分开留证，不能以这些组件场景代填。
+
+实施报告的 `candidateH` 固定最初 H0，临时受测提交与宿主 H1 分开。`tests/w5/implementation-native-profile.test.ts` 核单值输出约束、旧捕获兼容，以及错误角色/H0、额外字段和扩大决定范围在发送前拒绝；真实实施/测试/提交和秘书、原负责人组合继续沿 `tests/project-repair/integration.test.ts`，不以该协议组代替真实模型结果。
 
 该组合还覆盖两处确证未发等待：席位忙登记后释放、最终来源刷新失败只留下原输入；热重试/冷重开均沿原 ID、任务和材料到 H1，原资源只领取/结算一次。补准备前取消/停止、输入或文件/暂存变化、原生启动证据和竞争写者仍须零派发；已发未知继续只查原现场。页面脚本核 registered 的同 ID 补准备、重复点击和项目切换。扩展原 fixture，不另建恢复测试框架。 同一忙席位场景参数化普通请求/补充请求，核 H1/原责任/补充原文、热/新服务实例补准备和原会话完整回流；同名普通请求碰撞时开始与取消均拒绝、原请求与输入计数不变。正确绑定读回及同 ID 改目标/原文的拒绝沿该场景验证。
 
@@ -98,6 +103,8 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 
 
 ## 正式 PR 外层流程（Issue #72）
+
+`formal-kimi.test.ts` 复用实际项目设置/正式控制器及已有 ACP fixture，检查能力检测零模型输入、角色保存与请求冻结、完整同批原文回同一 fact、旧请求不改绑、原资源领取与结算，以及最后异步边界的来源/配置/停止/资源变化。错误会话/模型、工具、部分回复、缺 finding 和损坏捕获不能完成或冷重发；首次实际 profile 延迟仅有界等待。该文件的整轮正例仍需要下述 Docker 配置。样例 CLI 均明确为样例；真实 Kimi 影响消费者捕获、整轮其他真实角色和本人接受分别记录，不把 ACP 样例或外部工程审定当作真实软件调用。
 
 构建后可单独运行 `node --test dist/tests/w5/formal-*.test.js dist/tests/w7/formal-workbench.test.js`。包含同会话写入、发布后新候选自动验证的场景需要已有 `TONGXU_TEST_DOCKER_CONFIG` 和可用 Docker；模型是明确的协议样例。验证内容包括完整 PR/额外调用方、直接 PASS 与仅 P2 的零额外输入、空 finding 缺证据、整批双验证、三轮分歧、未变候选反证回流、同 fact session/thread 修复、实际 Git/测试树、准确发布记录、祖先/分叉 B 下的自动新候选采集及已有材料完整再审、项目查询失效时本地停止、离线冷重开与错误账号/项目/入口拒绝、旧无绑定原请求的明确退化和零新增输入、停止与冷读不重发、在途 H/B/target 变化及原容器结束证据。新候选材料沿原 collect/verify/readPacket/import，不伪造 W2。
 

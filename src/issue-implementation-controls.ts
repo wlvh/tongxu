@@ -1,3 +1,4 @@
+import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
 import {mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
@@ -16,7 +17,8 @@ import {prepareResourceRequest,resourceAction} from './resource-claims.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectRequest} from './project-repair.js';
-import type {SupplementTarget} from './project-chat.js';
+import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
+import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
 type Issue={number:number;title:string;body:string;url:string};
@@ -51,13 +53,14 @@ export class IssueImplementationControls{
       throw error;
     }
   }
-  private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void}){
+  private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
     await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
     const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined;
     try{const previous=previousQueue.issueImplementations().requests(id).find(r=>r.id===body.requestId);if(previous){
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
       original=previousQueue.issueImplementations().original(id,body.requestId);
+      if(work?.origin&&canonical(original.origin??null)!==canonical(work.origin))throw new Error('implementation_request_id_is_fixed');
       if(original.continuation)await this.checkSupplementPredecessor(id,original,previous.phase==='registered'&&!previous.stopped);
       if(previous.phase!=='registered'||previous.stopped)return this.publicState(previous);
       if(original.continuation)entry={...entry,H0:original.workspaceRequest.candidate.H,objects:original.workspaceRequest.objects};
@@ -70,23 +73,78 @@ export class IssueImplementationControls{
     const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'];try{const authority=scopeQueue.authority(),adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
     const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[]};
     const continuation=original?.continuation??followup?.continuation;
-    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...(continuation?{continuation}:{})};
+    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
     if(original&&canonical(request)!==canonical(original))throw new Error('implementation_request_id_is_fixed');
     const executorBytes=await regular(entry.config.path);if((JSON.parse(executorBytes.toString()).executionKind??'native_capture')!==entry.executionKind)throw new Error('implementation_executor_kind_mismatch');
     if(hash(executorBytes)!==entry.config.sha256)throw new Error('implementation_executor_changed');
     await mkdir(entry.root,{recursive:true,mode:0o700});await privateDirectory(entry.root,false);const prepared=await prepareIssueImplementation(entry.config.path,request,root),planBytes=await regular(prepared.plan),observation=await observeTaskWorkspace(definition);
     const q=await QueueStore.open(entry.store);
     try{
-      followup?.beforeRegistration();q.registerIssueImplementation(id,request,definition,observation);
+      followup?.beforeRegistration();q.registerIssueImplementation(id,request,definition,observation,work?currentAdoption=>{
+        work.beforeRegistration();if(currentAdoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');if(work.uniqueFirst){const existing=this.projectWorkOriginal(q,id,entry,body.issueNumber,currentAdoption!);if(existing&&existing.id!==body.requestId)throw new Error('implementation_project_work_original_exists');}
+      }:undefined);
+      work?.afterRegistration();
       const current=q.tasks().current(task),candidate=current.manifest.candidate,authority=q.authority(),baseline=authority.forScope(current.context.scope.id,{item:task,target:definition.target}),adoption=baseline.currentAdoption;
       if(!adoption||adoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');
       const adoptedScope=authority.inspectRecordedDecision(adoption).proposal as Row,scopeBodySha256=hash(canonical(adoptedScope.body));
       const prefix='implementation-'+hash(canonical([id,body.requestId])).slice(0,40),implementIntent=prefix+'-implement',testIntent=prefix+'-test';
       const action=(kind:'implement'|'test'):ActionRequest=>({schemaVersion:1,scopeId:current.context.scope.id,scopeVersion:current.context.scope.version,scopeBodySha256,repository:entry.repository,target:definition.target,action:kind,item:task,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},paths:kind==='implement'?entry.allowedPaths:entry.materialPaths,resourceRefs:entry.budgets.filter(b=>b.action===kind).map(b=>b.resourceRef),...(kind==='test'?{payloadSha256:entry.testPlanSha256}:{})});
       const actions={implement:action('implement'),test:action('test')};
-      return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.sha256,path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request}));
+      work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.sha256,path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request}));
     }finally{q.close();}
   }
+  private projectWorkOriginal(q:QueueStore,id:string,entry:Entry,issueNumber:number,adoption?:string){
+    const adopted=entry.approvedIssues.find(i=>i.number===issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
+    const matches=q.issueImplementations().requests(id).filter(s=>{
+      const r=q.issueImplementations().original(id,s.id);if(r.continuation||s.issue!==issueNumber||s.result?.status==='cancelled_unstarted'||r.issue.bodySha256!==adopted.bodySha256||r.workspaceRequest.candidate.H!==entry.H0||r.workspaceRequest.objects!==entry.objects)return false;
+      return (adoption??q.authority().forScope(entry.context.scope.id,{item:s.task,target:entry.target}).currentAdoption)===r.adoptedScope.adoption;
+    });
+    if(matches.length>1)throw new Error('implementation_project_work_original_ambiguous');return matches[0]??null;
+  }
+  private projectWorkState(q:QueueStore,entry:Entry,issueNumber:number,request:ProjectWorkRequest){
+    const {origin,original}=request;if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');
+    const requestId=original?.requestId??origin.requestId,state=q.issueImplementations().requests(entry.id).find(s=>s.id===requestId);
+    if(!state){if(original)throw new Error('project_work_original_not_registered');return null;}
+    const fixed=q.issueImplementations().original(entry.id,requestId),definition=q.tasks().definition(fixed.task);
+    if(fixed.continuation||state.issue!==issueNumber||definition.repository.toLowerCase()!==entry.repository.toLowerCase()||definition.target!==entry.target||
+      (original?.linked?requestId===origin.requestId:requestId!==origin.requestId||canonical(fixed.origin??null)!==canonical(origin)))throw new Error('project_work_original_mismatch');
+    return state;
+  }
+  /** Only a saved user work request calls this host consumer. Original task
+   * registration remains the final serial check, including concurrent chats. */
+  async coordinateProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void){
+    const {origin}=request;if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');await this.catalog();await this.verify();const entry=this.entry(id);
+    for(let attempt=0;attempt<2;attempt++){
+      const q=await QueueStore.open(entry.store);let previous:Row|null,link:ProjectWorkLink;try{
+        previous=this.projectWorkState(q,entry,issueNumber,request)??this.projectWorkOriginal(q,id,entry,issueNumber);
+        link={requestId:previous?.id??origin.requestId,linked:!!previous&&previous.id!==origin.requestId};
+        if(previous)this.projectWorkState(q,entry,issueNumber,{origin,original:link});
+      }finally{q.close();}
+      checkpoint(previous?link:undefined);
+      let prepared:Row;try{prepared=await this.prepareSelected(id,{requestId:link.requestId,issueNumber},undefined,{...(link.linked?{}:{origin}),beforeRegistration:()=>checkpoint(),afterRegistration:()=>checkpoint(link),uniqueFirst:!previous});}
+      catch(error){if((error as Error).message==='implementation_project_work_original_exists'&&attempt===0)continue;throw error;}
+      checkpoint(link);if(!prepared.status&&!prepared.stopped)await this.begin(id,link.requestId);return link;
+    }
+    throw new Error('implementation_project_work_original_changed');
+  }
+  async readProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row,resourcesSettled=false;try{const checked=this.projectWorkState(q,entry,issueNumber,request);if(!checked)return null;s=checked;if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,s.id,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
+    const requestId=s.id;
+    // Capture liveness alongside the resource snapshot. Reading the complete
+    // report may yield while the controller settles resources and exits.
+    const state=this.publicState(s),report=s.result?.completeCapture?await this.report(id,requestId):null;
+    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false};
+  }
+  async cancelProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
+    // Even without a saved chat link, inspect the queue after the cancellation
+    // fence. Registration may have committed in the other database. A matching
+    // ID is only a lookup hint; the immutable target/origin must also match.
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}
+    if(!s)return {cancelled:true,originalRegistered:false,newModelInputs:0};
+    if(s.result&&s.result.status!=='cancelled_unstarted')throw new Error('project_work_original_already_ended');
+    return {cancelled:true,originalRegistered:true,original:await this.cancel(id,s.id),newModelInputs:0};
+  }
+  async stopProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}if(!s)throw new Error('project_work_original_not_registered');return this.stop(id,s.id);}
   private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??null,stopped:s.stopped,completeCapture:s.result?.completeCapture===true};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
@@ -132,12 +190,19 @@ export class IssueImplementationControls{
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const state=q.issueImplementations().state(id,requestId);if(!state.result){if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
-    if(state.result.completeCapture){
-      const capture=await readRepairSession(join(state.plan.operationRoot,'implementer')),manifest=JSON.parse((await regular(join(state.plan.operationRoot,'input-manifest.json'))).toString()),{inputManifestSha256,...original}=manifest;
-      if(hash(canonical(original))!==inputManifestSha256||capture.binding.inputManifestSha256!==inputManifestSha256||capture.binding.role!=='implementer'||capture.binding.sessionId!==state.result.sessionId||manifest.planSha256!==state.plan.sha256||canonical(manifest.request)!==canonical(state.plan.request)||canonical(JSON.parse(capture.turns.at(-1)!.final!.text))!==canonical(state.result.report))throw new Error('implementation_original_capture_changed');
-    }
-    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,...state.result};
+    return readImplementationResult(state);
   }finally{q.close();}}
+  async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){
+    if(!implementationOwnerTarget(target))throw new Error('owner_feedback_target_invalid');await this.catalog();await this.verify();const entry=this.entry(target.source);if(entry.store!==store)throw new Error('owner_feedback_target_queue_mismatch');
+    const q=await QueueStore.open(store);try{const s=q.implementationOwnerSnapshot(target);if(s.state.task!==target.task||s.state.operation!==target.operation||s.state.requestSha256!==target.requestSha256||s.definition.repository.toLowerCase()!==entry.repository.toLowerCase()||canonical(s.definition.context.scope)!==canonical(entry.context.scope))throw new Error('owner_feedback_original_target_changed');return {target,logicalOwner:s.state.logicalOwner};}finally{q.close();}
+  }
+  async ownerFeedbackProof(store:string,target:ImplementationOwnerTarget):Promise<ImplementationOwnerProof>{
+    await this.ownerFeedbackTarget(store,target);const q=await QueueStore.open(store);try{
+      const snapshot=q.implementationOwnerSnapshot(target),issue=await this.read(snapshot.request.issue.number);
+      if(hash(issue.body)!==snapshot.request.issue.bodySha256)throw new Error('owner_feedback_adopted_requirement_changed');
+      const proof=await readImplementationOwnerProof(snapshot);q.tasks().observe(proof.definition,proof.observation);return proof;
+    }finally{q.close();}
+  }
   private async checkSupplementPredecessor(source:string,request:ImplementationRequest,current=true){
     const continuation=request.continuation!;
     const target=continuation.originalTarget,entry=this.entry(source),q=await QueueStore.open(entry.store);try{
