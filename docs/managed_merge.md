@@ -41,11 +41,17 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 能力回答必须来自实际启动和完整捕获，绑定准确仓库、目标、独立 actor 和同步 head 条件。序列化 JSON 或模型报告无法导入为这次能力证明。这里仍以**固定受管程序及其部署**为信任边界：它必须如实报告并实施自己的身份、权限和无绕过行为，字符串 `isolated_publisher` 本身不构成外部身份认证。测试只安装明确 fixture 程序，真正访问本地 HTTP 假服务，未据此宣称实际 GitHub 身份已核。
 
+规则集独立生效而没有旧版（classic）保护时，部署方可在原格式1配置中登记可选 `credentialKind`，仅支持 `github_app_installation`、`github_app_user`、`fine_grained_pat`。这表示部署方已经核实实际凭据类别，并保证同次核查的所有请求使用同一凭据；配置声明不能单独证明身份或权限。传统 OAuth/classic token 或未核实类别不能使用下面的跨接口证明。无此字段的旧配置仍可解析、仍可使用正常 classic200 路径，不静默推断其凭据类别。
+
 ## 发送前与发送后的判断
 
 发送前分开核 repository/PR、直接目标引用前后两次读取、branch/protection、适用 active rules、完整有界 check/status/review 分页。required check 绑定提供它的 app；计入当前 H 的审批还读取审核者的仓库权限，不能用旁观者 APPROVED 凑数。REST PR 历史 base 仅保留为 prReportedBase，不替代直接目标引用。原事实发布器也采用同一分离原则，仍只发布评论/status，不获得 merge 端点。
 
-当前有限规则实现支持 PR 审批数量、准确 app/context 检查、禁止删除/强推规则。Code Owners、指定团队审核、最后推送者、讨论解决、签名、部署、merge queue、线性历史及其他未知语义会给出具体缺项。保护接口 404 不当作“没有保护”而放行；缺页也不是空集合。不修改设置。GitHub 在请求时的服务端规则执行仍不可省略。
+当前有限规则实现支持 PR 审批数量、准确 app/context 检查、禁止删除/强推规则。Code Owners、指定团队审核、最后推送者、非零审批下对无法归属修改的额外批准、讨论解决、签名、部署、merge queue、线性历史及其他未知语义会给出具体缺项。不修改设置。GitHub 在请求时的服务端规则执行仍不可省略。
+
+保护接口的通用404仍不能当作“没有保护”。只有本次分支 `protected=true`、唯一完整非分页 classic404 对象的 `message` 精确为 `Branch not protected`，并且原部署明确登记上述受支持凭据类别时，才追加同仓库固定 `GET /repos/{owner}/{repo}/actions/permissions`。该接口对这些凭据要求 Administration repository read；本次同一发布程序、同一候选和同一凭据取得唯一完整非分页200对象，且 `enabled` 是布尔值，才能把前一份404解释为没有classic保护。`enabled=false` 也有效，不需要开启 Actions。传统OAuth/classic的repo scope返回200不用于这项管理权限推论。
+
+这一保守文案白名单不是GitHub永久返回格式承诺，变化或未知继续拒绝。缺失、403、未知404、错误JSON/字段、重复、错候选及分页均不能完成证明；classic200不请求新增端点。证明只消除classic缺项，有效规则完整性、PR/检查/批准、当前H/B/目标、原Owner/资源/停止和无绕过条件仍全部生效；规则读取并非原子快照。固定发布程序及其部署必须真实保持凭据不切换，程序没有因接口响应而取得新的凭据或合并权。真实独立发布程序尚未装配时仍不可用，不能借个人gh的调查结果替代。
 
 完整 provider 原字节逐份保存为 blob；preflight/readback 索引仅保留摘要、字节数、请求、捕获位置和时间，不把 Buffer 展成逐字节 JSON。原大页不截断、不降低既定页数/单响应上限。实际版本补验材料从准确原引用读取完整 UTF-8 回执，保留来源而不复制数字键表示。
 
@@ -73,6 +79,10 @@ base/tree 变化时，用 `validation-input` 取得完整原回读材料，交�
 
 `npm run test:merge` 使用明确假 Owner/账本/发布者/模型消息。实际 child、SQLite、HTTP、互斥与强杀恢复会执行；没有 GitHub mutation 或供应商模型请求。测试包括真实两个 CLI 竞争、已作用后丢响应、原控制器强杀后的未启动恢复、范围/规则/来源/证据缺项、实际版本补验消费以及原资源结算。补验的 W2 材料和模型判断仍明确 fixture，不能写成真实生产验证。相关原有 Docker 回归继续使用已有安全配置。
 
+GR01—GR04沿同一套件覆盖仅规则集的零批准规则、关闭Actions的有效读取、无类别旧配置/classic200零新请求，以及错误/残缺/重复/错候选的证明仍拒绝；实际本地HTTP合并仍只一次PUT、原回读和失回执零重发。样例中凭据类别明确是测试声明，不证明生产部署；一次调查者个人gh只读200也不进入产品权限证据。
+
 真实独立写身份、Owner 采用/授权、真实原资源接口、治理启用和任何生产合并仍未执行。组合的实际集成写入、完整任务/角色发送与 UI 控制继续按原 Issues 推进。本子范围完成不关闭全部 Issue 或 T01–T52。
 
 接口依据仅用于核对协议：[同步 merge](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)、[保护读取](https://docs.github.com/en/rest/branches/branch-protection#get-branch-protection)、[适用规则](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch)、[check runs](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)。真实支持范围以本模块实现、测试与明确缺项为准。
+
+跨接口读取权限依据：[仓库Actions策略读取](https://docs.github.com/en/rest/actions/permissions#get-github-actions-permissions-for-a-repository)。这里仅使用GET验证读取能力，未开放策略写入。

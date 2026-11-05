@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseMergeBinding,mergePayload,inspectMergeCurrent,inspectMergeResponse,inspectMergedResult,type ManagedMergeBinding,type MergeWire } from '../../src/merge-contract.js';
+import {parseMergeProfile,mergeCommand,mergeHttpRequest,type MergeProfile} from '../../src/merge-provider.js';
 
 const H='a'.repeat(40),B='b'.repeat(40),T='c'.repeat(40),M='d'.repeat(40),later='e'.repeat(40);
 const binding:ManagedMergeBinding={schemaVersion:1,operation:'00000000-0000-4000-8000-000000000001',item:'a'.repeat(64),packet:1,repository:'fixture/merge',repositoryId:10,pr:4,H,B,targetRef:'main',T,receptionOperation:'00000000-0000-4000-8000-000000000002',judgmentId:'explicit-fixture-judgment',receptionBindingHash:'b'.repeat(64),authorityIntent:'explicit-fixture-permission',resourceRequests:['c'.repeat(64)],scope:{id:'scope',version:'S1',bodySha256:'d'.repeat(64)},arrangement:{id:'team',version:'r1'},subjectSha256:null,integrationReference:null,method:'merge'};
@@ -9,6 +10,14 @@ const ref=(sha:string)=>wire({ref:'refs/heads/main',object:{type:'commit',sha}})
 const pr=(merged=false)=>({number:4,state:merged?'closed':'open',draft:false,merged,mergeable:true,merge_commit_sha:merged?M:null,merged_by:merged?{id:12}:null,head:{sha:H,repo:{id:10}},base:{ref:'main',sha:'0'.repeat(40),repo:{id:10,full_name:'fixture/merge'}}});
 const commit=()=>({sha:M,tree:{sha:T},parents:[{sha:B},{sha:H}],message:'tongxu: receive PR #4\n\n'+mergePayload(binding).commit_message});
 const result=()=>({pr:wire(pr(true)),commit:wire(commit()),targetBefore:ref(M),targetAfter:ref(M),expectedActorId:12});
+test('administration proof is one fixed read and credential declarations only narrow its supported use',()=>{
+  const p:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:binding.repository,repositoryId:10,targets:['main'],actorId:12,executable:'/explicit-fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000};
+  assert.deepEqual(parseMergeProfile(Buffer.from(JSON.stringify(p))),p);
+  for(const kind of ['github_app_installation','github_app_user','fine_grained_pat'])assert.equal(parseMergeProfile(Buffer.from(JSON.stringify({...p,credentialKind:kind}))).credentialKind,kind);
+  for(const kind of ['oauth','classic','unknown',true,null])assert.throws(()=>parseMergeProfile(Buffer.from(JSON.stringify({...p,credentialKind:kind}))),/managed_publisher_profile_invalid/);
+  const command=mergeCommand(binding,'read',{kind:'administration'});assert.deepEqual(mergeHttpRequest(command),{method:'GET',path:'/repos/fixture/merge/actions/permissions',body:null});
+  for(const read of [{kind:'administration',page:2},{kind:'administration',commit:H},{kind:'administration',tip:H},{kind:'administration',reviewer:'other'}])assert.throws(()=>mergeHttpRequest(mergeCommand(binding,'read',read as any)));
+});
 test('current direct target ref binds B while historical PR base remains separately reported',()=>{
   const checked=inspectMergeCurrent(binding,wire(pr()),ref(B),ref(B));assert.equal(checked.candidateMatches,true);assert.equal(checked.prReportedBase,'0'.repeat(40));assert.equal(checked.permissionGranted,false);
   assert.ok(inspectMergeCurrent(binding,wire(pr()),ref(B),ref(later)).gaps.includes('target_moved_during_preflight'));

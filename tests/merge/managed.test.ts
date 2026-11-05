@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ready } from './fixture.js';
+import { ready,rulesetOnly } from './fixture.js';
 import { managedMergeAction,prepareManagedMerge,validateManagedMerge } from '../../src/managed-merge.js';
 import { inspectMergePreflight } from '../../src/merge-preflight.js';
 import { callMergeProvider,mergeCommand,mergeHttpRequest,requireMergeObservation } from '../../src/merge-provider.js';
@@ -43,6 +43,18 @@ test('lost HTTP reply after an actual fixture merge stays unknown; readback reco
   assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
   f.adopt({kind:'revoke',decision:f.confirmation.sha});writeFileSync(f.sourcePath,'{}');
   const done=await managedMergeAction(f.store,f.operation,'reconcile');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.newMergeCall,false);assert.equal(f.publisher.state().merges,1);assert.equal(f.ledger.state().settlements.length,1);
+});
+test('ruleset-only proof reaches the original one-PUT consumer and lost-reply recovery without replay',async t=>{
+  for(const mode of ['normal','lost-after-merge']){
+    const f=await ready(t,mode,'github_app_installation');const paths=rulesetOnly(f);
+    if(mode==='normal'){
+      f.publisher.setReply(paths.administration,{message:'Forbidden'},403);const blocked=await managedMergeAction(f.store,f.operation,'run');assert.ok('preflight' in blocked);assert.ok(blocked.preflight.gaps.includes('classic_protection_unavailable'));assert.equal(blocked.newMergeCall,false);assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,0);
+      f.publisher.setReply(paths.administration,{enabled:false});assert.equal((await managedMergeAction(f.store,f.operation,'run')).merge.phase,'exact_merge_result_verified');
+    }
+    else {await assert.rejects(managedMergeAction(f.store,f.operation,'run'),/execution_incomplete/);assert.equal(f.q.merges().status(f.operation).merge.phase,'sent_unknown');assert.equal((await managedMergeAction(f.store,f.operation,'reconcile')).merge.phase,'exact_merge_result_verified');}
+    const count=f.publisher.requests.length;assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);assert.equal(f.publisher.requests.length,count);
+    assert.equal(f.publisher.requests.filter(r=>r.path===paths.administration).length,mode==='normal'?2:1);const puts=f.publisher.requests.filter(r=>r.method==='PUT');assert.equal(puts.length,1);assert.equal(JSON.parse(puts[0]!.body).sha,f.binding.H);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
+  }
 });
 test('changed actual base/tree keeps target occupied for actual-version verification; wrong target is never repaired by a PASS',async t=>{
   for(const mode of ['base-race','tree-race','wrong-target']){

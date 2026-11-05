@@ -9,7 +9,7 @@ import type { MergeProfile } from '../../src/merge-provider.js';
 
 /** Real child process + HTTP requests to an explicit local fake provider.
  * No supplier, GitHub mutation, credential or real merge. */
-export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal',actualFixtureMerge?:()=>Promise<string>){
+export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind']){
   const root=await mkdtemp(join(await realpath(tmpdir()),'tongxu-merge-http-fixture-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const requests:Array<{method:string;path:string;body:string;headers:Record<string,unknown>}>=[];
   const overrides=new Map<string,{value:unknown;status:number;nextPage:boolean}>();
@@ -50,6 +50,6 @@ let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',async()=>
 if(c.command==='capabilities'){result=await (await fetch(${JSON.stringify(origin+'/capabilities')})).json();}else{const q=mergeHttpRequest(c),r=await fetch(${JSON.stringify(origin)}+q.path,{method:q.method,...(q.body?{body:q.body}:{}),redirect:'error'});result={kind:'http',status:r.status,body:await r.text(),nextPage:Boolean(r.headers.get('link')?.includes('rel="next"'))};}
 console.log(JSON.stringify({protocol:c.protocol,inputSha256:hash(canonical(c)),result}));}catch(e){console.error('explicit fixture transport failed');process.exitCode=1;}});`;
   await writeFile(executable,source,{mode:0o700});
-  const profile:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:b.repository,repositoryId:b.repositoryId,targets:[b.targetRef],actorId:33,executable,executableSha256:hash(source),executionKind:'fixture',timeoutMs:5000};
+  const profile:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:b.repository,repositoryId:b.repositoryId,targets:[b.targetRef],actorId:33,executable,executableSha256:hash(source),executionKind:'fixture',timeoutMs:5000,...(credentialKind?{credentialKind}:{})};
   return {root,profile,requests,state:()=>({mode,merged,merges,actualBase,actualTree,target,M}),setMode:(value:string)=>{mode=value;},setReply:(path:string,value:unknown,status=200,nextPage=false)=>overrides.set(path,{value,status,nextPage}),env:async()=>JSON.parse((await readFile(envPath)).toString())};
 }

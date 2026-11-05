@@ -13,6 +13,20 @@ const decode = (r:MergeReadRecord) => {
   const w=mergeWire(r.observation); if(w.status!==200)throw new Error('unavailable');
   return JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(w.body));
 };
+// A permission-masked 404 is never an empty protection policy. This narrowly
+// supported absence proof also needs a live Administration(read) observation
+// from a publisher whose deployment verified its fine-grained credential class.
+const administrationCredential=(p:MergeProfile)=>['github_app_installation','github_app_user','fine_grained_pat'].includes(p.credentialKind??'');
+function singleObject(records:MergeReadRecord[],b:ManagedMergeBinding,kind:MergeRead['kind'],status:number):Row|null{
+  try{
+    const rs=records.filter(r=>r.command.read?.kind===kind);if(rs.length!==1)return null;
+    const r=rs[0]!,v=r.observation.reply.result;
+    if(canonical(r.command)!==canonical(mergeCommand(b,'read',{kind}))||v.kind!=='http'||v.status!==status||v.nextPage)return null;
+    const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(mergeWire(r.observation).body));
+    return body&&typeof body==='object'&&!Array.isArray(body)?body:null;
+  }catch{return null;}
+}
+const knownClassicAbsence=(records:MergeReadRecord[],b:ManagedMergeBinding)=>singleObject(records,b,'protection',404)?.message==='Branch not protected';
 
 /** A bounded set of rule semantics. Unsupported rules remain visible gaps;
  * GitHub's own enforcement remains necessary after this non-atomic read. */
@@ -54,6 +68,7 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
     if(r.require_last_push_approval===true)gaps.push('last_pusher_identity_not_supported');
     if(r.required_review_thread_resolution===true)gaps.push('review_thread_resolution_not_supported');
     if(r.required_reviewers?.length)gaps.push('required_team_reviewers_not_supported');
+    if(r.require_extra_approval_for_unattributed_changes===true&&r.required_approving_review_count>0)gaps.push('unattributed_extra_approval_not_supported');
     if(r.allowed_merge_methods!==undefined&&(!Array.isArray(r.allowed_merge_methods)||!r.allowed_merge_methods.includes('merge')))gaps.push('merge_commit_not_allowed_by_rule');
   };
   if(branch?.protected===true){
@@ -79,7 +94,7 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
       // server configuration would allow it. Unknown bypass settings fail shut.
       const bypass=v.required_pull_request_reviews?.bypass_pull_request_allowances;
       if(bypass&&(!['users','teams','apps'].every(k=>Array.isArray(bypass[k]))||Object.values(bypass).some((a:any)=>!Array.isArray(a)||a.length)))gaps.push('classic_bypass_allowance_present_or_unknown');
-    } else gaps.push('classic_protection_unavailable');
+    } else if(!administrationCredential(p)||!knownClassicAbsence(records,b)||typeof singleObject(records,b,'administration',200)?.enabled!=='boolean')gaps.push('classic_protection_unavailable');
   }
   for(const rule of rules){
     if(typeof rule.type!=='string'||!Number.isSafeInteger(rule.ruleset_id)||rule.ruleset_id<=0){gaps.push('active_rule_source_unknown');continue;}
@@ -139,6 +154,7 @@ export async function inspectMergePreflight(p:MergeProfile,b:ManagedMergeBinding
   // identities never become inferred approvals when this read bound is hit.
   for(const reviewer of [...reviewers].slice(0,32))await capture(mergeCommand(b,'read',{kind:'reviewer',reviewer}));
   await capture(mergeCommand(b,'read',{kind:'protection'}));
+  if(singleObject(records,b,'branch',200)?.protected===true&&administrationCredential(p)&&knownClassicAbsence(records,b))await capture(mergeCommand(b,'read',{kind:'administration'}));
   await capture(mergeCommand(b,'read',{kind:'target'}));
   const value=Object.freeze({profileSha256:hash(canonical(p)),bindingSha256:hash(canonical(b)),records,result:evaluateMergePreflight(p,b,records),checkedAt:new Date().toISOString()});
   preflights.add(value);return value;
