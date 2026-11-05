@@ -4,6 +4,7 @@ import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {BoundedCodexSession,findingSchema} from './repair-native.js';
 import {runClaude,readClaudeExecution} from './live-claude.js';
+import {runFormalKimiImpact} from './formal-kimi.js';
 import {regular,exists,type RepairTools} from './repair-workspace.js';
 import type {RepairConfig} from './repair.js';
 import type {FormalStage} from './formal-review-store.js';
@@ -55,9 +56,16 @@ export async function runFormalReviewRound(host:FormalRoundHost){
   const impact=async(round:number,batch:ReturnType<typeof formalBatch>,review:FormalReview,exchange?:Row)=>{
     const input=evidence(round?'Recheck only the actual disagreements using the exchanged code/test/Issue evidence. Return the complete SAME batch; do not vote by model identity.':'Independently verify the impact of every P0/P1 in this one exact batch. This is a NEW independent context. Initial factual conclusions are deliberately not supplied. Return one JSON object matching responseShape, preserving every finding ID.',{material,review,batch,...(exchange?{exchange}:{}),responseShape:formalVerificationSchema}),old=await host.original(key('impact-'+round),input,host.systems.impact);if(old)return {value:parseImpact(old.finalText,batch),sessionId:old.sessionId,finalText:old.finalText};
     const stage=await host.prepare(key('impact-'+round),'verifier_impact',input,host.systems.impact,'analysis');host.activate(stage);if(await exists(stage.directory))throw new Error('formal_original_native_unknown_no_resend');
-    const result=await runClaude({...selectedProviderOptions(host.aiSelections?.verifier_impact, 'claude', config.claudeExecutable),directory:stage.directory,system:host.systems.impact,input,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture',refreshBeforeDispatch:()=>host.refresh(stage),dispatchGate:effect=>host.submit(stage,effect)}),checked=await readClaudeExecution(stage.directory);
-    if(checked.inputSha256!==hash(input)||checked.systemPromptSha256!==hash(host.systems.impact)||checked.rawSha256!==result.rawSha256)throw new Error('formal_original_impact_input_changed');
-    const value=parseImpact(checked.finalText,batch),originals:Record<string,Buffer>={};for(const name of ['stdin.ndjson','stdout.ndjson','completed.json','executable.json','launch.json','process.json','exit.json','capture-status.json'])originals[name]=await regular(join(stage.directory,name),16*1024*1024);
+    const choice=host.aiSelections?.verifier_impact;let checked:{inputSha256:string;systemPromptSha256:string;rawSha256:string;finalText:string;sessionId:string;protocol:string},originals:Record<string,Buffer>={};
+    if(choice?.tool==='kimi'){
+      const result=await runFormalKimiImpact({executable:choice.executable,aiModel:{model:choice.model,effort:choice.effort},directory:stage.directory,system:host.systems.impact,input,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture'},()=>host.refresh(stage),()=>{host.submit(stage,()=>{});});checked=result;originals=result.originals;
+    }else{
+      const result=await runClaude({...selectedProviderOptions(choice,'claude',config.claudeExecutable),directory:stage.directory,system:host.systems.impact,input,timeoutMs:config.timeoutMs,executionKind:config.executionKind??'native_capture',refreshBeforeDispatch:()=>host.refresh(stage),dispatchGate:effect=>host.submit(stage,effect)});checked=await readClaudeExecution(stage.directory);
+      if(checked.rawSha256!==result.rawSha256)throw new Error('formal_original_impact_input_changed');
+      for(const name of ['stdin.ndjson','stdout.ndjson','completed.json','executable.json','launch.json','process.json','exit.json','capture-status.json'])originals[name]=await regular(join(stage.directory,name),16*1024*1024);
+    }
+    if(checked.inputSha256!==hash(input)||checked.systemPromptSha256!==hash(host.systems.impact))throw new Error('formal_original_impact_input_changed');
+    const value=parseImpact(checked.finalText,batch);
     host.record(stage,{finalText:checked.finalText,sessionId:checked.sessionId,assessment:value},proof(stage,'verifier_impact',{native:{sessionId:checked.sessionId,protocol:checked.protocol}}),originals);return {value,sessionId:checked.sessionId,finalText:checked.finalText};
   };
   try{
