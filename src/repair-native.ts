@@ -43,6 +43,8 @@ export const findingSchema = {
 export const implementationSchema = {
   type:'object',properties:{candidateH:{type:'string'},decision:{type:'string',enum:['implemented','no_change','needs_owner']},report:{type:'string'}},required:['candidateH','decision','report'],additionalProperties:false
 };
+export const implementationOutputSchema=(candidateH:string)=>({...implementationSchema,properties:{...implementationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
+const isImplementationOutputSchema=(schema:unknown,candidateH:string)=>isDeepStrictEqual(schema,implementationSchema)||isDeepStrictEqual(schema,implementationOutputSchema(candidateH));
 export const reviewSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, verdict: { type: 'string', enum: ['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'] }, report: { type: 'string' }, findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, priority: { type: 'integer', enum: [0, 1, 2] }, description: { type: 'string' } }, required: ['id', 'priority', 'description'], additionalProperties: false } } }, required: ['candidateH', 'verdict', 'report', 'findings'], additionalProperties: false
 };
@@ -82,7 +84,7 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
     if(!report||Object.keys(report).sort().join()!=='consumed,messageId,report'||report.messageId!==(schema as any).properties.messageId.enum[0]||typeof report.report!=='string'||!report.report.trim()||!Array.isArray(report.consumed)||report.consumed.length>32||report.consumed.some((x:unknown)=>typeof x!=='string'||!/^[a-f0-9]{64}$/.test(x)))throw new Error('invalid_native_message_receipt');
     return;
   }
-  const secretary=isDeepStrictEqual(schema,secretarySchema),review=isDeepStrictEqual(schema,reviewSchema),implementation=isDeepStrictEqual(schema,implementationSchema);
+  const secretary=isDeepStrictEqual(schema,secretarySchema),review=isDeepStrictEqual(schema,reviewSchema),implementation=isImplementationOutputSchema(schema,candidate.H);
   if (report.candidateH !== candidate.H || typeof report.report !== 'string' || !report.report.trim()) throw new Error('structured_report_wrong_candidate');
   if (secretary) {
     if (!Array.isArray(report.observationIds) || !report.observationIds.length || report.observationIds.length > 8 || report.observationIds.some((x: any) => typeof x !== 'string' || !/^[a-f0-9]{64}$/.test(x)) || Object.keys(report).sort().join() !== 'candidateH,observationIds,report') throw new Error('invalid_secretary_report');
@@ -293,7 +295,7 @@ export class BoundedCodexSession {
   }
   private async runTurn(input: string, candidate: Candidate, schema: unknown) {
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
-    if ((this.o.role==='implementer')!==(schema===implementationSchema))throw new Error('native_implementation_output_profile_mismatch');
+    if ((this.o.role==='implementer')!==isImplementationOutputSchema(schema,candidate.H))throw new Error('native_implementation_output_profile_mismatch');
     if ((this.o.role === 'secretary') !== (schema === secretarySchema)) throw new Error('native_role_output_schema_mismatch');
     if (this.closed || this.boundaryFailure || this.binding.turnIds.length >= 8) throw new Error('native_turn_budget_or_closed');
     if(this.activeTurn||this.pendingTurn)throw new Error('native_turn_already_active');

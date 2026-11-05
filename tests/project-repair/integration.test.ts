@@ -245,6 +245,7 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
  if(result.status!=='completed')assert.fail(JSON.stringify(result));assert.equal(dispatches,1);assert.ok(checks>2);assert.notEqual(result.H1,result.H0);assert.equal(result.tests.passed,true);assert.equal(result.testCandidateBinding.testedTree,await git(workspace,['rev-parse',result.H1+'^{tree}']));
  assert.equal((await readdir(join(prepared.operation,'calls'))).filter(x=>x.endsWith('.json')).length,4);
  const capture=JSON.parse(await readFile(join(prepared.operation,'implementer','binding.json'),'utf8'));assert.equal(capture.role,'implementer');assert.equal(capture.turnIds.length,1);
+ const sent=(await readFile(join(prepared.operation,'implementer','stdin.ndjson'),'utf8')).trim().split('\n').map(s=>JSON.parse(s)),turn=sent.find(m=>m.method==='turn/start');assert.deepEqual(turn.params.outputSchema.properties.candidateH.enum,[result.H0]);assert.equal(result.report.candidateH,result.H0);assert.notEqual(result.report.candidateH,result.H1);
  assert.deepEqual(await tree(f.objects,true),sourceBefore);assert.equal(await git(f.objects,['rev-parse','HEAD']),f.request.candidate.H);assert.equal(result.formalReview,false);assert.equal(result.published,false);
  if(secret){
   const directories=await readdir(join(prepared.operation,'tests')),testDirectory=directories.find(name=>name.startsWith('tool-'))!;
