@@ -34,6 +34,7 @@
 | 查看权限与执行授权分开 | `workbench.ts` 的临时查看标识只保护本机入口；`authority-source.ts`、`authority-store.ts` 核本人来源、范围和委托。复制报告或 owner JSON 不能产生授权。见 `tests/authority/authority.test.ts`。 |
 | 已发送或原进程未知时先查原执行，不自动重发 | `project-chat.ts`、`managed-merge.ts` 查原捕获、PID 与响应；缺失进程证明保留 `unknown`。失去回执、换页面或升级 CLI 不等于从未发送。见 `tests/w7/project-chat.test.ts`、`tests/merge/managed.test.ts`。 |
 | 新动作重核阶段条件；新安排不追溯改变旧输入 | `coordination.ts`、`task-store.ts`、`scope-controls.ts` 和具体控制入口执行检查。生产者材料或停止条件不满足时暂停依赖动作。见 `tests/coordination/feedback.test.ts`、`tests/w7/scope-controls.test.ts`。 |
+| 完全独立的旧只读结果保持原出处 | `coordination.ts` 在新选择前调用 `CoordinationRecords.independentHistory`，仅为两侧均无共享、登记产物和依赖的未变任务走原消息的 recoverOnly。实际程序、角色提示、源与完整捕获/资源仍核对；不写当前反馈或授予执行权。公开语义见 `docs/task_coordination.md`。 |
 | 模型偏好不增加权限，已固定运行不追溯换绑 | `ai-settings.ts` 的项目偏好经执行边界保存；`ai-execution.ts` 和适配器核支持能力。错误模型/强度或不支持组合应拒绝，不静默换程序。见 `tests/w7/ai-settings.test.ts`、`tests/w7/ai-workflow.test.ts`。 |
 
 这些是有范围的实现与已有政策约束，不是对恶意宿主或全部未来 CLI 的保证。提示中的职责规则仍需执行层限制；`prompts/tool_policy.json` 自身标为设计约定，不能证明全部工具已经安装。

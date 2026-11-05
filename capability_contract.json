@@ -117,6 +117,20 @@
         "test_anchor": "tests/w5/formal-round.test.ts",
         "test_status": "component_validation_native_pending",
         "since": "2026-11-04"
+      },
+      {
+        "anchor_id": "CAPABILITY.coordination_independent_history",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按原Issue9 F12及docs/task_coordination.md的限定结果，既有有限协调入口仅为新旧两侧均无共享、登记产物或依赖且实际输入/程序/提示未变的独立任务回读原完整已结束结果；原消费/捕获/资源核清，historicalReuse保留旧出处，不伪称读过新安排或产生当前反馈/执行权。当前固定选择优先，最近匹配原件未知或损坏不补位重发。实现src/coordination.ts、src/coordination-store.ts；不完成其余F12、真实模型或本人接受。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/coordination/feedback.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-05"
       }
     ],
     "capability_boundaries": [

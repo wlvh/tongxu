@@ -76,6 +76,16 @@
 - **Acceptance assertion**：重复点击、仅 checks 更新、刷新或重开不新增模型输入，结束后读回同一操作的全文；技术接收不是正式 PR PASS 或本人接受。
 - **Evidence**：`tests/events/normal-entry.test.ts`、`tests/w7/github-projects-ui.test.ts` 与既有 `tests/w3/receiver-authority.test.ts`。新入口目前以明确协议样例验证，真实原生正常用户路径待验；[使用说明](docs/source_reception_entry.md)。
 
+### G. 回读独立任务的历史结论
+
+<!-- capability-anchor: CAPABILITY.coordination_independent_history -->
+- **User goal**：相关共享工作变化时，完全独立且未变的任务沿原完整结论继续，不重复调用模型。
+- **Required context**：原有限协调计划、准确 previous 链和执行配置；新旧任务均无共享、登记产物或生产/消费依赖，实际本地输入、程序及提示相同，原捕获/消费/资源完整。
+- **User action or request**：仍从既有 coordination CLI 运行本次固定计划，无新开关或另写报告。
+- **Directly observable result**：结果中的 `historicalReuse` 保留原版本及完整报告出处，新增模型输入0；`readonlyTasksCompleted` 可表示有核实过的这份历史结论，不表示读过新安排。受影响任务仍实际重核和消费准确产物。
+- **Failure / degradation / escalation**：本版已固定选择优先；最近匹配原件缺失、未知、损坏或资源未清继续等待，不改选择、不查找更老成功项补位、不换运行重发。改变本地工作条件时沿原新读准入处理。
+- **Acceptance assertion / Evidence**：四任务样例首次6、共享变化5且独立A3新增0，重复/冷读0；`tests/coordination/feedback.test.ts` 含实际进程和资源失回执反例。`implementationCompleted` 与写权仍false，不完成其余F12或本人接受；详见 [task_coordination](docs/task_coordination.md)。
+
 ## 3. Cross-cutting User-visible Invariants
 
 <!-- capability-anchor: BOUNDARY.unknown_no_resend -->
