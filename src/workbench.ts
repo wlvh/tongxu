@@ -248,6 +248,12 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       read:async(scope,target,compiled,text)=>(await openImplementation(scope)).readSupplement(target,compiled,text),
       work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
+    }:undefined,p.issueImplementation?{
+      options:async scope=>(await openImplementation(scope)).options().flatMap(entry=>entry.issues.map(issue=>({source:entry.id,issueNumber:issue.number,title:'Issue #'+issue.number+' · '+issue.goal}))),
+      coordinate:async(scope,target,origin,checkpoint)=>(await openImplementation(scope)).coordinateProjectWork(target.source,target.issueNumber,origin,checkpoint),
+      read:async(scope,target,requestId)=>(await openImplementation(scope)).readProjectWork(target.source,requestId),
+      cancel:async(scope,target,requestId)=>(await openImplementation(scope)).cancelProjectWork(target.source,requestId),
+      stop:async(scope,target,requestId)=>(await openImplementation(scope)).stop(target.source,requestId)
     }:undefined).catch(error=>{projectChat=undefined;throw error;});
   };
   const initial=p.githubProjects?null:await openLocal(p);
@@ -332,13 +338,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),timeoutMs:p.projectSecretary.timeoutMs,aiDefault:ai?.defaultSecretary()??{tool:'codex',path:p.projectSecretary.codexExecutable,source:'project_secretary_startup',observed:null,observedAt:null},aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
-        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/continue-supplements'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/continue-supplements','/api/project-secretary/continue-work','/api/project-secretary/cancel-work','/api/project-secretary/stop-work'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
         if(url.pathname.endsWith('/supplement')){const result=await chat.receiveSupplement(selection,body);json(res,202,result);void chat.processSupplements(selection,body.target).catch(()=>{});return;}
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
         if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
+        if(url.pathname.endsWith('/continue-work')||url.pathname.endsWith('/cancel-work')||url.pathname.endsWith('/stop-work')){if(!exactKeys(body,['requestId']))throw new Error('project_work_request_invalid');json(res,200,url.pathname.endsWith('/cancel-work')?await chat.cancelWork(selection,body.requestId):url.pathname.endsWith('/stop-work')?await chat.stopWork(selection,body.requestId):await withAI(()=>chat.coordinateWork(selection,body.requestId)));return;}
         if(url.pathname.endsWith('/ask'))json(res,202,await withAI(()=>chat.begin(selection,body)));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
       }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;

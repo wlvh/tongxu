@@ -352,7 +352,8 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {target,state,request,definition,family:records.requests(target.source),resourcesSettled,currentAdoption:authority.forScope(definition.context.scope.id,{item:state.task,target:definition.target}).currentAdoption};
   }
   private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
-  registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation){return this.transaction(()=>{
+  registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation,beforeRegistration?:(currentAdoption:string|null)=>void){return this.transaction(()=>{
+    if(beforeRegistration){const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));beforeRegistration(authority.forScope(definition.context.scope.id,{item:request.task,target:definition.target}).currentAdoption);}
     const registered=this.taskRecords().observe(definition,observation);if(registered.item!==request.task)throw new Error('implementation_task_definition_mismatch');
     return this.issueImplementationRecords(fn=>fn()).register(source,request);
   });}

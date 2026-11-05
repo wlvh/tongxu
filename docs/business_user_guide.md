@@ -13,7 +13,7 @@
 | 导入与查看队列 | `node dist/src/cli.js queue`；[w3_shadow_queue](w3_shadow_queue.md)。普通影子评估不等于独立模型接收。 |
 | 原生元数据隔离自检 | `node dist/src/native-cli.js inspect`；[w4_native_inspection](w4_native_inspection.md)。此专用入口要求 Linux/bubblewrap，不调用模型；它与正常项目秘书/消息入口分开。 |
 | 启动本机工作台 | `npm run workbench -- --plan ABS_PLAN`；[local_workbench](local_workbench.md)、[github_project_entry](github_project_entry.md)。安装清单入口为 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`。 |
-| 按项目提问/读取历史 | 工作台右侧秘书；选择“发送给”可保存已登记原任务的补充，参见 [project_task_supplements](project_task_supplements.md)；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
+| 按项目提问/读取历史 | 工作台右侧秘书；“发送给”可选择办理已审定工作，或保存已登记原任务的补充，参见 [project_task_supplements](project_task_supplements.md)；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
 | 选择本机程序、模型和角色 | “AI 与角色设置”；[local_ai_roles](local_ai_roles.md)、[cli_capabilities](cli_capabilities.md)。 |
 | 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功H1不表示正式审核/发布；真实Codex路径仍待准确环境核验。 |
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
@@ -37,7 +37,7 @@
 ## 3. Capability and Responsibility Boundaries
 
 <!-- capability-anchor: BOUNDARY.secretary_scope -->
-秘书负责查询、解释和明确装配过的跟进；当前右侧项目秘书模型没有通用新开发派发、写代码、测试或合并工具。页面可为已登记任务保存补充，成功结束后的处理由原有权限与资源约束的实施消费者负责，不给秘书写权。AI 设置只决定新执行的偏好，不增加任务、文件、费用或合并权限。当前秘书使用 Codex 受限工具路径；其他程序能处理材料消息不等于支持全部角色。
+秘书负责查询、解释和明确装配过的跟进；普通问答只读；用户明确选定本项目已审定工作时，可通过单一受限协调工具复用原实施者，完整原话与原结果关联保留。它没有通用新开发派发、业务写入、测试或合并工具。页面可为已登记任务保存补充，成功结束后的处理由原有权限与资源约束的实施消费者负责，不给秘书写权。AI 设置只决定新执行的偏好，不增加任务、文件、费用或合并权限。当前秘书使用 Codex 受限工具路径；其他程序能处理材料消息不等于支持全部角色。
 
 <!-- capability-anchor: RESPONSIBILITY.owner_decision -->
 技术判断、发布状态、实际合并和用户接受分开。本人来源或委托未配置时限制相应动作，仍可使用适用查询。未完成的广泛验收沿 [PRODUCT_GUIDE 原记录入口](PRODUCT_GUIDE.md#unfinished-work)查证，页面可用不表示全部完成。

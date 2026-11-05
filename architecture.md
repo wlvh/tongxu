@@ -98,6 +98,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `queue-store.ts` 集成多领域状态与触发器，修改时容易漏掉预开连接、旧格式和原件消费者；`workbench.ts` 装配多个入口，须查配置关闭和跨项目边界。这里记录维护风险，不预设拆服务任务。通用新开发派发及未完成产品范围沿 [PRODUCT_GUIDE](docs/PRODUCT_GUIDE.md#unfinished-work)的原记录入口跟进，不另建进度账本。
 
+项目秘书明确工作模式从原用户消息固定 `workTarget`，仅该次原生请求及宿主 gate 注册空参数协调工具。`ProjectChat` 的消息关联保存意图，`IssueImplementationControls` 复用原准备/开始与真实报告；完整 `origin` 随新实施请求进入原输入清单，旧输入不回填。原队列最后登记事务核当前采用与准确已有责任，取消意图在此复核；并发新聊天不能多建同一工作。原消息/TaskInbox 与成果/权限/资源事实没有迁到聊天表。
+
 ## Change propagation
 
 | 变更类型 | 需要继续调查的影响面 | 相应验证 |
@@ -108,6 +110,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 | 原实施结果到秘书补充 | project-chat 只保存意图与原请求关联；issue-implementation-controls 从已核H1和原责任编译受控后续实施，复用原QueueStore/Authority/Resource，不新增发送事实账本 | `tests/project-repair/integration.test.ts`、`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
 | B 问题到原实施负责人再回 B | `implementation-owner-feedback` 核原完整结果/当前提交，TaskInbox 原事件与 TaskHistoryProjection 保存准确身份和单份全文；TaskControls/工作台精确唤醒已收件联系。`runMessages` 在原捕获恢复之后，从原 run→TaskInbox 请求识别 ownerContact，A及回B的新执行必须取得现有签发、匹配原目标的当前来源 proof；普通消息不新增此要求。宿主复用原 Issue reader，无 reader 的通用消费者明确拒绝新投入/输入；MessageResources 在实际领取前复核，发送前再读当前 Issue并保留本地同步门。已发捕获/资源清理不受新输入检查阻断；no_change 不造新提交 | `tests/project-repair/integration.test.ts` 原负责人联系组合、原秘书补充回归，`tests/w6/task-intake.test.ts`、`tests/w6/task-contact-choice.test.ts`、`tests/w6/message-resources.test.ts`、`tests/w7/github-projects-ui.test.ts` |
 | 零输入消息的资源取消 | 原 `MessageResourceRecords` 统一判断取消阶段是否还有未清投资：精确从未领取的申请无供应方结算义务，held仍结原claim；此判定供消息包装层、旧阶段再准入与TaskInbox投影/未发关闭使用，不改变全局settledOutcome或执行held门。取消和原claim最后登记共享队列事务，普通coordinate也不能从已关闭阶段回落取得新claim；申请与原件保留 | `tests/w6/message-resources.test.ts` 的原资源竞争/已发/未知场景，`tests/project-repair/integration.test.ts` before-claim正常HTTP及before-send回归 |
+| 秘书明确工作到原实施者 | project-chat-contract/repair-native 逐请求双层工具限制，ProjectChat 原意图/取消与 IssueImplementationControls 原输入/最后登记/直接控制；旧问答和补充保持 | `tests/project-repair/integration.test.ts` 秘书工作场景，`tests/w7/project-chat.test.ts`、`tests/w7/project-chat-ui.test.ts` |
 | 工作台来源/项目选择 | GitHub 账号缓存、任务筛选、秘书来源、已配置控制与完整报告；`reception-controls` 仅桥接明确动作到原 sourceTick/Authority/Resource/receiver，不新增队列或自动派发 | `tests/w7/github-projects.test.ts`、`tests/w7/project-workbench.test.ts`、`tests/w7/project-chat.test.ts`、`tests/events/normal-entry.test.ts` |
 | Node/启动/提示资产 | 构建输出、启动清单、校验前加载、历史原件、已结束组合接续 | `tests/w7/workbench-launch.test.ts`、`tests/w4/role-prompts.test.ts`、`tests/integration/node-continuation.test.ts` |
 
