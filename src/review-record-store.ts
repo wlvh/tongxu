@@ -1,3 +1,4 @@
+import {registeredReceiverMetadata} from './receiver-metadata.js';
 import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
@@ -213,8 +214,8 @@ export class ReviewRecords {
       this.requireMode(); const s = this.source(id, false);
       if (Object.values(classification).some(x => !text(x)) || Object.keys(classification).sort().join() !== 'coverageWindow,riskClass,source,taskClass') throw new Error('judgment_classification_required');
       const j = s.receiver.judgment, object = `judgment:${j.judgmentId}`, existing = this.events(object, 'judgment_registered')[0];
-      const init = JSON.parse(this.bytes(s.receiver.blobs['init.json'].sha256).toString());
-      const entry = { operation: id, judgmentId: j.judgmentId, bindingHash: s.receiver.bindingHash, candidate: s.candidate, ...(s.receiver.subject?{subject:s.receiver.subject,subjectSha256:s.receiver.subjectSha256}:{}), context: s.context, classification, verdict: j.verdict, findings: j.findings, executionKind: s.receiver.executionKind, inputSha256: s.receiver.inputSha256, systemSha256: s.receiver.systemSha256, rawOutputSha256: s.receiver.blobs['stdout.ndjson'].sha256, model: init.model, toolVersion: init.claude_code_version, session: init.session_id, outcome: 'unobserved' };
+      const metadata=registeredReceiverMetadata(s.receiver,sha=>this.bytes(sha));if(metadata.state!=='recorded')throw new Error('judgment_original_execution_metadata_unavailable');
+      const entry = { operation: id, judgmentId: j.judgmentId, bindingHash: s.receiver.bindingHash, candidate: s.candidate, ...(s.receiver.subject?{subject:s.receiver.subject,subjectSha256:s.receiver.subjectSha256}:{}), context: s.context, classification, verdict: j.verdict, findings: j.findings, executionKind: s.receiver.executionKind, inputSha256: s.receiver.inputSha256, systemSha256: s.receiver.systemSha256, rawOutputSha256: s.receiver.blobs['stdout.ndjson'].sha256, model:metadata.model,toolVersion:metadata.version,session:metadata.session,...(metadata.tool==='Kimi CLI'?{tool:'kimi'}:{}), outcome: 'unobserved' };
       if (existing) { if (canonical(existing.data) !== canonical(entry)) throw new Error('judgment_classification_changed'); return { ...existing.data, duplicate: true }; }
       this.event('judgment_registered', object, entry); return { ...entry, duplicate: false };
     });

@@ -128,14 +128,14 @@ export class ExtraCliSession{
     if(this.rpc.failure)throw Error(this.rpc.failure);
     checkAcpSessionEvents(this.rpc.events,this.session.sessionId);if(this.choice)this.checkChoice(this.choice);
   }
-  async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void,beforeDispatch?:()=>Promise<void>){
+  async prompt(input:string,timeoutMs:number,beforeSendSync?:()=>void,beforeDispatch?:()=>Promise<void>,dispatchGate?:<T>(effect:()=>T)=>T){
     for(const [p,sha]of Object.entries(this.profile.files))if(hash(await read(join(this.directory,p)))!==sha)throw Error('external_cli_profile_changed');
     await this.verifyProfile();await beforeDispatch?.();
     // The host refresh can yield. Recheck the actual local profile and session
     // synchronously before the original dispatch registration and input write.
     for(const [p,sha]of Object.entries(this.profile.files)){const b=readFileSync(join(this.directory,p));if(b.length>1024*1024||hash(b)!==sha)throw Error('external_cli_profile_changed');}
     this.verifyProfileSync();this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');const index=this.rpc.events.length;
-    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,()=>{this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');beforeSendSync?.();});
+    const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,()=>{this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');beforeSendSync?.();},dispatchGate);
     const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();this.assertCanForward();
     const requestId=this.rpc.events.find(m=>!m.method&&m.result===result)?.id;if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');return {final:parsed,requestId};
   }
@@ -178,7 +178,7 @@ export function parseAcpPrompt(events:any[],sessionId:string,result:any,choice?:
 }
 export async function probeAdditionalProgram(tool:AdditionalProgram,path:string,directory:string):Promise<AIProvider>{
   const result:AIProvider={id:hash(JSON.stringify([tool,path])).slice(0,24),tool,path,version:null,available:false,reason:null,authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:directory};let session:ExtraCliSession|undefined;
-  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.defaults={model:acpOptions(session.session.configOptions,'model')?.currentValue??session.session.models?.currentModelId??null,effort:acpOptions(session.session.configOptions,'thought_level')?.currentValue??null,source:'acp_session'};result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;result.capabilities.impactReports=tool==='kimi';}
+  try{session=await ExtraCliSession.open(tool,path,directory,'Metadata inspection only. No model input is authorized.');result.version=session.identity.version;result.defaults={model:acpOptions(session.session.configOptions,'model')?.currentValue??session.session.models?.currentModelId??null,effort:acpOptions(session.session.configOptions,'thought_level')?.currentValue??null,source:'acp_session'};result.models=await session.models();result.authentication=session.profile.auth;result.available=true;result.capabilities.readonlyMessages=true;result.capabilities.impactReports=tool==='kimi';result.capabilities.receptionReports=tool==='kimi';}
   catch(e){result.reason=e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'external_cli_probe_unavailable';}
   finally{await session?.close();}
   save(join(directory,'catalog.json'),result);return result;

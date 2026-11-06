@@ -111,7 +111,7 @@ export class LiveProcess {
   send(message: unknown) {
     const line = JSON.stringify(this.protocol==='acp'?{jsonrpc:'2.0',...(message as object)}:message) + '\n'; appendFileSync(join(this.directory, 'stdin.ndjson'), line); this.process.stdin.write(line);
   }
-  request(method: string, params: unknown, timeoutMs = 30_000, beforeSendSync?:()=>void): Promise<any> {
+  request(method: string, params: unknown, timeoutMs = 30_000, beforeSendSync?:()=>void,dispatchGate?:<T>(effect:()=>T)=>T): Promise<any> {
     if (this.failure || this.exit) throw new Error(this.failure ?? 'executor_closed');
     const id = ++this.sequence;
     if(this.protocol==='acp'&&method==='session/prompt'){
@@ -127,7 +127,9 @@ export class LiveProcess {
     beforeSendSync?.();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('executor_rpc_timeout')); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });if(this.protocol==='acp')this.acpRequests.add(id);this.send({ id, method, params });
+      this.pending.set(id, { resolve, reject, timer });if(this.protocol==='acp')this.acpRequests.add(id);
+      try{const send=()=>this.send({id,method,params});if(dispatchGate)dispatchGate(send);else send();}
+      catch(error){clearTimeout(timer);this.pending.delete(id);reject(error);}
     });
   }
   writeText(text: string) { appendFileSync(join(this.directory, 'stdin.ndjson'), text); this.process.stdin.end(text); }

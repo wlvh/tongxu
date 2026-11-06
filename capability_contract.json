@@ -94,7 +94,7 @@
         "anchor_id": "CAPABILITY.source_reception",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。协议场景已覆盖，真实原生正常入口尚待验；不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/workbench.ts。",
+        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。新接收可在项目设置选择已检测的Claude或严格只读Kimi，并要求原计划中所选程序适用的费用证据；旧请求及已保存未发送计划保留原选择，不因新设置变化或失效重发。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。协议场景、真实原生和本人结果分别核验，不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/receiver.ts、src/workbench.ts。",
         "audience": [
           "business_user",
           "agent",

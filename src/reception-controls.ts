@@ -12,6 +12,7 @@ import {sourceTick} from './event-tick.js';
 import {readOwnerSource,type OwnerObservation} from './authority-source.js';
 import {prepareResourceRequest} from './resource-claims.js';
 import {resourceRequestHash,type ResourceRequest} from './resource-contract.js';
+import {captureRoleAI,currentAIPreferences,withAIPreferences,type AIPreferenceSnapshot} from './ai-settings.js';
 type Row=Record<string,any>;
 type Source={id:string;store:string;item:string};
 type Entry={id:string;source:string;template:{path:string;sha256:string};authorization:string;budgets:Array<{ledgerId:string;resourceRef:string;unit:string;quantity:number}>};
@@ -21,8 +22,8 @@ type Entry={id:string;source:string;template:{path:string;sha256:string};authori
  * receiver and reads the same operation; it is not a background scheduler. */
 export class ReceptionControls{
   private active=new Map<string,Promise<unknown>>();private problems=new Map<string,string>();private accepting=true;
-  private constructor(private path:string,private sha256:string,private entries:Array<{entry:Entry;source:Source;plan:ReceiverPlan}>){ }
-  static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>){
+  private constructor(private path:string,private sha256:string,private entries:Array<{entry:Entry;source:Source;plan:ReceiverPlan}>,private readPreferences?:()=>AIPreferenceSnapshot){ }
+  static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>,readPreferences?:()=>AIPreferenceSnapshot){
     const raw=await regular(path,128*1024),p=JSON.parse(raw.toString());
     if(hash(raw)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-reception-controls'||!Array.isArray(p.entries)||p.entries.length>32)throw new Error('reception_controls_invalid');
     const entries=[];
@@ -34,7 +35,7 @@ export class ReceptionControls{
       entries.push({entry:e,source,plan});
     }
     if(new Set(entries.map(e=>e.entry.id)).size!==entries.length)throw new Error('reception_control_duplicate_id');
-    return new ReceptionControls(path,sha256,entries);
+    return new ReceptionControls(path,sha256,entries,readPreferences);
   }
   private selected(id:string){const value=this.entries.find(e=>e.entry.id===id);if(!value)throw new Error('reception_source_not_selected');return value;}
   private async fixed(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('reception_control_catalog_changed');}
@@ -51,11 +52,12 @@ export class ReceptionControls{
     this.problems.delete(id);const work=this.execute(id,body.expectedPacket);this.active.set(id,work);work.catch(error=>this.problems.set(id,error instanceof Error?error.message:'reception_unknown')).finally(()=>this.active.delete(id));return {id,controllerActive:true,registrationIsNotDispatch:true};
   }
   private async execute(id:string,expectedPacket:number){
-    const f=this.selected(id);await this.fixed();await sourceTick(f.source.store);
+    const f=this.selected(id);await this.fixed();
     const q=await QueueStore.open(f.source.store);try{
-      const snapshot=q.status(),item=snapshot.items.find((i:Row)=>i.id===f.source.item);if(!item||item.currentPacket!==expectedPacket)throw new Error('reception_material_changed_refresh_required');
+      let snapshot=q.status(),item=snapshot.items.find((i:Row)=>i.id===f.source.item);if(!item||item.currentPacket!==expectedPacket)throw new Error('reception_material_changed_refresh_required');
       const original=snapshot.operations.find((o:Row)=>o.item===f.source.item&&o.packet===expectedPacket);
       if(original?.result?.receiver)return await reconcileReception(f.source.store,original.id);
+      await sourceTick(f.source.store);snapshot=q.status();item=snapshot.items.find((i:Row)=>i.id===f.source.item);if(!item||item.currentPacket!==expectedPacket)throw new Error('reception_material_changed_refresh_required');
       const a=q.authority(),profile=a.configuration().profile,observations:OwnerObservation[]=[],directory=join(f.source.store,'normal-reception-sources',randomUUID());await mkdir(directory,{recursive:true,mode:0o700});
       for(const ref of a.sourceRequests(f.entry.authorization))observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(directory,ref.proposalSha256)));
       const adoption=a.inspectRecordedDecision(f.entry.authorization).proposal;if(!('adoption' in adoption))throw new Error('reception_exact_authorization_required');
@@ -67,14 +69,24 @@ export class ReceptionControls{
       const begun=q.begin(f.source.item,'normal-independent-reception');if(begun.blocked)throw new Error(begun.blocked.join(', '));
       const current=q.receiverState(begun.operation);if(current.currentPacket!==expectedPacket)throw new Error('reception_material_changed_refresh_required');if(current.receiver)return await reconcileReception(f.source.store,begun.operation);q.evaluate(begun.operation);
       const requests:ResourceRequest[]=f.entry.budgets.map(b=>({schemaVersion:1,ledgerId:b.ledgerId,repository:candidate.repository,operation:begun.operation,authorityIntent:intent,resourceRef:b.resourceRef,unit:b.unit,quantity:b.quantity,role:'receiver',actionSha256:hash(canonical(action))}));
-      const plan:ReceiverPlan={...f.plan,governance:{authorityIntent:intent,resourceRequests:requests.map(resourceRequestHash)}};
-      const bytes=Buffer.from(canonical(plan)),planPath=join(f.source.store,'normal-reception-'+begun.operation+'.json');
-      try{await writeFile(planPath,bytes,{flag:'wx',mode:0o600});}catch(error:any){if(error.code!=='EEXIST'||hash(await regular(planPath))!==hash(bytes))throw new Error('reception_original_plan_changed');}
+      const base:ReceiverPlan={...f.plan,governance:{authorityIntent:intent,resourceRequests:requests.map(resourceRequestHash)}},planPath=join(f.source.store,'normal-reception-'+begun.operation+'.json');
+      const validateFixed=(bytes:Buffer)=>{const saved=parseReceiverPlan(bytes),{ai:oldAI,...oldBase}=saved,{ai:templateAI,...expected}=base;if(canonical(oldBase)!==canonical(expected))throw new Error('reception_original_plan_changed');};
+      let bytes=q.receiverPreparedPlan(begun.operation),file:Buffer|undefined;
+      try{file=await regular(planPath);}catch(error:any){if(error.code!=='ENOENT')throw error;}
+      if(bytes){validateFixed(bytes);if(file&&hash(file)!==hash(bytes))throw new Error('reception_original_plan_changed');}
+      else{
+        if(file)throw new Error('reception_original_plan_binding_missing');
+        const capture=()=>{const selected=captureRoleAI(['receiver'],candidate.repository);if(!selected.receiver)return undefined;const snapshot=currentAIPreferences(['receiver'])!,scope=snapshot.scope;return {revision:snapshot.revision,scope:{account:{id:scope.account.id},repository:{id:scope.repository.id,nodeId:scope.repository.nodeId,fullName:scope.repository.fullName}},roles:{receiver:selected.receiver}};};
+        const ai=this.readPreferences?withAIPreferences(this.readPreferences(),capture):capture(),plan={...base,...(ai?{ai}:{})};bytes=Buffer.from(canonical(plan));parseReceiverPlan(bytes);
+      }
       a.enableGovernedReceiver();
       for(const request of requests)await prepareResourceRequest(f.source.store,Buffer.from(canonical(request)),'receiver');
       observations.length=0;const latest=join(directory,'current');await mkdir(latest,{mode:0o700});
       for(const ref of a.sourceRequests(f.entry.authorization))observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(latest,ref.proposalSha256)));
       q.receiverResourceAdmission(begun.operation,bytes,observations);
+      // Bind the exact choice in the original queue before publishing its plan
+      // file. A missing file can be restored only from that registered blob.
+      if(!file)try{await writeFile(planPath,bytes,{flag:'wx',mode:0o600});}catch(error:any){if(error.code!=='EEXIST'||hash(await regular(planPath))!==hash(bytes))throw new Error('reception_original_plan_changed');}
       return await runReception(planPath);
     }finally{q.close();}
   }
