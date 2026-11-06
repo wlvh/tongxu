@@ -6,7 +6,10 @@ import {isAuthorityDigest,type DeliveryOutcomeProposal} from './authority-contra
 import {parseDeliveryBatch,deliveryBatchSha,type DeliveryBatch} from './delivery-contract.js';
 
 type Row=Record<string,any>;
-type ScopeState={adoptionRecorded:boolean;currentAdoption:boolean;sourceOriginalsVerified:boolean;reason?:string;scopeBodySha256?:string;executionKind?:'github'|'fixture';decisionSource?:string;sourceFreshness:'not_rechecked'};
+// Only inspectRecordedDecision supplies this derived view. Persisted outcome
+// and source bytes retain their original format.
+const approvalView=(decision:Row)=>decision.ownerApprovalMode==='shared_account'?{ownerApprovalMode:decision.ownerApprovalMode,ownerSourceIdentityAllowed:decision.ownerSourceIdentityAllowed,operatorSeparationProven:decision.operatorSeparationProven,sharedAccountDecisionReference:decision.sharedAccountDecisionReference}:{};
+type ScopeState={adoptionRecorded:boolean;currentAdoption:boolean;sourceOriginalsVerified:boolean;reason?:string;scopeBodySha256?:string;executionKind?:'github'|'fixture';decisionSource?:string;sourceFreshness:'not_rechecked'}&ReturnType<typeof approvalView>;
 /** Fixed outcome material in the original event/blob store. Registration is
  * neither execution evidence nor an Owner acceptance or permission grant. */
 export class DeliveryRecords{
@@ -28,7 +31,7 @@ export class DeliveryRecords{
     const decision=this.inspectDecision(batch.scope.adoption),p=decision.proposal;
     if(p.kind!=='adopt_scope'||p.scopeId!==batch.scope.id||p.scopeVersion!==batch.scope.version||hash(canonical(p.body))!==latest.scopeBodySha256||batch.goals.some(g=>!p.body.goals.includes(g))||p.body.nonGoals.some((g:string)=>!batch.nonGoals.includes(g)))throw new Error('delivery_adopted_goals_mismatch');
     const revoked=this.db.prepare("SELECT 1 FROM events WHERE kind='authority_revoked' AND json_extract(data,'$.decision')=? LIMIT 1").get(batch.scope.adoption);if(revoked)throw new Error('delivery_scope_adoption_revoked');
-    return {adoptionRecorded:true,currentAdoption:true,sourceOriginalsVerified:true,scopeBodySha256:latest.scopeBodySha256,executionKind:decision.executionKind,decisionSource:decision.source.sourceUrl,sourceFreshness:'not_rechecked'};
+    return {adoptionRecorded:true,currentAdoption:true,sourceOriginalsVerified:true,scopeBodySha256:latest.scopeBodySha256,executionKind:decision.executionKind,decisionSource:decision.source.sourceUrl,...approvalView(decision),sourceFreshness:'not_rechecked'};
   }
   register(raw:Buffer){return this.transaction(()=>{
     const p=parseDeliveryBatch(raw),sha=deliveryBatchSha(p),history=this.events(p.id),old=history.find(e=>JSON.parse(e.data).batchSha256===sha);if(old)return {...this.stateOf(sha),duplicate:true};
@@ -45,8 +48,8 @@ export class DeliveryRecords{
   private outcomeHistory(id:string){
     const events=this.db.prepare("SELECT * FROM events WHERE kind='delivery_outcome_recorded' AND object=? ORDER BY id").all('delivery-outcome:'+id) as Row[];
     return events.map(e=>{const ref=JSON.parse(e.data),v=JSON.parse(this.bytes(ref.sha256).toString());if(canonical(v)!==canonical(ref.value))throw new Error('delivery_outcome_index_changed');const evidence=JSON.parse(this.bytes(v.evidenceSha256).toString());if(evidence.batchSha256!==v.batchSha256)throw new Error('delivery_outcome_evidence_changed');
-      let sourceOriginalsVerified=false,reason:string|null=null;try{const d=this.inspectDecision(v.proposalSha256),p=d.proposal;if(p.kind!=='delivery_outcome'||p.batchSha256!==v.batchSha256||p.evidenceSha256!==v.evidenceSha256||canonical(p)!==canonical(v.proposal)||d.executionKind!==v.executionKind||d.source.sourceUrl!==v.source)throw new Error('delivery_outcome_source_binding_changed');sourceOriginalsVerified=true;}catch(e){reason=e instanceof Error?e.message:'delivery_outcome_source_unavailable';}
-      const revoked=!!this.db.prepare("SELECT 1 FROM events WHERE kind='authority_revoked' AND json_extract(data,'$.decision')=?").get(v.proposalSha256);return {...v,sourceOriginalsVerified,reason,revoked,sourceFreshness:'not_rechecked'};
+      let sourceOriginalsVerified=false,reason:string|null=null,approval:Row={};try{const d=this.inspectDecision(v.proposalSha256),p=d.proposal;if(p.kind!=='delivery_outcome'||p.batchSha256!==v.batchSha256||p.evidenceSha256!==v.evidenceSha256||canonical(p)!==canonical(v.proposal)||d.executionKind!==v.executionKind||d.source.sourceUrl!==v.source)throw new Error('delivery_outcome_source_binding_changed');sourceOriginalsVerified=true;approval=approvalView(d);}catch(e){reason=e instanceof Error?e.message:'delivery_outcome_source_unavailable';}
+      const revoked=!!this.db.prepare("SELECT 1 FROM events WHERE kind='authority_revoked' AND json_extract(data,'$.decision')=?").get(v.proposalSha256);return {...v,...approval,sourceOriginalsVerified,reason,revoked,sourceFreshness:'not_rechecked'};
     });
   }
   private outcomeCheck(p:DeliveryOutcomeProposal){

@@ -92,7 +92,7 @@
 完成、未完成、未知和历史不适用不能互换。来源变了，旧报告仍可读但不能自动变为新材料许可；原执行未知时先核原状态，不靠刷新、换项目或改编号重发。证据见上述 C/E 及 `tests/merge/managed.test.ts` 的失回执样例。
 
 <!-- capability-anchor: RESPONSIBILITY.owner_decision -->
-临时查看标识、模型报告、技术接收和发布读回均不代替本人接受或新的执行授权。本人来源及停止边界由 `tests/authority/authority.test.ts`、`tests/w7/owner-controls.test.ts` 验证；其样例结果不证明当前用户已作决定。
+临时查看标识、模型报告、技术接收和发布读回均不代替本人接受或新的执行授权。本人来源及停止边界由 `tests/authority/authority.test.ts`、`tests/w7/owner-controls.test.ts` 验证；其样例结果不证明当前用户已作决定。 本人可按已采用的Issue #10选择由安装者在新固定配置显式启用共享账号来源；原配置继续要求不同账号。页面仍核准确原评论，并显示同一账号、未证明操作人分离及模式决定引用未复验；共享设置本身不产生批准，成果接受也保留这一说明。配置和旧原件边界见[本人来源](docs/owner_authority.md#显式共享账号批准)。
 
 各来源有各自的观察时间；工作台展示历史发布状态时不冒称本次刷新重新核过 GitHub。完整报告按原文文本显示，不执行报告中的 HTML/命令。相关证据：`tests/w7/workbench.test.ts`、`tests/w7/collaboration.test.ts`。
 
