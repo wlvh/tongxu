@@ -11,6 +11,7 @@ import { ownerDecisionText,scopeBodyHash,parseActionRequest,parseOwnerProposal,p
 import { fixtureOwnerObservation,readOwnerSource,type OwnerObservation } from '../../src/authority-source.js';
 import { authorityMain } from '../../src/authority-cli.js';
 import { runReception } from '../../src/receiver.js';
+import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import { fixture as modelFixture } from '../w5/repair-fixture.js';
 import { overallReview } from '../../src/overall-review.js';
 
@@ -22,11 +23,11 @@ function originals(sha:string,id=++serial,p=profile){const at=new Date().toISOSt
   return {id,readAt:at,comment:{id,node_id:nodeId,body:text,user:{id:p.ownerId,type:'User'},created_at:at,updated_at:at,issue_url:`https://api.github.com/repos/${p.repository}/issues/${p.issue}`,html_url:url},graph:{data:{viewer:{id:'U_fixture',databaseId:p.executorId,login:'executor-fixture'},node:{__typename:'IssueComment',id:nodeId,fullDatabaseId:String(id),body:text,createdAt:at,updatedAt:at,lastEditedAt:null as string|null,url,author:{__typename:'User',databaseId:p.ownerId},editor:null as any,issue:{number:p.issue,repository:{nameWithOwner:p.repository}}}}}};
 }
 function observation(raw:ReturnType<typeof originals>,sha:string,p=profile){return fixtureOwnerObservation(p,sha,raw.id,bytes(raw.graph),bytes(raw.comment),raw.readAt);}
-async function fixture(t:test.TestContext){
+async function fixture(t:test.TestContext,configuration=profile){
   const f=await setup(t);f.q.enableSupplements();f.q.reviewRecords().enable();f.q.enableCompositions();f.q.enableReceiverCorrections();
-  const r=f.q.authority();r.configure(bytes(profile));let index=0;
+  const r=f.q.authority();r.configure(bytes(configuration));let index=0;
   function prepare(p:any,id='proposal-'+(++index)){return r.prepare(id,bytes(p));}
-  function adopt(p:any){const proposal=prepare(p),raw=originals(proposal.proposalSha256),obs=observation(raw,proposal.proposalSha256);r.apply(proposal.proposalSha256,obs);return {sha:proposal.proposalSha256,raw,obs,proposal};}
+  function adopt(p:any){const proposal=prepare(p),raw=originals(proposal.proposalSha256,undefined,configuration),obs=observation(raw,proposal.proposalSha256,configuration);r.apply(proposal.proposalSha256,obs);return {sha:proposal.proposalSha256,raw,obs,proposal};}
   const c=f.q.status().items[0].context;
   const scope=adopt({kind:'adopt_scope',scopeId:c.scope.id,scopeVersion:c.scope.version,body,previousAdoption:null});
   const item=f.q.status().items[0],request:ActionRequest={schemaVersion:1,scopeId:c.scope.id,scopeVersion:c.scope.version,scopeBodySha256:scopeBodyHash(body),repository:profile.repository,target:'fixture',action:'receive',item:f.item,candidate:{H:item.candidate.H,B:item.candidate.B,subjectSha256:null},paths:['sample.js'],resourceRefs:[]};
@@ -57,6 +58,38 @@ test('configuration is not adoption; fixed proposals keep original encoding and 
   assert.throws(()=>f.r.prepare(f.scope.proposal.requestId,bytes({...f.scope.proposal.prepared.proposal,body:{...body,goals:['changed']}})),/request_id_changed/);
   assert.throws(()=>f.r.apply(f.scope.sha,{...f.scope.obs} as OwnerObservation),/fresh_provider/);
   const fresh=observation(f.scope.raw,f.scope.sha);fresh.graphRaw.fill(32);assert.throws(()=>f.r.apply(f.scope.sha,fresh));
+});
+const sharedProfile:AuthorityProfile={...profile,executorId:profile.ownerId,sharedAccountApproval:{decisionReference:{kind:'recorded_user_decision',sha256:'d'.repeat(64)}}};
+test('shared account policy is explicit, strictly shaped and does not materialize legacy profile defaults',()=>{
+  const original=bytes(profile),canonicalBefore=hash(canonical(profile));assert.deepEqual(parseAuthorityProfile(original),profile);assert.equal(hash(canonical(parseAuthorityProfile(original))),canonicalBefore);assert.equal(Object.hasOwn(parseAuthorityProfile(original),'sharedAccountApproval'),false);
+  assert.deepEqual(parseAuthorityProfile(bytes(sharedProfile)),sharedProfile);
+  for(const policy of [null,true,{}, {decisionReference:'https://example.test/approval'}, {decisionReference:{kind:'unknown',sha256:'d'.repeat(64)}}, {decisionReference:{kind:'recorded_user_decision',sha256:'D'.repeat(64)}}, {decisionReference:{kind:'recorded_user_decision',sha256:'d'.repeat(64),verified:true}}])assert.throws(()=>parseAuthorityProfile(bytes({...sharedProfile,sharedAccountApproval:policy})),/shared_account_policy/);
+  assert.throws(()=>parseAuthorityProfile(bytes({...sharedProfile,executorId:202})),/shared_account_policy/);
+  const omitted={...sharedProfile};delete omitted.sharedAccountApproval;assert.throws(()=>observation(originals('b'.repeat(64),undefined,omitted),'b'.repeat(64),omitted),/shared_account_is_not_owner_confirmation/);
+});
+test('explicit shared account still verifies exact viewer, author, editor, proposal and repository originals',()=>{
+  const sha='b'.repeat(64),source=originals(sha,undefined,sharedProfile);assert.equal(observation(source,sha,sharedProfile).authorId,101);
+  const reject=(mutate:(r:ReturnType<typeof originals>)=>void,pattern:RegExp)=>{const changed=structuredClone(source);mutate(changed);assert.throws(()=>observation(changed,sha,sharedProfile),pattern);};
+  reject(r=>{r.graph.data.viewer.databaseId=202;},/execution_identity/);
+  reject(r=>{r.graph.data.node.author.databaseId=r.comment.user.id=202;},/source_mismatch/);
+  reject(r=>{r.graph.data.node.editor={__typename:'User',databaseId:202};r.graph.data.node.lastEditedAt=r.readAt;},/edited_by_another/);
+  reject(r=>{r.graph.data.node.lastEditedAt=r.readAt;},/editor_attribution/);
+  reject(r=>{r.graph.data.node.issue.repository.nameWithOwner='other/repo';},/source_mismatch/);
+  reject(r=>{r.graph.data.node.body=r.comment.body=ownerDecisionText('c'.repeat(64));},/not_an_exact/);
+  reject(r=>{r.graph.data.node.body=r.comment.body='Please approve '+r.comment.body;},/not_an_exact/);
+});
+test('shared exact adoption/action retains candidate, resource, expiry, revocation, stop and immutable profile guards',async t=>{
+  const f=await fixture(t,sharedProfile),confirmed=f.confirm(),observations=[confirmed.obs,f.scope.obs];
+  assert.equal(f.r.checkAction(f.request,'receiver',confirmed.sha,observations).authorityCheck,'passed');
+  const scoped=f.r.forScope(f.request.scopeId,{item:f.item,target:'fixture'});assert.equal(scoped.ownerDistinctFromExecutor,false);assert.equal(scoped.ownerSourceIdentityAllowed,true);assert.equal(scoped.operatorSeparationProven,false);assert.equal(scoped.sharedAccountDecisionReference?.verification,'registered_not_rechecked');assert.equal(f.r.status().intents.length,0);
+  const before=canonical(f.r.inspectRecordedDecision(f.scope.sha).source);const cold=await QueueStore.open(f.store);try{assert.equal(canonical(cold.authority().inspectRecordedDecision(f.scope.sha).source),before);assert.equal(cold.authority().inspectRecordedDecision(f.scope.sha).ownerApprovalMode,'shared_account');}finally{cold.close();}
+  assert.throws(()=>f.r.configure(bytes({...sharedProfile,sharedAccountApproval:{decisionReference:{kind:'recorded_user_decision',sha256:'e'.repeat(64)}}})),/profile_is_fixed/);
+  const ledger=await ledgerFixture(t);f.q.resources().configure(bytes(ledger.profile));
+  assert.throws(()=>f.q.merges().configure(bytes({schemaVersion:1,kind:'tongxu-managed-publisher',repository:profile.repository,repositoryId:1,targets:['fixture'],actorId:101,executable:'/fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000})),/separate_managed_publisher_identity_required/);
+  for(const request of [{...f.request,target:'main'},{...f.request,resourceRefs:['not-granted']},{...f.request,candidate:{...f.request.candidate!,H:'a'.repeat(40)}}])assert.throws(()=>f.r.checkAction(request,'receiver',confirmed.sha,observations),/exact_action|current_candidate/);
+  const expired=structuredClone(confirmed.raw);expired.readAt=new Date(Date.now()-600000).toISOString();expired.graph.data.node.createdAt=expired.graph.data.node.updatedAt=expired.comment.created_at=expired.comment.updated_at=expired.readAt;assert.throws(()=>f.r.checkAction(f.request,'receiver',confirmed.sha,[observation(expired,confirmed.sha,sharedProfile),f.scope.obs]),/fresh_provider/);
+  f.adopt({kind:'control',adoption:f.scope.sha,control:'investment',state:'stopped'});assert.throws(()=>f.r.checkAction(f.request,'receiver',confirmed.sha,observations),/action_stopped/);assert.throws(()=>f.q.control(f.request.scopeId,'investment','open','shared account is not permission to resume'),/verified_owner_stop/);
+  f.adopt({kind:'control',adoption:f.scope.sha,control:'investment',state:'open'});f.adopt({kind:'revoke',decision:confirmed.sha});assert.throws(()=>f.r.checkAction(f.request,'receiver',confirmed.sha,observations),/decision_revoked/);assert.equal(await f.count(),0);
 });
 test('one-shot exact action survives restart without a second reservation or automatic resend',async t=>{
   const f=await fixture(t),c=f.confirm(),obs=[c.obs,f.scope.obs];

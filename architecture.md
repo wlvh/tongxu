@@ -31,7 +31,7 @@
 | 约束及适用范围 | 实现、反例与后果 |
 | --- | --- |
 | 结果对应准确输入；旧结果不自动成为新候选证据 | `snapshot.ts`、`queue-evidence.ts`、`codex-results.ts`、`message-store.ts` 核原件与身份。改变候选或捕获字节应产生不适用/错误，而非本轮成功。见 `tests/w1/collection.test.ts`、`tests/w4/codex-results.test.ts`。 |
-| 查看权限与执行授权分开 | `workbench.ts` 的临时查看标识只保护本机入口；`authority-source.ts`、`authority-store.ts` 核本人来源、范围和委托。复制报告或 owner JSON 不能产生授权。见 `tests/authority/authority.test.ts`。 |
+| 查看权限与执行授权分开 | `workbench.ts` 的临时查看标识只保护本机入口；`authority-source.ts`、`authority-store.ts` 核本人来源、范围和委托。`AuthorityProfile`可显式登记共享账号模式，只条件化账号相等拒绝；旧profile/来源原件不改。共享保证由原profile投影到Owner/成果视图，不作为动作许可。复制报告或 owner JSON 不能产生授权。见 `tests/authority/authority.test.ts`及Owner/成果页面回归。 |
 | 已发送或原进程未知时先查原执行，不自动重发 | `project-chat.ts`、`managed-merge.ts` 查原捕获、PID 与响应；缺失进程证明保留 `unknown`。失去回执、换页面或升级 CLI 不等于从未发送。见 `tests/w7/project-chat.test.ts`、`tests/merge/managed.test.ts`。 |
 | 新动作重核阶段条件；新安排不追溯改变旧输入 | `coordination.ts`、`task-store.ts`、`scope-controls.ts` 和具体控制入口执行检查。生产者材料或停止条件不满足时暂停依赖动作。见 `tests/coordination/feedback.test.ts`、`tests/w7/scope-controls.test.ts`。 |
 | 完全独立的旧只读结果保持原出处 | `coordination.ts` 在新选择前调用 `CoordinationRecords.independentHistory`，仅为两侧均无共享、登记产物和依赖的未变任务走原消息的 recoverOnly。实际程序、角色提示、源与完整捕获/资源仍核对；不写当前反馈或授予执行权。公开语义见 `docs/task_coordination.md`。 |

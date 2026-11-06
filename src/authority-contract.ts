@@ -9,6 +9,7 @@ export type AuthorityProfile = {
   schemaVersion: 1; kind: 'tongxu-owner-source-profile'; repository: string; issue: number;
   ownerId: number; executorId: number; ghExecutable: string; ghSha256: string;
   executionKind: 'github' | 'fixture'; maxObservationAgeMs: number; maxGrantDurationMs: number;
+  sharedAccountApproval?: {decisionReference:{kind:'recorded_user_decision';sha256:string}};
 };
 export type ScopeBody = { goals: string[]; nonGoals: string[]; preserve: string[]; acceptance: string[]; constraints: string[] };
 export type ActionRequest = {
@@ -40,9 +41,15 @@ const list = (x:unknown,check:(x:any)=>boolean,max=32): x is string[] => Array.i
 export const safeRelativePath = (p:unknown): p is string => typeof p==='string' && p.length>0 && p.length<=512 && !/[\\\x00-\x1f\x7f]/.test(p) && p.split('/').every(x=>x && x!=='.' && x!=='..' && x!=='.git');
 export function parseAuthorityProfile(bytes:Buffer):AuthorityProfile {
   const p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(bytes));
-  if(!exactKeys(p,['schemaVersion','kind','repository','issue','ownerId','executorId','ghExecutable','ghSha256','executionKind','maxObservationAgeMs','maxGrantDurationMs'])||p.schemaVersion!==1||p.kind!=='tongxu-owner-source-profile'||(typeof p.repository!=='string'||!repoPattern.test(p.repository))||![p.issue,p.ownerId,p.executorId].every(x=>Number.isSafeInteger(x)&&x>0)||!text(p.ghExecutable)||!isAuthorityDigest(p.ghSha256)||!['github','fixture'].includes(p.executionKind)||!Number.isSafeInteger(p.maxObservationAgeMs)||p.maxObservationAgeMs<1000||p.maxObservationAgeMs>300000||!Number.isSafeInteger(p.maxGrantDurationMs)||p.maxGrantDurationMs<1000||p.maxGrantDurationMs>31*86400000)throw new Error('authority_profile_invalid');
+  if(!exactKeys(p,['schemaVersion','kind','repository','issue','ownerId','executorId','ghExecutable','ghSha256','executionKind','maxObservationAgeMs','maxGrantDurationMs',...(p&&Object.hasOwn(p,'sharedAccountApproval')?['sharedAccountApproval']:[])])||p.schemaVersion!==1||p.kind!=='tongxu-owner-source-profile'||(typeof p.repository!=='string'||!repoPattern.test(p.repository))||![p.issue,p.ownerId,p.executorId].every(x=>Number.isSafeInteger(x)&&x>0)||!text(p.ghExecutable)||!isAuthorityDigest(p.ghSha256)||!['github','fixture'].includes(p.executionKind)||!Number.isSafeInteger(p.maxObservationAgeMs)||p.maxObservationAgeMs<1000||p.maxObservationAgeMs>300000||!Number.isSafeInteger(p.maxGrantDurationMs)||p.maxGrantDurationMs<1000||p.maxGrantDurationMs>31*86400000)throw new Error('authority_profile_invalid');
+  if(Object.hasOwn(p,'sharedAccountApproval')&&(!exactKeys(p.sharedAccountApproval,['decisionReference'])||!exactKeys(p.sharedAccountApproval.decisionReference,['kind','sha256'])||p.sharedAccountApproval.decisionReference.kind!=='recorded_user_decision'||!isAuthorityDigest(p.sharedAccountApproval.decisionReference.sha256)||p.ownerId!==p.executorId))throw new Error('authority_shared_account_policy_invalid');
   if(!isAbsolute(p.ghExecutable)||resolve(p.ghExecutable)!==p.ghExecutable)throw new Error('authority_executable_must_be_absolute');
   return p;
+}
+/** A registered installation choice, not an Owner observation or action grant.
+ * Omit it for legacy profiles so their saved and derived shapes stay intact. */
+export function sharedAccountApprovalProjection(profile:AuthorityProfile){
+  return profile.sharedAccountApproval?{ownerApprovalMode:'shared_account' as const,ownerSourceIdentityAllowed:true as const,operatorSeparationProven:false as const,sharedAccountDecisionReference:{...profile.sharedAccountApproval.decisionReference,verification:'registered_not_rechecked' as const}}:{};
 }
 export function parseActionRequest(x:any):ActionRequest {
   if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[]),...(x&&Object.hasOwn(x,'formalWorkSha256')?['formalWorkSha256']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');

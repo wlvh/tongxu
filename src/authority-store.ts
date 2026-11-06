@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, exactKeys, isAuthorityDigest, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
+import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, exactKeys, isAuthorityDigest, sharedAccountApprovalProjection, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 import {installRecompositionTestGuards} from './recomposition-test-guards.js';
 import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards,overallConsumerKey,overallAdmission,expectedEffectGuard,installOverallResultGuard} from './publication-guards.js';
@@ -142,13 +142,13 @@ export class AuthorityRecords {
       const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;
       return {control,state:row?.stopped?'stopped' as const:'open' as const,revision:row?.revision??0,recorded:!!row,verifiedOwnerStop:owner?.state==='stopped',effectiveAt:row?.effective_at??null};
     });
-    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
+    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,...sharedAccountApprovalProjection(profile),sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
   });}
   inspectRecordedDecision(sha:string){return this.transaction(()=>{
     const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
     const checked=inspectStoredOwnerSource(profile,sha,saved.commentId,this.bytes(originalEditorSha256),this.bytes(originalCommentSha256),saved.readAt);
     if(d.proposalSha256!==sha||d.kind!==d.proposal.kind||d.executionKind!==profile.executionKind||canonical(saved)!==canonical(checked.source))throw new Error('authority_recorded_source_index_changed');
-    return {proposalSha256:sha,proposal:d.proposal,source:checked.source,executionKind:d.executionKind,originalBytesVerified:true,freshForAction:false};
+    return {proposalSha256:sha,proposal:d.proposal,source:checked.source,executionKind:d.executionKind,...sharedAccountApprovalProjection(profile),originalBytesVerified:true,freshForAction:false};
   });}
   private decision(sha:string){const e=this.events('authority-decision:'+sha,'authority_decision_applied')[0];if(!e)throw new Error('verified_owner_decision_missing');return {...e.data,proposal:this.prepared(sha).proposal};}
   private revoked(sha:string){return this.all('authority_revoked').some(e=>e.data.decision===sha);}
@@ -270,5 +270,5 @@ export class AuthorityRecords {
     return {decision:baseline,adoption:d.proposal.adoption,scopeId:a.proposal.scopeId,scopeVersion:a.proposal.scopeVersion,scopeBodySha256:scopeBodyHash(a.proposal.body),material:d.proposal.material,source:d.source.sourceUrl,executionKind:d.source.executionKind,verifiedSource:true,technicalPass:false,mergeApproved:false};
   });}
   sourceRequests(authorization:string){return this.transaction(()=>{const d=this.decision(authorization),refs=[{proposalSha256:authorization,commentId:d.source.commentId}];if('adoption' in d.proposal){const a=this.decision(d.proposal.adoption);refs.push({proposalSha256:d.proposal.adoption,commentId:a.source.commentId});}return refs;});}
-  status(){return this.transaction(()=>{const {profile,profileSha256}=this.profile();return {profileSha256,executionKind:profile.executionKind,expectedOwnerId:profile.ownerId,expectedExecutorId:profile.executorId,scopes:this.all('authority_scope_adopted').map(e=>e.data),revocations:this.all('authority_revoked').map(e=>e.data),controls:this.all('authority_control_applied').map(e=>e.data),intents:this.all('authority_action_reserved').map(e=>e.data),externalActionSent:false,consumerActionAvailable:false,sourceFreshness:'recheck_exact_sources_before_action',unseenExternalRevocations:'not_observed_until_import_or_source_edit'};});}
+  status(){return this.transaction(()=>{const {profile,profileSha256}=this.profile();return {profileSha256,executionKind:profile.executionKind,expectedOwnerId:profile.ownerId,expectedExecutorId:profile.executorId,...sharedAccountApprovalProjection(profile),scopes:this.all('authority_scope_adopted').map(e=>e.data),revocations:this.all('authority_revoked').map(e=>e.data),controls:this.all('authority_control_applied').map(e=>e.data),intents:this.all('authority_action_reserved').map(e=>e.data),externalActionSent:false,consumerActionAvailable:false,sourceFreshness:'recheck_exact_sources_before_action',unseenExternalRevocations:'not_observed_until_import_or_source_edit'};});}
 }
