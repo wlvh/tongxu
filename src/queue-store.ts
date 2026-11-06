@@ -1,3 +1,4 @@
+import {registeredReceiverMetadata} from './receiver-metadata.js';
 import {FormalReviews} from './formal-review-store.js';
 import {IssueImplementations} from './issue-implementation-store.js';
 import type {ImplementationRequest} from './issue-implementation.js';
@@ -833,6 +834,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!claims.length)throw new Error('receiver_configured_resource_claim_required');
     return {authorityIntent:g.authorityIntent,resourceRequests:g.resourceRequests as string[],actionSha256:action.requestSha256,role:action.role,planSha256:hash(plan),packet:op.packet,operation:op.id};
   }
+  receiverPreparedPlan(id:string):Buffer|undefined{const record=this.db.prepare("SELECT data FROM events WHERE kind='authority_receiver_bound' AND object=?").get(id) as Row|undefined;return record?this.blob(JSON.parse(record.data).planSha256):undefined;}
   receiverResourceAdmission(id:string,plan:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{
     const {op,receiver}=this.receiverOperation(id);if(receiver||op.status!=='complete')throw new Error('receiver_original_started_or_unknown');this.receiverGate(op);const b=this.receiverAuthorization(op,plan,observations,false);if(!b)return {governed:false,newModelInputs:0};
     const sql="CREATE UNIQUE INDEX receiver_authority_unique ON events(json_extract(data,'$.authorityIntent')) WHERE kind='authority_receiver_bound'",oldIndex=this.db.prepare("SELECT sql FROM sqlite_schema WHERE name='receiver_authority_unique'").get() as Row|undefined;if(oldIndex&&oldIndex.sql!==sql)throw new Error('receiver_authority_guard_changed');if(!oldIndex)this.db.exec(sql);
@@ -1717,19 +1719,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   }
   // Read only original, registered capture blobs inside the same status
   // transaction. Never probe today's executable or follow a recorded path.
-  private receiverMetadata(receiver: Row | undefined): Row {
-    if (!receiver) return { state: 'not_dispatched' };
-    const base = { executionKind: receiver.executionKind, tool: 'Claude Code' };
-    try {
-      const initRef = receiver.blobs?.['init.json'];
-      if (!initRef) return { ...base, state: 'unavailable', reason: 'original_init_not_registered' };
-      const bytes = this.blob(initRef.sha256);
-      if (bytes.length !== initRef.bytes || bytes.length > 65536) throw new Error('original_init_invalid');
-      const init = JSON.parse(bytes.toString());
-      if (init.type !== 'system' || init.subtype !== 'init' || ![init.claude_code_version, init.model, init.session_id].every(x => typeof x === 'string' && x.length > 0 && x.length <= 256 && !/[\x00-\x1f]/.test(x))) throw new Error('original_init_invalid');
-      return { ...base, state: 'recorded', version: init.claude_code_version, model: init.model, session: init.session_id, evidenceSha256: initRef.sha256 };
-    } catch { return { ...base, state: 'unavailable', reason: 'original_metadata_unreadable_or_invalid' }; }
-  }
+  private receiverMetadata(receiver: Row | undefined): Row {return registeredReceiverMetadata(receiver,sha=>this.blob(sha));}
   status(receiverMetadataFor: readonly string[] = [], invalidOutputFor: readonly string[] = [], collaborationFor: readonly string[] = []): Row {
     this.db.exec('BEGIN');
     try {

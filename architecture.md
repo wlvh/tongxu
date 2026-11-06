@@ -130,6 +130,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 工作台向原正式控制器传入绑定已核项目身份的 AI 设置读取回调；新请求封存时读取当前 AISettings 快照，一次捕获三个角色，定时接续与手工准备使用同一来源。回调不缓存启动时选择，也不改写已有请求；保存选择不可用沿原等待记录处理。调整此装配时核 `tests/w7/formal-workbench.test.ts` 的真实定时器、手工核对、设置变化/默认/不可用和跨项目场景。
 
+`reception-controls` 对正常新接收使用同一项目设置回调，仅固定专用 receiver 角色；旧 receiver 以及已保存而未发送的原计划先复用原绑定，不读取新偏好。`receiver` 保留 Claude 默认/旧捕获，并可沿同一生命周期使用 Kimi。`formal-kimi` 仅以两个固定角色身份共享无工具 ACP 检查，formal 旧请求/完成格式不变；Kimi receiver 完成件另保留准确全文供原无效结果纠正和发布回流。`LiveProcess.request` 的可选同步 effect 将 Kimi 实际问题写入包在原 receiver 事务中；原调用未传 effect 时保持原行为。`receiver-metadata` 只从注册计划/捕获 blobs 投影真实程序、模型与会话，供队列页面和 ReviewRecords 共用，不探测当前安装。传播验证见 `tests/w3/receiver-kimi.test.ts`、原 receiver/治理/纠正、判断记录、AI设置/正常入口及 formal Kimi 测试。
+
 正式当前性检查把冻结 Issue/采用范围与要求摘要及原 AuthorityRecords 当前采用绑定，host 刷新后消费实际采用来源，PASS 终结事务再次核对。此检查不依赖已返回阶段的执行权或已结算资源；采用改变时保留旧报告并等待新准入，不修改原输入。正式后继登记和中央 check/effect 事务沿固定 previousOperation 核父祖先停止，公开状态继承同一停止；正常已完成但未停止的父轮不需保留旧运行 claim，已发结果仍可保存。反证正式结论复用原 owner/PASS 判定，修复 needs_owner 也消费既有 owner 出口。
 
 原 AuthorityRecords/ResourceRecords 通过明确 opt-in 的正式消费者分支接入，`formalWorkSha256` 区分固定正式工作与普通接收；旧接收/repair/publication 拒绝挪用该绑定。原 ReviewRecords 共用发布返工事件及反思入口。`formal-candidate` 在发布核回后沿原 collect/verify/readPacket/import 生产新材料，用真实在运行报告绑定测试权限，并经 W2 原容器结束捕获后结算与导入。没有新余额、恢复队列或通用发布器。项目准备保留固定 H/B 的独立历史和共同祖先供后继完整读取，checkout 仍是 H。正式停止在远端项目确认前消费原请求中的项目身份；旧无绑定请求只接受已发现的本地项目映射，不改写旧输入。

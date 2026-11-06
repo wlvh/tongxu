@@ -19,6 +19,7 @@ export const aiRoles=[
   {id:'reviewer',name:'独立审核者',need:'controlledReports',description:'独立阅读固定材料并返回审核报告'},
   {id:'verifier_fact',name:'事实核实与修复',need:'scopedTools',description:'使用原执行器的受限文件、测试及授权修复工具'},
   {id:'verifier_impact',name:'影响核实者',need:'impactReports',description:'分析已核实问题的影响和修正范围'},
+  {id:'receiver',name:'独立技术接收者',need:'receptionReports',description:'接收准确候选与材料，返回独立技术判断；不替代正式审核或本人接受'},
   {id:'acceptance',name:'接收与综合',need:'readonlyMessages',description:'解释证据与汇总结果；不替代本人接受'}
 ] as const;
 export type AIRole=typeof aiRoles[number]['id'];
@@ -28,6 +29,7 @@ const aiRoleUsage:Record<AIRole,{view:string;entry:string;interaction:string}>={
   reviewer:{view:'retrospective',entry:'判断与复盘：准备并运行已登记的整体复盘；独立再审也由原修复链触发',interaction:'新的独立上下文阅读固定源码和证据并返回判断。该只读审核不持有写入权限，也不把未执行的测试写成本轮实测。'},
   verifier_fact:{view:'tasks',entry:'任务与报告：在对应 RETURN 的核实与修复入口启动',interaction:'原执行器先开放限定文件读取和测试；写入责任及授权成立后才开放替换文件工具。新候选交独立审核，不自批。'},
   verifier_impact:{view:'tasks',entry:'任务与报告：正式 PR 批次验证或已接入的原局部核实链',interaction:'正式 PR 用固定候选和整批材料独立核影响，可选已检测 Kimi；初次不输入事实结论。完整原文交原事实会话综合；无写入或任意网络工具，局部链沿各自支持范围。'},
+  receiver:{view:'tasks',entry:'任务与报告：所选候选的来源补查与独立技术接收',interaction:'新接收可选择已检测的Claude或严格只读Kimi，程序固定准确材料和本次选择。实际启动仍需原接收权限、资源及适用费用证据；原请求保留原程序，查回不重发。未设置沿用原Claude。'},
   acceptance:{view:'deliveries',entry:'成果与验收：选择原成果和已登记的验证方案',interaction:'程序装配成果证据，由验收角色解释并返回完整报告；不代替本人接受。这里的选择不修改旧 PR 技术接收器的固定计划。'}
 };
 export type AISettingChoice=AIModelChoice&{providerId:string};

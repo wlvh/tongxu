@@ -174,7 +174,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const polling=plan.eventPolling?await SourceTickLoop.load(plan.eventPolling,plan.sources):null;
     const secretary=plan.secretary?await SecretaryControls.load(plan.secretary.path,plan.secretary.sha256,p.sources,selectedSources):null;
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
-    const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources):null;
+    const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources,readPreferences):null;
     const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences):null;
     return {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions};
   };
