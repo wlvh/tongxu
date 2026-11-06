@@ -135,6 +135,15 @@ test('implementation UI keeps one request through duplicate clicks and does not 
  start.onclick();await flush();assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1,'a stale project-1 button cannot create work under project 2');
 });
 
+for(const supplement of [false,true])for(const [status,label] of [['no_change','核对完成，无需修改'],['owner_decision_required','需要本人决定']] as const)test(`terminal implementation ${status} is visible for ${supplement?'supplement':'initial work'} without offering a retry`,async()=>{
+ const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-returned',issue:74,phase:'returned',status,stopped:false,controllerActive:false,supplement,H0:'b'.repeat(40),H1:null};
+ p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);
+ const buttons:any[]=[],labels:string[]=[];const collect=(n:any)=>{if(n.tag==='button')buttons.push(n);if(n.tag==='strong')labels.push(n.textContent);for(const child of n.children??[])collect(child);};collect(p.run('implementationPanel()'));
+ assert.ok(labels.some(text=>text===(supplement?'原任务补充 · Issue #':'Issue #')+'74 · '+label));assert.ok(!labels.some(text=>/待补准备|待执行|正在处理/.test(text)));assert.ok(!buttons.some(b=>/继续原请求|撤回未发请求|停止本次实施/.test(b.textContent)));
+ const pending=buttons.find(b=>b.textContent==='查看原成果与全文').onclick();assert.equal(p.fetchCalls.length,1);assert.equal(p.fetchCalls[0]!.path,'/api/implementation-report/impl/original-returned');assert.ok(!p.fetchCalls[0]!.options.method||p.fetchCalls[0]!.options.method==='GET');
+ p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({status,H0:request.H0,H1:null,report:{report:'FULL ORIGINAL TERMINAL REPORT'}})});await pending;assert.match(p.nodes.get('report-meta')!.textContent,new RegExp(label));assert.equal(p.nodes.get('report-body')!.textContent,'FULL ORIGINAL TERMINAL REPORT');assert.equal(p.fetchCalls.length,1);
+});
+
 for(const supplement of [false,true])for(const switchProject of [false,true])test(`registered ${supplement?'supplement':'implementation'} UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
  const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false,supplement};
  p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);
