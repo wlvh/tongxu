@@ -251,21 +251,29 @@ export class CoordinationRecords {
       const output=this.outputFor(f,dependency.producer,dependency.capability);
       if(!output){blockers.push('capability_missing:'+dependency.producer+':'+dependency.capability);continue;}
       let materialChanged=false;for(const task of this.relevantTasks(f,[dependency.producer],output.stage)){try{this.currentTask(f,task);}catch{blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability+':source:'+task);materialChanged=true;}}if(materialChanged)continue;
-      try{this.verifyOutput(output);const source=this.stageState(f,dependency.producer,output.stage,memo);if(source.blockers.length){for(const reason of source.blockers)blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability+':'+reason);continue;}}
-      catch{blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability);continue;}
-      if(integrationOutputKind(output.kind)){
-        try{const value=this.verifyOutput(output),artifact=this.integrationReceiptSource(output.operation,true,output.kind==='integration_publication_readback'),members=this.integrationMembers(f,output.task,output.capability,artifact,memo);if(canonical(artifact)!==canonical(value.artifact)||canonical(members)!==canonical(value.members))throw new Error('coordination_integration_output_changed');if(!this.inputConsumed(f,taskId,stage,output.sha256))blockers.push('capability_not_consumed:'+dependency.producer+':'+dependency.capability);}
-        catch(e){blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability+':'+(e instanceof Error?e.message:'integration_receipt_unknown'));}
-      }
-      else if(output.kind==='publication_readback'){
-        try{const value=this.verifyOutput(output);if(canonical(this.publicationSource(output.operation,true))!==canonical(value.artifact))throw new Error('coordination_publication_output_original_changed');if(!this.inputConsumed(f,taskId,stage,output.sha256))blockers.push('capability_not_consumed:'+dependency.producer+':'+dependency.capability);}
-        catch{blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability);}
-      }
-      else if(!this.inputConsumed(f,taskId,stage,output.sha256))blockers.push('capability_not_consumed:'+dependency.producer+':'+dependency.capability);
+      try{this.requireCurrentOutput(f,output,memo);}
+      catch(e){blockers.push('capability_producer_changed:'+dependency.producer+':'+dependency.capability+':'+(e instanceof Error?e.message:'coordination_source_unknown'));continue;}
+      if(!this.inputConsumed(f,taskId,stage,output.sha256))blockers.push('capability_not_consumed:'+dependency.producer+':'+dependency.capability);
     }
     const result:StageState={task:taskId,stage,blockers,phasePrerequisitesMet:blockers.length===0,executionAuthorized:false};memo.set(key,result);return result;
   }
   stage(id:string,task:string,stage:CoordinationStage){return this.transaction(()=>this.stageState(this.fixed(id),task,stage));}
+  /** Current eligibility follows the declared producer phase. Historical
+   * originals and consumption receipts remain independently readable. */
+  private requireCurrentOutput(f:ReturnType<CoordinationRecords['fixed']>,output:Row,memo=new Map<string,StageState>()){
+    for(const task of this.relevantTasks(f,[output.task],output.stage))this.currentTask(f,task);
+    const value=this.verifyOutput(output),source=this.stageState(f,output.task,output.stage,memo);
+    if(source.blockers.length)throw new Error('coordination_producer_stage_not_current:'+source.blockers[0]);
+    if(integrationOutputKind(output.kind)){
+      const artifact=this.integrationReceiptSource(output.operation,true,output.kind==='integration_publication_readback'),members=this.integrationMembers(f,output.task,output.capability,artifact,memo);
+      if(canonical(artifact)!==canonical(value.artifact)||canonical(members)!==canonical(value.members))throw new Error('coordination_integration_output_changed');
+    }else if(output.kind==='receiver_judgment'){
+      if(canonical(this.receiverSource(output.operation,true))!==canonical(value.artifact))throw new Error('coordination_receiver_output_original_changed');
+    }else if(output.kind==='publication_readback'){
+      if(canonical(this.publicationSource(output.operation,true))!==canonical(value.artifact))throw new Error('coordination_publication_output_original_changed');
+    }
+    return value;
+  }
   private relevantTasks(f:ReturnType<CoordinationRecords['fixed']>,selectedTasks?:string[],selectedStage?:CoordinationStage){
     const relevant=new Set(selectedTasks??f.plan.tasks.map(t=>t.id));if(!relevant.size||[...relevant].some(id=>!f.plan.tasks.some(t=>t.id===id)))throw new Error('coordination_context_task_missing');
     const visited=new Set<string>();const visit=(id:string,stage:CoordinationStage)=>{
@@ -280,7 +288,7 @@ export class CoordinationRecords {
   private contextValue(f:ReturnType<CoordinationRecords['fixed']>,selectedTasks?:string[],selectedStage?:CoordinationStage){
     const relevant=this.relevantTasks(f,selectedTasks,selectedStage);
     const nonCurrentTasks:string[]=[];for(const t of f.plan.tasks)try{this.currentTask(f,t.id);}catch(e){if(relevant.has(t.id))throw e;nonCurrentTasks.push(t.id);}
-    const outputs:any[]=f.plan.tasks.flatMap(t=>t.outputs.flatMap(o=>{const output=this.outputFor(f,t.id,o.id);if(!output)return [];const row:Row={...output,text:this.bytes(output.sha256).toString()};if(integrationOutputKind(output.kind)){row.individualReceptionInferred=false;try{const value=this.verifyOutput(output),artifact=this.integrationReceiptSource(output.operation,true,output.kind==='integration_publication_readback'),members=this.integrationMembers(f,t.id,o.id,artifact);row.sourceCurrent=canonical(artifact)===canonical(value.artifact)&&canonical(members)===canonical(value.members);}catch(e){row.sourceCurrent=false;row.sourceProblem=e instanceof Error?e.message:'integration_source_unknown';}}return [row];}));
+    const outputs:any[]=f.plan.tasks.flatMap(t=>t.outputs.flatMap(o=>{const output=this.outputFor(f,t.id,o.id);if(!output)return [];const row:Row={...output,text:this.bytes(output.sha256).toString()};if(integrationOutputKind(output.kind))row.individualReceptionInferred=false;try{this.requireCurrentOutput(f,output);row.sourceCurrent=true;}catch(e){row.sourceCurrent=false;row.sourceProblem=e instanceof Error?e.message:'coordination_source_unknown';}return [row];}));
     let earlyReceiverAdvice:ReturnType<CoordinationRecords['earlyAdvice']>|undefined;if(this.earlyParts(f).length){try{earlyReceiverAdvice=this.earlyAdviceValue(f);}catch(e){earlyReceiverAdvice={available:false,reason:e instanceof Error?e.message:'early_receiver_advice_unknown',technicalAcceptanceGranted:false};}}
     return {schemaVersion:1,kind:'tongxu-coordination-context',planId:f.id,name:f.plan.name,revision:f.plan.revision,scope:f.registration.scope,mode:f.plan.mode,tasks:f.plan.tasks,actors:f.plan.actors,bindings:f.registration.bindings,shared:f.plan.shared.map(p=>({...p,hash:f.registration.parts[p.id]})),dependencies:f.plan.dependencies,outputs,...(nonCurrentTasks.length?{sourceApplicability:{selectedTasks,...(selectedStage?{selectedStage}:{}),relevantTasks:[...relevant],nonCurrentTasks,originalBindingsPreserved:true,unrelatedOriginalsAreHistorical:true}}:{}),...(earlyReceiverAdvice?{earlyReceiverAdvice}:{}),permissionsGranted:false,responseContract:{kind:'tongxu-coordination-feedback',task:'exact assigned task id',revision:f.plan.revision,parts:'each affected part: id, hash, position (agreed/conflict/unknown), report',report:'complete substantive report; feedback is not writing authority'}};
   }
@@ -340,9 +348,9 @@ export class CoordinationRecords {
   private selected(f:ReturnType<CoordinationRecords['fixed']>,task:string,purpose:string){return f.events.findLast(e=>e.kind==='coordination_dispatch_selected'&&e.data.task===task&&e.data.purpose===purpose)?.data??null;}
   private stageInputs(f:ReturnType<CoordinationRecords['fixed']>,task:string,stage:CoordinationStage){return f.plan.dependencies.filter(d=>d.task===task&&d.stage===stage).map(d=>{
     this.currentTask(f,d.producer);const output=this.outputFor(f,d.producer,d.capability);
-    if(!output)throw new Error('coordination_precise_stage_output_missing');this.verifyOutput(output);return output;
+    if(!output)throw new Error('coordination_precise_stage_output_missing');this.requireCurrentOutput(f,output);return output;
   });}
-  private containsInputs(context:Row,outputs:Row[]){return outputs.every(output=>context.outputs.some((o:Row)=>o.task===output.task&&o.capability===output.capability&&o.sha256===output.sha256&&hash(o.text)===output.sha256));}
+  private containsInputs(context:Row,outputs:Row[]){return outputs.every(output=>context.outputs.some((o:Row)=>o.task===output.task&&o.capability===output.capability&&o.sha256===output.sha256&&hash(o.text)===output.sha256&&o.sourceCurrent!==false));}
   /** Legacy phases retain one late read. A joint receipt's at most three
    * material versions may each be read only after the prior read ended fully.
    * Every selected original input and its first legacy slot stay immutable. */
@@ -488,7 +496,22 @@ export class CoordinationRecords {
       // This readonly message may perform the consumption itself. Its input
       // must already contain the exact available upstream output; later
       // implementation still requires a complete acknowledged reply.
-      const context=JSON.parse(this.bytes(bound.contextSha256).toString());for(const d of f.plan.dependencies.filter(d=>d.task===m.task&&d.stage==='investigate')){this.currentTask(f,d.producer);const output=this.outputFor(f,d.producer,d.capability);if(!output||!context.outputs.some((o:Row)=>o.task===d.producer&&o.capability===d.capability&&o.sha256===output.sha256&&hash(o.text)===output.sha256))throw new Error('coordination_precise_upstream_input_required');}
+      const context=JSON.parse(this.bytes(bound.contextSha256).toString());
+      if(dispatch?.purpose==='consume'&&!task.stages.some(stage=>{
+        const pending=this.stageState(f,m.task,stage);
+        return pending.blockers.some(b=>b.startsWith('capability_not_consumed:'))&&!pending.blockers.some(b=>b.startsWith('capability_missing:')||b.startsWith('capability_producer_changed:'))&&this.containsInputs(context,this.stageInputs(f,m.task,stage));
+      }))throw new Error('coordination_precise_stage_not_ready');
+      for(const d of f.plan.dependencies.filter(d=>d.task===m.task)){
+        const supplied=context.outputs.find((o:Row)=>o.task===d.producer&&o.capability===d.capability);
+        if(d.stage==='investigate'&&(!supplied||supplied.sourceCurrent===false))throw new Error('coordination_precise_upstream_input_required');
+        // An independent investigation can read explicitly historical future
+        // inputs. A frozen input presented as current must remain applicable,
+        // including the original legacy consume and contexts without flags.
+        if(!supplied||supplied.sourceCurrent===false)continue;
+        const output=this.outputFor(f,d.producer,d.capability);
+        if(!output||supplied.sha256!==output.sha256||hash(supplied.text)!==output.sha256)throw new Error('coordination_precise_upstream_input_required');
+        this.requireCurrentOutput(f,output);
+      }
       for(const other of this.db.prepare("SELECT object,data FROM events WHERE kind='coordination_messages_bound' AND json_extract(data,'$.value.run')!=?").all(run) as Row[]){
         const previous=this.fixed(other.object.slice(13)),link=previous.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===JSON.parse(other.data).value.run)!.data;
         const priorActors=[...new Set<string>(link.mapping.flatMap((x:Row)=>{const prior=previous.plan.tasks.find(t=>t.id===x.task)!;return prior.actor===task.actor||previous.plan.name===f.plan.name&&prior.id===task.id?[prior.actor]:[];}))];
@@ -519,7 +542,8 @@ export class CoordinationRecords {
     const {source,input}=this.verifiedReply(run,messageId),bytes=source.materials['coordination-context.json'];if(!bytes||hash(bytes)!==bound.contextSha256||!input.replyReferences.includes(bound.contextSha256))throw new Error('coordination_exact_context_consumption_required');const context=JSON.parse(bytes.toString()),recorded=[];
     for(const d of f.plan.dependencies.filter(d=>d.task===taskId&&d.stage===stage)){
       this.currentTask(f,d.producer);const output=this.outputFor(f,d.producer,d.capability),consumed=context.outputs.find((o:Row)=>o.task===d.producer&&o.capability===d.capability);
-      if(!output||!consumed||output.sha256!==consumed.sha256||hash(consumed.text)!==output.sha256)throw new Error('coordination_exact_producer_output_not_consumed');this.verifyOutput(output);
+      if(!output||!consumed||output.sha256!==consumed.sha256||hash(consumed.text)!==output.sha256||consumed.sourceCurrent===false)throw new Error('coordination_exact_producer_output_not_consumed');
+      try{this.requireCurrentOutput(f,output);}catch{throw new Error('coordination_exact_producer_output_not_consumed');}
       const entry={task:taskId,stage,producer:d.producer,capability:d.capability,outputSha256:output.sha256,run,messageId,contextSha256:bound.contextSha256};if(!f.events.some(e=>e.kind==='coordination_consumed'&&canonical(e.data)===canonical(entry)))this.event(id,'consumed',entry);recorded.push(entry);
     }
     return {recorded,newPermissionGranted:false};

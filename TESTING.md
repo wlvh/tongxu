@@ -31,6 +31,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 条件交付入口沿 `test:coordination`、`test:integration` 和 `test:integration-member` 验证。`conditional-entry.test.ts` 覆盖正常 CLI、完整接收及下游实际消费、来源变化、原 W1/W2 保留和候选共用三批限额。`conditional-member-repair.test.ts` 覆盖原 RETURN 到成员 H1、真实隔离验证和重组、来源过期/失败/候选变化、正文更新后的组合复用与准确接收输入。`conditional-individual-repair.test.ts` 还覆盖准确 after.H 上的新 RETURN、同 H 新材料与任意外部 H 的当前等待、旧未知/损坏捕获/未核资源/工作区占用、原终态能力移除后查回及旧 task-only 记录。成员场景的 `current-parent` 覆盖成员H/manifest不变时父材料更新后的正常CLI修复、准确新父全文绑定、完整历史排除、未知/损坏拒绝、多当前父歧义，以及成员导入后按原修复绑定的精确历史终态查回。独立运输断言覆盖99前缀成员SHA与精确组合PR路径的区分。成员场景的 `second-round` 运行两轮真实修复、各自采集/自身 W2/重组/导入及组合自身接收，并断言新旧原操作和证据不串用。本人来源和账本由明确样例提供，运行报告分别记录实际 Git/Docker 与模型/远端样例范围。
 
+`tests/coordination/receiver-currentness.test.ts` 复用原接收与消息 fixture，覆盖同一上游H的证据失效、登记未消费/已消费、旧式和命名阶段消费预备未发、runtime启动后的最后输入门、初次调查携历史未来产物、已发后的完整回复与原run零新增恢复，以及报告SHA不变时的声明依赖传播。断言实际协议输入数量、原产物与消费出处、历史全文和独立A3。Git、SQLite、CLI及子进程真实执行，验证材料和模型为明确协议样例。
+
 行为、契约和失败边界优先于实现形状。固定输入减少外部数据漂移；真实外部调用需明确授权与条件。缺材料、未知、部分输出、拒绝和未运行不是通过。某个文件名带 native、integration 或 live，不足以判断它实际启动了什么，必须看 fixture 和执行器。
 
 ## 2. Test Layers and What Each Proves
