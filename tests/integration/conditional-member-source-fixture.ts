@@ -10,7 +10,11 @@ export async function memberSourceFixture(root:string,H:string,B:string,objects:
  const code=`#!${process.execPath}
 import fs from 'node:fs';
 const args=process.argv.slice(2);if(args.includes('--version')){console.log('gh version 9.8.7 (explicit fixture)');process.exit(0);}if(args.includes('--help')){console.log('gh api --method --include --hostname');process.exit(0);}
-const endpoint=args.at(-1),all=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8')),pr=endpoint.includes('/99')||all.integration&&endpoint.includes('/commits/'+all.integration.H+'/')?99:10,s=pr===99?all.integration??{}:all;if(args[args.indexOf('--method')+1]!=='GET')process.exit(4);fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({method:'GET',endpoint})+'\\n');
+const endpoint=args.at(-1),all=JSON.parse(fs.readFileSync(${JSON.stringify(state)},'utf8'));
+const integrationPr=/^repos\\/fixture\\/reception\\/(?:pulls|issues)\\/99(?:[/?]|$)/.test(endpoint);
+const integrationCommit=all.integration&&endpoint.startsWith('repos/fixture/reception/commits/'+all.integration.H+'/');
+const pr=integrationPr||integrationCommit?99:10,s=pr===99?all.integration??{}:all;
+if(args[args.indexOf('--method')+1]!=='GET')process.exit(4);fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({method:'GET',endpoint})+'\\n');
 const repository={id:1,full_name:'fixture/reception'};let value,status=200;
 if(pr===99&&!all.integration){status=404;value={message:'explicit integration fixture not published'};}
 else if(endpoint==='repos/fixture/reception')value=repository;

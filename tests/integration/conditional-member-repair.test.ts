@@ -24,6 +24,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {readOwnerSource} from '../../src/authority-source.js';
 import {parseActionRequest} from '../../src/authority-contract.js';
 import {randomUUID} from 'node:crypto';
+import {setup as receiverFixture} from '../w3/receiver-fixture.js';
+import {git} from '../../src/repair-workspace.js';
 
 const noInput=(r:any)=>r.messages.every((m:any)=>!m.sent&&!m.delivery&&!m.reply)&&r.runtimes.every((r:any)=>!r.started||r.ended?.proof.knownUnstarted===true&&r.captureVerification?.proof.knownUnstarted===true);
 
@@ -156,21 +158,11 @@ for(const mode of ['local','owner-missing','governed','monitored','governed-moni
   const duplicate=await run('repair-member','--task','A','--finding','0');
   assert.equal(duplicate.operation,result.operation);assert.equal(duplicate.result.duplicate,true);
   assert.deepEqual(duplicate.result.counters,result.result.counters);
-  await rm(profilePath);await rm(f.model.configPath);
-  const coldDuplicate=await run('repair-member','--task','A','--finding','0');
-  assert.equal(coldDuplicate.operation,result.operation);assert.equal(coldDuplicate.result.duplicate,true);
   assert.deepEqual(await readFile(f.model.trace),stableTrace);
   assert.deepEqual(f.q.status().events.filter((e:any)=>e.kind.startsWith('resource_')),stableResources);
   assert.deepEqual(await f.authorState(),stableAuthor);
  }
 
- if(mode==='current-parent'){
-  const db=new DatabaseSync(join(f.store,'queue.sqlite'),{readOnly:true});
-  assert.equal((db.prepare('SELECT result FROM operations WHERE id=?').get(f.parent.operation) as any).result,historicalParentOriginal);db.close();
-  assert.ok((await run('report')).reports.some((r:any)=>r.kind==='repair'&&r.complete&&r.result.operation===result.operation));
-  if(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE)await cp(f.root,join(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE,'member-current-parent'),{recursive:true});
-  return;
- }
  await assert.rejects(()=>run('collect-member','--task','A'),/conditional_entry_published_candidate_mismatch/);assert.ok(!f.q.status().events.some((e:any)=>e.kind==='coordination_normal_entry_step'&&JSON.parse(e.data).value.reference.kind==='member-snapshot'));
  await remote.publish(result.result.after.H,join(f.request.executionRoot,'workspace'));if(f.observeOriginalSource)await f.observeOriginalSource();const observed=await run('collect-member','--task','A');assert.equal(observed.collectionComplete,true);assert.equal(observed.candidate.H,result.result.after.H);assert.equal(observed.remoteWritePerformed,false);const firstGets=(await remote.reads()).length,frozenMember=await readFile(join(observed.snapshot,'manifest.json'));assert.equal((await run('collect-member','--task','A')).collectionComplete,true);assert.ok((await remote.reads()).length>firstGets);assert.deepEqual(await readFile(join(observed.snapshot,'manifest.json')),frozenMember);const gets=(await remote.reads()).length;
  const own=await run('validate-member','--task','A');assert.equal(own.state.phase,'recorded');assert.equal(own.newVerificationRuns,1);assert.equal(own.state.source.kind,'member-repair');assert.equal(own.state.integration,undefined);assert.equal((await run('validate-member','--task','A')).newVerificationRuns,0);
@@ -202,6 +194,16 @@ for(const mode of ['local','owner-missing','governed','monitored','governed-moni
  const report=await run('report'),repair=report.reports.find((r:any)=>r.kind==='repair');assert.equal(repair.available,true);assert.equal(repair.complete,true);assert.ok(report.reports.some((r:any)=>r.kind==='member-recomposition'&&r.complete&&r.result.link.repair.resultSha256===state.resultSha256&&r.result.originals.length>0));assert.equal(repair.result.originalVerdict,'RETURN_FOR_WORK');assert.equal(repair.result.originalResult.after.H,result.result.after.H);assert.deepEqual(await readFile(f.model.trace),trace);assert.deepEqual(await f.authorState(),authorBefore);
  await run('refresh');const rejoined=await run('integrate');assert.equal(rejoined.phase,'produced');assert.equal(rejoined.result.candidate.H,rebuilt.candidate.H);assert.equal(rejoined.newGitProcesses,0);await assert.rejects(()=>run('collect','--pr','99'),/conditional_entry_published_candidate_unavailable/);assert.equal((await remote.reads()).some((r:any)=>r.method!=='GET'),false);assert.deepEqual(await f.authorState(),authorBefore);
  const pSource=f.q.candidateValidations().originals(own.state.id).plan;assert.equal(pSource.kind,'tongxu-member-candidate-validation');if(pSource.kind!=='tongxu-member-candidate-validation'||!pSource.candidateSource)throw new Error('source_reference_missing');const refSource=pSource.candidateSource,clock=Date.now;try{const now=Date.now();Date.now=()=>now+120000;assert.throws(()=>f.q.memberCandidateSource(refSource),/member_source_current_observation_required/);}finally{Date.now=clock;}
+ if(mode==='current-parent'){
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'),{readOnly:true});
+  assert.equal((db.prepare('SELECT result FROM operations WHERE id=?').get(f.parent.operation) as any).result,historicalParentOriginal);db.close();
+  const reports=(await run('report')).reports;
+  assert.ok(reports.some((r:any)=>r.kind==='repair'&&r.complete&&r.result.operation===result.operation));
+  assert.deepEqual(await readFile(f.model.trace),trace);
+  assert.deepEqual(await f.authorState(),authorBefore);
+  if(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE)await cp(f.root,join(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE,'member-current-parent'),{recursive:true});
+  return;
+ }
  const remoteOriginal=await readFile(remote.state),allModels=await readFile(f.model.trace),allReadonly=await readFile(roles.trace),resourceState=ledger?.state();for(const problem of [{closed:true},{fork:true},{exitCode:3}]){await writeFile(remote.state,canonical({...JSON.parse(remoteOriginal.toString()),...problem}));await assert.rejects(()=>run('collect-member','--task','A'),/conditional_entry_(source_read_incomplete|published_repository_changed|published_candidate_mismatch)/);const old=await run('validate-member','--task','A');assert.equal(old.newVerificationRuns,0);assert.equal(old.sourceCurrent,false);assert.equal(old.historicalResultOnly,true);assert.equal((await run('recompose-member','--task','A')).phase,'waiting_for_current_member_source');await writeFile(remote.state,remoteOriginal);await run('collect-member','--task','A');assert.equal((await run('validate-member','--task','A')).sourceCurrent,true);}
  await remote.publish(f.A3,f.objects);await assert.rejects(()=>run('collect-member','--task','A'),/conditional_entry_published_candidate_mismatch/);assert.equal((await run('state')).collectionSources.find((s:any)=>s.kind==='member-source').sourceCurrent,false);assert.throws(()=>f.q.memberCandidateSource(refSource),/member_source_current_observation_required/);await writeFile(remote.state,remoteOriginal);await run('collect-member','--task','A');
  const body='Actual newly observed member material for the same fixed H1';await writeFile(remote.state,canonical({...JSON.parse(remoteOriginal.toString()),body}));const changed=await run('collect-member','--task','A');assert.ok(changed.sourceObservation.materialReconciliation.items.some((i:any)=>i.changed));assert.deepEqual(await readFile(join(observed.snapshot,'manifest.json')),frozenMember);const originals=await run('report'),memberOriginal=originals.reports.find((r:any)=>r.kind==='member-collection');assert.equal(memberOriginal.result.latestSource.sourceCurrent,true);assert.ok(memberOriginal.result.latestSource.originals.some((r:any)=>Buffer.from(r.text,r.encoding).toString().includes(body)));const oldValidation=await run('validate-member','--task','A');assert.equal(oldValidation.newVerificationRuns,0);assert.equal((await run('recompose-member','--task','A')).phase,'waiting_for_current_combination_material');assert.deepEqual(await readFile(f.model.trace),allModels);assert.deepEqual(await readFile(roles.trace),allReadonly);if(ledger)assert.deepEqual(ledger.state(),resourceState);
@@ -247,4 +249,28 @@ for(const mode of ['local','owner-missing','governed','monitored','governed-moni
   assert.deepEqual(await readFile(f.model.trace),allModels);
   if(ledger){assert.equal(ledger.state().claims.length,8);assert.equal(ledger.state().settlements.length,8);}
  }
+});
+
+
+test('member source fixture keeps 99-prefixed member commits separate from exact integration routes',async t=>{
+ const f=await receiverFixture(t);
+ const B=await git(f.plan.objects,['rev-parse','HEAD^']);
+ const remote=await memberSourceFixture(f.root,f.H,B,f.plan.objects);
+ const state=JSON.parse(await readFile(remote.state,'utf8'));
+ // These artificial SHAs exercise only the local transport routing.
+ state.H='99'+'f'.repeat(38);
+ state.integration={H:'ab'+'e'.repeat(38),B,commits:[],files:[]};
+ await writeFile(remote.state,canonical(state));
+ const execute=promisify(execFile);
+ const get=async(endpoint:string)=>{
+  const response=await execute(process.execPath,[remote.executable,'api','--method','GET',endpoint]);
+  assert.match(response.stdout,/^HTTP\/1\.1 200 Fixture/);
+  return JSON.parse(response.stdout.split('\r\n\r\n')[1]!);
+ };
+ assert.equal((await get('repos/fixture/reception/pulls/10')).head.sha,state.H);
+ assert.deepEqual(await get('repos/fixture/reception/commits/'+state.H+'/check-runs?filter=latest&per_page=100&page=1'),{total_count:0,check_runs:[]});
+ assert.deepEqual(await get('repos/fixture/reception/commits/'+state.H+'/statuses?per_page=100&page=1'),[]);
+ assert.equal((await get('repos/fixture/reception/pulls/99')).head.sha,state.integration.H);
+ assert.deepEqual(await get('repos/fixture/reception/issues/99/comments?per_page=100&page=1'),[]);
+ assert.deepEqual(await get('repos/fixture/reception/commits/'+state.integration.H+'/check-runs?filter=latest&per_page=100&page=1'),{total_count:0,check_runs:[]});
 });

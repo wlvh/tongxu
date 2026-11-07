@@ -44,7 +44,7 @@ export async function prepareConditionalRepair(q:QueueStore,entry:ConditionalEnt
   // historical. Recover only the same complete RETURN and terminal operation;
   // a newer packet or different parent selection cannot enter this branch.
   if(previous){
-   let historical;try{historical=q.conditionalRepairOriginalSource(task.item,finding);}catch{/* Preserve the current selector's exact failure below. */}
+   let historical;try{historical=q.conditionalRepairOriginalSource(task.item,finding,previous);}catch{/* Preserve the current selector's exact failure below. */}
    if(historical&&q.conditionalRepairMatches(previous,historical)){
     const old=q.reviewRecords().state(previous.reference.id).repair;
     if(old.phase==='returned'&&old.controllerReturned===true&&previous.reference.finding===(finding??null))return restore(previous);

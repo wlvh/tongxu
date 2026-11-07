@@ -642,12 +642,18 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   conditionalRepairSource(itemId:string,finding?:number){return this.transaction(()=>this.conditionalRepairSourceValue(itemId,finding));}
   /** Historical selection is only for exact terminal readback. All effect
    * admissions still call the current-source gates below. */
-  conditionalRepairOriginalSource(itemId:string,finding?:number){return this.transaction(()=>this.conditionalRepairSourceValue(itemId,finding,false));}
-  private conditionalRepairSourceValue(itemId:string,finding?:number,requireCurrent=true){
+  conditionalRepairOriginalSource(itemId:string,finding?:number,step?:Row){return this.transaction(()=>{
+    const plan=step&&JSON.parse(step.request.toString());
+    const member=plan?.memberReturn&&this.integrationMemberRecords(fn=>fn()).material(plan.memberReturn.id);
+    const operation=plan?(member?member.request.reception.operation:plan.operation):undefined;
+    return this.conditionalRepairSourceValue(itemId,finding,false,operation);
+  });}
+  private conditionalRepairSourceValue(itemId:string,finding?:number,requireCurrent=true,originalOperation?:string){
     const item=this.item(itemId),packet=this.packet(item.current_packet),e=this.packetEvidence(packet),matches:Row[]=[];
     if(e.manifest.candidate.kind==='development-task'||this.effectiveSummary(item,packet).composition)throw new Error('conditional_entry_individual_repair_source_required');
     const rows=this.db.prepare("SELECT * FROM operations WHERE status IN ('complete','repairing') AND json_extract(result,'$.receiver.judgment.verdict')='RETURN_FOR_WORK' ORDER BY started_at,id").all() as Row[];
     for(const op of rows){
+      if(originalOperation!==undefined&&op.id!==originalOperation)continue;
       if(finding===undefined&&op.item!==itemId)continue;
       const parentPacket=this.packet(op.packet),integration=finding===undefined?null:this.integrationMaterial(parentPacket,false,op.id);
       const index=integration?.source.composition.subject.members.findIndex((m:Row)=>m.manifestHash===packet.manifest_hash&&['repository','pr','H','B','targetRef'].every(k=>m.candidate[k]===e.manifest.candidate[k as keyof typeof e.manifest.candidate]));
