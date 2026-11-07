@@ -18,6 +18,17 @@ test('administration proof is one fixed read and credential declarations only na
   const command=mergeCommand(binding,'read',{kind:'administration'});assert.deepEqual(mergeHttpRequest(command),{method:'GET',path:'/repos/fixture/merge/actions/permissions',body:null});
   for(const read of [{kind:'administration',page:2},{kind:'administration',commit:H},{kind:'administration',tip:H},{kind:'administration',reviewer:'other'}])assert.throws(()=>mergeHttpRequest(mergeCommand(binding,'read',read as any)));
 });
+test('designated review policy is a fixed readonly query for the bound repository PR and direct target',()=>{
+  const request=mergeHttpRequest(mergeCommand(binding,'read',{kind:'review_policy'}));
+  assert.equal(request.method,'POST');assert.equal(request.path,'/graphql');
+  const body=JSON.parse(request.body!);
+  assert.match(body.query,/^query TongxuMergeReviewPolicy\(/);
+  assert.equal(body.query.includes('mutation'),false);
+  assert.deepEqual(body.variables,{owner:'fixture',name:'merge',pr:binding.pr,ref:'refs/heads/main'});
+  for(const read of [{kind:'review_policy',page:2},{kind:'review_policy',commit:H},{kind:'review_policy',tip:H},{kind:'review_policy',reviewer:'other'}])assert.throws(()=>mergeHttpRequest(mergeCommand(binding,'read',read as any)));
+  const command=mergeCommand(binding,'read',{kind:'review_policy'});
+  assert.throws(()=>mergeHttpRequest({...command,read:{...command.read,query:'mutation { anything }'}} as any));
+});
 test('current direct target ref binds B while historical PR base remains separately reported',()=>{
   const checked=inspectMergeCurrent(binding,wire(pr()),ref(B),ref(B));assert.equal(checked.candidateMatches,true);assert.equal(checked.prReportedBase,'0'.repeat(40));assert.equal(checked.permissionGranted,false);
   assert.ok(inspectMergeCurrent(binding,wire(pr()),ref(B),ref(later)).gaps.includes('target_moved_during_preflight'));
