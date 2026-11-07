@@ -28,7 +28,7 @@ import type {RecompositionLink,MemberRecompositionPlan} from './member-recomposi
 import {RecompositionTestRecords,type RecompositionTestSource} from './recomposition-test-store.js';
 import { DatabaseSync } from 'node:sqlite';
 import {withManagedRepairCapture,type ManagedRepairCapture} from './workspace-handoff-originals.js';
-import type {RepairContinuation} from './repair-continuation-contract.js';
+import {repairContinuationContext,type RepairContinuation} from './repair-continuation-contract.js';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -515,7 +515,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}
   private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
   integrations(){return this.integrationRecords(fn=>this.transaction(fn));}
-  private memberSourceRecords(){return new MemberSourceRecords(this.db,this.coordinationRecords(fn=>fn()),(origin,entry,task)=>this.repairedMemberSource(origin,entry,task,false),id=>this.authorityItem(id));}
+  private memberSourceRecords(){return new MemberSourceRecords(this.db,this.coordinationRecords(fn=>fn()),(origin,entry,task,operation)=>this.repairedMemberSource(origin,entry,task,false,operation),id=>this.authorityItem(id));}
   registerMemberCandidateSource(origin:string,entry:string,task:string,collection:import('./conditional-entry-source.js').ConditionalMemberCollection,manifest:Buffer){return this.transaction(()=>this.memberSourceRecords().register(origin,entry,task,collection,manifest));}
   memberCandidateSource(ref:import('./authority-contract.js').AuthorityCandidateSource){return this.transaction(()=>this.memberSourceRecords().subject(ref.sha256,ref));}
   candidateValidations(){return this.candidateValidationRecords(fn=>this.transaction(fn));}
@@ -546,12 +546,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   static async observeCandidateValidationReport(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.candidateValidationRecords(fn=>fn()).report(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   /** Exact completed repair from this entry's original step, never a caller
    * supplied new head. Historical readback is separate from effect admission. */
-  conditionalRepairedMember(originPlan:string,entryId:string,taskId:string,current=true){return this.transaction(()=>this.repairedMemberSource(originPlan,entryId,taskId,current));}
-  private repairedMemberSource(originPlan:string,entryId:string,taskId:string,current=true){
-    const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(originPlan,entryId),step=records.normalEntryHistory(originPlan,entryId,'repair-'+taskId);
+  conditionalRepairedMember(originPlan:string,entryId:string,taskId:string,current=true){return this.transaction(()=>this.repairedMemberSource(originPlan,entryId,taskId,current,undefined,true));}
+  private repairedMemberSource(originPlan:string,entryId:string,taskId:string,current=true,operation?:string,selected=false){
+    const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(originPlan,entryId),step=records.normalEntryTaskStep(originPlan,entryId,'repair',taskId,operation);
     if(!entry||step?.reference.kind!=='repair'||step.reference.task!==taskId)throw new Error('conditional_entry_original_member_repair_required');
     const p=JSON.parse(step.request.toString()),r=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('repair_read_cannot_authorize');},()=>{throw new Error('repair_read_cannot_authorize');}).state(p.operation).repair,result=r.result;
     if(r.phase!=='returned'||r.controllerReturned!==true||r.planSha256!==step.requestSha256||!['completed','completed_recovered_candidate'].includes(result?.status)||result.actualRepairPerformed!==true||!(r.counters.actualFileWrites>0)||result.data?.tests?.passed!==true||result.data?.tests?.candidateTreeSha256!==result.treeSha256||result.data?.review?.verdict!=='PASS'||result.data.review.candidateH!==result.after.H||!r.resultSha256||canonical(JSON.parse(this.blob(r.resultSha256).toString()))!==canonical(result)||!r.evidenceSha256)throw new Error('conditional_entry_completed_changed_member_required');
+    const task=records.reference(originPlan).plan.tasks.find(t=>t.id===taskId)!;
+    if(selected&&(task.item!==step.reference.item||records.originalBindings(originPlan)[taskId].packet!==p.packet)){
+      let currentReturn;try{currentReturn=this.conditionalRepairSourceValue(task.item,step.reference.finding??undefined);}catch(e){if(!(e instanceof Error)||e.message!=='conditional_entry_real_return_required')throw e;}
+      if(currentReturn&&!this.conditionalRepairMatchesValue(step,currentReturn)||!currentReturn&&this.authorityItem(task.item).candidate.H!==result.after.H)throw new Error('conditional_entry_current_member_repair_required');
+    }
     this.blob(r.evidenceSha256);const source=p.memberReturn?this.memberRepairSource(p.operation,p.memberReturn,current):this.reviewSource(p.operation,current),c=source.candidate;
     if(c.kind==='development-task'||result.before.H!==c.H||result.after.H===c.H||result.sourceCandidate?.repository!==c.repository||result.sourceCandidate.pr!==c.pr||result.sourceCandidate.B!==c.B||result.sourceCandidate.target!==c.targetRef||!(/^[a-f0-9]{40}$/).test(result.data.tests.T))throw new Error('conditional_entry_changed_member_source_mismatch');
     return {step:{...step,request:Buffer.from(step.request)},plan:p,repair:{operation:p.operation,planSha256:r.planSha256,bindingHash:r.bindingHash,resultSha256:r.resultSha256,evidenceSha256:r.evidenceSha256},memberReturn:p.memberReturn??null,subjectMembers:p.memberReturn?this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id).proof.integration.source.composition.subject.members:null,objects:join(r.executionRoot,'workspace'),candidate:{repository:c.repository,pr:c.pr,H:result.after.H,B:c.B,T:result.data.tests.T,targetRef:c.targetRef},context:source.context,original:{operation:p.operation,item:source.memberReturn?this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id).request.member.item:step.reference.item,packet:source.packet,fingerprint:this.packet(source.packet).fingerprint,candidate:c,context:source.context,prerequisites:this.prerequisites(this.item(step.reference.item))},executionKind:result.executionKind};
@@ -560,7 +565,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(p.originPlan,p.entry);if(!entry||p.store!==this.directory)throw new Error('candidate_validation_original_entry_required');
     const catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),cap=catalog.repairs?.find((r:Row)=>r.task===p.collection.task),identity=records.normalEntryIdentity(p.entry,entry.catalogSha256),current=identity&&records.current(identity.name);
     if(!cap?.postRepair||!current||!records.normalEntryAncestor(current.id,p.entry,p.originPlan,entry.catalogSha256))throw new Error('candidate_validation_current_relation_required');
-    const collection=records.normalEntryHistory(current.id,p.entry,p.collectionKey),association=records.normalEntryHistory(current.id,p.entry,'member-validation-'+p.collection.task),original=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,!p.candidateSource);
+    const collection=records.normalEntryHistory(current.id,p.entry,p.collectionKey),association=records.normalEntryTaskStep(current.id,p.entry,'validation',p.collection.task,p.collection.repair.operation),original=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,!p.candidateSource,p.collection.repair.operation);
     if(collection?.reference.kind!=='member-snapshot'||!collection.request.equals(Buffer.from(canonical(p.collection)))||!association?.request.equals(Buffer.from(canonical(p)))||canonical(cap.postRepair.testPlan)!==canonical(p.testPlan)||canonical(original.repair)!==canonical(p.collection.repair)||canonical(original.candidate)!==canonical(p.collection.candidate)||canonical(original.context)!==canonical(p.collection.context)||p.collection.objects!==original.objects||p.directory!==join(this.directory,'candidate-validation-'+p.id))throw new Error('candidate_validation_original_member_collection_required');
     const own=currentEventSource(this.db,p.collection.candidate);if(own.registered&&!own.current)throw new Error('candidate_validation_own_source_not_current');
     if(p.candidateSource){const source=this.memberSourceRecords().material(p.candidateSource),view=source.subject!;if(source.record.originPlan!==p.originPlan||source.record.entry!==p.entry||source.record.task!==p.collection.task||source.record.manifestSha256!==p.manifestSha256)throw new Error('candidate_validation_member_source_binding_required');return {operation:original.repair.operation,item:view.item,packet:null,fingerprint:view.fingerprint,candidate:view.candidate,subjectSha256:null,context:view.context,fixture:original.executionKind==='fixture',authorization:cap.postRepair.validationAuthorization??null};}
@@ -597,7 +602,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private recompositionTestRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new RecompositionTestRecords(this.db,transaction,this.directory,(p,m,t,current)=>this.recompositionTestSource(p,m,t,current),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()));}
   private completedMemberSource(reference:import('./member-recomposition-contract.js').MemberValidationReference,memberReturn:unknown,current=true){
     const r=this.candidateValidationRecords(fn=>fn()),state=r.state(reference.id),originals=r.originals(reference.id),p=parseCandidateValidation(Buffer.from(canonical(originals.plan)));if(state.requestSha256!==reference.requestSha256||p.kind!=='tongxu-member-candidate-validation'||!p.candidateSource||state.phase!=='recorded'||!state.captureValidationCurrent||!state.resourcesSettled||!state.result.executionComplete||state.result.gaps.some((g:string)=>g!=='sample_failure_or_incomplete_comparison'))throw new Error('member_source_own_verification_required');
-    const source=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,false);if(canonical(source.memberReturn)!==canonical(memberReturn)||canonical(p.collection.repair)!==canonical(source.repair)||state.result.testedTree!==source.candidate.T)throw new Error('member_source_original_repair_changed');
+    const source=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,false,p.collection.repair.operation);if(canonical(source.memberReturn)!==canonical(memberReturn)||canonical(p.collection.repair)!==canonical(source.repair)||state.result.testedTree!==source.candidate.T)throw new Error('member_source_original_repair_changed');
     const subject=this.memberSourceRecords().subject(p.candidateSource.sha256,p.candidateSource,current);return {p,state,source,subject};
   }
   private recompositionTestSource(p:MemberRecompositionPlan,newManifest:Buffer,testPlan:Buffer,current:boolean):RecompositionTestSource{
@@ -626,10 +631,22 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   /** Select existing complete RETURN facts. This neither records a member
    * return nor creates a repair/permission. Ambiguity needs an explicit user
    * selection rather than silently using an arbitrary previous review. */
-  conditionalRepairSource(itemId:string,finding?:number){return this.transaction(()=>{
+  conditionalRepairMatches(step:Row,source:Row){return this.transaction(()=>this.conditionalRepairMatchesValue(step,source));}
+  private conditionalRepairMatchesValue(step:Row,source:Row){
+    const p=JSON.parse(step.request.toString());
+    if(step.reference.item!==source.item||p.packet!==source.packet||canonical(p.context)!==canonical(source.context))return false;
+    if(source.kind==='individual')return !p.memberReturn&&p.operation===source.operation&&p.judgmentId===source.judgmentId&&p.bindingHash===source.bindingHash;
+    if(!p.memberReturn)return false;const member=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id);
+    return p.judgmentId===source.selection.reception.judgmentId&&p.bindingHash===source.selection.reception.bindingHash&&canonical(member.request)===canonical(source.selection);
+  }
+  conditionalRepairSource(itemId:string,finding?:number){return this.transaction(()=>this.conditionalRepairSourceValue(itemId,finding));}
+  /** Historical selection is only for exact terminal readback. All effect
+   * admissions still call the current-source gates below. */
+  conditionalRepairOriginalSource(itemId:string,finding?:number){return this.transaction(()=>this.conditionalRepairSourceValue(itemId,finding,false));}
+  private conditionalRepairSourceValue(itemId:string,finding?:number,requireCurrent=true){
     const item=this.item(itemId),packet=this.packet(item.current_packet),e=this.packetEvidence(packet),matches:Row[]=[];
     if(e.manifest.candidate.kind==='development-task'||this.effectiveSummary(item,packet).composition)throw new Error('conditional_entry_individual_repair_source_required');
-    const rows=this.db.prepare("SELECT * FROM operations WHERE status='complete' AND json_extract(result,'$.receiver.judgment.verdict')='RETURN_FOR_WORK' ORDER BY started_at,id").all() as Row[];
+    const rows=this.db.prepare("SELECT * FROM operations WHERE status IN ('complete','repairing') AND json_extract(result,'$.receiver.judgment.verdict')='RETURN_FOR_WORK' ORDER BY started_at,id").all() as Row[];
     for(const op of rows){
       if(finding===undefined&&op.item!==itemId)continue;
       const parentPacket=this.packet(op.packet),integration=finding===undefined?null:this.integrationMaterial(parentPacket,false,op.id);
@@ -638,17 +655,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if(finding===undefined&&op.packet!==item.current_packet)continue;
       // Once a structurally exact original is selected, preserve failures;
       // a corrupt or stale original is not a reason to choose another one.
-      const source=this.reviewSource(op.id,true),r=source.receiver;
+      const source=this.reviewSource(op.id,requireCurrent),r=source.receiver;
       if(!r.controllerReturned||r.judgment.verdict!=='RETURN_FOR_WORK')throw new Error('conditional_entry_complete_return_required');
       if(finding===undefined){if(r.subject)throw new Error('conditional_entry_individual_return_required');matches.push({kind:'individual',operation:op.id,item:itemId,packet:op.packet,candidate:source.candidate,context:source.context,judgmentId:r.judgmentId,bindingHash:r.bindingHash,executionKind:r.executionKind});continue;}
       if(!Number.isSafeInteger(finding)||finding<0||finding>29||!r.judgment.findings[finding])throw new Error('integration_member_finding_not_in_original');
       const completed=r.blobs?.['completed.json'];if(!completed)throw new Error('integration_member_final_original_required');const receipt=JSON.parse(this.blob(completed.sha256).toString());
       if(!integration)throw new Error('integration_member_original_return_required');
       const selected=integration.source.composition.subject.members[index!],selection={schemaVersion:1 as const,kind:'tongxu-integration-member-return' as const,id:'entry-member-'+hash(canonical([op.id,itemId,packet.id,finding])).slice(0,48),integration:integration.id,reception:{operation:op.id,packet:op.packet,bindingHash:r.bindingHash,judgmentId:r.judgmentId,inputSha256:r.inputSha256,finalSha256:hash(receipt.finalText)},member:{index:index!,H:selected.candidate.H,B:selected.candidate.B,manifestSha256:selected.manifestHash,item:itemId,packet:packet.id,fingerprint:packet.fingerprint},scopeSha256:hash(canonical(e.context.scope)),arrangementSha256:hash(canonical(e.context.arrangement)),findingIndexes:[finding],source:'Original completed RETURN and current selected member; configured normal entry. No individual reception or repair authority inferred.'};
-      this.integrationMemberSource(selection);matches.push({kind:'member',operation:op.id,item:itemId,packet:packet.id,candidate:e.manifest.candidate,context:e.context,selection,executionKind:r.executionKind});
+      if(requireCurrent)this.integrationMemberSource(selection);matches.push({kind:'member',operation:op.id,item:itemId,packet:packet.id,candidate:e.manifest.candidate,context:e.context,selection,executionKind:r.executionKind});
     }
     if(matches.length!==1)throw new Error(matches.length?'conditional_entry_return_ambiguous':'conditional_entry_real_return_required');return matches[0]!;
-  });}
+  }
   private memberRefutationProof(request:MemberRefutationRequest){
     const original=this.integrationMemberRecords(fn=>fn()).material(request.memberReturn.id),reference=request.memberReturn;
     if(original.state.requestSha256!==reference.requestSha256||original.state.sourceSha256!==reference.sourceSha256)throw new Error('member_refutation_original_return_changed');
@@ -723,7 +740,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,stage=parse(op,'result')?.repair,plan=proposed?.plan??this.blob(stage?.planSha256),p=JSON.parse(plan.toString()),history=this.db.prepare("SELECT data FROM events WHERE kind='integration_member_repair_bound' AND object=? ORDER BY id DESC LIMIT 1").get(operation) as Row|undefined;
     if(!p.memberReturn){if(history)throw new Error('member_repair_original_return_required');return;}
     const source=this.memberRepairSource(operation,p.memberReturn,true),request=proposed?.request??this.blob(stage.requestSha256),config=proposed?.config??this.blob(stage.configSha256),r=JSON.parse(request.toString());
-    if(canonical(r.priorReview)!==canonical(source.priorReview)||canonical(r.findings)!==canonical(source.findings)||canonical(r.queueOperation)!==canonical(source.queueOperation))throw new Error('member_repair_complete_parent_material_required');
+    let priorReview=source.priorReview;
+    if(p.continuation){const old=this.db.prepare('SELECT result FROM operations WHERE id=?').get(p.continuation.operation) as Row|undefined,prior=old&&JSON.parse(old.result)?.repair?.result;if(!prior)throw new Error('continuation_original_reconciliation_required');priorReview={...priorReview,continuation:repairContinuationContext(p.continuation,prior)};}
+    if(canonical(r.priorReview)!==canonical(priorReview)||canonical(r.findings)!==canonical(source.findings)||canonical(r.queueOperation)!==canonical(source.queueOperation))throw new Error('member_repair_complete_parent_material_required');
     const entry={memberReturn:p.memberReturn,packet:op.packet,planSha256:hash(plan),requestSha256:hash(request),configSha256:hash(config),memberReturnSha256:p.memberReturn.sourceSha256};
     if(history&&canonical(JSON.parse(history.data))!==canonical(entry)&&!(stage?.phase==='closed_unstarted'&&p.replacesClosedBinding===stage.bindingHash))throw new Error('member_repair_original_binding_changed');
     enableMemberRepairFormat(this.db);if(!history||canonical(JSON.parse(history.data))!==canonical(entry))this.event('integration_member_repair_bound',operation,entry);
@@ -831,7 +850,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private deliveryAssessmentRecords(transaction:<T>(fn:()=>T)=>T):DeliveryAssessmentRecords{return new DeliveryAssessmentRecords(this.db,transaction,this.directory,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),()=>this.messageRecords(fn=>fn()),(run,p)=>{if(!p.resourceBudget)return !this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}});}
   private collectedSourceProfile(binding:import('./event-store.js').CollectedSourceBinding):import('./event-contract.js').EventProfile{
     if(!exactKeys(binding,['originPlan','entry','collectionKey']))throw new Error('collected_source_original_entry_required');const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(binding.originPlan,binding.entry),collection=records.normalEntryHistory(binding.originPlan,binding.entry,binding.collectionKey);
-    if(entry&&collection?.reference.kind==='member-snapshot'){const p=JSON.parse(collection.request.toString()),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),reader=catalog.integration.sourceReader,base=this.repairedMemberSource(binding.originPlan,binding.entry,p.task,false),root=join(this.directory,'conditional-entry-'+hash(canonical([binding.entry,records.reference(binding.originPlan).plan.name])).slice(0,48));if(p.kind!=='tongxu-conditional-member-collection'||canonical(p.repair)!==canonical(base.repair)||canonical(p.candidate)!==canonical(base.candidate)||p.objects!==base.objects||p.snapshot!==join(root,'member-source-'+hash(canonical(base.repair)).slice(0,48)))throw new Error('collected_source_exact_member_required');return {schemaVersion:1,kind:'tongxu-bounded-event-source',repository:p.candidate.repository,repositoryId:reader.repositoryId,ghExecutable:reader.ghExecutable,ghSha256:reader.ghSha256,executionKind:reader.executionKind==='fixture'?'fixture':'github',prs:[p.candidate.pr],pollIntervalMs:60000,maxSubjectsPerTick:1};}
+    if(entry&&collection?.reference.kind==='member-snapshot'){const p=JSON.parse(collection.request.toString()),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),reader=catalog.integration.sourceReader,base=this.repairedMemberSource(binding.originPlan,binding.entry,p.task,false,p.repair.operation),root=join(this.directory,'conditional-entry-'+hash(canonical([binding.entry,records.reference(binding.originPlan).plan.name])).slice(0,48));if(p.kind!=='tongxu-conditional-member-collection'||canonical(p.repair)!==canonical(base.repair)||canonical(p.candidate)!==canonical(base.candidate)||p.objects!==base.objects||p.snapshot!==join(root,'member-source-'+hash(canonical(base.repair)).slice(0,48)))throw new Error('collected_source_exact_member_required');return {schemaVersion:1,kind:'tongxu-bounded-event-source',repository:p.candidate.repository,repositoryId:reader.repositoryId,ghExecutable:reader.ghExecutable,ghSha256:reader.ghSha256,executionKind:reader.executionKind==='fixture'?'fixture':'github',prs:[p.candidate.pr],pollIntervalMs:60000,maxSubjectsPerTick:1};}
     if(!entry||collection?.reference.kind!=='snapshot')throw new Error('collected_source_original_entry_required');const p=JSON.parse(collection.request.toString()),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),reader=catalog.integration.sourceReader,material=this.integrationRecords(fn=>fn()).candidateMaterial(p.integration),state=this.integrationRecords(fn=>fn()).state(p.integration),c=p.candidate;
     if(p.kind!=='tongxu-conditional-candidate-collection'||p.integrationRequestSha256!==material.requestSha256||!material.current||material.candidate.repository!==catalog.repository||material.candidate.target!==catalog.target||p.objects!==join(state.directory,'candidate.git')||['H','B','T','repository'].some(k=>c[k]!==material.candidate[k])||c.targetRef!==material.candidate.target||p.snapshot!==join(this.directory,'conditional-entry-'+hash(canonical([binding.entry,records.reference(binding.originPlan).plan.name])).slice(0,48),'collection-'+hash(canonical([state.id,c.pr]))))throw new Error('collected_source_exact_private_candidate_required');
     return {schemaVersion:1,kind:'tongxu-bounded-event-source',repository:c.repository,repositoryId:reader.repositoryId,ghExecutable:reader.ghExecutable,ghSha256:reader.ghSha256,executionKind:reader.executionKind==='fixture'?'fixture':'github',prs:[c.pr],pollIntervalMs:60000,maxSubjectsPerTick:1};
@@ -878,12 +897,13 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       return {phase:receiver?.phase??'not_started',verdict:receiver?.judgment?.verdict??null,current:current?.currentMaterialMatches??null,controllerReturned:receiver?.controllerReturned??false};
     }
     const records=new ReviewRecords(this.db,fn=>fn(),(id,current)=>this.reviewSource(id,current),()=>{throw new Error('readonly_view_cannot_authorize');});
-    const repair=records.state(ref.operation).repair;
+    const original=records.state(ref.operation??ref.id),repair=original.repair,plan=JSON.parse(original.plan.toString());let sourceCurrent=true;
+    try{if(plan.memberReturn)this.memberRepairSource(ref.operation??ref.id,plan.memberReturn,true);else this.reviewSource(ref.operation??ref.id,true);}catch{sourceCurrent=false;}
     const resources=(repair.resourceRequests??[]).map((id:string)=>{
       const records=this.resourceRecords(fn=>fn());
       return {id,state:records.status(id).state,settled:records.settledOutcome(id)};
     });
-    return {phase:repair.phase,controllerReturned:repair.controllerReturned??false,resultStatus:repair.result?.status??null,resources};
+    return {phase:repair.phase,controllerReturned:repair.controllerReturned??false,resultStatus:repair.result?.status??null,candidate:repair.result?.sourceCandidate??null,afterH:repair.result?.after?.H??null,sourceCurrent,historicalResultOnly:!sourceCurrent,resources};
   }
   private coordinationRecords(transaction:<T>(f:()=>T)=>T):CoordinationRecords {
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});
@@ -1140,6 +1160,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   managedRepairOriginal(operation:string){return this.transaction(()=>{
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const repair=JSON.parse(op.result)?.repair;
     if(!repair?.evidenceSha256)throw new Error('handoff_original_reconciliation_required');
+    for(const id of repair.resourceRequests??[]){try{if(this.resourceRecords(fn=>fn()).settledOutcome(id))continue;}catch{/* An unavailable original outcome is unresolved. */}throw new Error('continuation_original_resources_unsettled');}
     return {op,repair,plan:this.blob(repair.planSha256),request:this.blob(repair.requestSha256),config:this.blob(repair.configSha256),evidence:this.blob(repair.evidenceSha256)};
   });}
   repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{

@@ -24,9 +24,9 @@ async function reference(r:ConditionalRef){const b=await regular(r.path,2*1024*1
 const capability=(entry:ConditionalEntryPlan,task:string)=>{const cap=entry.repairs?.find(r=>r.task===task);if(!cap?.postRepair)throw new Error('conditional_entry_member_verification_not_configured');return cap;};
 
 export function memberCollectionInput(q:QueueStore,entry:ConditionalEntryPlan,id:string,root:string,task:string){
- capability(entry,task);const source=q.conditionalRepairedMember(id,entry.id,task,false),key='member-collection-'+task,previous=q.coordination().normalEntryHistory(id,entry.id,key);
+ capability(entry,task);const source=q.conditionalRepairedMember(id,entry.id,task,false),key='member-collection-'+hash(canonical(source.repair)).slice(0,40),previous=q.coordination().normalEntryTaskStep(id,entry.id,'member-snapshot',task,source.repair.operation);
  const collection:ConditionalMemberCollection={schemaVersion:1,kind:'tongxu-conditional-member-collection',task,repair:source.repair,snapshot:join(root,'member-source-'+hash(canonical(source.repair)).slice(0,48)),objects:source.objects,candidate:source.candidate,context:source.context};
- if(previous&&!previous.request.equals(Buffer.from(canonical(collection))))throw new Error('conditional_entry_original_member_collection_required');return {key,collection};
+ if(previous&&!previous.request.equals(Buffer.from(canonical(collection))))throw new Error('conditional_entry_original_member_collection_required');return {key:previous?.key??key,collection};
 }
 
 /** Only background/test actions for these two fixed consumers. The permission
@@ -42,10 +42,10 @@ async function testAction(q:QueueStore,entry:ConditionalEntryPlan,plan:Coordinat
 }
 
 export async function memberValidationInput(q:QueueStore,entry:ConditionalEntryPlan,plan:CoordinationPlan,id:string,root:string,task:string){
- const cap=capability(entry,task),key='member-validation-'+task,previous=q.coordination().normalEntryHistory(id,entry.id,key);
+ const cap=capability(entry,task),source=q.conditionalRepairedMember(id,entry.id,task,false),key='member-validation-'+hash(canonical(source.repair)).slice(0,40),previous=q.coordination().normalEntryTaskStep(id,entry.id,'validation',task,source.repair.operation);
  if(previous){const p=parseCandidateValidation(previous.request);if(p.kind!=='tongxu-member-candidate-validation'||p.collection.task!==task)throw new Error('conditional_entry_original_member_validation_required');const path=join(root,'member-validation-'+previous.requestSha256+'.json');await fixed(path,previous.request);return {path,p,resources:(previous.reference.resources??[]) as ResourceRequest[]};}
- const source=q.conditionalRepairedMember(id,entry.id,task,false),collectionKey='member-collection-'+task,step=q.coordination().normalEntryHistory(id,entry.id,collectionKey);
- if(step?.reference.kind!=='member-snapshot')throw new Error('conditional_entry_member_collection_required');const collection=JSON.parse(step.request.toString()) as ConditionalMemberCollection;
+ const step=q.coordination().normalEntryTaskStep(id,entry.id,'member-snapshot',task,source.repair.operation),collectionKey=step?.key;
+ if(!collectionKey||step?.reference.kind!=='member-snapshot')throw new Error('conditional_entry_member_collection_required');const collection=JSON.parse(step.request.toString()) as ConditionalMemberCollection;
  if(canonical(collection.repair)!==canonical(source.repair))throw new Error('conditional_entry_original_member_collection_required');
  const bundle=await loadBundle(collection.snapshot),candidateSource=q.registerMemberCandidateSource(id,entry.id,task,collection,bundle.bytes),subject=q.memberCandidateSource(candidateSource),testPlan=cap.postRepair!.testPlan;await reference(testPlan);const validationId='member-'+hash(canonical([entry.id,task,collection,hash(bundle.bytes),testPlan])).slice(0,48),auth=cap.postRepair!.validationAuthorization;
  const p:MemberCandidateValidationPlan={schemaVersion:1,kind:'tongxu-member-candidate-validation',id:validationId,store:entry.store,entry:entry.id,originPlan:id,collectionKey,collection,candidateSource,manifestSha256:hash(bundle.bytes),testPlan,directory:join(entry.store,'candidate-validation-'+validationId),governance:auth?{authorityIntent:'m-test-'+hash(validationId).slice(0,48),resourceRequests:[]}:null};
@@ -54,10 +54,10 @@ export async function memberValidationInput(q:QueueStore,entry:ConditionalEntryP
 }
 
 export async function memberRecompositionInput(q:QueueStore,entry:ConditionalEntryPlan,plan:CoordinationPlan,id:string,root:string,task:string){
- const cap=capability(entry,task),key='member-recomposition-'+task,previous=q.coordination().normalEntryHistory(id,entry.id,key);
+ const cap=capability(entry,task),source=q.conditionalRepairedMember(id,entry.id,task,false),key='member-recomposition-'+hash(canonical(source.repair)).slice(0,40),previous=q.coordination().normalEntryTaskStep(id,entry.id,'member-recomposition',task,source.repair.operation);
  if(previous){const p=parseMemberRecompositionPlan(previous.request),path=join(root,'member-recomposition-'+previous.requestSha256+'.json');await fixed(path,previous.request);return {path,plan:p,resources:(previous.reference.resources??[]) as ResourceRequest[]};}
- const source=q.conditionalRepairedMember(id,entry.id,task,false);if(!source.memberReturn)throw new Error('conditional_entry_original_member_return_required');
- const validation=q.coordination().normalEntryHistory(id,entry.id,'member-validation-'+task);if(validation?.reference.source!=='member-repair')throw new Error('conditional_entry_own_member_validation_required');const v=parseCandidateValidation(validation.request);if(v.kind!=='tongxu-member-candidate-validation')throw new Error('conditional_entry_own_member_validation_required');
+ if(!source.memberReturn)throw new Error('conditional_entry_original_member_return_required');
+ const validation=q.coordination().normalEntryTaskStep(id,entry.id,'validation',task,source.repair.operation);if(validation?.reference.source!=='member-repair')throw new Error('conditional_entry_own_member_validation_required');const v=parseCandidateValidation(validation.request);if(v.kind!=='tongxu-member-candidate-validation')throw new Error('conditional_entry_own_member_validation_required');
  const state=q.candidateValidations().state(v.id);if(state.phase!=='recorded'||!state.captureValidationCurrent||!state.resourcesSettled||!state.binding)throw new Error('conditional_entry_terminal_member_validation_required');
  const capture=await readCandidateValidationCapture(v,state.binding,q.candidateValidations().executions(v.id));
  if(capture.packet.summary.tree!==source.candidate.T||capture.packet.summary.gaps.some(g=>g!=='sample_failure_or_incomplete_comparison'))throw new Error('conditional_entry_complete_member_validation_required');
@@ -69,11 +69,12 @@ export async function memberRecompositionInput(q:QueueStore,entry:ConditionalEnt
 }
 
 export async function importRecomposedMember(q:QueueStore,entry:ConditionalEntryPlan,id:string,task:string){
- const records=q.coordination(),v=records.normalEntryHistory(id,entry.id,'member-validation-'+task),r=records.normalEntryHistory(id,entry.id,'member-recomposition-'+task);if(!v||!r)throw new Error('conditional_entry_original_member_recomposition_required');const p=parseCandidateValidation(v.request),recomposition=parseMemberRecompositionPlan(r.request);
+ const source=q.conditionalRepairedMember(id,entry.id,task,false),records=q.coordination(),v=records.normalEntryTaskStep(id,entry.id,'validation',task,source.repair.operation),r=records.normalEntryTaskStep(id,entry.id,'member-recomposition',task,source.repair.operation);if(!v||!r)throw new Error('conditional_entry_original_member_recomposition_required');const p=parseCandidateValidation(v.request),recomposition=parseMemberRecompositionPlan(r.request);
  if(p.kind!=='tongxu-member-candidate-validation')throw new Error('conditional_entry_own_member_validation_required');const link=q.memberRecompositions().state(recomposition.id),integration=q.integrations().state(recomposition.id);
  if(integration.phase!=='produced'||!integration.result||link.request.repair.resultSha256!==p.collection.repair.resultSha256)throw new Error('conditional_entry_original_member_recomposition_required');
- const key='member-import-'+task,previous=records.normalEntryHistory(id,entry.id,key);if(previous)return {...previous.reference,duplicate:true,newModelInputs:0};
+ const key='member-import-'+hash(canonical([p.id,recomposition.id])).slice(0,48),legacy=records.normalEntryHistory(id,entry.id,'member-import-'+task),previous=records.normalEntryTaskStep(id,entry.id,'member-packet',task,source.repair.operation)??(legacy&&JSON.parse(legacy.request.toString()).validation===p.id&&JSON.parse(legacy.request.toString()).recomposition===recomposition.id?legacy:null);
+ if(previous){const bound=JSON.parse(previous.request.toString());if(bound.validation!==p.id||bound.recomposition!==recomposition.id||bound.manifestSha256!==p.manifestSha256)throw new Error('conditional_entry_original_member_import_required');return {...previous.reference,duplicate:true,newModelInputs:0};}
  const state=q.candidateValidations().state(p.id);if(!state.binding||state.phase!=='recorded'||!state.captureValidationCurrent||!state.resourcesSettled)throw new Error('conditional_entry_terminal_member_validation_required');
  const capture=await readCandidateValidationCapture(p,state.binding,q.candidateValidations().executions(p.id)),result=q.import(capture.packet);if(p.candidateSource){const bound=q.events().reconcilePackets([result.item]);if(bound.items.some((r:any)=>r.waiting?.length))throw new Error('conditional_entry_member_current_material_required');}const current=await QueueStore.observeConditionalCandidate(entry.store,result.item);result.packet=current.packet;
- records.normalEntryStep(id,entry.id,key,Buffer.from(canonical({validation:p.id,recomposition:recomposition.id,manifestSha256:p.manifestSha256,reportSha256:capture.packet.reportHash})),{kind:'member-packet',id:result.item,task,item:result.item,packet:result.packet,fingerprint:current.fingerprint,individualReceptionInferred:false});return {...result,duplicate:false,newModelInputs:0,individualReceptionInferred:false};
+ records.normalEntryStep(id,entry.id,key,Buffer.from(canonical({validation:p.id,recomposition:recomposition.id,manifestSha256:p.manifestSha256,reportSha256:capture.packet.reportHash})),{kind:'member-packet',id:result.item,task,operation:source.repair.operation,item:result.item,packet:result.packet,fingerprint:current.fingerprint,individualReceptionInferred:false});return {...result,duplicate:false,newModelInputs:0,individualReceptionInferred:false};
 }

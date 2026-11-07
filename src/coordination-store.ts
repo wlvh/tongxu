@@ -7,7 +7,7 @@ import { coordinationPartId,coordinationPlanId,parseCoordinationPlan,integration
 import { messagePlanId,parseMessagePlan,messageId,messagePath,type MessagePlan } from './message-contract.js';
 import {parseEarlyReceiverAdvice,earlyReceiverAdviceInstructions} from './early-receiver-contract.js';
 import { parseCoordinationExecution,coordinationExecutionIdentity,coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority,coordinationConsumptionStage,type CoordinationMessagePurpose } from './coordination-execution-contract.js';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import {lstatSync,realpathSync,readFileSync} from 'node:fs';
 import { projectModelTestResult } from './project-repair.js';
 import {parseRepairContinuation} from './repair-continuation-contract.js';
@@ -63,6 +63,23 @@ export class CoordinationRecords {
     return null;
   }
   normalEntryHistory(id:string,entryId:string,key:string){return this.transaction(()=>this.entryHistory(id,entryId,key));}
+  /** Latest matching original in this relation's ancestry. Legacy task-only
+   * keys remain readable; callers bind effects to the selected operation. */
+  normalEntryTaskStep(id:string,entryId:string,kind:string,task:string,operation?:string){return this.transaction(()=>{
+    for(const version of this.ancestry(this.fixed(id))){
+      const entry=version.events.findLast(e=>e.kind==='coordination_normal_entry_step'&&e.data.entryId===entryId&&e.data.reference.kind===kind&&e.data.reference.task===task&&(operation===undefined||(e.data.reference.operation??e.data.reference.id)===operation))?.data;
+      if(entry)return {...entry,originPlan:version.id,request:this.bytes(entry.requestSha256)};
+    }return null;
+  });}
+  private normalRepairWorkspace(f:ReturnType<CoordinationRecords['fixed']>,task:Row,operation:string,raw:Buffer,request:Row){
+    const step=f.events.find(e=>e.kind==='coordination_normal_entry_step'&&e.data.reference.kind==='repair'&&e.data.reference.task===task.id&&e.data.reference.id===operation&&e.data.requestSha256===hash(raw))?.data;
+    if(!step||!JSON.parse(raw.toString()).continuation)return task.workspace;
+    this.normalEntryGate(f);
+    const workspace=join(dirname(dirname(task.workspace)),'conditional-repair-'+hash(canonical([step.entryId,task.id,operation])).slice(0,48),'workspace');
+    if(join(request.executionRoot,'workspace')!==workspace)throw new Error('conditional_entry_exact_successor_workspace_required');
+    return workspace;
+  }
+
   normalEntryPacket(id:string,entryId:string,integration:string,materialKey:string){return this.transaction(()=>{
     for(const version of this.ancestry(this.fixed(id))){const ref=version.events.findLast(e=>e.kind==='coordination_normal_entry_step'&&e.data.entryId===entryId&&e.data.reference.kind==='packet'&&e.data.reference.integration===integration&&e.data.reference.materialKey===materialKey)?.data;if(ref)return {...ref,originPlan:version.id,request:this.bytes(ref.requestSha256)};}return null;
   });}
@@ -549,8 +566,8 @@ export class CoordinationRecords {
     if(!p?.coordination){if(history.length||p?.continuation)throw new Error('coordination_explicit_write_handoff_required');return;}
     const ref=p.coordination,f=this.fixed(ref.planId),{task,binding}=this.currentTask(f,ref.task),requestBytes=proposed?.request??this.bytes(repair.requestSha256),configBytes=proposed?.config??this.bytes(repair.configSha256),request=JSON.parse(requestBytes.toString()),config=JSON.parse(configBytes.toString());
     if(history.some(h=>h.plan.name!==f.plan.name))throw new Error('coordination_item_has_multiple_arrangements');
-    const output=task.outputs.find(o=>o.id===ref.capability),actor=f.plan.actors.find(a=>a.id===task.actor);
-    if(task.item!==op.item||binding.packet!==op.packet||actor?.tool!=='codex'||output?.kind!=='repair_candidate'||output.stage!=='implement'||!task.workspace||task.workspace!==join(request.executionRoot,'workspace')||!task.publishBranch||request.authorization?.allowRepair!==true)throw new Error('coordination_exact_repair_task_workspace_required');
+    const output=task.outputs.find(o=>o.id===ref.capability),actor=f.plan.actors.find(a=>a.id===task.actor),workspace=this.normalRepairWorkspace(f,task,operation,raw!,request);
+    if(task.item!==op.item||binding.packet!==op.packet||actor?.tool!=='codex'||output?.kind!=='repair_candidate'||output.stage!=='implement'||!task.workspace||workspace!==join(request.executionRoot,'workspace')||!task.publishBranch||request.authorization?.allowRepair!==true)throw new Error('coordination_exact_repair_task_workspace_required');
     const paths=[...task.independentPaths,...f.plan.shared.filter(s=>s.tasks.includes(task.id)).flatMap(s=>s.paths)];if(!Array.isArray(request.allowedPaths)||!request.allowedPaths.length||request.allowedPaths.some((path:string)=>!paths.includes(path)))throw new Error('coordination_repair_path_not_assigned');
     const stage=this.stageState(f,task.id,'implement');if(stage.blockers.length)throw new Error(stage.blockers[0]);
     const bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===ref.fromRun)?.data;
@@ -564,7 +581,7 @@ export class CoordinationRecords {
       let state:Row;try{state=this.message(link.run).state;}catch(e){if(e instanceof Error&&e.message==='original_message_run_required')continue;throw e;}
       const runtime=state.runtimes.find((r:Row)=>r.participant===task.actor);if(runtime?.started&&(!runtime.ended||runtime.captureVerification?.proof.successfulCapture!==true&&runtime.ended.proof.knownUnstarted!==true||state.messages.some((m:Row)=>m.to===task.actor&&['Unknown','Delivered'].includes(m.state))))throw new Error('coordination_actor_active_or_unknown');
     }
-    const entry={task:task.id,capability:ref.capability,operation,item:op.item,packet:op.packet,actor:task.actor,workspace:task.workspace,publishBranch:task.publishBranch,repository:binding.candidate.repository,scope:f.registration.scope,planSha256:hash(raw!),requestSha256:hash(requestBytes),configSha256:hash(configBytes),fromRun:ref.fromRun,fromMessage:ref.fromMessage,priorSessionId:original.message.reply.sessionId,priorTurnId:original.message.reply.turnId,newExecutionContext:true,nativeSessionResumed:false,startMode:'new_managed_workspace'};
+    const entry={task:task.id,capability:ref.capability,operation,item:op.item,packet:op.packet,actor:task.actor,workspace,publishBranch:task.publishBranch,repository:binding.candidate.repository,scope:f.registration.scope,planSha256:hash(raw!),requestSha256:hash(requestBytes),configSha256:hash(configBytes),fromRun:ref.fromRun,fromMessage:ref.fromMessage,priorSessionId:original.message.reply.sessionId,priorTurnId:original.message.reply.turnId,newExecutionContext:true,nativeSessionResumed:false,startMode:'new_managed_workspace'};
     const released=this.continueRepair(entry,p,request,capture,reserve);
     for(const row of this.db.prepare("SELECT id,object FROM events WHERE kind='coordination_repair_bound'").all() as Row[]){
       const x=this.events(row.object.slice(13)).find(e=>e.id===row.id)!.data;

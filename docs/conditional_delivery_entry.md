@@ -56,6 +56,8 @@ npm run conditional-entry -- validate-member --entry ABS_ENTRY --task A1
 npm run conditional-entry -- recompose-member --entry ABS_ENTRY --task A1
 ```
 
+同一准确退回的重复操作恢复原请求；新材料形成的新退回按当前 operation、packet 和完整判断绑定处理。上一轮已经核实结束、资源结清且当前退回指向该轮准确 after.H 时，程序沿原责任交接捕获准备新的受管工作区，保留旧工作区和全部原件。原工作区仍被占用、捕获损坏或资源结果未知时，返回当前对象的具体等待原因。任意外部新 H 与原 after.H 不同，需要原责任的合法交接；此入口不接管任意外部修改，也不把未提交现场迁入新工作区。
+
 受管 H1 需要真实远端关联后才能采集。该成员的独立验证、重组的验证、组合新候选自己的验证与独立接收各自保留原证据。重组后沿上一节从 `integrate` 继续。原执行已经结束而回执待核时，用 `reconcile-repair`、`reconcile-member` 或 `reconcile` 查询相应原操作。
 
 ## 等待和证据范围
