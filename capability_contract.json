@@ -21,6 +21,16 @@
   "contracts": {
     "capabilities": [
       {
+        "anchor_id": "CAPABILITY.designated_reviewer_merge",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按 Issue #10 已采用 CO01—CO06及 docs/managed_merge.md，原受管合并对指定个人或团队审核保存实际适用规则，核准确仓库/PR/H/目标及GitHub当前整体策略证据，并保留原普通审批、检查、Owner/资源、停止和发送回读门。满足条件后继续原请求，缺项显示具体等待。真实发布配置和服务器规则生效分别验证。实现 src/merge-preflight.ts、src/merge-provider.ts。",
+        "audience": ["business_user", "agent", "reviewer"],
+        "test_anchor": "tests/merge/designated-reviewers.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-07"
+      },
+      {
         "anchor_id": "CAPABILITY.conditional_delivery_entry",
         "type": "capability",
         "status": "pending_validation",

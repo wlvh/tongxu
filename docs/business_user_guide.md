@@ -22,6 +22,7 @@
 | 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；影响核实默认 Claude，可在项目 AI 设置选已检测 Kimi 后用于新请求；真实模型外层演练仍待配置验证。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
+| 指定个人或团队审核后合并 | 安装者配置的原受管合并入口，参见 [指定审核方说明](managed_merge.md#指定审核方的有效批准)。程序核GitHub当前策略和原批准/权限/资源，条件满足后继续，缺项显示等待。实际规则启用按原Issue条件处理。 |
 
 工作台是受本机查看标识保护的 UI 后端；没有已配置的通用远程 SaaS、公共 OpenAPI 或 MCP 服务契约。内部 `/api/` 路由不是能力登记表生成的外部稳定接口；程序接入优先用已有 CLI 和正式规范。
 

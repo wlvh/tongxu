@@ -1,5 +1,24 @@
 > 当前外部依赖规则：[最低要求与实际能力](runtime_compatibility.md)。旧程序摘要和版本路径只作历史来源；兼容升级按当前能力核查，已发送操作及权限仍按原记录处理。下文历史验证记录不改写。
 
+## 指定审核方的有效批准
+
+<!-- capability-anchor: CAPABILITY.designated_reviewer_merge -->
+按 Issue #10 本人采用的 CO01—CO06，个人和团队统一称为“指定审核方”。当仓库要求指定文件负责人或团队批准后才能合并，同序保存原适用规则及 GitHub 对当前候选的策略评估，条件满足后继续原合并，缺项时返回具体等待和原始来源。
+
+例如，权限文件需要指定负责人审核，GitHub仍表示分支策略阻断时，本次合并保持等待。批准到位后重新读取准确候选和规则，服务端表示当前可合并，原本人许可、资源、检查和当前H普通审批也全部满足，程序才登记并发送原固定PR/H的合并请求，再核实际结果。
+
+安装者的原受管发布程序需支持新增 `read.kind=review_policy`。它由 `mergeHttpRequest` 生成固定只读 `POST /graphql`，只查询配置仓库、准确PR和目标分支。旧profile格式继续使用，已有无新增审核要求的路径保持原请求序列。实际新增要求出现而程序或读取权限不可用时，状态显示来源缺项。
+
+查询同时核仓库数字id和名称、PR、当前H、真实target，以及直接目标ref的B。`CLEAN/UNSTABLE`是新增审核要求的当前服务端整体可合并证据，原必需检查仍须独立通过。`reviewDecision`作为一致性检查，`APPROVED`和null均须与上述独立证据及全部原门共同成立。`REVIEW_REQUIRED`、`CHANGES_REQUESTED`、未知/矛盾状态、错误或残缺GraphQL响应、错对象和目标变化均继续等待。
+
+零团队门槛和无路径命中可按GitHub当前有效评估正常继续。程序保存每条团队原规则及门槛，当前结果以服务端整体评估为依据。具体成员和逐批准配额由GitHub核算，输出明确标注其来源。原普通审批仍只计当前H、合格仓库权限和非作者，原停止、资源、唯一写者、已发未知查回及准确结果回读继续执行。
+
+个人负责人规则沿目标分支的CODEOWNERS生效，团队必审规则适用组织仓库。软件测试使用明确个人/组织规则样例，真实规则生效需要对应仓库配置、发布程序和权限资源。源码、测试、完整审核、合入安装及真实规则生效分别在原Issue和PR记录。
+
+服务端状态的工程依据来自GitHub GraphQL定义及官方CLI实际消费者，真实组织规则仍按实际条件验证。[GraphQL参考](https://docs.github.com/en/graphql/reference/pulls)、[规则说明](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)、[官方CLI实现](https://github.com/cli/cli/blob/trunk/pkg/cmd/pr/merge/merge.go)。
+
+## 初始实现背景（历史）
+
 继续原 #5/#10 正式受管合入与实际结果核查缺口（G02）。当前前置为 G03 原账本候选 dd5516fb6992b236131901a0924827e15425217f（独立限定修补复验通过，PR33）；新分支 feat/w3-managed-merge，target feat/w3-resource-claims。沿用 PR32 已交付的来源/有限授权与原队列、原资源引用，不新建合并调度或余额。实际 main/PR 合并与治理设置仍不在本轮授权内。
 
 MM01 准备对象必须绑定准确 repo/PR/H/B/真实target、S/r、原接收operation及其独立判断、当前packet/完整subject/T、有限授权intent、原资源认领和唯一目标写责任。技术PASS、材料文件存在或CLI成功均不能替代这些门。过期、不匹配或已有活动/未知写者时不新发。
@@ -47,7 +66,7 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 发送前分开核 repository/PR、直接目标引用前后两次读取、branch/protection、适用 active rules、完整有界 check/status/review 分页。required check 绑定提供它的 app；计入当前 H 的审批还读取审核者的仓库权限，不能用旁观者 APPROVED 凑数。REST PR 历史 base 仅保留为 prReportedBase，不替代直接目标引用。原事实发布器也采用同一分离原则，仍只发布评论/status，不获得 merge 端点。
 
-当前有限规则实现支持 PR 审批数量、准确 app/context 检查、禁止删除/强推规则。Code Owners、指定团队审核、最后推送者、非零审批下对无法归属修改的额外批准、讨论解决、签名、部署、merge queue、线性历史及其他未知语义会给出具体缺项。不修改设置。GitHub 在请求时的服务端规则执行仍不可省略。
+当前有限规则实现支持 PR 审批数量、准确 app/context 检查、禁止删除/强推规则，以及上文的指定审核方服务端策略证据。最后推送者、非零审批下对无法归属修改的额外批准、讨论解决、签名、部署、merge queue、线性历史及其他未知语义会给出具体缺项。GitHub 在请求时的服务端规则执行仍不可省略，实际设置沿原Issue具体授权处理。
 
 保护接口的通用404仍不能当作“没有保护”。只有本次分支 `protected=true`、唯一完整非分页 classic404 对象的 `message` 精确为 `Branch not protected`，并且原部署明确登记上述受支持凭据类别时，才追加同仓库固定 `GET /repos/{owner}/{repo}/actions/permissions`。该接口对这些凭据要求 Administration repository read；本次同一发布程序、同一候选和同一凭据取得唯一完整非分页200对象，且 `enabled` 是布尔值，才能把前一份404解释为没有classic保护。`enabled=false` 也有效，不需要开启 Actions。传统OAuth/classic的repo scope返回200不用于这项管理权限推论。
 

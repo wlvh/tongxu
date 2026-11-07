@@ -19,7 +19,7 @@ test('actual fixture reads bind required app checks and current-head approvals w
   p.setReply(checksPath,{...checks,check_runs:[{...checks.check_runs[0],app:{id:999}}]});assert.ok((await inspect()).result.gaps.includes('required_check_not_successful:CI'));
   p.setReply(checksPath,{...checks,check_runs:[{...checks.check_runs[0],conclusion:'failure'}]});assert.ok((await inspect()).result.gaps.includes('required_check_not_successful:CI'));
   p.setReply(checksPath,checks);p.setReply(reviewsPath,[{...reviews[0],commit_id:'f'.repeat(40)}]);assert.ok((await inspect()).result.gaps.includes('current_head_approvals_insufficient'));
-  p.setReply(reviewsPath,reviews);p.setReply(protectionPath,{...protection,required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:true}});assert.ok((await inspect()).result.gaps.includes('code_owner_resolution_not_supported'));
+  p.setReply(reviewsPath,reviews);p.setReply(protectionPath,{...protection,required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:true}});assert.equal((await inspect()).result.ready,true);
   assert.equal(p.requests.filter(r=>r.method==='PUT').length,0);
   assert.equal(p.requests.filter(r=>r.path===root+'/actions/permissions').length,0);
 });
@@ -61,7 +61,8 @@ test('unknown classic absence and incomplete administration observations never b
 test('proven classic absence still evaluates effective rule semantics, full pages and the current candidate',async t=>{
   const f=await ready(t,'normal','github_app_user'),p=f.publisher,b=f.binding,paths=rulesetOnly(f);let n=0;
   const inspect=()=>inspectMergePreflight(p.profile,b,join(f.root,'ruleset-gates-'+(++n)));
-  for(const [parameters,gap] of [[{require_code_owner_review:true},'code_owner_resolution_not_supported'],[{required_reviewers:[{team_id:8}]},'required_team_reviewers_not_supported'],[{required_approving_review_count:1,require_extra_approval_for_unattributed_changes:true},'unattributed_extra_approval_not_supported']] as const){p.setReply(paths.rules,[{type:'pull_request',ruleset_id:7,parameters:{required_approving_review_count:0,...parameters}}]);assert.ok((await inspect()).result.gaps.includes(gap));}
+  p.setReply(paths.rules,[{type:'pull_request',ruleset_id:7,parameters:{required_approving_review_count:0,require_code_owner_review:true}}]);assert.equal((await inspect()).result.ready,true);
+  for(const [parameters,gap] of [[{required_reviewers:[{team_id:8}]},'designated_reviewer_requirement_invalid'],[{required_approving_review_count:1,require_extra_approval_for_unattributed_changes:true},'unattributed_extra_approval_not_supported']] as const){p.setReply(paths.rules,[{type:'pull_request',ruleset_id:7,parameters:{required_approving_review_count:0,...parameters}}]);assert.ok((await inspect()).result.gaps.includes(gap));}
   p.setReply(paths.rules,[{type:'merge_queue',ruleset_id:7}]);assert.ok((await inspect()).result.gaps.includes('unsupported_active_rule:merge_queue'));
   p.setReply(paths.rules,[]);assert.ok((await inspect()).result.gaps.includes('managed_target_pull_request_rule_missing'));
   rulesetOnly(f);p.setReply(paths.rules,[],200,true);assert.ok((await inspect()).result.gaps.includes('rules_coverage_incomplete'));

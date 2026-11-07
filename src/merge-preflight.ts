@@ -27,6 +27,7 @@ function singleObject(records:MergeReadRecord[],b:ManagedMergeBinding,kind:Merge
   }catch{return null;}
 }
 const knownClassicAbsence=(records:MergeReadRecord[],b:ManagedMergeBinding)=>singleObject(records,b,'protection',404)?.message==='Branch not protected';
+const designatedReviewRequired=(r:Row|undefined)=>r?.require_code_owner_review===true||r?.require_code_owner_reviews===true||Array.isArray(r?.required_reviewers)&&r.required_reviewers.length>0;
 
 /** A bounded set of rule semantics. Unsupported rules remain visible gaps;
  * GitHub's own enforcement remains necessary after this non-atomic read. */
@@ -59,15 +60,31 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
   }
   const rules=pages('rules'),checks=pages('checks','check_runs'),statuses=pages('statuses'),reviews=pages('reviews');
   const required:Array<{context:string;appId:number|null}>=[];
-  let approvalCount=0,prRule=false;
+  let approvalCount=0,prRule=false,designatedRequired=false,codeOwnersRequired=false;
+  const requiredTeams:Array<{id:number;filePatterns:string[];minimumApprovals:number}>=[];
   const requireReviews=(r:Row)=>{
     prRule=true;
     if(!Number.isSafeInteger(r.required_approving_review_count)||r.required_approving_review_count<0)gaps.push('review_count_unknown');
     else approvalCount=Math.max(approvalCount,r.required_approving_review_count);
-    if(r.require_code_owner_review===true||r.require_code_owner_reviews===true)gaps.push('code_owner_resolution_not_supported');
+    for(const field of ['require_code_owner_review','require_code_owner_reviews'])if(r[field]!==undefined&&typeof r[field]!=='boolean')gaps.push('code_owner_requirement_invalid');
+    if(r.require_code_owner_review!==undefined&&r.require_code_owner_reviews!==undefined&&r.require_code_owner_review!==r.require_code_owner_reviews)gaps.push('code_owner_requirement_inconsistent');
+    codeOwnersRequired ||= r.require_code_owner_review===true||r.require_code_owner_reviews===true;
+    designatedRequired ||= designatedReviewRequired(r);
     if(r.require_last_push_approval===true)gaps.push('last_pusher_identity_not_supported');
     if(r.required_review_thread_resolution===true)gaps.push('review_thread_resolution_not_supported');
-    if(r.required_reviewers?.length)gaps.push('required_team_reviewers_not_supported');
+    if(r.required_reviewers!==undefined){
+      if(!Array.isArray(r.required_reviewers)||r.required_reviewers.length>15)gaps.push('designated_reviewer_requirement_invalid');
+      else for(const requirement of r.required_reviewers){
+        if(!requirement||requirement.reviewer?.type!=='Team'
+          ||!Number.isSafeInteger(requirement.reviewer.id)||requirement.reviewer.id<=0
+          ||!Number.isSafeInteger(requirement.minimum_approvals)||requirement.minimum_approvals<0||requirement.minimum_approvals>10
+          ||!Array.isArray(requirement.file_patterns)||!requirement.file_patterns.length
+          ||requirement.file_patterns.some((pattern:unknown)=>typeof pattern!=='string'||!pattern.length)){
+          gaps.push('designated_reviewer_requirement_invalid');continue;
+        }
+        requiredTeams.push({id:requirement.reviewer.id,filePatterns:requirement.file_patterns,minimumApprovals:requirement.minimum_approvals});
+      }
+    }
     if(r.require_extra_approval_for_unattributed_changes===true&&r.required_approving_review_count>0)gaps.push('unattributed_extra_approval_not_supported');
     if(r.allowed_merge_methods!==undefined&&(!Array.isArray(r.allowed_merge_methods)||!r.allowed_merge_methods.includes('merge')))gaps.push('merge_commit_not_allowed_by_rule');
   };
@@ -138,7 +155,29 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
     }catch{gaps.push('reviewer_repository_permission_unavailable');return false;}
   }).length;
   if(approvals<approvalCount)gaps.push('current_head_approvals_insufficient');
-  return { ready:gaps.length===0,gaps:[...new Set(gaps)],current,requiredChecks:required,requiredApprovals:approvalCount,currentHeadApprovals:approvals,nonAtomicRemoteObservation:true,serverEnforcementStillRequired:true,productionActionAllowed:false };
+  let designatedReview:Row|undefined;
+  if(designatedRequired){
+    if(requiredTeams.length&&repo?.owner?.type!=='Organization')gaps.push('designated_team_repository_identity_invalid');
+    const observation=singleObject(records,b,'review_policy',200);
+    const repository=observation?.data?.repository,request=repository?.pullRequest,target=repository?.ref?.target;
+    const graphErrors=observation?.errors!==undefined&&(!Array.isArray(observation.errors)||observation.errors.length>0);
+    const repositoryMatches=repository?.databaseId===b.repositoryId
+      &&typeof repository?.nameWithOwner==='string'&&repository.nameWithOwner.toLowerCase()===b.repository.toLowerCase();
+    const candidateMatches=request?.number===b.pr&&request.state==='OPEN'&&request.isDraft===false
+      &&request.headRefOid===b.H&&request.baseRefName===b.targetRef;
+    const targetMatches=target?.__typename==='Commit'&&target.oid===b.B;
+    const decisionKnown=request&&Object.hasOwn(request,'reviewDecision')
+      &&[null,'APPROVED','REVIEW_REQUIRED','CHANGES_REQUESTED'].includes(request.reviewDecision);
+    if(!observation||graphErrors||!repositoryMatches||!candidateMatches||!targetMatches
+      ||!decisionKnown||typeof request.mergeStateStatus!=='string'){
+      gaps.push('designated_review_observation_unavailable');
+    }else{
+      if(!['CLEAN','UNSTABLE'].includes(request.mergeStateStatus))gaps.push('designated_review_policy_not_mergeable');
+      if(request.reviewDecision!==null&&request.reviewDecision!=='APPROVED')gaps.push('designated_review_required_or_inconsistent');
+      designatedReview={basis:'github_current_merge_policy',mergeStateStatus:request.mergeStateStatus,reviewDecision:request.reviewDecision,codeOwnersRequired,requiredTeams,perReviewerApprovalCountsInferred:false};
+    }
+  }
+  return { ready:gaps.length===0,gaps:[...new Set(gaps)],current,requiredChecks:required,requiredApprovals:approvalCount,currentHeadApprovals:approvals,...(designatedRequired?{designatedReview:designatedReview??{basis:'github_current_merge_policy',codeOwnersRequired,requiredTeams,sourceAvailable:false}}:{}),nonAtomicRemoteObservation:true,serverEnforcementStillRequired:true,productionActionAllowed:false };
 }
 
 export async function inspectMergePreflight(p:MergeProfile,b:ManagedMergeBinding,directory:string):Promise<MergePreflight>{
@@ -155,6 +194,16 @@ export async function inspectMergePreflight(p:MergeProfile,b:ManagedMergeBinding
   for(const reviewer of [...reviewers].slice(0,32))await capture(mergeCommand(b,'read',{kind:'reviewer',reviewer}));
   await capture(mergeCommand(b,'read',{kind:'protection'}));
   if(singleObject(records,b,'branch',200)?.protected===true&&administrationCredential(p)&&knownClassicAbsence(records,b))await capture(mergeCommand(b,'read',{kind:'administration'}));
+  const needsReviewPolicy=records.some(record=>{
+    const kind=record.command.read?.kind;
+    if(kind!=='protection'&&kind!=='rules')return false;
+    try{
+      const value=decode(record);
+      if(kind==='protection')return designatedReviewRequired(value.required_pull_request_reviews);
+      return Array.isArray(value)&&value.some(rule=>rule.type==='pull_request'&&designatedReviewRequired(rule.parameters));
+    }catch{return false;}
+  });
+  if(needsReviewPolicy)await capture(mergeCommand(b,'read',{kind:'review_policy'}));
   await capture(mergeCommand(b,'read',{kind:'target'}));
   const value=Object.freeze({profileSha256:hash(canonical(p)),bindingSha256:hash(canonical(b)),records,result:evaluateMergePreflight(p,b,records),checkedAt:new Date().toISOString()});
   preflights.add(value);return value;
