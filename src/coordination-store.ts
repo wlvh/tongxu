@@ -264,7 +264,9 @@ export class CoordinationRecords {
     for(const task of this.relevantTasks(f,[output.task],output.stage))this.currentTask(f,task);
     const value=this.verifyOutput(output),source=this.stageState(f,output.task,output.stage,memo);
     if(source.blockers.length)throw new Error('coordination_producer_stage_not_current:'+source.blockers[0]);
-    if(integrationOutputKind(output.kind)){
+    if(output.kind==='message_report'){
+      if(!this.containsInputs(this.messageOutputContext(f,output),this.stageInputs(f,output.task,output.stage)))throw new Error('coordination_message_output_inputs_changed');
+    }else if(integrationOutputKind(output.kind)){
       const artifact=this.integrationReceiptSource(output.operation,true,output.kind==='integration_publication_readback'),members=this.integrationMembers(f,output.task,output.capability,artifact,memo);
       if(canonical(artifact)!==canonical(value.artifact)||canonical(members)!==canonical(value.members))throw new Error('coordination_integration_output_changed');
     }else if(output.kind==='receiver_judgment'){
@@ -333,12 +335,9 @@ export class CoordinationRecords {
   ownerFeedback(id:string,taskId:string,run:string,messageId:string){return this.transaction(()=>{
     const f=this.fixed(id),{task}=this.currentTask(f,taskId),feedback=this.feedback(id,run,messageId);
     if(feedback.task!==taskId)throw new Error('task_coordination_feedback_mismatch');
-    const outputs=task.outputs.filter(o=>o.stage==='investigate').map(o=>{
-      const original=f.events.find(e=>e.kind==='coordination_output'&&e.data.task===taskId&&e.data.capability===o.id)?.data;
-      if(original){this.verifyOutput(original);return {...original,reusedOriginal:true};}
-      return this.recordMessageOutput(id,taskId,o.id,run,messageId);
-    }),consumed=[],waiting=[];
+    const consumed=[],waiting=[];
     for(const stage of task.stages){try{consumed.push(this.consumeMessageInputs(id,taskId,stage,run,messageId));}catch(e){if((e as Error).message!=='coordination_exact_producer_output_not_consumed')throw e;waiting.push(stage);}}
+    const outputs=waiting.includes('investigate')?[]:task.outputs.filter(o=>o.stage==='investigate').map(o=>this.recordMessageOutput(id,taskId,o.id,run,messageId));
     return {planId:id,task:taskId,feedback,outputs,consumed,waiting,writingPermissionGranted:false};
   });}
   execution(id:string,request:Buffer){return this.transaction(()=>{
@@ -361,7 +360,7 @@ export class CoordinationRecords {
     if(!old||this.containsInputs(JSON.parse(this.bytes(old.contextSha256).toString()),outputs))return 'consume';
     const original=this.verifiedReply(old.run,coordinationMessageId(task,'consume'));
     if(original.source.state.resourcesSettled!==true)throw new Error('coordination_prior_consumption_resources_unsettled');
-    const purposes:CoordinationMessagePurpose[]=['consume_'+stage as CoordinationMessagePurpose];if(outputs.some(o=>integrationOutputKind(o.kind)))purposes.push('consume_'+stage+'_2' as CoordinationMessagePurpose,'consume_'+stage+'_3' as CoordinationMessagePurpose);
+    const purposes:CoordinationMessagePurpose[]=['consume_'+stage as CoordinationMessagePurpose];if(outputs.some(o=>integrationOutputKind(o.kind)||o.kind==='message_report'))purposes.push('consume_'+stage+'_2' as CoordinationMessagePurpose,'consume_'+stage+'_3' as CoordinationMessagePurpose);
     for(const purpose of purposes){const selected=this.selected(f,task,purpose);if(!selected||this.containsInputs(JSON.parse(this.bytes(selected.contextSha256).toString()),outputs))return purpose;const original=this.verifiedReply(selected.run,coordinationMessageId(task,purpose));if(original.source.state.resourcesSettled!==true)throw new Error('coordination_prior_consumption_resources_unsettled');}
     throw new Error('coordination_integration_consumption_limit');
   });}
@@ -400,17 +399,30 @@ export class CoordinationRecords {
     const original=this.verifiedReply(origin.run,origin.messageId);if(original.source.state.resourcesSettled!==true)throw new Error('coordination_historical_result_or_resources_unresolved');this.checkedFeedback(origin.planId,origin.run,origin.messageId);
     const value={task,origin,requestSha256,promptSha256,readCurrentRevision:false,permissionsGranted:false},old=f.events.find(e=>e.kind==='coordination_task_history_reused'&&e.data.task===task);if(old){if(canonical(old.data)!==canonical(value))throw new Error('coordination_original_task_history_changed');}else this.event(id,'task_history_reused',value);
   });}
+  private refreshableDispatch(prior:Row){
+    // A provider request is already an investment. Sent, active and unknown
+    // originals must reconcile before any new context is even prepared.
+    const resource=this.db.prepare("SELECT data FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+prior.run) as Row;
+    if(resource){const record=JSON.parse(resource.data);if(canonical(JSON.parse(this.bytes(record.sha256).toString()))!==canonical(record.value))throw new Error('coordination_original_resource_binding_changed');return false;}
+    let state:Row|null=null;try{state=this.message(prior.run).state;}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}
+    return !state||!state.messages.some((m:Row)=>m.sent)&&!state.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true);
+  }
+  canRefreshDispatch(id:string,task:string,purpose:CoordinationMessagePurpose){return this.transaction(()=>{const prior=this.selected(this.fixed(id),task,purpose);return !prior||this.refreshableDispatch(prior);});}
+  private sameDispatchInputs(f:ReturnType<CoordinationRecords['fixed']>,task:string,before:Row,after:Row){
+    const required=(context:Row)=>({
+      outputs:f.plan.dependencies.filter(d=>d.task===task).map(d=>{
+        const output=context.outputs.find((o:Row)=>o.task===d.producer&&o.capability===d.capability);
+        return output?{task:output.task,capability:output.capability,sha256:output.sha256,sourceCurrent:output.sourceCurrent!==false}:null;
+      }),
+      advice:this.earlyParts(f).some(part=>part.tasks.includes(task))?context.earlyReceiverAdvice:null
+    });
+    return canonical(required(before))===canonical(required(after));
+  }
   selectDispatch(id:string,taskId:string,purpose:CoordinationMessagePurpose,requestSha256:string,rawPlan:Buffer,contextSha256:string){return this.transaction(()=>{
     const f=this.fixed(id),{task}=this.currentTask(f,taskId),request=parseCoordinationExecution(this.bytes(requestSha256),f.plan),consumptionStage=coordinationConsumptionStage(purpose);if(!['investigate','consume','early_advice'].includes(purpose)&&!consumptionStage||consumptionStage&&!task.stages.includes(consumptionStage)||purpose==='early_advice'&&!this.earlyParts(f).some(p=>p.tasks.includes(taskId))||!f.events.some(e=>e.kind==='coordination_execution_prepared'&&e.data.requestSha256===requestSha256))throw new Error('coordination_execution_request_required');
     const prior=this.selected(f,taskId,purpose);if(prior){
-      if(prior.requestSha256===requestSha256||!request.refreshUnsent)return prior;
-      // A provider request is an actual investment even when no model input
-      // has been sent. Keep its original selection; only append fresh billing
-      // observations when resuming the same operation and claim.
-      const resource=this.db.prepare("SELECT data FROM events WHERE kind='message_resource_bound' AND object=?").get('message-resource:'+prior.run) as Row;
-      if(resource){const record=JSON.parse(resource.data);if(canonical(JSON.parse(this.bytes(record.sha256).toString()))!==canonical(record.value))throw new Error('coordination_original_resource_binding_changed');return prior;}
-      let state:Row|null=null;try{state=this.message(prior.run).state;}catch(e){if(!(e instanceof Error)||e.message!=='original_message_run_required')throw e;}
-      if(state&&(state.messages.some((m:Row)=>m.sent)||state.runtimes.some((r:Row)=>r.started&&r.ended?.proof.knownUnstarted!==true)))return prior;
+      if(!request.refreshUnsent||prior.requestSha256===requestSha256&&this.sameDispatchInputs(f,taskId,JSON.parse(this.bytes(prior.contextSha256).toString()),JSON.parse(this.bytes(contextSha256).toString())))return prior;
+      if(!this.refreshableDispatch(prior))return prior;
       if(prior.attempt>=3)throw new Error('coordination_unstarted_preparation_limit');
     }
     const attempt=(prior?.attempt??0)+1,directory=join(this.directory,'coordination-'+id,'dispatch-'+hash(canonical([taskId,purpose])),'attempt-'+attempt),plan=parseMessagePlan(rawPlan),actor=request.actors.find(a=>a.id===task.actor)!;
@@ -531,11 +543,29 @@ export class CoordinationRecords {
     if(original.runtime.participant!==task.actor||!original.runtime.ended||original.source.state.resourcesSettled!==true)throw new Error('coordination_repair_original_task_not_ended');
     return {planId:id,task:task.id,capability:outputs[0]!.id,fromRun:bound!.data.run as string,fromMessage:message.messageId as string};
   });}
+  private messageOutputContext(f:ReturnType<CoordinationRecords['fixed']>,output:Row){
+    const origin=this.ancestry(f).find(version=>version.id===(output.originPlan??f.id)),bound=origin?.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===output.run)?.data;
+    if(!bound?.mapping.some((m:Row)=>m.task===output.task&&m.messageId===output.messageId))throw new Error('coordination_original_message_binding_required');
+    const {source,input}=this.verifiedReply(output.run,output.messageId),bytes=source.materials['coordination-context.json'];
+    if(!bytes||hash(bytes)!==bound.contextSha256||!input.replyReferences.includes(bound.contextSha256))throw new Error('coordination_exact_context_consumption_required');
+    if(source.state.resourcesSettled!==true)throw new Error('coordination_message_output_resources_unsettled');
+    return JSON.parse(bytes.toString());
+  }
   recordMessageOutput(id:string,taskId:string,capability:string,run:string,messageId:string){return this.transaction(()=>{
     const f=this.fixed(id),{task,binding}=this.currentTask(f,taskId),output=task.outputs.find(o=>o.id===capability);if(output?.stage!=='investigate'||output.kind!=='message_report')throw new Error('coordination_message_is_not_implementation_evidence');
     const bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===run)?.data;if(!bound?.mapping.some((m:Row)=>m.task===taskId&&m.messageId===messageId))throw new Error('coordination_original_message_binding_required');
-    const {message}=this.verifiedReply(run,messageId),value={schemaVersion:1,kind:'message_report',task:taskId,capability,binding,run,messageId,sessionId:message.reply.sessionId,turnId:message.reply.turnId,inputSha256:message.reply.inputSha256,finalSha256:message.reply.finalSha256,finalText:message.reply.finalText},sha256=this.blob(Buffer.from(canonical(value))),entry={task:taskId,capability,stage:'investigate',kind:'message_report',sha256,run,messageId},old=f.events.find(e=>e.kind==='coordination_output'&&e.data.task===taskId&&e.data.capability===capability);
-    if(old){if(canonical(old.data)!==canonical(entry))throw new Error('coordination_original_capability_is_fixed');return {...entry,duplicate:true};}this.event(id,'output',entry);return {...entry,duplicate:false};
+    const {message}=this.verifiedReply(run,messageId);
+    const value={schemaVersion:1,kind:'message_report',task:taskId,capability,binding,run,messageId,sessionId:message.reply.sessionId,turnId:message.reply.turnId,inputSha256:message.reply.inputSha256,finalSha256:message.reply.finalSha256,finalText:message.reply.finalText};
+    const sha256=this.blob(Buffer.from(canonical(value))),entry={task:taskId,capability,stage:'investigate',kind:'message_report',sha256,run,messageId};
+    const previous=f.events.filter(e=>e.kind==='coordination_output'&&e.data.task===taskId&&e.data.capability===capability);
+    const duplicate=previous.find(e=>e.data.run===run&&e.data.messageId===messageId);
+    if(duplicate){if(canonical(duplicate.data)!==canonical(entry))throw new Error('coordination_original_capability_is_fixed');return {...entry,duplicate:true};}
+    const inputs=this.stageInputs(f,taskId,output.stage);
+    if(!this.containsInputs(this.messageOutputContext(f,entry),inputs))throw new Error('coordination_message_output_inputs_changed');
+    const old=this.outputFor(f,taskId,capability);
+    if(old&&this.containsInputs(this.messageOutputContext(f,old),inputs))return {...old,sha256:old.sha256 as string,duplicate:true,reusedOriginal:true};
+    if(previous.length>=3)throw new Error('coordination_message_output_revision_limit');
+    this.event(id,'output',entry);return {...entry,duplicate:false};
   });}
   consumeMessageInputs(id:string,taskId:string,stage:CoordinationStage,run:string,messageId:string){return this.transaction(()=>{
     const f=this.fixed(id);this.currentTask(f,taskId);const bound=f.events.find(e=>e.kind==='coordination_messages_bound'&&e.data.run===run)?.data;if(!bound?.mapping.some((m:Row)=>m.task===taskId&&m.messageId===messageId))throw new Error('coordination_original_message_binding_required');

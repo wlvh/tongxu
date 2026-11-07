@@ -33,6 +33,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 `tests/coordination/receiver-currentness.test.ts` 复用原接收与消息 fixture，覆盖同一上游H的证据失效、登记未消费/已消费、旧式和命名阶段消费预备未发、runtime启动后的最后输入门、初次调查携历史未来产物、已发后的完整回复与原run零新增恢复，以及报告SHA不变时的声明依赖传播。断言实际协议输入数量、原产物与消费出处、历史全文和独立A3。Git、SQLite、CLI及子进程真实执行，验证材料和模型为明确协议样例。
 
+`tests/integration/conditional-report-revisions.test.ts` 复用同一 integration/message fixture，验证正常 CLI 中 R1→R2→R3 的报告自身固定输入、新完整回复与原 output 版本、已消费旧报告的下游有限接续，以及旧准备未发的配额等待。分别核显式允许刷新后首次实际输入收到新报告、未允许刷新时具体等待、正常 ownerFeedback callback 发布新版本、历史全文、重复零新增与原三批接收限制。`receiver-currentness` 还核 `refreshUnsent` 下已发原 run 的源失效恢复、完整回复在源失效时不发布新报告，以及无关变化不替换独立未发选择。模型与外部服务为协议样例，Git/SQLite/CLI/子进程和所需 Docker 隔离真实执行。
+
 行为、契约和失败边界优先于实现形状。固定输入减少外部数据漂移；真实外部调用需明确授权与条件。缺材料、未知、部分输出、拒绝和未运行不是通过。某个文件名带 native、integration 或 live，不足以判断它实际启动了什么，必须看 fixture 和执行器。
 
 ## 2. Test Layers and What Each Proves

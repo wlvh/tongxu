@@ -26,7 +26,7 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
     const records=q.coordination();records.register(raw);const execution=records.execution(id,requestBytes),prepared:Record<string,any>={},results:Record<string,any>={},errors:Record<string,string>={};let newModelRequests=0;
     const select=async(taskId:string,purpose:CoordinationMessagePurpose)=>{
       const task=plan.tasks.find(t=>t.id===taskId)!,prior=records.dispatchSelection(id,taskId,purpose);
-      if(prior&&(prior.requestSha256===execution.requestSha256||!request.refreshUnsent)){
+      if(prior&&(!request.refreshUnsent||!records.canRefreshDispatch(id,taskId,purpose))){
         const parsed=JSON.parse(prior.plan.toString());records.bindMessages(id,prior.plan,prior.contextSha256,[{task:taskId,messageId:parsed.messages[0].id}]);await directory(dirname(prior.directory));await directory(prior.directory);await fixedFile(join(prior.directory,'context.json'),prior.context);await fixedFile(join(prior.directory,'plan.json'),prior.plan);
         const result={task:taskId,purpose,run:prior.run,attempt:prior.attempt,planPath:join(prior.directory,'plan.json'),contextSha256:prior.contextSha256,messageId:parsed.messages[0].id};prepared[taskId+':'+purpose]=result;return result;
       }
@@ -63,10 +63,16 @@ export async function runCoordination(store:string,planPath:string,requestPath:s
         const result=await runMessages(store,selected.planPath,false,selected.run,request.refreshUnsent?request.billing:undefined);newModelRequests+=result.newModelRequests;results[taskId+':'+purpose]=result;if(!result.completed)return;
         records.feedback(id,result.run,selected.messageId);
         if(request.earlyReceiver&&records.earlyAdvice(id).available)records.consumeEarlyAdvice(id,taskId,result.run,selected.messageId);
-        const task=plan.tasks.find(t=>t.id===taskId)!;if(purpose==='investigate')for(const output of task.outputs.filter(o=>o.stage==='investigate'))records.recordMessageOutput(id,taskId,output.id,result.run,selected.messageId);
+        const task=plan.tasks.find(t=>t.id===taskId)!;
         // Consume only the stages whose complete producer outputs were already
         // in this fixed message. Missing later capabilities remain waiting.
         for(const stage of task.stages){try{records.consumeMessageInputs(id,taskId,stage,result.run,selected.messageId);}catch(e){if(!(e instanceof Error)||e.message!=='coordination_exact_producer_output_not_consumed')throw e;}}
+        // A complete later read may replace only a report whose required
+        // production inputs changed. Old messages remain immutable history.
+        for(const output of task.outputs.filter(o=>o.stage==='investigate')){
+          try{records.recordMessageOutput(id,taskId,output.id,result.run,selected.messageId);}
+          catch(e){if(!(e instanceof Error)||e.message!=='coordination_message_output_inputs_changed')throw e;}
+        }
       }catch(e){errors[taskId+':'+purpose]=e instanceof Error?e.message:'coordination_task_unresolved';}
     };
     const attempted=new Set<string>();

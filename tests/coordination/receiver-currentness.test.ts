@@ -13,7 +13,7 @@ import {hash} from '../../src/snapshot.js';
 import type {CoordinationPlan,CoordinationStage} from '../../src/coordination-contract.js';
 import {coordinationTaskBody,coordinationMessageId,coordinationMessageAuthority,type CoordinationMessagePurpose,type CoordinationExecution} from '../../src/coordination-execution-contract.js';
 
-async function fixture(t:test.TestContext,recursive=false){
+async function fixture(t:test.TestContext,recursive=false,refreshUnsent=false){
   const f=await messageFixture(t),receiverTemplate=JSON.parse(await readFile(join(f.root,'plan.json'),'utf8'));
   const parent=await f.packet({pr:3}),H=f.q.status().items.find((i:any)=>i.id===parent.item)!.candidate.H;
   const producer=await f.packet({pr:4,requires:[{item:parent.item,type:'development',version:H,blocks:'shadow_review',source:'Explicit current upstream evidence fixture',canContinue:'Independent reading'}]}),consumer=await f.packet({pr:5}),independent=await f.packet({pr:6});
@@ -31,7 +31,7 @@ async function fixture(t:test.TestContext,recursive=false){
   script=script.replace(finish,`if(fs.existsSync(${JSON.stringify(enabled)})){fs.writeFileSync(${JSON.stringify(sent)},x.messageId);const wait=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(wait);finish();}},10);}else finish();return;}`);
   await writeFile(f.codex,script);
   const {item:_item,role:_role,parent:_parent,...profile}=f.plan.participants[0]!;
-  const execution:CoordinationExecution={schemaVersion:1,kind:'tongxu-coordination-readonly-execution',source:'Explicit fixed role capabilities',executionKind:'fixture',actors:plan.actors.map(a=>({...profile,id:a.id,executableSha256:hash(script)})),taskBodies:Object.fromEntries(plan.tasks.map(t=>[t.id,'Read the declared original sources and their current applicability'])),authorityIntents:Object.fromEntries(plan.tasks.map(t=>[t.id,null])),billing:f.plan.billing,timeoutMs:5000,refreshUnsent:false};
+  const execution:CoordinationExecution={schemaVersion:1,kind:'tongxu-coordination-readonly-execution',source:'Explicit fixed role capabilities',executionKind:'fixture',actors:plan.actors.map(a=>({...profile,id:a.id,executableSha256:hash(script)})),taskBodies:Object.fromEntries(plan.tasks.map(t=>[t.id,'Read the declared original sources and their current applicability'])),authorityIntents:Object.fromEntries(plan.tasks.map(t=>[t.id,null])),billing:f.plan.billing,timeoutMs:5000,refreshUnsent};
   const planPath=join(f.root,'coordination.json'),executionPath=join(f.root,'execution.json'),testPath=join(f.root,'unused-test.json');
   await writeFile(planPath,canonical(plan));await writeFile(executionPath,canonical(execution));await writeFile(testPath,canonical({schemaVersion:1,tools:[{id:'unused',argv:['/fixture/not-run'],timeoutMs:1000}]}));
   const ref=async(path:string)=>({path,sha256:hash(await readFile(path))});
@@ -107,8 +107,19 @@ test('new independent investigation labels a stale future receipt as history and
   await f.restore();assert.equal((await f.run('investigate')).newModelRequests,1);assert.equal(f.ready().phasePrerequisitesMet,true);
 });
 
-test('a source lost after actual input retains the complete reply and reconciles the same run after restoration without another input',async t=>{
-  const f=await fixture(t);await f.run('investigate');const receipt=await f.reuse(),selected=await f.prepareMessage('B','consume','implement');await writeFile(f.enabled,'hold');
+test('refreshUnsent preserves an independent prepared run when only unrelated source applicability changes',async t=>{
+  const f=await fixture(t,false,true);await f.reuse();
+  const selected=await f.prepareMessage('A3','investigate','investigate');
+  await f.invalidate();
+  const result=await f.run('investigate');
+  assert.equal(result.results['A3:investigate'].completed,true);
+  assert.equal(f.records.dispatchSelection(f.id,'A3','investigate')!.run,selected.run);
+  assert.equal(f.q.messages().submitted(selected.run,'A3').length,1);
+  assert.equal((await f.run('investigate')).newModelRequests,0);
+});
+
+for(const refreshUnsent of [false,true])test('a source lost after actual input retains the complete reply and reconciles the same run with refreshUnsent='+refreshUnsent,async t=>{
+  const f=await fixture(t,false,refreshUnsent);await f.run('investigate');const receipt=await f.reuse(),selected=await f.prepareMessage('B','consume','implement');await writeFile(f.enabled,'hold');
   const pending=runMessages(f.store,selected.planPath,false,selected.run);
   try{for(let attempt=0;;attempt++){try{await access(f.sent);break;}catch{if(attempt>=500)throw new Error('fixture_input_not_observed');await new Promise(resolve=>setTimeout(resolve,10));}}await f.invalidate();}finally{await writeFile(f.release,'release');}
   const result=await pending;assert.equal(result.completed,true);assert.equal(result.newModelRequests,1);assert.equal(f.ready().phasePrerequisitesMet,false);
@@ -123,4 +134,32 @@ test('unchanged downstream message-report SHA retains history while declared rec
   await f.invalidate();assert.equal(f.records.stage(f.id,'B','investigate').phasePrerequisitesMet,false);assert.match(f.ready('C').blockers.join(),/B:report/);assert.equal((await f.run('investigate')).newModelRequests,0);assert.equal(await f.inputs(),before);
   assert.equal(hash(canonical(f.records.outputOriginal(f.id,report.sha256).value)),report.sha256);assert.equal(f.records.outputOriginal(f.id,receipt.sha256).complete,true);
   await f.restore();assert.equal((await f.run('investigate')).newModelRequests,1);assert.equal(f.ready('C').phasePrerequisitesMet,true);assert.equal((await f.run('investigate')).newModelRequests,0);
+});
+
+test('a complete report from an input whose source was lost stays unpublished until the same original source recovers',async t=>{
+  const f=await fixture(t,true,true);await f.run('investigate');await f.reuse();
+  const selected=await f.prepareMessage('B','investigate','investigate');
+  await writeFile(f.enabled,'hold');
+  const pending=runMessages(f.store,selected.planPath,false,selected.run);
+  try{
+    for(let attempt=0;;attempt++){
+      try{await access(f.sent);break;}
+      catch{if(attempt>=500)throw new Error('fixture_input_not_observed');await new Promise(resolve=>setTimeout(resolve,10));}
+    }
+    await f.invalidate();
+  }finally{await writeFile(f.release,'release');}
+  const reply=await pending;
+  assert.equal(reply.completed,true);
+  assert.equal(reply.newModelRequests,1);
+  const before=await f.inputs();
+  assert.throws(()=>f.records.recordMessageOutput(f.id,'B','report',selected.run,selected.messageId),/queue_repair_source_no_longer_current/);
+  assert.equal(f.records.context(f.id,['A3'],'investigate').value.outputs.some(o=>o.task==='B'),false);
+  await f.restore();
+  f.records.consumeMessageInputs(f.id,'B','investigate',selected.run,selected.messageId);
+  const output=f.records.recordMessageOutput(f.id,'B','report',selected.run,selected.messageId);
+  assert.equal(f.records.recordMessageOutput(f.id,'B','report',selected.run,selected.messageId).duplicate,true);
+  assert.equal(await f.inputs(),before);
+  assert.equal(f.records.context(f.id).value.outputs.find(o=>o.sha256===output.sha256).sourceCurrent,true);
+  assert.equal((await f.run('investigate')).newModelRequests,1);
+  assert.equal((await f.run('investigate')).newModelRequests,0);
 });

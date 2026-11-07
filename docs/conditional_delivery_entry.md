@@ -37,6 +37,8 @@ npm run conditional-entry -- investigate --entry ABS_ENTRY
 
 同一代码候选的正文等材料更新后，显式 `collect` 会读取当前材料，原采集包和测试结果继续保存。成员材料由 `collect-member` 更新。随后 `refresh` 和 `integrate` 核准确成员、范围、测试与组合身份，将当前材料关联到原私人候选。再次 `attach`、`receive` 时，受影响的输入包含新的完整材料。接收结果和进度变化保留在完整上下文中，输入标识取相关任务和安排的语义内容。每个物理候选共用三批接收限额。
 
+必需的上游接收更新后，只基于旧版本的分析报告先变为历史。`investigate` 的完整后续消费回复可登记准确新报告，下游实际读取该新报告后继续。同一协调版本中每项报告最多三版，原全文、原输入与消费出处保留。已准备但从未发送的下游选择，仅在安装配置允许 `refreshUnsent:true`、没有资源投入且已核未发时按原限制刷新，否则返回准确的材料等待。已发或未知原运行继续按原件恢复。
+
 ```sh
 npm run conditional-entry -- refresh --entry ABS_ENTRY
 npm run conditional-entry -- arrange --entry ABS_ENTRY --choice parallel
