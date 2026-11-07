@@ -14,7 +14,7 @@ import { readOwnerSource,type OwnerObservation } from './authority-source.js';
 import { resourceAction } from './resource-claims.js';
 import type { AuthorityRole } from './authority-contract.js';
 import {memberReturnReference,type MemberReturnReference} from './integration-member-contract.js';
-import {parseRepairContinuation,type RepairContinuation} from './repair-continuation-contract.js';
+import {parseRepairContinuation,repairContinuationContext,type RepairContinuation} from './repair-continuation-contract.js';
 
 type Row = Record<string, any>;
 export type QueueRepairPlan = { schemaVersion: 1; kind: 'tongxu-queue-repair'; store: string; operation: string; packet: number; judgmentId: string; bindingHash: string; context: unknown;
@@ -88,7 +88,7 @@ export async function runQueueRepair(planPath: string, reconcileEnded = false,ex
       };
       if(p.continuation){
         const old=q.managedRepairOriginal(p.continuation.operation),result=old.repair.result;
-        effective.priorReview!.continuation={...p.continuation,priorResult:{status:result.status,before:result.before,after:result.after,treeSha256:result.treeSha256,factReport:result.data?.factReport??null,independentReview:result.data?.review??null},adoptedSource:'exact committed candidate; staged/working/untracked originals preserved separately in the original queue',newExecutionContext:true,nativeSessionResumed:false,reportsGrantPermissions:false};
+        effective.priorReview!.continuation=repairContinuationContext(p.continuation,result);
       }
       const effectiveBytes = Buffer.from(JSON.stringify(effective));
       return await q.withRepairContinuation(p.continuation,async()=>{

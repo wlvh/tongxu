@@ -1,3 +1,5 @@
+import {controlledSourceOperationMatches} from './resource-contract.js';
+import {exactKeys} from './authority-contract.js';
 import {registeredReceiverMetadata} from './receiver-metadata.js';
 import {FormalReviews} from './formal-review-store.js';
 import {IssueImplementations} from './issue-implementation-store.js';
@@ -11,6 +13,9 @@ import {parseMemberRefutationRequest,type MemberRefutationRequest} from './membe
 import {verifyMemberRefutationOriginals} from './member-refutation-originals.js';
 import {installMemberRefutationOriginalsGuard} from './member-refutation-format.js';
 import {IntegrationRecords,type IntegrationSource} from './integration-store.js';
+import {MemberSourceRecords} from './member-source-store.js';
+import {CandidateValidationRecords,type CandidateValidationSource} from './candidate-validation-store.js';
+import {parseCandidateValidation,type CandidateValidationPlan} from './candidate-validation-contract.js';
 import {parseObservedCandidateRequest,integrationCandidateRequest,type ObservedCandidateRequest} from './observed-candidate-contract.js';
 import {requireObservedCandidate,type ObservedCandidateBinding,type ObservedCandidateCapture} from './observed-candidate-source.js';
 import {protectObservedCandidate} from './integration-format.js';
@@ -23,7 +28,7 @@ import type {RecompositionLink,MemberRecompositionPlan} from './member-recomposi
 import {RecompositionTestRecords,type RecompositionTestSource} from './recomposition-test-store.js';
 import { DatabaseSync } from 'node:sqlite';
 import {withManagedRepairCapture,type ManagedRepairCapture} from './workspace-handoff-originals.js';
-import type {RepairContinuation} from './repair-continuation-contract.js';
+import {repairContinuationContext,type RepairContinuation} from './repair-continuation-contract.js';
 import { lstat, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,7 +50,7 @@ import { EventRecords } from './event-store.js';
 import { SessionRecords } from './session-store.js';
 import { MessageRecords } from './message-store.js';
 import { CoordinationRecords } from './coordination-store.js';
-import {parseCoordinationPlan,coordinationPlanId} from './coordination-contract.js';
+import {parseCoordinationPlan,coordinationPlanId,type CoordinationPlan} from './coordination-contract.js';
 import { MessageResourceRecords } from './message-resource-store.js';
 import { TaskCandidateLinks } from './task-link-store.js';
 import { observeTaskLinkSource,assertTaskLinkSourceCurrentSync } from './task-link-source.js';
@@ -215,7 +220,7 @@ export class QueueStore {
   }
   registerWorkbenchDelivery(anchor:string,allowed:readonly string[],p:{requestId:string;title:string;issue:number;adoption:string;previous:string|null;members:Array<{item:string;packet:number;fingerprint:string}>;scenarios:Array<{id:string;title:string;expected:string;members:string[]}>}){return this.transaction(()=>{
     if(!allowed.includes(anchor)||!p.members.some(m=>m.item===anchor)||p.members.some(m=>!allowed.includes(m.item)))throw new Error('delivery_preparation_member_not_selected');
-    const c=this.authorityItem(anchor),a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),owner=a.forScope(c.context.scope.id,{item:anchor,target:c.candidate.targetRef});
+    const c=this.authorityItem(anchor),a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),owner=a.forScope(c.context.scope.id,{item:anchor,target:c.candidate.targetRef});
     if(!c.current||owner.currentAdoption!==p.adoption||owner.currentScope?.kind!=='adopt_scope'||owner.currentScope.scopeVersion!==c.context.scope.version)throw new Error('delivery_preparation_current_adoption_required');
     const records=this.deliveryRecords(fn=>fn()),prior=p.previous?records.manifest(p.previous):null;
     if(prior&&prior.members.some(m=>!allowed.includes(m.item)))throw new Error('delivery_preparation_previous_not_selected');
@@ -239,7 +244,7 @@ export class QueueStore {
   }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private collaborationView(){
     const noAction=()=>{throw new Error('readonly_view_cannot_authorize');},m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),noAction),r=this.resourceRecords(fn=>fn()),c=this.coordinationRecords(fn=>fn()),mr=this.messageResourceRecords(fn=>fn()),repair=new ReviewRecords(this.db,fn=>fn(),noAction,noAction);
-    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),messageClosedUnstarted:run=>this.deliveryAssessmentRecords(fn=>fn()).messageClosedUnstarted(run)||this.taskInboxRecords(fn=>fn()).messageClosedUnstarted(run),coordination:id=>c.status(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
+    return new CollaborationView(this.db,{item:id=>this.authorityItem(id),message:run=>m.status(run),messageAssociation:run=>this.taskInboxRecords(fn=>fn()).associationStatus(run),messageClosedUnstarted:run=>this.deliveryAssessmentRecords(fn=>fn()).messageClosedUnstarted(run)||this.taskInboxRecords(fn=>fn()).messageClosedUnstarted(run),coordination:id=>c.status(id),coordinationReference:id=>c.reference(id),resource:id=>r.status(id),settled:id=>r.settledOutcome(id),messageResource:run=>mr.state(run),repair:id=>repair.state(id)});
   }
   private static async connect(directory: string, readOnly: boolean): Promise<QueueStore> {
     await privateDirectory(directory, false);
@@ -344,24 +349,24 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private taskLinkRecords(transaction:<T>(f:()=>T)=>T){return new TaskCandidateLinks(this.db,transaction,this.taskRecords(),id=>{const item=this.item(id);if(parse(item,'candidate').kind==='development-task')throw new Error('task_link_requires_individual_pr_candidate');const packet=this.packet(item.current_packet),e=this.packetEvidence(packet);return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,verificationSha256:packet.report_hash,collection:e.manifest,verification:e.report};});}
   async refreshTaskLinkSource(id:string){this.taskLinks().configuration();const p=this.tasks().definition(id),source=await observeTaskLinkSource(p);this.transaction(()=>{this.taskRecords().observe(p,source.observation);this.taskLinkRecords(fn=>fn()).observe(source);});return source;}
   formalReviews(){return this.formalReviewRecords(fn=>this.transaction(fn));}
-  private formalReviewRecords(transaction:<T>(f:()=>T)=>T){return new FormalReviews(this.db,transaction,new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),item=>this.authorityItem(item),(item,run)=>this.beginCurrent(item,run),id=>this.evaluateCurrent(id));}
+  private formalReviewRecords(transaction:<T>(f:()=>T)=>T){return new FormalReviews(this.db,transaction,new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),()=>this.resourceRecords(fn=>fn()),item=>this.authorityItem(item),(item,run)=>this.beginCurrent(item,run),id=>this.evaluateCurrent(id));}
   issueImplementations(){return this.issueImplementationRecords(fn=>this.transaction(fn));}
   implementationOwnerSnapshot(target:import('./implementation-owner-feedback.js').ImplementationOwnerTarget):import('./implementation-owner-feedback.js').ImplementationOwnerSnapshot{
     const records=this.issueImplementationRecords(fn=>fn()),state=records.state(target.source,target.requestId),request=records.original(target.source,target.requestId),definition=this.taskRecords().definition(state.task);
     let resourcesSettled=true;for(const id of state.plan?.resourceRequests??[])try{if(!this.resourceRecords(fn=>fn()).settledOutcome(id))resourcesSettled=false;}catch{resourcesSettled=false;}
-    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
+    const authority=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));
     return {target,state,request,definition,family:records.requests(target.source),resourcesSettled,currentAdoption:authority.forScope(definition.context.scope.id,{item:state.task,target:definition.target}).currentAdoption};
   }
-  private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
+  private issueImplementationRecords(transaction:<T>(f:()=>T)=>T){return new IssueImplementations(this.db,transaction,this.taskRecords(),new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),()=>this.resourceRecords(fn=>fn()),(task,run)=>this.beginCurrent(task,run));}
   registerIssueImplementation(source:string,request:ImplementationRequest,definition:DevelopmentTask,observation:TaskObservation,beforeRegistration?:(currentAdoption:string|null)=>void){return this.transaction(()=>{
-    if(beforeRegistration){const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));beforeRegistration(authority.forScope(definition.context.scope.id,{item:request.task,target:definition.target}).currentAdoption);}
+    if(beforeRegistration){const authority=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));beforeRegistration(authority.forScope(definition.context.scope.id,{item:request.task,target:definition.target}).currentAdoption);}
     const registered=this.taskRecords().observe(definition,observation);if(registered.item!==request.task)throw new Error('implementation_task_definition_mismatch');
     return this.issueImplementationRecords(fn=>fn()).register(source,request);
   });}
   taskInbox(){return this.taskInboxRecords(fn=>this.transaction(fn));}
   static async observeOwnerContact(directory:string,task:string,key:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');const inbox=q.taskInboxRecords(fn=>fn());return {record:inbox.ownerContact(task,key),applicability:inbox.ownerContactApplicability(task,key)};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   scopeFollowups():TaskScopeFollowups{return this.taskScopeFollowupRecords(fn=>this.transaction(fn));}
-  private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));}
+  private taskScopeFollowupRecords(transaction:<T>(f:()=>T)=>T):TaskScopeFollowups{return new TaskScopeFollowups(this.db,transaction,this.taskRecords(),this.taskInboxRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)));}
   private taskInboxRecords(transaction:<T>(f:()=>T)=>T):TaskInbox{
     const m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('task_history_read_cannot_authorize');});
     return new TaskInbox(this.db,transaction,this.directory,this.taskRecords(),run=>{
@@ -446,13 +451,17 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       return {id:records.overallIdentity(raw),operation:p.operation,current,phase:result?'review_recorded':dispatch&&!closed?'submitted_or_unknown':closed?'confirmed_unstarted':original?'prepared_not_sent':'not_prepared',attempts:events.filter((e:Row)=>e.kind==='overall_review_dispatched').length,lastProblem:events.findLast((e:Row)=>e.kind==='overall_review_problem')?.data.reason??null,baselineStatus:p.baselineAcceptance?.kind??'unknown',candidate:result?.candidate??q.reviewSource(p.operation,false).candidate,resources,noOverallDriftEstablished:false,ownerSourceConfigured:Boolean(q.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get()),governanceConfigured:!!p.governance,...(result?{verdict:result.report?.verdict??null,reportSha256:hash(result.report.report),gaps:result.gaps,...(full?{report:result.report.report,findings:result.report.findings,executionKind:result.executionKind,baselineSource:result.baselineSource??null,conclusionScope:result.conclusionScope}:{} )}:{gaps:['overall_report_not_recorded']}),newModelRequests:0,productionActionAllowed:false};
     }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
   }
-  registerWorkbenchOrganization(raw:Buffer,items:readonly string[],delegation:{adoption:string;authorization:string}|null,observations:OwnerObservation[],checkSources:()=>void){return this.transaction(()=>{
+  registerWorkbenchOrganization(raw:Buffer,items:readonly string[],delegation:{adoption:string;authorization:string}|null,observations:OwnerObservation[],checkSources:()=>void,candidateRefresh?:{previous:string;bindings:Array<{task:string;from:string;to:string}>}){return this.transaction(()=>{
     const p=parseCoordinationPlan(raw),id=coordinationPlanId(p),records=this.coordinationRecords(fn=>fn());
     if(new Set(items).size!==items.length||canonical([...items].sort())!==canonical(p.tasks.map(t=>t.item).sort()))throw new Error('organization_exact_selected_tasks_required');
     // Reading an already registered choice never grants fresh authority or
     // changes which revision is current, even after permission is revoked.
     try{const old=records.status(id);return {state:old,duplicate:true,newModelRequests:0,writingPermissionGranted:false,externalStateRechecked:false};}catch(e){if((e as Error).message!=='coordination_plan_not_registered')throw e;}
-    const previous=records.current(p.name);if(previous&&previous.plan.tasks.some(t=>!items.includes(t.item)))throw new Error('organization_previous_task_not_selected');
+    const previous=records.current(p.name);
+    if(candidateRefresh){
+      if(!previous||candidateRefresh.previous!==previous.id||p.previous!==previous.id||candidateRefresh.bindings.length!==previous.plan.tasks.length||p.tasks.length!==previous.plan.tasks.length)throw new Error('organization_exact_candidate_refresh_required');
+      for(const old of previous.plan.tasks){const task=p.tasks.find(t=>t.id===old.id),mapping=candidateRefresh.bindings.filter(b=>b.task===old.id);if(!task||mapping.length!==1||mapping[0]!.from!==old.item||mapping[0]!.to!==task.item||!this.sameConditionalTask(old.item,task.item))throw new Error('organization_candidate_refresh_outside_original_task');}
+    }else if(previous&&previous.plan.tasks.some(t=>!items.includes(t.item)))throw new Error('organization_previous_task_not_selected');
     checkSources();const bindings=p.tasks.map(t=>this.authorityItem(t.item)),first=bindings[0]!,configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(bindings.some(b=>!b.current||canonical(b.context.scope)!==canonical(first.context.scope)||b.candidate.repository!==first.candidate.repository))throw new Error('coordination_common_current_scope_required');
     const intents:string[]=[];
@@ -466,17 +475,37 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     }else if(delegation||p.authorityIntent!==null)throw new Error('organization_owner_source_profile_required');
     const state=records.register(raw);return {state,duplicate:false,authority:configured?{kind:'existing_delegation',intents}:{kind:'operator_fixed_local_arrangement'},newModelRequests:0,writingPermissionGranted:false,ownerAdoptionCreated:false};
   });}
-  private authorityItem(id:string):Row {
+  private sameConditionalTask(initial:string,selected:string){const a=this.authorityItem(initial),b=this.authorityItem(selected),c=a.candidate,d=b.candidate;return !c.kind&&!d.kind&&c.repository===d.repository&&c.pr===d.pr&&c.targetRef===d.targetRef&&canonical(a.context.scope)===canonical(b.context.scope)&&canonical(a.context.arrangement)===canonical(b.context.arrangement);}
+  verifyConditionalTaskIdentity(template:CoordinationPlan,plan:CoordinationPlan){return this.transaction(()=>{if(plan.tasks.length!==template.tasks.length||plan.tasks.some(task=>{const initial=template.tasks.find(t=>t.id===task.id);return !initial||!this.sameConditionalTask(initial.item,task.item);}))throw new Error('conditional_entry_task_identity_changed');});}
+  resolveConditionalTaskBindings(template:CoordinationPlan,repository:string,target:string){return this.transaction(()=>{
+    return template.tasks.map(task=>{
+      const original=this.authorityItem(task.item),c=original.candidate;if(c.kind||c.repository!==repository||c.targetRef!==target)throw new Error('conditional_entry_supported_pr_tasks_required');
+      const rows=this.db.prepare("SELECT id FROM items WHERE lower(json_extract(candidate,'$.repository'))=? AND json_extract(candidate,'$.pr')=? AND json_extract(candidate,'$.targetRef')=?").all(repository.toLowerCase(),c.pr,target) as Row[];
+      const matches=rows.filter(r=>!parse(this.packet(this.item(r.id).current_packet),'summary').composition&&this.sameConditionalTask(task.item,r.id)).map(r=>this.authorityItem(r.id)).filter(b=>b.current);
+      if(matches.length!==1)throw new Error('conditional_entry_unique_current_task_source_required');return {task:task.id,initialItem:task.item,...matches[0],item:matches[0]!.item as string};
+    });
+  });}
+  resolveConditionalComposition(initial:string,memberItems:string[]){return this.transaction(()=>{
+    const source=this.authorityItem(initial),initialSummary=parse(this.packet(this.item(initial).current_packet),'summary');if(!initialSummary.composition)return null;
+    const members=memberItems.map(id=>this.authorityItem(id)),matches=(this.db.prepare('SELECT id FROM items').all() as Row[]).filter(row=>{
+      const item=this.item(row.id),packet=this.packet(item.current_packet),summary=parse(packet,'summary'),composition=summary.composition;if(!composition||composition.subject.members.length!==members.length)return false;
+      const e=this.packetEvidence(packet);if(canonical(e.context.scope)!==canonical(source.context.scope)||canonical(e.context.arrangement)!==canonical(source.context.arrangement))return false;
+      return composition.subject.members.every((m:Row,index:number)=>['repository','pr','H','B','targetRef'].every(k=>m.candidate[k]===members[index]!.candidate[k]))&&this.authorityItem(row.id).current;
+    });
+    if(matches.length!==1)throw new Error('conditional_entry_current_revalidated_combination_required');return this.authorityItem(matches[0]!.id);
+  });}
+  private authorityItem(id:string,source?:import('./authority-contract.js').AuthorityCandidateSource):Row {
+    if(source)return this.memberSourceRecords().subject(id,source);
     const item=this.item(id),packet=this.packet(item.current_packet),evidence=this.packetEvidence(packet),summary=this.effectiveSummary(item,packet);
     return {item:id,packet:item.current_packet,fingerprint:packet.fingerprint,candidate:evidence.manifest.candidate,context:evidence.context,subjectSha256:summary.composition?.sha256??null,current:!item.observation_conflict&&this.receiverCandidateCurrent(item),prerequisites:this.prerequisites(item),evidenceComplete:summary.evidenceComplete};
   }
-  authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),id=>this.authorityItem(id),{check:p=>this.deliveryRecords(fn=>fn()).checkOutcome(p),record:sha=>this.deliveryRecords(fn=>fn()).recordOutcome(sha)}); }
+  authority(): AuthorityRecords { return new AuthorityRecords(this.db,fn=>this.transaction(fn),(id,source)=>this.authorityItem(id,source),{check:p=>this.deliveryRecords(fn=>fn()).checkOutcome(p),record:sha=>this.deliveryRecords(fn=>fn()).recordOutcome(sha)}); }
   withOwnerTask<T>(item:string,scopeId:string,target:string,action:(a:AuthorityRecords)=>T):T{return this.transaction(()=>{
     const selected=this.authorityItem(item);if(selected.context.scope.id!==scopeId||selected.candidate.targetRef!==target)throw new Error('owner_control_task_changed');
-    return action(new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)));
+    return action(new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)));
   });}
   deliveries(){return this.deliveryRecords(fn=>this.transaction(fn));}
-  private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude),members=>this.deliveryMemberReturns(members));}
+  private deliveryRecords(transaction:<T>(fn:()=>T)=>T):DeliveryRecords{const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new DeliveryRecords(this.db,transaction,id=>this.authorityItem(id),sha=>a.inspectRecordedDecision(sha),sha=>this.deliveryValidationRecords(fn=>fn()).forBatch(sha),(sha,exclude)=>this.deliveryAssessmentRecords(fn=>fn()).forBatch(sha,exclude),members=>this.deliveryMemberReturns(members));}
   private deliveryMemberReturns(members:Row[]){
     return members.flatMap(member=>{
       const packet=this.packet(member.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),integration=this.integrationMaterial(packet,false),selected=integration?.source.composition.subject.members??summary.composition?.subject.members??[{candidate:e.manifest.candidate}],returns=this.integrationMemberRecords(fn=>fn()).contextFor(selected,e.context),subject=integration?.source.composition.sha256??summary.composition?.sha256,repairs=subject?this.memberRecompositionRecords(fn=>fn()).forSubject(subject):[];
@@ -484,9 +513,85 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     });
   }
   deliveryValidations(){return this.deliveryValidationRecords(fn=>this.transaction(fn));}
-  private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
+  private deliveryValidationRecords(transaction:<T>(fn:()=>T)=>T):DeliveryValidationRecords{const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new DeliveryValidationRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),id=>{const item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet);if(e.manifest.candidate.kind==='development-task')throw new Error('delivery_validation_formal_candidate_required');return {...this.authorityItem(id),manifestSha256:packet.manifest_hash,composition:this.effectiveSummary(item,packet).composition};},(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
   integrations(){return this.integrationRecords(fn=>this.transaction(fn));}
-  private integrationRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new IntegrationRecords(this.db,transaction,this.directory,operation=>this.integrationSource(operation),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
+  private memberSourceRecords(){return new MemberSourceRecords(this.db,this.coordinationRecords(fn=>fn()),(origin,entry,task,operation)=>this.repairedMemberSource(origin,entry,task,false,operation),id=>this.authorityItem(id));}
+  registerMemberCandidateSource(origin:string,entry:string,task:string,collection:import('./conditional-entry-source.js').ConditionalMemberCollection,manifest:Buffer){return this.transaction(()=>this.memberSourceRecords().register(origin,entry,task,collection,manifest));}
+  memberCandidateSource(ref:import('./authority-contract.js').AuthorityCandidateSource){return this.transaction(()=>this.memberSourceRecords().subject(ref.sha256,ref));}
+  candidateValidations(){return this.candidateValidationRecords(fn=>this.transaction(fn));}
+  private candidateValidationRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new CandidateValidationRecords(this.db,transaction,p=>this.candidateValidationSource(p),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()));}
+  private candidateValidationSource(p:CandidateValidationPlan):CandidateValidationSource{
+    if(p.kind==='tongxu-member-candidate-validation')return this.memberCandidateValidationSource(p);
+    const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(p.originPlan,p.entry);if(!entry||p.store!==this.directory)throw new Error('candidate_validation_original_entry_required');
+    const identity=records.normalEntryIdentity(p.entry,entry.catalogSha256),current=identity&&records.current(identity.name),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),cap=catalog.integration;
+    if(!current||!records.normalEntryAncestor(current.id,p.entry,p.originPlan,entry.catalogSha256))throw new Error('candidate_validation_current_relation_required');
+    if(current.id!==p.originPlan){
+      const now=records.normalEntry(current.id,p.entry),validation=now?.steps.find((s:Row)=>s.reference.kind==='validation'&&s.reference.id===p.id),collection=records.normalEntryHistory(current.id,p.entry,p.collectionKey);
+      if(!validation?.request.equals(Buffer.from(canonical(p)))||collection?.reference.kind!=='snapshot'||!collection.request.equals(Buffer.from(canonical(p.collection))))throw new Error('candidate_validation_current_original_association_required');
+    }
+    const collection=records.normalEntryHistory(p.originPlan,p.entry,p.collectionKey),association=entry.steps.find((s:Row)=>s.reference.kind==='validation'&&s.reference.id===p.id);
+    if(collection?.reference.kind!=='snapshot'||!collection.request.equals(Buffer.from(canonical(p.collection)))||!association?.request.equals(Buffer.from(canonical(p)))||canonical(cap.testPlan)!==canonical(p.testPlan))throw new Error('candidate_validation_original_collection_required');
+    const integrations=this.integrationRecords(fn=>fn()),produced=integrations.candidateMaterial(p.collection.integration),c=p.collection.candidate;
+    const prepared=this.db.prepare("SELECT data FROM events WHERE kind='candidate_validation_prepared' AND object=?").get('candidate-validation:'+p.id) as Row|undefined;
+    const prior=prepared&&JSON.parse(this.blob(JSON.parse(prepared.data).value.sourceSha256).toString());
+    const currentSource=integrations.currentMaterialSource(p.collection.integration).source;
+    const s=this.integrationSource(prior?.operation??currentSource.operation),candidate=s.composition.subject.members.at(-1).candidate;
+    if(!produced.current||produced.requestSha256!==p.collection.integrationRequestSha256||produced.candidate.H!==c.H||produced.candidate.B!==c.B||produced.candidate.T!==c.T||produced.candidate.target!==c.targetRef||produced.candidate.repository!==c.repository||canonical(s.context)!==canonical(p.collection.context)||p.collection.objects!==join(this.integrationRecords(fn=>fn()).state(p.collection.integration).directory,'candidate.git')||p.directory!==join(this.directory,'candidate-validation-'+p.id))throw new Error('candidate_validation_private_candidate_changed');
+    const ownSource=currentEventSource(this.db,c);if(ownSource.registered&&!ownSource.current)throw new Error('candidate_validation_own_source_not_current');
+    const execution=this.db.prepare("SELECT data FROM events WHERE kind='coordination_execution_prepared' AND object=? ORDER BY id DESC LIMIT 1").get('coordination:'+p.originPlan) as Row|undefined;
+    const configured=execution&&JSON.parse(this.blob(JSON.parse(execution.data).value.requestSha256).toString());
+    return {operation:s.operation,item:s.item,packet:s.packet,fingerprint:s.fingerprint,candidate,subjectSha256:s.composition.sha256,context:s.context,fixture:configured?.executionKind==='fixture',authorization:cap.validationAuthorization??null};
+  }
+  static async observeCandidateValidation(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.candidateValidationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeCandidateValidationReport(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.candidateValidationRecords(fn=>fn()).report(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  /** Exact completed repair from this entry's original step, never a caller
+   * supplied new head. Historical readback is separate from effect admission. */
+  conditionalRepairedMember(originPlan:string,entryId:string,taskId:string,current=true){return this.transaction(()=>this.repairedMemberSource(originPlan,entryId,taskId,current,undefined,true));}
+  private repairedMemberSource(originPlan:string,entryId:string,taskId:string,current=true,operation?:string,selected=false){
+    const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(originPlan,entryId),step=records.normalEntryTaskStep(originPlan,entryId,'repair',taskId,operation);
+    if(!entry||step?.reference.kind!=='repair'||step.reference.task!==taskId)throw new Error('conditional_entry_original_member_repair_required');
+    const p=JSON.parse(step.request.toString()),r=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('repair_read_cannot_authorize');},()=>{throw new Error('repair_read_cannot_authorize');}).state(p.operation).repair,result=r.result;
+    if(r.phase!=='returned'||r.controllerReturned!==true||r.planSha256!==step.requestSha256||!['completed','completed_recovered_candidate'].includes(result?.status)||result.actualRepairPerformed!==true||!(r.counters.actualFileWrites>0)||result.data?.tests?.passed!==true||result.data?.tests?.candidateTreeSha256!==result.treeSha256||result.data?.review?.verdict!=='PASS'||result.data.review.candidateH!==result.after.H||!r.resultSha256||canonical(JSON.parse(this.blob(r.resultSha256).toString()))!==canonical(result)||!r.evidenceSha256)throw new Error('conditional_entry_completed_changed_member_required');
+    const task=records.reference(originPlan).plan.tasks.find(t=>t.id===taskId)!;
+    if(selected&&(task.item!==step.reference.item||records.originalBindings(originPlan)[taskId].packet!==p.packet)){
+      let currentReturn;try{currentReturn=this.conditionalRepairSourceValue(task.item,step.reference.finding??undefined);}catch(e){if(!(e instanceof Error)||e.message!=='conditional_entry_real_return_required')throw e;}
+      if(currentReturn&&!this.conditionalRepairMatchesValue(step,currentReturn)||!currentReturn&&this.authorityItem(task.item).candidate.H!==result.after.H)throw new Error('conditional_entry_current_member_repair_required');
+    }
+    this.blob(r.evidenceSha256);const source=p.memberReturn?this.memberRepairSource(p.operation,p.memberReturn,current):this.reviewSource(p.operation,current),c=source.candidate;
+    if(c.kind==='development-task'||result.before.H!==c.H||result.after.H===c.H||result.sourceCandidate?.repository!==c.repository||result.sourceCandidate.pr!==c.pr||result.sourceCandidate.B!==c.B||result.sourceCandidate.target!==c.targetRef||!(/^[a-f0-9]{40}$/).test(result.data.tests.T))throw new Error('conditional_entry_changed_member_source_mismatch');
+    return {step:{...step,request:Buffer.from(step.request)},plan:p,repair:{operation:p.operation,planSha256:r.planSha256,bindingHash:r.bindingHash,resultSha256:r.resultSha256,evidenceSha256:r.evidenceSha256},memberReturn:p.memberReturn??null,subjectMembers:p.memberReturn?this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id).proof.integration.source.composition.subject.members:null,objects:join(r.executionRoot,'workspace'),candidate:{repository:c.repository,pr:c.pr,H:result.after.H,B:c.B,T:result.data.tests.T,targetRef:c.targetRef},context:source.context,original:{operation:p.operation,item:source.memberReturn?this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id).request.member.item:step.reference.item,packet:source.packet,fingerprint:this.packet(source.packet).fingerprint,candidate:c,context:source.context,prerequisites:this.prerequisites(this.item(step.reference.item))},executionKind:result.executionKind};
+  }
+  private memberCandidateValidationSource(p:import('./candidate-validation-contract.js').MemberCandidateValidationPlan):CandidateValidationSource{
+    const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(p.originPlan,p.entry);if(!entry||p.store!==this.directory)throw new Error('candidate_validation_original_entry_required');
+    const catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),cap=catalog.repairs?.find((r:Row)=>r.task===p.collection.task),identity=records.normalEntryIdentity(p.entry,entry.catalogSha256),current=identity&&records.current(identity.name);
+    if(!cap?.postRepair||!current||!records.normalEntryAncestor(current.id,p.entry,p.originPlan,entry.catalogSha256))throw new Error('candidate_validation_current_relation_required');
+    const collection=records.normalEntryHistory(current.id,p.entry,p.collectionKey),association=records.normalEntryTaskStep(current.id,p.entry,'validation',p.collection.task,p.collection.repair.operation),original=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,!p.candidateSource,p.collection.repair.operation);
+    if(collection?.reference.kind!=='member-snapshot'||!collection.request.equals(Buffer.from(canonical(p.collection)))||!association?.request.equals(Buffer.from(canonical(p)))||canonical(cap.postRepair.testPlan)!==canonical(p.testPlan)||canonical(original.repair)!==canonical(p.collection.repair)||canonical(original.candidate)!==canonical(p.collection.candidate)||canonical(original.context)!==canonical(p.collection.context)||p.collection.objects!==original.objects||p.directory!==join(this.directory,'candidate-validation-'+p.id))throw new Error('candidate_validation_original_member_collection_required');
+    const own=currentEventSource(this.db,p.collection.candidate);if(own.registered&&!own.current)throw new Error('candidate_validation_own_source_not_current');
+    if(p.candidateSource){const source=this.memberSourceRecords().material(p.candidateSource),view=source.subject!;if(source.record.originPlan!==p.originPlan||source.record.entry!==p.entry||source.record.task!==p.collection.task||source.record.manifestSha256!==p.manifestSha256)throw new Error('candidate_validation_member_source_binding_required');return {operation:original.repair.operation,item:view.item,packet:null,fingerprint:view.fingerprint,candidate:view.candidate,subjectSha256:null,context:view.context,fixture:original.executionKind==='fixture',authorization:cap.postRepair.validationAuthorization??null};}
+    return {...original.original,subjectSha256:null,fixture:original.executionKind==='fixture',authorization:cap.postRepair.validationAuthorization??null};
+  }
+  static async observeConditionalMemberRecomposition(directory:string,id:string){
+    const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const link=q.memberRecompositionRecords(fn=>fn()).state(id),integration=q.integrationRecords(fn=>fn()).state(id),refs=[link.value.requestSha256,link.value.originalRequestSha256,link.value.proofSha256,...link.value.originals] as string[];
+      return {id,phase:integration.phase,link:link.request,proof:link.proof,integration,originals:[...new Set(refs)].map(sha256=>{const b=q.blob(sha256);return {sha256,bytes:b.length,encoding:'base64',text:b.toString('base64')};}),historicalObservationOnly:true,remotePublicationInferred:false,priorAcceptanceTransferred:false,userOutcomeAccepted:false};
+    }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}
+  }
+  conditionalCandidatePacket(collection:import('./conditional-entry-source.js').ConditionalCollection,receptionContextSha256?:string){return this.transaction(()=>{
+    const id=candidateKey(collection.candidate,collection.context),item=this.item(id),packet=this.packet(item.current_packet),e=this.packetEvidence(packet),summary=parse(packet,'summary');
+    if(summary.composition||this.integrationRecords(fn=>fn()).candidateProducer(e.manifest.candidate)!==collection.integration||['repository','pr','H','B','targetRef'].some(k=>e.manifest.candidate[k]!== (collection.candidate as Row)[k])||summary.tree!==collection.candidate.T)throw new Error('conditional_entry_exact_own_candidate_required');
+    const currentMaterial=this.integrationRecords(fn=>fn()).currentMaterialSource(collection.integration).material;
+    const materialKey=hash(canonical({base:this.basePacketFingerprint(packet),eventSources:(summary.eventSources??[]).map((r:Row)=>({pr:r.pr,materialSha256:r.materialSha256,projectionSha256:r.projectionSha256})),supplement:summary.supplement?.identity??null,memberRefutation:summary.memberRefutation??null,...(currentMaterial?{integrationMaterial:currentMaterial.semanticSha256}:{}),...(receptionContextSha256?{receptionContextSha256}:{})}));return {item:id,packet:packet.id,fingerprint:packet.fingerprint,materialKey};
+  });}
+  static async observeConditionalCollectionSource(directory:string,collection:import('./conditional-entry-source.js').ConditionalCandidateCollection,includeOriginals=false){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');
+    const id=candidateKey(collection.candidate,collection.context),item=q.db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row|undefined,current=currentEventSource(q.db,item?parse(item,'candidate'):collection.candidate,item?.id,item?.current_packet);
+    if(!current.registered)return {registered:false,sourceCurrent:null,materialBound:null,newModelInputs:0};
+    const source=q.eventRecords(fn=>fn()).source(collection.candidate.pr),originals=includeOriginals?source.originals.map((ref:Row)=>{const bytes=q.blob(ref.sha256);return {...ref,encoding:'base64',text:bytes.toString('base64')};}):undefined;
+    return {registered:true,sourceCurrent:current.current,materialBound:current.materialBound,reason:current.reason??null,sequence:source.sequence,revision:source.revision,lastReadComplete:source.complete===true,gaps:source.currentResult?.gaps??[],lastGoodAt:source.lastGoodAt,validUntilAt:source.validUntilAt,changes:source.changes,originals,newModelInputs:0,permissionGranted:false};
+  }catch(e){return {registered:true,sourceCurrent:false,materialBound:false,reason:e instanceof Error&&/^[a-z0-9_:.-]+$/.test(e.message)?e.message:'collected_source_original_unavailable',newModelInputs:0,permissionGranted:false};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeCoordinationOutput(directory:string,originPlan:string,sha256:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.coordinationRecords(fn=>fn()).outputOriginal(originPlan,sha256);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeConditionalCandidate(directory:string,id:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const item=q.item(id),packet=q.packet(item.current_packet),e=q.packetEvidence(packet),integration=q.integrationMaterial(packet,false);return {item:id,packet:packet.id,fingerprint:packet.fingerprint,manifest:e.manifest,verification:e.report,context:e.context,integration,complete:Boolean(integration?.association?.remoteObservation),technicalAcceptanceGranted:false};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeConditionalReception(directory:string,item:string,operation:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');const {op,result,receiver:r}=q.receiverOperation(operation);if(op.item!==item||!r)throw new Error('conditional_entry_original_receiver_report_unavailable');const refs=[r.planSha256,r.inputSha256,r.systemSha256,...(r.promptAssemblySha256?[r.promptAssemblySha256]:[]),...Object.values(r.blobs??{}).map((ref:any)=>ref.sha256)] as string[];return {operation,item,result:q.currentReceiverResult(op,result),nativeExecution:q.receiverMetadata(r),originals:[...new Set(refs)].map(sha256=>{const b=q.blob(sha256);return {sha256,bytes:b.length,encoding:'base64',text:b.toString('base64')};}),complete:r.phase==='returned'&&Boolean(r.judgment)&&r.controllerReturned===true,technicalAcceptanceGranted:false,userOutcomeAccepted:false};}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  private integrationRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new IntegrationRecords(this.db,transaction,this.directory,operation=>this.integrationSource(operation),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations));}
   integrationMemberReturns(){return this.integrationMemberRecords(fn=>this.transaction(fn));}
   private integrationMemberRecords(transaction:<T>(fn:()=>T)=>T){return new IntegrationMemberRecords(this.db,transaction,p=>this.integrationMemberSource(p),()=>{enableMemberRecompositionFormat(this.db);});}
   private memberReceptionCurrent(item:string){return !this.integrationMemberRecords(fn=>fn()).hasPendingForItem(item);}
@@ -494,28 +599,86 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   memberRecompositions(){return this.memberRecompositionRecords(fn=>this.transaction(fn));}
   private memberRecompositionRecords(transaction:<T>(fn:()=>T)=>T){return new MemberRecompositionRecords(this.db,transaction,p=>this.memberRecompositionSource(p));}
   recompositionTests(){return this.recompositionTestRecords(fn=>this.transaction(fn));}
-  private recompositionTestRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new RecompositionTestRecords(this.db,transaction,this.directory,(p,m,t,current)=>this.recompositionTestSource(p,m,t,current),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()));}
+  private recompositionTestRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new RecompositionTestRecords(this.db,transaction,this.directory,(p,m,t,current)=>this.recompositionTestSource(p,m,t,current),(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()));}
+  private completedMemberSource(reference:import('./member-recomposition-contract.js').MemberValidationReference,memberReturn:unknown,current=true){
+    const r=this.candidateValidationRecords(fn=>fn()),state=r.state(reference.id),originals=r.originals(reference.id),p=parseCandidateValidation(Buffer.from(canonical(originals.plan)));if(state.requestSha256!==reference.requestSha256||p.kind!=='tongxu-member-candidate-validation'||!p.candidateSource||state.phase!=='recorded'||!state.captureValidationCurrent||!state.resourcesSettled||!state.result.executionComplete||state.result.gaps.some((g:string)=>g!=='sample_failure_or_incomplete_comparison'))throw new Error('member_source_own_verification_required');
+    const source=this.repairedMemberSource(p.originPlan,p.entry,p.collection.task,false,p.collection.repair.operation);if(canonical(source.memberReturn)!==canonical(memberReturn)||canonical(p.collection.repair)!==canonical(source.repair)||state.result.testedTree!==source.candidate.T)throw new Error('member_source_original_repair_changed');
+    const subject=this.memberSourceRecords().subject(p.candidateSource.sha256,p.candidateSource,current);return {p,state,source,subject};
+  }
   private recompositionTestSource(p:MemberRecompositionPlan,newManifest:Buffer,testPlan:Buffer,current:boolean):RecompositionTestSource{
     const matches=this.db.prepare("SELECT * FROM operations WHERE json_extract(result,'$.repair.planSha256')=?").all(p.repairPlan.sha256) as Row[];
     if(matches.length!==1)throw new Error('recomposition_test_original_repair_ambiguous');const op=matches[0]!,repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('recomposition_read_cannot_authorize');},()=>{throw new Error('recomposition_read_cannot_authorize');}).state(op.id).repair;
     const original=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id),selected=original.request.member,old=original.proof.integration.source.composition.subject.members,member=original.proof.member,manifest=JSON.parse(newManifest.toString()),c=manifest.candidate;
     if(original.state.requestSha256!==p.memberReturn.requestSha256||original.state.sourceSha256!==p.memberReturn.sourceSha256||canonical(repair.memberReturn)!==canonical(p.memberReturn)||op.status!=='complete'||op.item!==selected.item||op.packet!==selected.packet||repair.phase!=='returned'||!repair.controllerReturned||!['completed','completed_recovered_candidate'].includes(repair.result.status)||!repair.result.actualRepairPerformed||!(repair.counters.actualFileWrites>0)||!['fixture','native_capture'].includes(repair.result.executionKind))throw new Error('recomposition_test_completed_repair_required');
     const repairPlan=JSON.parse(this.blob(repair.planSha256).toString());if(repairPlan.store!==this.directory||repairPlan.operation!==op.id||canonical(repairPlan.memberReturn)!==canonical(p.memberReturn)||hash(newManifest)!==p.newMember.sha256||hash(testPlan)!==p.testPlan.sha256||!c||c.H!==repair.result.after.H||c.H===selected.H||['repository','pr','B','targetRef'].some(k=>c[k]!==old[selected.index].candidate[k]))throw new Error('recomposition_test_fixed_input_mismatch');
-    if(current){this.memberRepairSource(op.id,p.memberReturn,true);if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND stopped=1 AND kind IN ('investment','implementation','candidate')").get(member.context.scope.id))throw new Error('member_recomposition_stopped');}
-    const previous=this.integrationRecords(fn=>fn()).sourceMaterial(original.request.integration),originals=new Map<string,Buffer>([...original.originals,...previous.originals].map(x=>[x.sha256,x.bytes]));for(const sha of [repair.planSha256,repair.resultSha256,repair.evidenceSha256])originals.set(sha,this.blob(sha));originals.set(p.newMember.sha256,newManifest);originals.set(p.testPlan.sha256,testPlan);
+    const observed=p.memberValidation?this.completedMemberSource(p.memberValidation,p.memberReturn,current):null;if(observed&&(observed.p.manifestSha256!==p.newMember.sha256||observed.p.collection.repair.resultSha256!==repair.resultSha256))throw new Error('recomposition_test_member_validation_mismatch');
+    if(current){if(!observed)this.memberRepairSource(op.id,p.memberReturn,true);if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND stopped=1 AND kind IN ('investment','implementation','candidate')").get(member.context.scope.id))throw new Error('member_recomposition_stopped');}
+    const previous=this.integrationRecords(fn=>fn()).sourceMaterial(original.request.integration),originals=new Map<string,Buffer>([...original.originals,...previous.originals].map(x=>[x.sha256,x.bytes]));for(const sha of [repair.planSha256,repair.resultSha256,repair.evidenceSha256])originals.set(sha,this.blob(sha));originals.set(p.newMember.sha256,newManifest);originals.set(p.testPlan.sha256,testPlan);if(observed)for(const sha of [observed.state.requestSha256,...observed.state.result.originals])originals.set(sha,this.blob(sha));
     const contextBytes=Buffer.from(canonical(member.context)),contextSha256=hash(contextBytes);originals.set(contextSha256,contextBytes);
-    return {operation:op.id,item:op.item,packet:op.packet,fingerprint:this.packet(op.packet).fingerprint,candidate:member.manifest.candidate,context:member.context,subjectSha256:null,executionKind:repair.result.executionKind,inputManifests:old.map((m:Row,i:number)=>i===selected.index?p.newMember.sha256:m.manifestHash),contextSha256,proof:{memberReturn:p.memberReturn,selectedMember:original.proof.selectedMember,previousIntegration:original.request.integration,repair:{operation:op.id,planSha256:repair.planSha256,bindingHash:repair.bindingHash,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256},newMemberManifestSha256:p.newMember.sha256,testPlanSha256:p.testPlan.sha256,priorAcceptanceTransferred:false},originals};
+    return {operation:op.id,item:observed?.subject?.item??op.item,packet:observed?.subject?null:op.packet,fingerprint:observed?.subject?.fingerprint??this.packet(op.packet).fingerprint,candidate:observed?.subject?.candidate??member.manifest.candidate,context:member.context,subjectSha256:null,...(observed?.p.candidateSource?{candidateSource:observed.p.candidateSource}:{}),executionKind:repair.result.executionKind,inputManifests:old.map((m:Row,i:number)=>i===selected.index?p.newMember.sha256:m.manifestHash),contextSha256,proof:{memberReturn:p.memberReturn,selectedMember:original.proof.selectedMember,previousIntegration:original.request.integration,repair:{operation:op.id,planSha256:repair.planSha256,bindingHash:repair.bindingHash,resultSha256:repair.resultSha256,evidenceSha256:repair.evidenceSha256},newMemberManifestSha256:p.newMember.sha256,testPlanSha256:p.testPlan.sha256,...(observed?{memberValidation:{...p.memberValidation,result:observed.state.result,candidateSource:observed.p.candidateSource}}:{}),priorAcceptanceTransferred:false},originals};
   }
   private memberRecompositionSource(p:RecompositionLink){
     const original=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id),s=original.state,source=original.proof,repair=new ReviewRecords(this.db,fn=>fn(),()=>{throw new Error('recomposition_read_cannot_authorize');},()=>{throw new Error('recomposition_read_cannot_authorize');}).state(p.repair.operation).repair,item=this.item(p.composition.item),packet=this.packet(p.composition.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),composition=summary.composition;
     if(s.requestSha256!==p.memberReturn.requestSha256||s.sourceSha256!==p.memberReturn.sourceSha256||canonical(repair.memberReturn)!==canonical(p.memberReturn)||repair.phase!=='returned'||repair.bindingHash!==p.repair.bindingHash||repair.resultSha256!==p.repair.resultSha256||repair.evidenceSha256!==p.repair.evidenceSha256||!['completed','completed_recovered_candidate'].includes(repair.result.status)||!repair.result.actualRepairPerformed||!(repair.counters.actualFileWrites>0))throw new Error('member_recomposition_completed_repair_required');
     const selected=original.request.member,previous=source.integration.source.composition.subject.members,next=composition?.subject.members,candidate=repair.result.sourceCandidate;
+    const observed=p.memberValidation?this.completedMemberSource(p.memberValidation,p.memberReturn):null;if(observed&&(observed.p.collection.candidate.H!==repair.result.after.H||observed.p.manifestSha256!==composition?.subject.members[original.request.member.index]?.manifestHash))throw new Error('member_recomposition_member_validation_mismatch');
     if(candidate.H!==selected.H||candidate.B!==selected.B||candidate.repository!==source.member.manifest.candidate.repository||candidate.pr!==source.member.manifest.candidate.pr||candidate.target!==source.member.manifest.candidate.targetRef||repair.result.after.H===selected.H||packet.item!==item.id||item.current_packet!==packet.id||packet.fingerprint!==p.composition.fingerprint||item.observation_conflict||!this.receiverCandidateCurrent(item)||!composition||composition.sha256!==p.composition.subjectSha256||canonical(e.context)!==canonical(source.member.context)||next.length!==previous.length||summary.gaps.some((g:string)=>g!=='sample_failure_or_incomplete_comparison')||!e.report.executionComplete)throw new Error('member_recomposition_exact_candidate_required');
     for(const [i,m] of next.entries()){const old=previous[i];if(i===selected.index){if(m.candidate.H!==repair.result.after.H||['repository','pr','B','targetRef'].some(k=>m.candidate[k]!==old.candidate[k]))throw new Error('member_recomposition_selected_version_mismatch');}else if(canonical(m)!==canonical(old))throw new Error('member_recomposition_other_members_changed');}
-    const originals=new Map<string,Buffer>(original.originals.map(x=>[x.sha256,x.bytes]));for(const sha of [repair.resultSha256,repair.evidenceSha256,packet.manifest_hash,packet.report_hash,packet.context_hash,...e.report.inputs.map((x:Row)=>x.manifestHash)])originals.set(sha,this.blob(sha));
-    return {proof:{parent:source.parent,selectedMember:source.selectedMember,selectedFindings:source.selectedFindings,memberReturn:p.memberReturn,repair:{...p.repair,result:repair.result},composition:{...p.composition,subject:composition.subject},previousIntegration:{id:original.request.integration,candidate:source.integration.candidate,subject:source.integration.source.composition.subject},permissionGranted:false,priorAcceptanceTransferred:false},originals};
+    const originals=new Map<string,Buffer>(original.originals.map(x=>[x.sha256,x.bytes]));for(const sha of [repair.resultSha256,repair.evidenceSha256,packet.manifest_hash,packet.report_hash,packet.context_hash,...e.report.inputs.map((x:Row)=>x.manifestHash)])originals.set(sha,this.blob(sha));if(observed)for(const sha of [observed.state.requestSha256,...observed.state.result.originals])originals.set(sha,this.blob(sha));
+    return {proof:{parent:source.parent,selectedMember:source.selectedMember,selectedFindings:source.selectedFindings,memberReturn:p.memberReturn,...(observed?{memberValidation:{...p.memberValidation,result:observed.state.result,candidateSource:observed.p.candidateSource}}:{}),repair:{...p.repair,result:repair.result},composition:{...p.composition,subject:composition.subject},previousIntegration:{id:original.request.integration,candidate:source.integration.candidate,subject:source.integration.source.composition.subject},permissionGranted:false,priorAcceptanceTransferred:false},originals};
   }
   memberRepairInput(operation:string,reference:unknown,current=true){return this.transaction(()=>this.memberRepairSource(operation,reference,current));}
+  /** Select existing complete RETURN facts. This neither records a member
+   * return nor creates a repair/permission. Ambiguity needs an explicit user
+   * selection rather than silently using an arbitrary previous review. */
+  conditionalRepairMatches(step:Row,source:Row){return this.transaction(()=>this.conditionalRepairMatchesValue(step,source));}
+  private conditionalRepairMatchesValue(step:Row,source:Row){
+    const p=JSON.parse(step.request.toString());
+    if(step.reference.item!==source.item||p.packet!==source.packet||canonical(p.context)!==canonical(source.context))return false;
+    if(source.kind==='individual')return !p.memberReturn&&p.operation===source.operation&&p.judgmentId===source.judgmentId&&p.bindingHash===source.bindingHash;
+    if(!p.memberReturn)return false;const member=this.integrationMemberRecords(fn=>fn()).material(p.memberReturn.id);
+    return p.judgmentId===source.selection.reception.judgmentId&&p.bindingHash===source.selection.reception.bindingHash&&canonical(member.request)===canonical(source.selection);
+  }
+  conditionalRepairSource(itemId:string,finding?:number){return this.transaction(()=>this.conditionalRepairSourceValue(itemId,finding));}
+  /** Historical selection is only for exact terminal readback. All effect
+   * admissions still call the current-source gates below. */
+  conditionalRepairOriginalSource(itemId:string,finding?:number,step?:Row){return this.transaction(()=>{
+    const plan=step&&JSON.parse(step.request.toString());
+    const member=plan?.memberReturn&&this.integrationMemberRecords(fn=>fn()).material(plan.memberReturn.id);
+    const operation=plan?(member?member.request.reception.operation:plan.operation):undefined;
+    return this.conditionalRepairSourceValue(itemId,finding,false,operation);
+  });}
+  private conditionalRepairSourceValue(itemId:string,finding?:number,requireCurrent=true,originalOperation?:string){
+    const item=this.item(itemId),packet=this.packet(item.current_packet),e=this.packetEvidence(packet),matches:Row[]=[];
+    if(e.manifest.candidate.kind==='development-task'||this.effectiveSummary(item,packet).composition)throw new Error('conditional_entry_individual_repair_source_required');
+    const rows=this.db.prepare("SELECT * FROM operations WHERE status IN ('complete','repairing') AND json_extract(result,'$.receiver.judgment.verdict')='RETURN_FOR_WORK' ORDER BY started_at,id").all() as Row[];
+    for(const op of rows){
+      if(originalOperation!==undefined&&op.id!==originalOperation)continue;
+      if(finding===undefined&&op.item!==itemId)continue;
+      const parentPacket=this.packet(op.packet),integration=finding===undefined?null:this.integrationMaterial(parentPacket,false,op.id);
+      const index=integration?.source.composition.subject.members.findIndex((m:Row)=>m.manifestHash===packet.manifest_hash&&['repository','pr','H','B','targetRef'].every(k=>m.candidate[k]===e.manifest.candidate[k as keyof typeof e.manifest.candidate]));
+      if(finding!==undefined&&(index===undefined||index<0))continue;
+      if(finding===undefined&&op.packet!==item.current_packet)continue;
+      // Members can remain unchanged across multiple parent material packets.
+      // Read the complete original before deciding whether it is only history.
+      const source=this.reviewSource(op.id,finding===undefined&&requireCurrent),r=source.receiver;
+      if(!r.controllerReturned||r.judgment.verdict!=='RETURN_FOR_WORK')throw new Error('conditional_entry_complete_return_required');
+      if(finding===undefined){if(r.subject)throw new Error('conditional_entry_individual_return_required');matches.push({kind:'individual',operation:op.id,item:itemId,packet:op.packet,candidate:source.candidate,context:source.context,judgmentId:r.judgmentId,bindingHash:r.bindingHash,executionKind:r.executionKind});continue;}
+      const completed=r.blobs?.['completed.json'];if(!completed)throw new Error('integration_member_final_original_required');const receipt=JSON.parse(this.blob(completed.sha256).toString());
+      if(!integration)throw new Error('integration_member_original_return_required');
+      if(typeof receipt.finalText!=='string'||receipt.inputSha256!==r.inputSha256)throw new Error('integration_member_final_original_changed');
+      if(requireCurrent){
+        // Only a complete, ended parent with an explicitly superseding packet
+        // can be excluded. Unknown, repairing and corrupt originals still fail.
+        if(op.status==='complete'&&op.packet!==this.item(op.item).current_packet)continue;
+        this.reviewSource(op.id,true);
+      }
+      if(!Number.isSafeInteger(finding)||finding<0||finding>29||!r.judgment.findings[finding])throw new Error('integration_member_finding_not_in_original');
+      const selected=integration.source.composition.subject.members[index!],selection={schemaVersion:1 as const,kind:'tongxu-integration-member-return' as const,id:'entry-member-'+hash(canonical([op.id,itemId,packet.id,finding])).slice(0,48),integration:integration.id,reception:{operation:op.id,packet:op.packet,bindingHash:r.bindingHash,judgmentId:r.judgmentId,inputSha256:r.inputSha256,finalSha256:hash(receipt.finalText)},member:{index:index!,H:selected.candidate.H,B:selected.candidate.B,manifestSha256:selected.manifestHash,item:itemId,packet:packet.id,fingerprint:packet.fingerprint},scopeSha256:hash(canonical(e.context.scope)),arrangementSha256:hash(canonical(e.context.arrangement)),findingIndexes:[finding],source:'Original completed RETURN and current selected member; configured normal entry. No individual reception or repair authority inferred.'};
+      if(requireCurrent)this.integrationMemberSource(selection);matches.push({kind:'member',operation:op.id,item:itemId,packet:packet.id,candidate:e.manifest.candidate,context:e.context,selection,executionKind:r.executionKind});
+    }
+    if(matches.length!==1)throw new Error(matches.length?'conditional_entry_return_ambiguous':'conditional_entry_real_return_required');return matches[0]!;
+  }
   private memberRefutationProof(request:MemberRefutationRequest){
     const original=this.integrationMemberRecords(fn=>fn()).material(request.memberReturn.id),reference=request.memberReturn;
     if(original.state.requestSha256!==reference.requestSha256||original.state.sourceSha256!==reference.sourceSha256)throw new Error('member_refutation_original_return_changed');
@@ -572,9 +735,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   /** Hold the original queue transaction through the synchronous spawn. A
    * separately committed stop/source update cannot slip between the last
    * read and the actual new Git or isolated test process. */
-  memberRecompositionEffect<T>(reference:unknown,effect:()=>T):T{return this.transaction(()=>{
+  memberRecompositionEffect<T>(reference:unknown,effect:()=>T,validation?:import('./member-recomposition-contract.js').MemberValidationReference):T{return this.transaction(()=>{
     if(!memberReturnReference(reference))throw new Error('member_repair_reference_invalid');this.requireUnprofiledConsumer();const m=this.integrationMemberRecords(fn=>fn()).material(reference.id);
-    if(m.state.requestSha256!==reference.requestSha256||m.state.sourceSha256!==reference.sourceSha256||!m.state.current)throw new Error('member_recomposition_source_no_longer_current');
+    if(validation)this.completedMemberSource(validation,reference);if(m.state.requestSha256!==reference.requestSha256||m.state.sourceSha256!==reference.sourceSha256||!validation&&!m.state.current)throw new Error('member_recomposition_source_no_longer_current');
     if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND stopped=1 AND kind IN ('investment','implementation','candidate')").get(m.proof.member.context.scope.id))throw new Error('member_recomposition_stopped');return effect();
   });}
   private memberRepairSource(operation:string,reference:unknown,current:boolean):Row{
@@ -590,7 +753,9 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,stage=parse(op,'result')?.repair,plan=proposed?.plan??this.blob(stage?.planSha256),p=JSON.parse(plan.toString()),history=this.db.prepare("SELECT data FROM events WHERE kind='integration_member_repair_bound' AND object=? ORDER BY id DESC LIMIT 1").get(operation) as Row|undefined;
     if(!p.memberReturn){if(history)throw new Error('member_repair_original_return_required');return;}
     const source=this.memberRepairSource(operation,p.memberReturn,true),request=proposed?.request??this.blob(stage.requestSha256),config=proposed?.config??this.blob(stage.configSha256),r=JSON.parse(request.toString());
-    if(canonical(r.priorReview)!==canonical(source.priorReview)||canonical(r.findings)!==canonical(source.findings)||canonical(r.queueOperation)!==canonical(source.queueOperation))throw new Error('member_repair_complete_parent_material_required');
+    let priorReview=source.priorReview;
+    if(p.continuation){const old=this.db.prepare('SELECT result FROM operations WHERE id=?').get(p.continuation.operation) as Row|undefined,prior=old&&JSON.parse(old.result)?.repair?.result;if(!prior)throw new Error('continuation_original_reconciliation_required');priorReview={...priorReview,continuation:repairContinuationContext(p.continuation,prior)};}
+    if(canonical(r.priorReview)!==canonical(priorReview)||canonical(r.findings)!==canonical(source.findings)||canonical(r.queueOperation)!==canonical(source.queueOperation))throw new Error('member_repair_complete_parent_material_required');
     const entry={memberReturn:p.memberReturn,packet:op.packet,planSha256:hash(plan),requestSha256:hash(request),configSha256:hash(config),memberReturnSha256:p.memberReturn.sourceSha256};
     if(history&&canonical(JSON.parse(history.data))!==canonical(entry)&&!(stage?.phase==='closed_unstarted'&&p.replacesClosedBinding===stage.bindingHash))throw new Error('member_repair_original_binding_changed');
     enableMemberRepairFormat(this.db);if(!history||canonical(JSON.parse(history.data))!==canonical(entry))this.event('integration_member_repair_bound',operation,entry);
@@ -611,12 +776,13 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return {proof:{parent:{operation:op.id,packet:op.packet,integrationSha256:integration.sha256,judgment:r.judgment,fullFinal:receipt.finalText,inputSha256:r.inputSha256,systemSha256:r.systemSha256,executionKind:r.executionKind},integration,selectedMember:selected,member:{item:member.id,packet:memberPacket.id,fingerprint:memberPacket.fingerprint,manifest:e.manifest,report:e.report,context:e.context},selectedFindings:p.findingIndexes.map(i=>({index:i,finding:r.judgment.findings[i]})),permissionGranted:false,individualReceptionInferred:false},originals};
   }
   private observedCandidateBinding(p:ObservedCandidateRequest):ObservedCandidateBinding{
+    if(p.receptionContext)this.coordinationRecords(fn=>fn()).requireNormalReceptionContext(p.receptionContext);
     const item=this.item(p.item),packet=this.packet(p.packet),current=this.packet(item.current_packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),m=this.integrationRecords(fn=>fn()).candidateMaterial(p.integration),c=e.manifest.candidate;
     if(packet.item!==item.id||packet.fingerprint!==p.fingerprint||item.observation_conflict||!this.receiverCandidateCurrent(item,true)||!m.current)throw new Error('observed_candidate_original_not_current');
     if(current.id!==packet.id){const prior=parse(current,'summary').integration,proof=prior&&JSON.parse(this.blob(prior.sha256).toString());if(prior?.id!==p.integration||proof.originalCandidatePacket!==packet.id||proof.originalCandidateFingerprint!==packet.fingerprint||current.manifest_hash!==packet.manifest_hash||current.report_hash!==packet.report_hash||current.context_hash!==packet.context_hash)throw new Error('observed_candidate_original_packet_changed');}
     if(summary.composition||c.kind==='development-task'||!summary.evidenceComplete||e.report.inputs.length!==1||summary.tree!==m.candidate.T||c.H!==m.candidate.H||c.B!==m.candidate.B||c.targetRef!==m.candidate.target||c.repository.toLowerCase()!==m.candidate.repository.toLowerCase()||m.source.composition.subject.members.some((x:Row)=>x.candidate.pr===c.pr)||canonical(e.context)!==canonical(m.source.context))throw new Error('integration_own_candidate_verification_required');
     const latest=this.db.prepare("SELECT MAX(id) AS version FROM events WHERE kind='integration_remote_observation' AND object=? AND json_extract(data,'$.integration')=?").get(p.item,p.integration) as Row;
-    return {repository:c.repository,pr:c.pr,H:c.H,B:c.B,T:summary.tree,targetRef:c.targetRef,integration:p.integration,integrationRequestSha256:m.requestSha256,item:p.item,packet:p.packet,fingerprint:p.fingerprint,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,observationVersion:latest.version??0};
+    return {repository:c.repository,pr:c.pr,H:c.H,B:c.B,T:summary.tree,targetRef:c.targetRef,integration:p.integration,integrationRequestSha256:m.requestSha256,item:p.item,packet:p.packet,fingerprint:p.fingerprint,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,observationVersion:latest.version??0,...(m.currentMaterial?{currentMaterialSha256:m.currentMaterial.sha256}:{})};
   }
   observedCandidateSource(raw:Buffer){return this.transaction(()=>this.observedCandidateBinding(parseObservedCandidateRequest(raw)));}
   observedCandidateProblem(raw:Buffer,reason:string,started:ObservedCandidateBinding){return this.transaction(()=>{
@@ -627,12 +793,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const last=this.db.prepare("SELECT data FROM events WHERE kind='integration_remote_observation' AND object=? AND json_extract(data,'$.integration')=? ORDER BY id DESC LIMIT 1").get(p.item,p.integration) as Row|undefined;if(last&&JSON.parse(last.data).observedAt>=actual.observedAt)throw new Error('observed_candidate_newer_read_required');protectObservedCandidate(this.db);
     const keep=(b:Buffer)=>{const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.blob(sha);return sha;},captureSha256=keep(Buffer.from(canonical(actual))),requestSha256=keep(Buffer.from(canonical(p)));
     const checked=()=>this.event('integration_remote_observation',p.item,{integration:p.integration,requestSha256,binding,matched:true,captureSha256,observedAt:actual.observedAt,permissionGranted:false});
-    if(previous?.remoteObservation?.requestSha256===requestSha256){this.integrationMaterial(packet,false);checked();return {item:p.item,packet:packet.id,fingerprint:packet.fingerprint,integrationSha256:summary.integration.sha256,originalRemoteObservationSha256:previous.remoteObservation.captureSha256,currentReadSha256:captureSha256,duplicate:true};}
+    if(previous?.remoteObservation?.requestSha256===requestSha256&&(previous.currentMaterialSha256??null)===(m.currentMaterial?.sha256??null)){this.integrationMaterial(packet,false);checked();return {item:p.item,packet:packet.id,fingerprint:packet.fingerprint,integrationSha256:summary.integration.sha256,originalRemoteObservationSha256:previous.remoteObservation.captureSha256,currentReadSha256:captureSha256,duplicate:true};}
     if(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(targetKey(e.manifest.candidate)))throw new Error('target_occupied_or_unknown');
     enableIntegrationFormat(this.db);
     const link=Buffer.from(canonical(integrationCandidateRequest(p))),proof={schemaVersion:1,id:p.integration,requestSha256:m.requestSha256,sourceOperation:m.source.operation,sourcePacket:m.source.packet,sourceFingerprint:m.source.fingerprint,subjectSha256:m.source.composition.sha256,candidate:e.manifest.candidate,candidateTree:binding.T,context:e.context,originalCandidatePacket:source.id,originalCandidateFingerprint:source.fingerprint,originalCandidateManifestSha256:source.manifest_hash,originalCandidateReportSha256:source.report_hash,linkRequestSha256:keep(link),...(previous?{previousAssociationSha256:summary.integration.sha256}:{}),remoteObservation:{requestSha256,captureSha256,request:p,capture:actual,historicalObservationOnly:true}};
+    if(m.currentMaterial)Object.assign(proof,{currentMaterialSha256:m.currentMaterial.sha256});
+    if(p.receptionContext)Object.assign(proof,{receptionContext:p.receptionContext});
     const integration={id:p.integration,sha256:keep(Buffer.from(canonical(proof)))},fingerprint=hash(canonical({previous:packet.fingerprint,integration})),inserted=this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id,fingerprint,packet.manifest_hash,packet.report_hash,packet.context_hash,JSON.stringify({...summary,baseFingerprint:this.basePacketFingerprint(packet),integration}),now()),packetId=Number(inserted.lastInsertRowid);
-    this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId,item.id);this.event('integration_candidate_linked',item.id,{packet:packetId,previousPacket:packet.id,integrationSha256:integration.sha256,requestSha256:keep(link),remoteObservationSha256:captureSha256});checked();
+    this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId,item.id);this.event('integration_candidate_linked',item.id,{packet:packetId,previousPacket:packet.id,integrationSha256:integration.sha256,requestSha256:keep(link),remoteObservationSha256:captureSha256});this.rebindUnchangedSource(item.id);checked();
     return {item:item.id,packet:packetId,fingerprint,integrationSha256:integration.sha256,originalRemoteObservationSha256:captureSha256,currentReadSha256:captureSha256,duplicate:false,priorJudgmentTransferred:false};
   });}
   attachIntegrationCandidate(raw:Buffer){return this.transaction(()=>{
@@ -644,61 +812,157 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(this.db.prepare('SELECT 1 FROM claims WHERE target=?').get(targetKey(c)))throw new Error('target_occupied_or_unknown');
     enableIntegrationFormat(this.db);
     const proof={schemaVersion:1,id:p.integration,requestSha256:m.requestSha256,sourceOperation:m.source.operation,sourcePacket:m.source.packet,sourceFingerprint:m.source.fingerprint,subjectSha256:m.source.composition.sha256,candidate:c,candidateTree:summary.tree,context:e.context,originalCandidatePacket:packet.id,originalCandidateFingerprint:packet.fingerprint,originalCandidateManifestSha256:packet.manifest_hash,originalCandidateReportSha256:packet.report_hash,linkRequestSha256:hash(raw)};
+    if(m.currentMaterial)Object.assign(proof,{currentMaterialSha256:m.currentMaterial.sha256});
     const bytes=Buffer.from(canonical(proof)),sha256=hash(bytes);for(const b of [raw,bytes])this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(hash(b),b);
     const integration={id:p.integration,sha256},fingerprint=hash(canonical({previous:packet.fingerprint,integration})),inserted=this.db.prepare('INSERT INTO packets(item,fingerprint,manifest_hash,report_hash,context_hash,summary,created_at) VALUES(?,?,?,?,?,?,?)').run(item.id,fingerprint,packet.manifest_hash,packet.report_hash,packet.context_hash,JSON.stringify({...summary,baseFingerprint:this.basePacketFingerprint(packet),integration}),now()),packetId=Number(inserted.lastInsertRowid);
-    this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId,item.id);this.event('integration_candidate_linked',item.id,{packet:packetId,previousPacket:packet.id,integrationSha256:sha256,requestSha256:hash(raw)});
+    this.db.prepare('UPDATE items SET current_packet=? WHERE id=?').run(packetId,item.id);this.event('integration_candidate_linked',item.id,{packet:packetId,previousPacket:packet.id,integrationSha256:sha256,requestSha256:hash(raw)});this.rebindUnchangedSource(item.id);
     return {item:item.id,packet:packetId,fingerprint,integrationSha256:sha256,duplicate:false,newModelInputs:0,priorJudgmentTransferred:false};
   });}
   private integrationMaterial(packet:Row,requireCurrent:boolean,excludeReception?:string):Row|null{
     const e=this.packetEvidence(packet),records=this.integrationRecords(fn=>fn()),id=records.candidateProducer(e.manifest.candidate),ref=parse(packet,'summary').integration;
     if(!id){if(ref)throw new Error('integration_producer_binding_changed');return null;}if(!ref||ref.id!==id)throw new Error('integration_candidate_link_required');
-    const proof=JSON.parse(this.blob(ref.sha256).toString()),m=records.candidateMaterial(id),c=e.manifest.candidate,summary=parse(packet,'summary');
+    const proof=JSON.parse(this.blob(ref.sha256).toString()),m=records.candidateMaterial(id,proof.currentMaterialSha256??null),c=e.manifest.candidate,summary=parse(packet,'summary');
     if(proof.id!==id||proof.requestSha256!==m.requestSha256||proof.sourceOperation!==m.source.operation||proof.sourcePacket!==m.source.packet||proof.sourceFingerprint!==m.source.fingerprint||proof.subjectSha256!==m.source.composition.sha256||['repository','pr','H','B','targetRef'].some(k=>proof.candidate[k]!==c[k])||proof.candidateTree!==m.candidate.T||summary.tree!==m.candidate.T||canonical(proof.context)!==canonical(e.context)||canonical(e.context)!==canonical(m.source.context))throw new Error('integration_candidate_link_changed');
     this.blob(proof.linkRequestSha256);this.blob(proof.originalCandidateManifestSha256);this.blob(proof.originalCandidateReportSha256);
-    if(proof.remoteObservation){const r=proof.remoteObservation;if(!this.blob(r.captureSha256).equals(Buffer.from(canonical(r.capture)))||!this.blob(r.requestSha256).equals(Buffer.from(canonical(r.request)))||r.capture.requestSha256!==r.requestSha256||r.capture.binding.integration!==id||r.capture.binding.H!==c.H||r.capture.binding.B!==c.B||r.capture.binding.T!==summary.tree||r.capture.binding.item!==packet.item||r.capture.binding.manifestSha256!==proof.originalCandidateManifestSha256||r.capture.binding.reportSha256!==proof.originalCandidateReportSha256)throw new Error('integration_remote_observation_original_changed');}
+    if(proof.remoteObservation){const r=proof.remoteObservation;if(!this.blob(r.captureSha256).equals(Buffer.from(canonical(r.capture)))||!this.blob(r.requestSha256).equals(Buffer.from(canonical(r.request)))||r.capture.requestSha256!==r.requestSha256||r.capture.binding.integration!==id||r.capture.binding.H!==c.H||r.capture.binding.B!==c.B||r.capture.binding.T!==summary.tree||r.capture.binding.item!==packet.item||r.capture.binding.manifestSha256!==proof.originalCandidateManifestSha256||r.capture.binding.reportSha256!==proof.originalCandidateReportSha256||(r.capture.binding.currentMaterialSha256??null)!==(proof.currentMaterialSha256??null)||canonical(r.request.receptionContext??null)!==canonical(proof.receptionContext??null))throw new Error('integration_remote_observation_original_changed');}
     const latestRemote=this.db.prepare("SELECT data FROM events WHERE kind='integration_remote_observation' AND object=? AND json_extract(data,'$.integration')=? ORDER BY id DESC LIMIT 1").get(packet.item,id) as Row|undefined;
     if(requireCurrent&&latestRemote&&JSON.parse(latestRemote.data).matched!==true)throw new Error('integration_remote_observation_unresolved');
+    if(requireCurrent&&proof.receptionContext)this.coordinationRecords(fn=>fn()).requireNormalReceptionContext(proof.receptionContext);
     if(requireCurrent&&(!m.current||!summary.evidenceComplete))throw new Error('integration_original_or_validation_no_longer_current');
     const {current:_current,...material}=m,memberReturns=this.integrationMemberRecords(fn=>fn()).contextFor(m.source.composition.subject.members,m.source.context,excludeReception),memberRepairs=this.memberRecompositionRecords(fn=>fn()).forSubject(m.source.composition.sha256);return {sha256:ref.sha256,association:proof,...material,memberReturns,memberReturnEvidenceSha256:hash(canonical(memberReturns)),...(memberRepairs.length?{memberRepairs,memberRepairEvidenceSha256:hash(canonical(memberRepairs))}:{})};
   }
-  private integrationAdmission(op:Row,status:'receiving'|'merging',authority?:Row){
+  private integrationAdmission(op:Row,status:'receiving'|'merging',authority?:Row,receiverPlanSha256?:string){
     const material=this.integrationMaterial(this.packet(op.packet),true,op.id);if(!material&&!authority)return;
     if(!this.receiverCandidateCurrent(this.item(op.item)))throw new Error('integration_current_candidate_required');
     const refutation=this.memberRefutationEvidence(this.packet(op.packet),true);if(refutation)installMemberRefutationOriginalsGuard(this.db);
-    this.event('integration_consumer_admitted',op.id,{...authority,packet:op.packet,status,integrationSha256:material?.sha256??null,...(refutation?{memberRefutationSha256:refutation.sha256,memberRefutationTerminalSha256:refutation.repair.terminalRecordSha256}:{})});
+    const normal=status==='receiving'?this.coordinationRecords(fn=>fn()).requireNormalReceiver(op.item,op.id,receiverPlanSha256):[];
+    this.event('integration_consumer_admitted',op.id,{...authority,packet:op.packet,status,integrationSha256:material?.sha256??null,...(normal.length?{normalEntryReceivers:normal}:{}),...(refutation?{memberRefutationSha256:refutation.sha256,memberRefutationTerminalSha256:refutation.repair.terminalRecordSha256}:{})});
   }
   static async observeIntegration(directory:string,id:string){const q=await QueueStore.connect(directory,true);try{q.db.exec('BEGIN');return q.integrationRecords(fn=>fn()).state(id);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private integrationSource(operation:string):IntegrationSource{
     const {op}=this.receiverOperation(operation),item=this.item(op.item),packet=this.packet(op.packet),e=this.packetEvidence(packet),summary=parse(packet,'summary'),composition=summary.composition;
     if(!composition)throw new Error('integration_original_composition_required');this.requireCompositionMode();this.basePacketFingerprint(packet);
+    this.coordinationRecords(fn=>fn()).requireNormalIntegration(operation,composition.subject.members);
     const originals=new Map<string,Buffer>(),add=(ref:Row)=>{const b=this.blob(ref.sha256);if(ref.bytes!==undefined&&ref.bytes!==b.length)throw new Error('integration_original_length_changed');originals.set(ref.sha256,b);};
     for(const sha of [packet.manifest_hash,packet.report_hash,packet.context_hash])add({sha256:sha});add(e.report.plan);
     for(const input of e.report.inputs){add(input.manifest);const manifest=JSON.parse(this.blob(input.manifestHash).toString());for(const ref of manifest.artifacts)add(ref);}
     for(const stage of e.report.stages){if(stage.mergeOutput)add(stage.mergeOutput);for(const tool of stage.tools)for(const key of ['stdout','stderr','result','sandbox'])if(tool[key])add(tool[key]);}
     if(e.report.failureOutput){add(e.report.failureOutput.stdout);add(e.report.failureOutput.stderr);}
-    return {operation,item:op.item,packet:op.packet,fingerprint:packet.fingerprint,current:op.status==='complete'&&item.current_packet===op.packet&&!item.observation_conflict&&this.receiverCandidateCurrent(item),context:e.context,composition,report:e.report,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,originals};
+    const materialSources=(summary.eventSources??[]).map((ref:Row)=>{const value=storedEventMaterial(this.db,ref);const index=JSON.parse(this.blob(ref.projectionSha256).toString());originals.set(ref.projectionSha256,this.blob(ref.projectionSha256));for(const item of index.records)originals.set(item.sha256,this.blob(item.sha256));return value;});
+    return {operation,item:op.item,packet:op.packet,fingerprint:packet.fingerprint,current:op.status==='complete'&&item.current_packet===op.packet&&!item.observation_conflict&&this.receiverCandidateCurrent(item),context:e.context,composition,report:e.report,manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,contextSha256:packet.context_hash,originals,...(materialSources.length?{materialSources}:{})};
   }
   deliveryAssessments(){return this.deliveryAssessmentRecords(fn=>this.transaction(fn));}
   deliveryWorkbench(){return this.deliveryWorkbenchRecords(fn=>this.transaction(fn));}
-  private deliveryWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new DeliveryWorkbenchRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),this.deliveryAssessmentRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),id=>this.authorityItem(id));}
+  private deliveryWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new DeliveryWorkbenchRecords(this.db,transaction,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),this.deliveryAssessmentRecords(fn=>fn()),new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),id=>this.authorityItem(id));}
   static async observeDeliveryWorkbench(directory:string,batch:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');return q.deliveryWorkbenchRecords(fn=>fn()).forBatch(batch);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   overallWorkbench(){return this.overallWorkbenchRecords(fn=>this.transaction(fn));}
-  private overallWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new OverallWorkbenchRecords(this.db,transaction,this.directory,new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),this.resourceRecords(fn=>fn()),(id,current)=>this.reviewSource(id,current));}
+  private overallWorkbenchRecords(transaction:<T>(f:()=>T)=>T){return new OverallWorkbenchRecords(this.db,transaction,this.directory,new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),this.resourceRecords(fn=>fn()),(id,current)=>this.reviewSource(id,current));}
   static observeWorkbenchOverall(directory:string,item:string,templateSha256:string):Promise<ReturnType<OverallWorkbenchRecords['selected']>>;
   static observeWorkbenchOverall(directory:string,item:string,templateSha256:string,id:string):Promise<ReturnType<OverallWorkbenchRecords['files']>>;
   static async observeWorkbenchOverall(directory:string,item:string,templateSha256:string,id?:string){const q=await this.connect(directory,true);try{q.db.exec('BEGIN');q.item(item);const r=q.overallWorkbenchRecords(fn=>fn());return id?r.files(item,id,templateSha256):r.selected(item,templateSha256);}finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
   private deliveryAssessmentRecords(transaction:<T>(fn:()=>T)=>T):DeliveryAssessmentRecords{return new DeliveryAssessmentRecords(this.db,transaction,this.directory,this.deliveryRecords(fn=>fn()),this.deliveryValidationRecords(fn=>fn()),()=>this.messageRecords(fn=>fn()),(run,p)=>{if(!p.resourceBudget)return !this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get();try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return b.phase==='returned'&&b.resourceRequests.length===p.resourceBudget.length&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}});}
-  events(): EventRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));return new EventRecords(this.db,fn=>this.transaction(fn),this.directory,(id,observations)=>a.refreshReservedAction(id,observations)); }
+  private collectedSourceProfile(binding:import('./event-store.js').CollectedSourceBinding):import('./event-contract.js').EventProfile{
+    if(!exactKeys(binding,['originPlan','entry','collectionKey']))throw new Error('collected_source_original_entry_required');const records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(binding.originPlan,binding.entry),collection=records.normalEntryHistory(binding.originPlan,binding.entry,binding.collectionKey);
+    if(entry&&collection?.reference.kind==='member-snapshot'){const p=JSON.parse(collection.request.toString()),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),reader=catalog.integration.sourceReader,base=this.repairedMemberSource(binding.originPlan,binding.entry,p.task,false,p.repair.operation),root=join(this.directory,'conditional-entry-'+hash(canonical([binding.entry,records.reference(binding.originPlan).plan.name])).slice(0,48));if(p.kind!=='tongxu-conditional-member-collection'||canonical(p.repair)!==canonical(base.repair)||canonical(p.candidate)!==canonical(base.candidate)||p.objects!==base.objects||p.snapshot!==join(root,'member-source-'+hash(canonical(base.repair)).slice(0,48)))throw new Error('collected_source_exact_member_required');return {schemaVersion:1,kind:'tongxu-bounded-event-source',repository:p.candidate.repository,repositoryId:reader.repositoryId,ghExecutable:reader.ghExecutable,ghSha256:reader.ghSha256,executionKind:reader.executionKind==='fixture'?'fixture':'github',prs:[p.candidate.pr],pollIntervalMs:60000,maxSubjectsPerTick:1};}
+    if(!entry||collection?.reference.kind!=='snapshot')throw new Error('collected_source_original_entry_required');const p=JSON.parse(collection.request.toString()),catalog=JSON.parse(this.blob(entry.catalogSha256).toString()),reader=catalog.integration.sourceReader,material=this.integrationRecords(fn=>fn()).candidateMaterial(p.integration),state=this.integrationRecords(fn=>fn()).state(p.integration),c=p.candidate;
+    if(p.kind!=='tongxu-conditional-candidate-collection'||p.integrationRequestSha256!==material.requestSha256||!material.current||material.candidate.repository!==catalog.repository||material.candidate.target!==catalog.target||p.objects!==join(state.directory,'candidate.git')||['H','B','T','repository'].some(k=>c[k]!==material.candidate[k])||c.targetRef!==material.candidate.target||p.snapshot!==join(this.directory,'conditional-entry-'+hash(canonical([binding.entry,records.reference(binding.originPlan).plan.name])).slice(0,48),'collection-'+hash(canonical([state.id,c.pr]))))throw new Error('collected_source_exact_private_candidate_required');
+    return {schemaVersion:1,kind:'tongxu-bounded-event-source',repository:c.repository,repositoryId:reader.repositoryId,ghExecutable:reader.ghExecutable,ghSha256:reader.ghSha256,executionKind:reader.executionKind==='fixture'?'fixture':'github',prs:[c.pr],pollIntervalMs:60000,maxSubjectsPerTick:1};
+  }
+  private eventRecords(transaction:<T>(fn:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));return new EventRecords(this.db,transaction,this.directory,(id,observations)=>a.refreshReservedAction(id,observations),binding=>this.collectedSourceProfile(binding));}
+  events(): EventRecords {return this.eventRecords(fn=>this.transaction(fn));}
+  private rebindUnchangedSource(item:string){if(this.eventSourceStates(this.item(item)).some(s=>s.registered))this.eventRecords(fn=>fn()).reconcilePackets([item]);}
   sessions(): SessionRecords { return new SessionRecords(this.db,fn=>this.transaction(fn),this.directory,id=>this.authorityItem(id)); }
   messages():MessageRecords{return this.messageRecords(fn=>this.transaction(fn));}
   private messageResourceResult(run:string):boolean{try{const b=this.messageResourceRecords(fn=>fn()).state(run),r=this.resourceRecords(fn=>fn());return ['returned','partial_returned','interrupted_returned'].includes(b.phase)&&b.resourceRequests.length>0&&b.resourceRequests.every((id:string)=>r.settledOutcome(id));}catch{return false;}}
-  private messageRecords(transaction:<T>(fn:()=>T)=>T): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,transaction,this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant,effect)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run,effect);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>this.messageResourceResult(run)); }
+  private messageRecords(transaction:<T>(fn:()=>T)=>T): MessageRecords { const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),c=this.coordinationRecords(fn=>fn());return new MessageRecords(this.db,transaction,this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant,effect)=>{c.messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run,effect);},(run,action)=>this.messageResourceRecords(fn=>fn()).requireHeld(run,action),run=>this.messageResourceResult(run)); }
   messageResources(){return this.messageResourceRecords(fn=>this.transaction(fn));}
-  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{this.coordinationRecords(fn=>fn()).messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run);},undefined,run=>this.messageResourceResult(run));return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run),(run,observations)=>{m.admission(run,observations);},(run,operation)=>{const row=this.db.prepare('SELECT result FROM operations WHERE id=?').get(operation) as Row;if(JSON.parse(row.result??'null')?.implementation){const target=this.taskInboxRecords(fn=>fn()).ownerContactResourceTarget(run,operation);this.issueImplementationRecords(fn=>fn()).admitOwnerContactResources(target,run);}});}
+  private messageResourceRecords(transaction:<T>(f:()=>T)=>T){const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),m=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),(id,observations)=>a.refreshReservedAction(id,observations),(run,message,participant)=>{this.coordinationRecords(fn=>fn()).messageGate(run,message,participant);this.taskInboxRecords(fn=>fn()).gate(run);this.deliveryAssessmentRecords(fn=>fn()).gate(run);},undefined,run=>this.messageResourceResult(run));return new MessageResourceRecords(this.db,transaction,run=>m.status(run),(id,observations)=>a.refreshReservedAction(id,observations),()=>this.resourceRecords(fn=>fn()),run=>m.continuation(run),run=>m.continuationSource(run),run=>m.partialExecutionProof(run),(run,observations)=>{m.admission(run,observations);},(run,operation)=>{const row=this.db.prepare('SELECT result FROM operations WHERE id=?').get(operation) as Row;if(JSON.parse(row.result??'null')?.implementation){const target=this.taskInboxRecords(fn=>fn()).ownerContactResourceTarget(run,operation);this.issueImplementationRecords(fn=>fn()).admitOwnerContactResources(target,run);}});}
   coordination(): CoordinationRecords {return this.coordinationRecords(fn=>this.transaction(fn));}
+  static async observeConditionalEntry(directory:string,name:string,entryId:string){const q=await this.connect(directory,true);try{
+    q.db.exec('BEGIN');const c=q.coordinationRecords(fn=>fn()),current=c.current(name);
+    return {current,entry:current?c.normalEntry(current.id,entryId):null,earlyAdvice:current?c.earlyAdvice(current.id):null,newModelInputs:0};
+  }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  static async observeConditionalEntryCatalog(directory:string,entryId:string,catalogSha256:string,includeCurrent=true){const q=await this.connect(directory,true);try{
+    q.db.exec('BEGIN');const c=q.coordinationRecords(fn=>fn()),identity=c.normalEntryIdentity(entryId,catalogSha256),reference=identity?c.currentReference(identity.name):null;let current:ReturnType<typeof c.current>=null,currentProblem:string|null=null;
+    if(includeCurrent&&reference)try{current=c.status(reference.id);}catch(e){currentProblem=e instanceof Error&&/^[a-z0-9_:.-]+$/.test(e.message)?e.message:'current_coordination_unavailable';}
+    const children:Row[]=[],seen=new Set<string>();
+    if(includeCurrent)for(const history of identity?.history??[])for(const step of history.entry?.steps??[]){
+      const ref=step.reference,key=canonical([ref.kind,ref.id,ref.operation]);
+      if(!['integration','validation','receiver','repair'].includes(ref.kind)||seen.has(key))continue;
+      seen.add(key);
+      try{children.push({...q.conditionalChildState(ref),kind:ref.kind,id:ref.id,operation:ref.operation??null,originPlan:history.originPlan,available:true});}
+      catch(e){children.push({kind:ref.kind,id:ref.id,operation:ref.operation??null,originPlan:history.originPlan,available:false,problem:e instanceof Error&&/^[a-z0-9_:.-]+$/.test(e.message)?e.message:'original_child_state_unavailable'});}
+    }
+    return {identity,current,currentProblem,children,currentReference:reference?{id:reference.id,name:reference.plan.name,revision:reference.plan.revision}:null,entry:reference?c.normalEntry(reference.id,entryId):null,earlyAdvice:reference?c.earlyAdvice(reference.id):null,newModelInputs:0};
+  }finally{if(q.db.isTransaction)q.db.exec('ROLLBACK');q.close();}}
+  private conditionalChildState(ref:Row):Row{
+    if(ref.kind==='integration'){
+      const state=this.integrationRecords(fn=>fn()).state(ref.id);
+      return {phase:state.phase,sourceCurrent:state.currentSource,candidate:state.result?.candidate??null};
+    }
+    if(ref.kind==='validation'){
+      const state=this.candidateValidationRecords(fn=>fn()).state(ref.id);
+      return {phase:state.phase,captureValidationCurrent:state.captureValidationCurrent,resourcesSettled:state.resourcesSettled};
+    }
+    if(ref.kind==='receiver'){
+      const {op,receiver,result}=this.receiverOperation(ref.operation);
+      const current=this.currentReceiverResult(op,result)?.receiver;
+      return {phase:receiver?.phase??'not_started',verdict:receiver?.judgment?.verdict??null,current:current?.currentMaterialMatches??null,controllerReturned:receiver?.controllerReturned??false};
+    }
+    const records=new ReviewRecords(this.db,fn=>fn(),(id,current)=>this.reviewSource(id,current),()=>{throw new Error('readonly_view_cannot_authorize');});
+    const original=records.state(ref.operation??ref.id),repair=original.repair,plan=JSON.parse(original.plan.toString());let sourceCurrent=true;
+    try{if(plan.memberReturn)this.memberRepairSource(ref.operation??ref.id,plan.memberReturn,true);else this.reviewSource(ref.operation??ref.id,true);}catch{sourceCurrent=false;}
+    const resources=(repair.resourceRequests??[]).map((id:string)=>{
+      const records=this.resourceRecords(fn=>fn());
+      return {id,state:records.status(id).state,settled:records.settledOutcome(id)};
+    });
+    return {phase:repair.phase,controllerReturned:repair.controllerReturned??false,resultStatus:repair.result?.status??null,candidate:repair.result?.sourceCandidate??null,afterH:repair.result?.after?.H??null,sourceCurrent,historicalResultOnly:!sourceCurrent,resources};
+  }
   private coordinationRecords(transaction:<T>(f:()=>T)=>T):CoordinationRecords {
     const messages=new MessageRecords(this.db,fn=>fn(),this.directory,id=>this.authorityItem(id),()=>{throw new Error('coordination_read_cannot_authorize_messages');});
-    return new CoordinationRecords(this.db,transaction,id=>this.authorityItem(id),run=>({state:messages.status(run),materials:messages.frozen(run).materials,submitted:participant=>messages.submitted(run,participant)}),this.directory);
+    return new CoordinationRecords(this.db,transaction,id=>this.authorityItem(id),run=>{const state=messages.status(run);let resourcesSettled=!state.plan.resourceBudget;if(!resourcesSettled)try{resourcesSettled=this.messageResourceRecords(fn=>fn()).settled(run);}catch{}return {state:{...state,resourcesSettled},materials:messages.frozen(run).materials,submitted:participant=>messages.submitted(run,participant)};},this.directory,(operation,current)=>this.coordinatedReceiverSource(operation,current),(operation,current)=>this.coordinatedPublicationSource(operation,current),(operation,current,published)=>this.coordinatedIntegrationSource(operation,current,published));
+  }
+  private coordinatedReceiverSource(operation:string,current:boolean){
+    const source=this.reviewSource(operation,current),{op}=this.receiverOperation(operation),packet=this.packet(op.packet),e=this.packetEvidence(packet),r=source.receiver,plan=JSON.parse(this.blob(r.planSha256).toString());
+    if(r.controllerReturned!==true)throw new Error('coordination_receiver_controller_unresolved');
+    const resources=this.resourceRecords(fn=>fn());for(const id of plan.governance?.resourceRequests??[])if(!resources.settledOutcome(id))throw new Error('coordination_receiver_resources_unsettled');
+    const input=JSON.parse(this.blob(r.inputSha256).toString());
+    return {kind:'original-receiver-result',operation,item:op.item,packet:op.packet,fingerprint:packet.fingerprint,candidate:source.candidate,context:source.context,
+      judgment:source.receiver.judgment,inputSha256:r.inputSha256,systemSha256:r.systemSha256,promptAssemblySha256:r.promptAssemblySha256??null,
+      selectedSources:input.data?.sources??[],verification:{manifestSha256:packet.manifest_hash,reportSha256:packet.report_hash,executionComplete:e.report.executionComplete,comparisonComplete:e.report.comparisonComplete,observedSampleFailures:e.report.observedSampleFailures},technicalAcceptanceOnly:true};
+  }
+  /** Integration receipts keep their joint subject. Physical source checks
+   * do not recurse through a downstream coordination phase that consumes it. */
+  private coordinatedIntegrationSource(operation:string,current:boolean,published:boolean){
+    const artifact:Row=published?this.coordinatedPublicationSource(operation,false):this.coordinatedReceiverSource(operation,false),{op,receiver:r}=this.receiverOperation(operation);if(!r)throw new Error('coordination_integration_original_reception_required');
+    const packet=this.packet(op.packet),input=JSON.parse(this.blob(r.inputSha256).toString()),integration=input.data?.evidence?.integration;
+    if(!integration||r.judgment?.consumedIntegration!==integration.sha256||r.integrationSha256!==integration.sha256)throw new Error('coordination_integration_original_reception_required');
+    const original=this.integrationRecords(fn=>fn()).candidateResult(integration.id),e=this.packetEvidence(packet),ref=parse(packet,'summary').integration;
+    if(!ref||ref.sha256!==integration.sha256||!this.blob(ref.sha256).equals(Buffer.from(canonical(integration.association)))||integration.requestSha256!==original.requestSha256||canonical(integration.source)!==canonical(original.source)||canonical(integration.candidate)!==canonical(original.candidate)||e.report.inputs.length!==1||e.report.inputs[0].manifestHash!==packet.manifest_hash||['H','B','repository'].some(k=>e.manifest.candidate[k]!==original.candidate[k])||e.manifest.candidate.targetRef!==original.candidate.target||e.report.stages.at(-1)?.tree!==original.candidate.T||r.judgment.verdict!=='ACCEPT_WITHIN_SCOPE')throw new Error('coordination_integration_own_evidence_required');
+    const contexts=input.data.material.flatMap((m:Row)=>{try{const value=JSON.parse(m.text);return value.kind==='tongxu-normal-entry-reception-context'?[value]:[];}catch{return [];}});if(contexts.length>1)throw new Error('coordination_integration_context_ambiguous');
+    let normal:Row|null=null;if(contexts.length){const context=contexts[0],records=this.coordinationRecords(fn=>fn()),entry=records.normalEntry(context.coordination,context.entryId),saved=entry?.steps.find((s:Row)=>s.reference.kind==='receiver'&&s.reference.operation===operation&&s.requestSha256===r.planSha256),catalog=entry&&JSON.parse(this.blob(entry.catalogSha256).toString());if(!saved||context.relation.planId!==context.coordination||canonical(records.originalBindings(context.coordination))!==canonical(context.relation.bindings))throw new Error('coordination_integration_original_normal_context_required');normal={entryId:context.entryId,planId:context.coordination,members:catalog.integration.members,gateStage:catalog.integration.gateStage,bindings:context.relation.bindings};}
+    if(current){
+      const selected=this.integrationRecords(fn=>fn()).candidateMaterial(original.id,integration.currentMaterial?.sha256??null);
+      const currentSource=selected.currentMaterial?.source??original.source;
+      if(!selected.current)throw new Error('coordination_integration_candidate_or_material_changed');
+      if(integration.association.receptionContext)this.coordinationRecords(fn=>fn()).requireNormalReceptionContext(integration.association.receptionContext);
+      const item=this.item(op.item),source=this.item(currentSource.item),sourcePacket=this.packet(currentSource.packet),returns=this.integrationMemberRecords(fn=>fn()).contextFor(original.source.composition.subject.members,original.source.context,operation),repairs=this.memberRecompositionRecords(fn=>fn()).forSubject(original.source.composition.sha256),empty=hash(canonical([]));
+      if(item.current_packet!==op.packet||item.observation_conflict||!this.receiverCandidateCurrent(item,true)||!this.memberReceptionCurrent(item.id)||!this.pairedApplicability(op,r)||!this.effectiveSummary(item,packet).evidenceComplete||this.prerequisites(item).length||source.current_packet!==sourcePacket.id||sourcePacket.fingerprint!==currentSource.fingerprint||source.observation_conflict||!this.receiverCandidateCurrent(source,true)||(r.memberReturnEvidenceSha256??empty)!==hash(canonical(returns))||(r.memberRepairEvidenceSha256??empty)!==hash(canonical(repairs)))throw new Error('coordination_integration_candidate_or_material_changed');
+      const remote=this.db.prepare("SELECT data FROM events WHERE kind='integration_remote_observation' AND object=? AND json_extract(data,'$.integration')=? ORDER BY id DESC LIMIT 1").get(op.item,original.id) as Row|undefined;if(remote&&JSON.parse(remote.data).matched!==true)throw new Error('integration_remote_observation_unresolved');
+      if(published){const history=this.publicationHistory(operation);for(const stage of ['comment','status'])if(history.stages[stage].lastState!=='verified'||canonical(history.stages[stage].verified?.remote)!==canonical(artifact.publication[stage]))throw new Error('coordination_verified_publication_required');}
+    }
+    return {...artifact,integration:{id:original.id,requestSha256:original.requestSha256,sourceOperation:original.source.operation,sourcePacket:original.source.packet,sourceFingerprint:original.source.fingerprint,subjectSha256:original.source.composition.sha256,subject:original.source.composition.subject,privateCandidate:original.candidate,normal},individualReceptionInferred:false};
+  }
+  private coordinatedPublicationSource(operation:string,current:boolean){
+    const receiver=this.coordinatedReceiverSource(operation,current),{receiver:r}=this.receiverOperation(operation),p=this.publicationHistory(operation),d=p.document;
+    if(!r||!p.prepared||!d||p.pendingDispatches.length||p.prepared.bindingHash!==r.bindingHash||d.operation!==operation||d.inputSha256!==r.inputSha256||d.bindingHash!==r.bindingHash||d.judgment!=='ACCEPT_WITHIN_SCOPE'||r.judgment.verdict!==d.judgment||['repository','pr','H','B','targetRef'].some(k=>d.candidate[k]!==receiver.candidate[k]))throw new Error('coordination_verified_publication_required');
+    this.publicationOriginalProcessesEnded(operation);
+    const start=p.events.findLastIndex((e:Row)=>e.kind==='prepared'),first:Row={};let end=start;
+    for(const stage of ['comment','status']){const latest=p.stages[stage],index=p.events.findIndex((e:Row,i:number)=>i>start&&e.stage===stage&&e.kind==='verified');if(!latest.intent||!latest.started||index<0||current&&latest.lastState!=='verified')throw new Error('coordination_verified_publication_required');first[stage]=p.events[index];end=Math.max(end,index);if(current&&canonical(first[stage].remote)!==canonical(latest.verified?.remote))throw new Error('coordination_original_publication_readback_changed');}
+    const records=this.resourceRecords(fn=>fn());for(const id of p.plan.governance?.resourceRequests??[])if(!records.settledOutcome(id))throw new Error('coordination_publication_resources_unsettled');
+    const originals=new Map<string,Buffer>();for(const sha of [p.prepared.planSha256,p.prepared.documentSha256])originals.set(sha,this.blob(sha));
+    for(const event of p.events.slice(start,end+1))for(const ref of Object.values(event.blobs??{}) as Row[]){const bytes=this.blob(ref.sha256);if(bytes.length!==ref.bytes)throw new Error('coordination_publication_original_length_changed');originals.set(ref.sha256,bytes);}
+    return {...receiver,kind:'original-publication-readback',publication:{id:d.publicationId,planSha256:p.prepared.planSha256,documentSha256:p.prepared.documentSha256,comment:first.comment.remote,status:first.status.remote,readbackComplete:true,source:'original_verified_readback',historicalObservationOnly:true,liveRemoteRechecked:false,technicalJudgmentPublished:true,targetUpdated:false,ownerOutcomeAccepted:false},originals:[...originals].sort(([a],[b])=>a.localeCompare(b)).map(([sha256,bytes])=>({sha256,bytes:bytes.length,encoding:'base64',text:bytes.toString('base64')}))};
   }
   resources(): ResourceRecords {
     // Persist the old-consumer guard before any result validation can fail.
@@ -707,7 +971,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     return this.resourceRecords(fn=>this.transaction(fn));
   }
   private resourceRecords(transaction:<T>(f:()=>T)=>T):ResourceRecords {
-    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
+    const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));
     return new ResourceRecords(this.db,transaction,(id,observations)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations),(operation,action,claimedAt)=>this.resourceExecution(operation,action,claimedAt),(action,request,dispatch)=>{
       const formal=this.formalResource(action,request);
       if(!formal&&action.request.action==='coordinate')this.deliveryAssessmentRecords(fn=>fn()).gate(action.request.payloadSha256);
@@ -715,12 +979,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         const implementation=!formal&&this.issueImplementationResource(action,request);
         if(action.request.action==='implement'&&!implementation&&!formal)this.memberRepairResourceGate(action,request);
         const receiver=formal&&action.request.action==='receive'?formal:action.request.action==='receive'&&this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()?this.receiverResourceClaimGate(action,request):null;
-        const test=!formal&&!implementation&&action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
+        const candidateTest=!formal&&!implementation&&action.request.action==='test'&&action.request.payloadSha256&&this.candidateValidationRecords(fn=>fn()).handles(action)?this.candidateValidationRecords(fn=>fn()).resourceClaimGate(action,request):null;
+        const test=!candidateTest&&!formal&&!implementation&&action.request.action==='test'&&action.request.payloadSha256?this.recompositionTestRecords(fn=>fn()).resourceClaimGate(action,request):null;
         const publication=!formal&&action.request.action==='publish'?this.publicationResourceClaimGate(action,request):null;
-        if(queueFormatVersion(this.db)>=20||receiver||test||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(formal?{formalStageKey:formal.key,formalStageSha256:formal.planSha256,formalAuthorityIntent:formal.authorityIntent}:receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
+        if(queueFormatVersion(this.db)>=20||receiver||test||candidateTest||publication){queueFeatureVersion(this.db);this.event('member_resource_claim_admitted','resource:'+resourceRequestHash(request),{operation:request.operation,requestSha256:resourceRequestHash(request),...(formal?{formalStageKey:formal.key,formalStageSha256:formal.planSha256,formalAuthorityIntent:formal.authorityIntent}:receiver?{receiverPlanSha256:receiver.planSha256,receiverAuthorityIntent:receiver.authorityIntent}:{}),...(test?{recompositionTestId:test.id,recompositionTestPlanSha256:test.planSha256}:{}),...(candidateTest?{candidateValidationId:candidateTest.id,candidateValidationRequestSha256:candidateTest.requestSha256}:{}),...(publication?{publicationBindingSha256:publication.bindingSha256}:{})});}
       }
     },(request,record,dispatch)=>{
       const action=a.reservedAction(request.authorityIntent);
+      if(record.source==='verified_integration_candidate_test'||record.source==='verified_member_candidate_test'){const original=this.candidateValidationRecords(fn=>fn()).outcome(request.operation,action,'1970-01-01T00:00:00Z');if(original.source!==record.source||original.state!==record.outcome.state||hash(original.proof)!==record.outcome.evidenceSha256)throw new Error('candidate_validation_resource_outcome_changed');return;}
       if(record.source==='verified_formal_review_capture'){const original=this.formalReviewRecords(fn=>fn()).outcome(request.operation,action);if(original.state!==record.outcome.state||hash(original.proof)!==record.outcome.evidenceSha256)throw new Error('formal_resource_original_outcome_changed');if(dispatch&&action.request.action==='publish')this.event('publication_resource_result_admitted','resource:'+resourceRequestHash(request),{originalOperation:request.operation,outcomeSha256:record.outcomeSha256,formalSource:true});return;}
       if(record.source==='verified_overall_review_capture'){
         const original=this.overallForAction(request.operation,action.request.payloadSha256,action.requestId);if(!original)throw new Error('overall_original_action_binding_required');const proof=this.overallResourceOutcome(original,action,'1970-01-01T00:00:00Z');
@@ -752,7 +1018,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     this.memberRepairSource(request.operation,binding.memberReturn,true);
   }
   merges(): MergeRecords {
-    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id));
+    const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source));
     const authority=(id:string,observations:import('./authority-source.js').OwnerObservation[]|null)=>observations===null?a.reservedAction(id):a.refreshReservedAction(id,observations);
     const resources=()=>this.resourceRecords(fn=>fn());
     return new MergeRecords(this.db,fn=>this.transaction(fn),authority,(operation,current)=>{
@@ -764,7 +1030,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   private resourceExecution(operation:string,action:Row,claimedAt:string):ResourceOutcome {
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row,result=parse(op,'result');
     if(action.request.formalWorkSha256!==undefined)return this.formalReviewRecords(fn=>fn()).outcome(operation,action);
-    if(!op||op.status!=='complete'||op.item!==action.request.item||op.packet!==action.binding?.packet)throw new Error('original_resource_execution_still_unknown');
+    if(!op||op.status!=='complete'||!controlledSourceOperationMatches(action,op)&&(op.item!==action.request.item||op.packet!==action.binding?.packet))throw new Error('original_resource_execution_still_unknown');
     if(result?.implementation&&['implement','test'].includes(action.request.action))return this.issueImplementationRecords(fn=>fn()).outcome(operation,action);
     const kind=action.request.action,stage=kind==='receive'?result?.receiver:kind==='implement'?result?.repair:kind==='merge'?result?.merge:null;
     if(kind==='coordinate'){
@@ -773,7 +1039,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       return this.messageResourceRecords(fn=>fn()).outcome(operation,action,claimedAt);
     }
     if(kind==='publish')return this.publicationResourceOutcome(operation,action,claimedAt);
-    if(kind==='test'&&action.request.payloadSha256)return this.recompositionTestRecords(fn=>fn()).outcome(operation,action,claimedAt);
+    if(kind==='test'&&action.request.payloadSha256)return this.candidateValidationRecords(fn=>fn()).handles(action)?this.candidateValidationRecords(fn=>fn()).outcome(operation,action,claimedAt):this.recompositionTestRecords(fn=>fn()).outcome(operation,action,claimedAt);
     if(kind==='merge'){
       const original=this.mergesResourceOutcome(operation,action,claimedAt);
       return original;
@@ -826,7 +1092,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const p=JSON.parse(plan.toString()),g=p.governance,configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(g!==undefined)throw new Error('receiver_authority_profile_missing');return null;}
     if(!this.db.prepare("SELECT 1 FROM meta WHERE key='owner_governed_receiver_v1'").get()||!g||Object.keys(g).sort().join()!=='authorityIntent,resourceRequests'||typeof g.authorityIntent!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(g.authorityIntent)||!Array.isArray(g.resourceRequests)||g.resourceRequests.length>32||new Set(g.resourceRequests).size!==g.resourceRequests.length||g.resourceRequests.some((id:unknown)=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id)))throw new Error('receiver_authority_consumer_binding_required');
-    const a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
+    const a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),action=a.refreshReservedAction(g.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
     if(p.kind!=='tongxu-queue-receiver'||p.item!==op.item||p.store!==this.directory||!['receiver','background'].includes(action.role)||action.request.action!=='receive'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.binding?.fingerprint!==this.packet(op.packet).fingerprint||action.request.paths.length||(action.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('receiver_exact_authority_mismatch');
     const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,op.id,g.authorityIntent):resources.status(id));
     if(claims.some((r:Row)=>r.request.operation!==op.id||r.request.authorityIntent!==g.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('receiver_original_resource_operation_mismatch');
@@ -877,7 +1143,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(source.context.scope.id))throw new Error('new_investment_stopped');
     const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(p.governance!==undefined)throw new Error('overall_authority_profile_missing');return;}
-    const g=parseOverallGovernance(p.governance),a=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=a.refreshReservedAction(g.authorityIntent,observations);
+    const g=parseOverallGovernance(p.governance),a=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),action=a.refreshReservedAction(g.authorityIntent,observations);
     if(action.role!=='coordinator'||action.request.action!=='coordinate'||action.request.item!==op.item||action.binding?.packet!==op.packet||action.request.paths.length||action.request.payloadSha256!==overallAuthorityPayloadSha(p)||(action.executionKind==='fixture')!==(source.receiver.executionKind==='fixture'))throw new Error('overall_exact_authority_mismatch');
     const resources=this.resourceRecords(fn=>fn()),claims=g.resourceRequests.map(id=>held?resources.requireHeldForExecution(id,operation,g.authorityIntent):resources.status(id));
     if(claims.some(c=>c.request.operation!==operation||c.request.authorityIntent!==g.authorityIntent||c.request.actionSha256!==action.requestSha256||c.request.role!=='coordinator')||new Set(claims.map(c=>c.request.resourceRef)).size!==claims.length||canonical(claims.map(c=>c.request.resourceRef).sort())!==canonical([...action.request.resourceRefs].sort()))throw new Error('overall_exact_resource_set_required');
@@ -907,6 +1173,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
   managedRepairOriginal(operation:string){return this.transaction(()=>{
     const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(operation) as Row;if(!op)throw new Error('operation_not_found');const repair=JSON.parse(op.result)?.repair;
     if(!repair?.evidenceSha256)throw new Error('handoff_original_reconciliation_required');
+    for(const id of repair.resourceRequests??[]){try{if(this.resourceRecords(fn=>fn()).settledOutcome(id))continue;}catch{/* An unavailable original outcome is unresolved. */}throw new Error('continuation_original_resources_unsettled');}
     return {op,repair,plan:this.blob(repair.planSha256),request:this.blob(repair.requestSha256),config:this.blob(repair.configSha256),evidence:this.blob(repair.evidenceSha256)};
   });}
   repairResourceAdmission(operation:string,proposed:{plan:Buffer;request:Buffer;config:Buffer},observations:import('./authority-source.js').OwnerObservation[]){return this.transaction(()=>{
@@ -925,7 +1192,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
     const configured=Boolean(this.db.prepare("SELECT 1 FROM meta WHERE key='owner_authority_profile'").get());
     if(!configured){if(governance!==undefined)throw new Error('queue_repair_authority_profile_missing');return;}
     if(!governance||Object.keys(governance).sort().join()!=='authorityIntent,resourceRequests'||typeof governance.authorityIntent!=='string'||!Array.isArray(governance.resourceRequests)||governance.resourceRequests.length>32||new Set(governance.resourceRequests).size!==governance.resourceRequests.length||governance.resourceRequests.some((r:unknown)=>typeof r!=='string'||!/^[a-f0-9]{64}$/.test(r)))throw new Error('queue_repair_authority_consumer_binding_required');
-    const authority=new AuthorityRecords(this.db,fn=>fn(),id=>this.authorityItem(id)),action=authority.refreshReservedAction(governance.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
+    const authority=new AuthorityRecords(this.db,fn=>fn(),(id,source)=>this.authorityItem(id,source)),action=authority.refreshReservedAction(governance.authorityIntent,observations);if(action.request.formalWorkSha256!==undefined)throw new Error('formal_specific_consumer_required');
     if(!['implementer','background'].includes(action.role)||action.request.action!=='implement'||action.request.item!==op.item||action.binding?.packet!==op.packet||!Array.isArray(request.allowedPaths)||request.allowedPaths.some((path:unknown)=>typeof path!=='string'||!action.request.paths.includes(path))||(action.executionKind==='fixture')!==(config.executionKind==='fixture'))throw new Error('queue_repair_exact_authority_mismatch');
     const resources=this.resourceRecords(fn=>fn()),held=governance.resourceRequests.map((id:string)=>requireHeld?resources.requireHeldForExecution(id,operation,governance.authorityIntent):resources.status(id));
     if(held.some((r:Row)=>r.request.operation!==operation||r.request.authorityIntent!==governance.authorityIntent||r.request.actionSha256!==action.requestSha256||r.request.role!==action.role))throw new Error('queue_repair_original_resource_operation_mismatch');
@@ -1526,13 +1793,14 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         ...(receiver ? { input: this.blob(receiver.inputSha256), system: this.blob(receiver.systemSha256), plan: this.blob(receiver.planSha256),...(receiver.promptAssemblySha256?{promptAssembly:this.blob(receiver.promptAssemblySha256)}:{}) } : {}) };
     });
   }
-  private receiverGate(op: Row): void {
+  private receiverGate(op: Row,planSha256?:string): void {
     const item = this.item(op.item), packet = this.packet(op.packet), { context } = this.packetEvidence(packet);
     if(parse(packet,'summary').composition)this.requireCompositionMode();
     this.basePacketFingerprint(packet); this.pairedPrerequisite(op.item);this.memberRefutationEvidence(packet,true);
     if(!this.memberReceptionCurrent(item.id))throw new Error('member_return_requires_repair_or_refutation_reception');
     if (item.current_packet !== op.packet || item.observation_conflict || !this.effectiveSummary(item, packet).evidenceComplete || !this.receiverCandidateCurrent(item)) throw new Error('receiver_current_material_unverified');
     if (this.prerequisites(item).length) throw new Error('receiver_prerequisites_unmet');
+    this.coordinationRecords(fn=>fn()).requireNormalReceiver(item.id,op.id,planSha256??parse(op,'result')?.receiver?.planSha256);
     if ((this.db.prepare("SELECT stopped FROM controls WHERE scope=? AND kind='investment'").get(context.scope.id) as Row | undefined)?.stopped) throw new Error('new_investment_stopped');
     const version = queueFeatureVersion(this.db);
     if (version === 5) throw new Error('receiver_supplements_require_format6');
@@ -1553,7 +1821,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         return { duplicate: true, receiver };
       }
       if (op.status !== 'complete' || result?.status !== 'evaluated' || this.packet(op.packet).fingerprint !== fixed.fingerprint) throw new Error('receiver_shadow_evaluation_required');
-      this.receiverGate(op);
+      this.receiverGate(op,hash(fixed.plan));
       this.pairPlanCheck(op, hash(fixed.plan));
       const prerequisite = this.pairedPrerequisite(op.item);
       if (prerequisite && (prerequisite.executionKind !== fixed.executionKind || canonical(JSON.parse(fixed.input.toString()).data.evidence.prerequisite) !== canonical(prerequisite))) throw new Error('paired_input_prerequisite_mismatch');
@@ -1578,7 +1846,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
         ...(correction ? { correctionSha256: correction.sha256, correctionOf: correction.previousOperation } : {}),
         ...(composition?{subject:composition.subject,subjectSha256:composition.sha256}:{}),
         ...(prerequisite ? { prerequisite } : {}), executionKind: fixed.executionKind, controllerPid: process.pid, controllerReturned: false, phase: 'reserved', registeredAt: now(), directory: join(this.directory, `receiver-${id}`) };
-      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,record,fixed.plan,observations));this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
+      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,record,fixed.plan,observations),record.planSha256);this.db.prepare("UPDATE operations SET status='receiving',generation=?,result=?,finished_at=NULL WHERE id=?").run(generation, JSON.stringify({ ...result, generation, shadowEvaluation: result, independentReception: 'running_or_unknown', receiver: record }), id);
       this.db.prepare('INSERT INTO claims VALUES(?,?,?)').run(op.target, id, generation);
       this.event('receiver_reserved', id, { generation, judgmentId: record.judgmentId, bindingHash: record.bindingHash });
       return { duplicate: false, receiver: record };
@@ -1590,7 +1858,7 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       if (op.status !== 'receiving' || receiver?.phase !== 'reserved' || receiver.bindingHash !== bindingHash) throw new Error('receiver_dispatch_already_registered');
       this.pairPlanCheck(op, receiver.planSha256); this.receiverGate(op); if (!this.pairedApplicability(op, receiver)) throw new Error('paired_prerequisite_changed_before_dispatch'); this.receiverClaim(op); receiver.phase = 'dispatch_registered'; receiver.dispatchRegisteredAt = now();
       result.externalActionSent = receiver.executionKind === 'fixture' ? false : 'unknown'; result.externalActionKind = 'readonly_model_request'; result.externalProductionActionSent = false;
-      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,receiver,this.blob(receiver.planSha256),observations));this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
+      this.integrationAdmission(op,'receiving',this.receiverAuthorityAdmission(op,receiver,this.blob(receiver.planSha256),observations),receiver.planSha256);this.db.prepare('UPDATE operations SET result=? WHERE id=?').run(JSON.stringify(result), id); this.event('receiver_dispatch_registered', id, { bindingHash });
   }
   receiverDispatch(id:string,bindingHash:string,observations:OwnerObservation[]=[]):void{this.transaction(()=>this.dispatchReceiver(id,bindingHash,observations));}
   receiverEffect<T>(id:string,bindingHash:string,observations:OwnerObservation[],effect:()=>T):T{

@@ -3,7 +3,7 @@ import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 
 type Row=Record<string,any>;
-type Sources={item:(id:string)=>Row;message:(run:string)=>Row;messageAssociation?:(run:string)=>{current:boolean}|null;messageClosedUnstarted?:(run:string)=>boolean;coordination:(id:string)=>Row;resource:(id:string)=>Row;settled:(id:string)=>boolean;messageResource:(run:string)=>Row;repair:(operation:string)=>Row};
+type Sources={item:(id:string)=>Row;message:(run:string)=>Row;messageAssociation?:(run:string)=>{current:boolean}|null;messageClosedUnstarted?:(run:string)=>boolean;coordination:(id:string)=>Row;coordinationReference?:(id:string)=>Row;resource:(id:string)=>Row;settled:(id:string)=>boolean;messageResource:(run:string)=>Row;repair:(operation:string)=>Row};
 const safe=(e:unknown)=>e instanceof Error&&/^[a-z0-9_]+$/.test(e.message)?e.message:'original_record_unavailable';
 /** Selected-task facts from one readonly SQLite snapshot. No provider, model,
  * filesystem execution, authorization refresh or new event is available here. */
@@ -16,7 +16,7 @@ export class CollaborationView {
   private arrangement(run:string){
     const links=this.db.prepare("SELECT object FROM events WHERE kind='coordination_messages_bound' AND json_extract(data,'$.value.run')=?").all(run) as Row[];
     if(!links.length)return null;if(links.length!==1)throw new Error('coordination_message_binding_ambiguous');
-    const id=links[0]!.object.slice(13),c=this.sources.coordination(id);
+    const id=links[0]!.object.slice(13),c=this.sources.coordinationReference?.(id)??this.sources.coordination(id);
     const selection=this.db.prepare("SELECT data FROM events WHERE object=? AND kind='coordination_dispatch_selected' AND json_extract(data,'$.value.run')=?").get('coordination:'+id,run) as Row|undefined;
     let selected=true;if(selection){const old=JSON.parse(selection.data).value,latest=this.db.prepare("SELECT data FROM events WHERE object=? AND kind='coordination_dispatch_selected' AND json_extract(data,'$.value.task')=? AND json_extract(data,'$.value.purpose')=? ORDER BY id DESC LIMIT 1").get('coordination:'+id,old.task,old.purpose) as Row;selected=JSON.parse(latest.data).value.run===run;}
     return {id,revision:c.plan.revision,current:c.current&&selected};

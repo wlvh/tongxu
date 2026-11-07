@@ -12,6 +12,7 @@ export type AuthorityProfile = {
   sharedAccountApproval?: {decisionReference:{kind:'recorded_user_decision';sha256:string}};
 };
 export type ScopeBody = { goals: string[]; nonGoals: string[]; preserve: string[]; acceptance: string[]; constraints: string[] };
+export type AuthorityCandidateSource={kind:'controlled-member-observation';sha256:string};
 export type ActionRequest = {
   schemaVersion: 1; scopeId: string; scopeVersion: string; scopeBodySha256: string;
   repository: string; target: string; action: AuthorityAction; item: string | null;
@@ -19,6 +20,7 @@ export type ActionRequest = {
   paths: string[]; resourceRefs: string[];
   payloadSha256?: string;
   formalWorkSha256?:string;
+  candidateSource?:AuthorityCandidateSource;
 };
 export type DeliveryOutcomeProposal={kind:'delivery_outcome';adoption:string;batchSha256:string;evidenceSha256:string;previousOutcome:string|null;outcome:'accepted'|'rejected'|'needs_evidence'|'stopped';rationale:string};
 export type OwnerProposal =
@@ -52,9 +54,10 @@ export function sharedAccountApprovalProjection(profile:AuthorityProfile){
   return profile.sharedAccountApproval?{ownerApprovalMode:'shared_account' as const,ownerSourceIdentityAllowed:true as const,operatorSeparationProven:false as const,sharedAccountDecisionReference:{...profile.sharedAccountApproval.decisionReference,verification:'registered_not_rechecked' as const}}:{};
 }
 export function parseActionRequest(x:any):ActionRequest {
-  if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[]),...(x&&Object.hasOwn(x,'formalWorkSha256')?['formalWorkSha256']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');
+  if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[]),...(x&&Object.hasOwn(x,'formalWorkSha256')?['formalWorkSha256']:[]),...(x&&Object.hasOwn(x,'candidateSource')?['candidateSource']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');
   if(Object.hasOwn(x,'payloadSha256')&&(!['coordinate','test','publish'].includes(x.action)||!isAuthorityDigest(x.payloadSha256)))throw new Error('authority_action_payload_invalid');
   if(Object.hasOwn(x,'formalWorkSha256')&&(!['receive','implement','test','publish'].includes(x.action)||!isAuthorityDigest(x.formalWorkSha256)))throw new Error('formal_work_binding_invalid');
+  if(Object.hasOwn(x,'candidateSource')&&(x.action!=='test'||!exactKeys(x.candidateSource,['kind','sha256'])||x.candidateSource.kind!=='controlled-member-observation'||!isAuthorityDigest(x.candidateSource.sha256)||x.item!==x.candidateSource.sha256))throw new Error('authority_candidate_source_invalid');
   if(x.candidate!==null&&(!exactKeys(x.candidate,['H','B','subjectSha256'])||typeof x.candidate.H!=='string'||!shaPattern.test(x.candidate.H)||typeof x.candidate.B!=='string'||!shaPattern.test(x.candidate.B)||!(x.candidate.subjectSha256===null||isAuthorityDigest(x.candidate.subjectSha256))))throw new Error('authority_action_candidate_invalid');
   if(x.action!=='coordinate'&&(x.item===null||x.candidate===null))throw new Error('authority_action_exact_candidate_required');
   if((x.item===null)!==(x.candidate===null))throw new Error('authority_action_item_candidate_mismatch');

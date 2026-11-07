@@ -1,4 +1,5 @@
-import { PublicationHttp } from './publication-http.js';
+import { PublicationHttp,ordinaryFile } from './publication-http.js';
+import {join} from 'node:path';
 import { canonical } from './comparison.js';
 import { privateDirectory,hash } from './snapshot.js';
 import { shaPattern,validBranchRef } from './contract.js';
@@ -85,7 +86,8 @@ export async function readEventSource(profile:EventProfile,pr:number,directory:s
   const http=(H:string,target:string)=>new PublicationHttp(directory,p.ghExecutable,p.ghSha256,p.repository,pr,H,target,true,p.executionKind==='github'),root=`repos/${p.repository}`;
   const get=async(client:PublicationHttp,kind:string,endpoint:string,page=1)=>{
     const reply=await client.request('GET',endpoint);total+=reply.body.length;if(total>maxBytes)throw new Error('event_source_aggregate_limit');
-    const record={kind,endpoint,page,status:reply.status,body:reply.body,headers:reply.headers,directory:reply.directory};records.push(record);return record;
+    const record={kind,endpoint,page,status:reply.status,body:reply.body,headers:reply.headers,directory:reply.directory};records.push(record);
+    const exit=JSON.parse((await ordinaryFile(join(reply.directory,'exit.json'),64*1024)).toString());if(exit.code!==0||exit.signal!==null||exit.failure!==null)throw new Error('event_source_process_failed');return record;
   };
   try{
     const initial=http('0'.repeat(40),'source-read-placeholder'),first=decode(await get(initial,'pr',`${root}/pulls/${pr}`));

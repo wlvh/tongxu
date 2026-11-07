@@ -35,7 +35,8 @@ export class PublicationHttp {
   async request(method: 'GET' | 'POST', endpoint: string, payload?: any, hooks?: DispatchHooks): Promise<HttpReply> {
     this.allowed(method, endpoint);
     if (method === 'POST' && (!hooks || !payload)) throw new Error('publication_dispatch_hooks_required');
-    const selected=this.selected??=await selectGhExecutable(this.executable,this.executableHash);
+    const probeEnvironment=this.readOnly&&!this.existingGitHubAuth?{cwd:this.directory,env:{PATH:'/usr/bin:/bin',HOME:this.directory,GH_CONFIG_DIR:this.directory,GH_HOST:'github.com',GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'}}:undefined;
+    const selected=this.selected??=await selectGhExecutable(this.executable,this.executableHash,undefined,probeEnvironment);
     assertGhExecutableUnchanged(selected);
     const dir = join(this.directory, `http-${randomUUID()}`); await privateDirectory(dir, true);
     const args = ['api', '--hostname', 'github.com', '--method', method, '--include', '-H', 'Accept: application/vnd.github+json', ...(payload ? ['--input', '-'] : []), endpoint];

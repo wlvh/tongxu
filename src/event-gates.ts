@@ -22,11 +22,12 @@ export const legacyEventGuards=eventGuards.map(g=>({...g,sql:g.sql.replaceAll(me
 export function eventGuardsPresent(db:DatabaseSync){return eventGuards.every(g=>(db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(g.name) as Row)?.sql===g.sql);}
 export function effectiveEventCandidate(c:Candidate,watermark:string|null):Candidate{return {...c,observedAt:watermark&&(!c.observedAt||watermark>c.observedAt)?watermark:c.observedAt};}
 function bytes(db:DatabaseSync,sha:string){const row=db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=row&&Buffer.from(row.bytes);if(!b||hash(b)!==sha)throw new Error('event_original_missing_or_changed');return b;}
-export function currentEventSource(db:DatabaseSync,c:Candidate,item?:string,packet?:number):Row{
+export function currentEventSource(db:DatabaseSync,c:Pick<Candidate,'repository'|'pr'|'H'|'B'|'targetRef'>&Partial<Pick<Candidate,'observedAt'>>,item?:string,packet?:number):Row{
   const profileRef=(db.prepare("SELECT value FROM meta WHERE key='bounded_event_source_profile'").get() as Row)?.value;
-  if(!profileRef)return {registered:false,current:true,materialBound:true};
   try{
-    const p=parseEventProfile(bytes(db,profileRef));if(p.repository.toLowerCase()!==c.repository.toLowerCase()||!p.prs.includes(c.pr))return {registered:false,current:true,materialBound:true};
+    let p=profileRef?parseEventProfile(bytes(db,profileRef)):null;if(!p||p.repository.toLowerCase()!==c.repository.toLowerCase()||!p.prs.includes(c.pr)){
+      const collected=db.prepare('SELECT value FROM meta WHERE key=?').get('bounded_collected_source_profile:'+eventKey(c.repository,c.pr)) as Row|undefined;if(!collected)return {registered:false,current:true,materialBound:true};p=parseEventProfile(bytes(db,collected.value));if(p.repository.toLowerCase()!==c.repository.toLowerCase()||!p.prs.includes(c.pr))throw new Error('collected_source_profile_changed');
+    }
     if(!eventGuardsPresent(db))throw new Error('event_storage_guards_missing');
     const row=db.prepare('SELECT value FROM meta WHERE key=?').get(eventStateKey(c.repository,c.pr)) as Row,s=row&&JSON.parse(row.value);if(!s)throw new Error('event_subject_state_missing');
     const index=s.projectionSha256?JSON.parse(bytes(db,s.projectionSha256).toString()):null;

@@ -1,3 +1,4 @@
+import {controlledSourceOperationMatches} from './resource-contract.js';
 import {queueFeatureVersion,setQueueFeatureVersion} from './queue-format.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
@@ -81,7 +82,8 @@ export class ResourceRecords {
       const prepared=this.db.prepare("SELECT data FROM events WHERE kind='formal_review_stage_prepared' AND object=? AND json_extract(data,'$.value.stage.authorityIntent')=?").get(op.id,request.authorityIntent) as Row|undefined,stage=prepared&&JSON.parse(prepared.data).value.stage;
       if(!result?.formalReview||op.status!=='running'||claim?.operation!==op.id||claim?.generation!==op.generation||action.request.item!==op.item||action.binding?.packet!==op.packet||action.role!==request.role||stage?.actorRole!==action.role||action.requestSha256!==request.actionSha256||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||!stage||canonical(stage.action)!==canonical(action.request)||!stage.resources.some((r:ResourceRequest)=>resourceRequestHash(r)===resourceRequestHash(request)))throw new Error('formal_resource_exact_consumer_required');return;
     }
-    if(!op||action.requestSha256!==request.actionSha256||action.role!==request.role||!action.request.resourceRefs.includes(request.resourceRef)||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||action.request.item!==op.item||action.binding?.packet!==op.packet)throw new Error('resource_original_action_or_operation_mismatch');
+    const controlled=controlledSourceOperationMatches(action,op);
+    if(!op||action.requestSha256!==request.actionSha256||action.role!==request.role||!action.request.resourceRefs.includes(request.resourceRef)||action.request.repository.toLowerCase()!==request.repository.toLowerCase()||!controlled&&(action.request.item!==op.item||action.binding?.packet!==op.packet))throw new Error('resource_original_action_or_operation_mismatch');
     const stage={receive:'receiver',implement:'repair',merge:'merge',coordinate:'secretary',test:'test',publish:'publication'}[action.request.action as string];
     const ownMerge=stage==='merge'&&op.status==='merging'&&result?.merge?.phase==='resources_pending'&&result.merge.authorityIntent===request.authorityIntent&&result.merge.resourceRequests?.includes(resourceRequestHash(request))&&claim?.operation===op.id&&claim?.generation===op.generation;
     const message=result?.messageResources?.[action.request.payloadSha256],ownMessage=action.request.action==='coordinate'&&op.status==='messaging'&&message?.phase==='resources_pending'&&message.authorityIntent===request.authorityIntent&&message.resourceRequests?.includes(resourceRequestHash(request));

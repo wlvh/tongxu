@@ -27,3 +27,8 @@ test('all pages are read once and stored bytes are retained separately from the 
   const f=await sourceFixture(t),comments=Array.from({length:105},(_,i)=>({id:i+1,user:{id:11},body:'source '+i}));await f.change({comments});const r=await readEventSource(f.profile,1,join(f.root,'pages'));assert.equal(r.result.complete,true,JSON.stringify(r.result.gaps));assert.equal(r.records.filter(r=>r.kind==='comments').length,2);assert.equal(r.result.semantic.comments.length,105);
   r.records.find(r=>r.kind==='comments')!.body[0]=0;assert.throws(()=>requireEventSource(r,f.profile,1),/event_source_original_changed/);
 });
+
+
+test('a successful-looking HTTP body from a failed actual source process remains incomplete',async t=>{
+ const f=await sourceFixture(t);await f.change({exitCode:3});const observation=await readEventSource(f.profile,1,join(f.root,'failed-process'));assert.equal(observation.result.complete,false);assert.equal(observation.transportGap,'event_source_process_failed');assert.equal(observation.records.length,1);assert.equal(observation.records[0]!.status,200);assert.match(observation.records[0]!.body.toString(),/head/);assert.equal(observation.result.modelTasksStarted,0);
+});
