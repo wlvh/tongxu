@@ -12,19 +12,45 @@ import { dirname,basename } from 'node:path';
 
 type Row=Record<string,any>;
 const profileKey='bounded_event_source_profile';
+const collectedProfileKey=(repository:string,pr:number)=>'bounded_collected_source_profile:'+eventKey(repository,pr);
+export type CollectedSourceBinding={originPlan:string;entry:string;collectionKey:string};
 const sourceKey=(repo:string,pr:number)=>'event-source:'+eventKey(repo,pr);
 
 /** Notification and source observations live beside existing queue events and
  * blobs. This class does not create a second task queue or call an agent. */
 export class EventRecords {
-  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private refreshIntent?:(id:string,observations:OwnerObservation[])=>Row){}
+  constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,private directory:string,private refreshIntent?:(id:string,observations:OwnerObservation[])=>Row,private collectedProfile?:(binding:CollectedSourceBinding)=>EventProfile){}
   private event(kind:string,object:string,data:unknown){const r=this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('source_'+kind,object,JSON.stringify(data),now());return Number(r.lastInsertRowid);}
   private blob(b:Buffer){const sha=hash(b);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha,b);this.bytes(sha);return sha;}
   private bytes(sha:string){const row=this.db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as Row,b=row&&Buffer.from(row.bytes);if(!b||hash(b)!==sha)throw new Error('event_original_missing_or_changed');return b;}
   private profile():EventProfile{const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;if(!row)throw new Error('bounded_event_source_not_configured');return parseEventProfile(this.bytes(row.value));}
   private events(object:string,kind:string){return (this.db.prepare('SELECT * FROM events WHERE object=? AND kind=? ORDER BY id').all(object,'source_'+kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
-  private state(pr:number){const p=this.profile();if(!p.prs.includes(pr))throw new Error('event_subject_not_registered');const r=this.db.prepare('SELECT value FROM meta WHERE key=?').get(sourceKey(p.repository,pr)) as Row;if(!r)throw new Error('event_subject_state_missing');const s=JSON.parse(r.value);if(s.projectionSha256)this.bytes(s.projectionSha256);return s as Row;}
-  private save(pr:number,s:Row){this.db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify(s),sourceKey(this.profile().repository,pr));}
+  private profileFor(pr:number):EventProfile{
+    const normal=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row|undefined;
+    if(normal){const p=parseEventProfile(this.bytes(normal.value));if(p.prs.includes(pr))return p;}
+    const repository=(this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value,row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(collectedProfileKey(repository,pr)) as Row|undefined;
+    if(!row)throw new Error('event_subject_not_registered');return parseEventProfile(this.bytes(row.value));
+  }
+  /** Explicit collection of an already registered private candidate adds only
+   * its bounded read source. It does not change the periodic polling profile. */
+  configureCollectedSource(binding:CollectedSourceBinding){return this.transaction(()=>{
+    if(!this.collectedProfile)throw new Error('collected_source_original_entry_required');const p=parseEventProfile(Buffer.from(canonical(this.collectedProfile(binding)))),key=collectedProfileKey(p.repository,p.prs[0]!),sha=hash(canonical(p));
+    if(p.prs.length!==1)throw new Error('collected_source_single_candidate_required');const pr=p.prs[0]!;
+    const normal=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row|undefined;
+    if(normal){const old=parseEventProfile(this.bytes(normal.value));if(old.prs.includes(pr)){for(const k of ['repository','repositoryId','ghExecutable','ghSha256','executionKind'] as const)if(old[k]!==p[k])throw new Error('collected_source_registered_profile_mismatch');return {profile:old,duplicate:true,modelTasksStarted:0};}}
+    const old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row|undefined;
+    if(old){if(old.value!==sha)throw new Error('collected_source_profile_is_fixed');if(!eventGuardsPresent(this.db))throw new Error('event_storage_guards_missing_or_unknown');return {profile:p,duplicate:true,modelTasksStarted:0};}
+    const owner=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row|undefined)?.value;
+    if(owner&&(JSON.parse(this.bytes(owner).toString()).executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('event_owner_profile_kind_mismatch');
+    if(p.executionKind==='fixture'&&(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE json_extract(result,'$.receiver.executionKind')='native_capture'").get() as Row).n)throw new Error('fixture_event_source_requires_non_native_queue');
+    const subjects=new Set<number>(normal?parseEventProfile(this.bytes(normal.value)).prs:[]);for(const row of this.db.prepare("SELECT value FROM meta WHERE key LIKE 'bounded_collected_source_profile:%'").all() as Row[])for(const n of parseEventProfile(this.bytes(row.value)).prs)subjects.add(n);subjects.add(pr);if(subjects.size>8)throw new Error('bounded_event_subject_limit');
+    for(const guard of eventGuards){const installed=this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(guard.name) as Row|undefined;if(installed&&installed.sql!==guard.sql)throw new Error('event_storage_guards_missing_or_unknown');if(!installed)this.db.exec(guard.sql);}
+    this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(key,sha);this.db.prepare('INSERT INTO meta VALUES(?,?)').run(sourceKey(p.repository,pr),JSON.stringify({pr,complete:false,revision:0,sequence:0,lastStartedAt:null,nextDueAt:null,lastFinishedAt:null,lastGoodAt:null,lastGoodProjectionSha256:null,projectionSha256:null,lastHint:0,consumedHint:0,changes:[],candidate:null,bindings:{},validUntilAt:null}));
+    this.event('collected_source_registered',sourceKey(p.repository,pr),{binding,profileSha256:sha,periodicProfileChanged:false,newModelTasks:0});return {profile:p,duplicate:false,modelTasksStarted:0};
+  });}
+  configurationFor(pr:number){return this.transaction(()=>this.profileFor(pr));}
+  private state(pr:number){const p=this.profileFor(pr);if(!p.prs.includes(pr))throw new Error('event_subject_not_registered');const r=this.db.prepare('SELECT value FROM meta WHERE key=?').get(sourceKey(p.repository,pr)) as Row;if(!r)throw new Error('event_subject_state_missing');const s=JSON.parse(r.value);if(s.projectionSha256)this.bytes(s.projectionSha256);return s as Row;}
+  private save(pr:number,s:Row){this.db.prepare('UPDATE meta SET value=? WHERE key=?').run(JSON.stringify(s),sourceKey(this.profileFor(pr).repository,pr));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseEventProfile(raw),sha=hash(canonical(p));if(p.repository.toLowerCase()!==(this.db.prepare("SELECT value FROM meta WHERE key='repository'").get() as Row).value)throw new Error('event_repository_mismatch');
     const old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;if(old){
@@ -43,9 +69,10 @@ export class EventRecords {
     const owner=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value;
     if(owner&&(JSON.parse(this.bytes(owner).toString()).executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('event_owner_profile_kind_mismatch');
     if(p.executionKind==='fixture'&&(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE json_extract(result,'$.receiver.executionKind')='native_capture'").get() as Row).n)throw new Error('fixture_event_source_requires_non_native_queue');
+    for(const pr of p.prs){const row=this.db.prepare('SELECT value FROM meta WHERE key=?').get(collectedProfileKey(p.repository,pr)) as Row|undefined;if(row){const collected=parseEventProfile(this.bytes(row.value));for(const k of ['repository','repositoryId','ghExecutable','ghSha256','executionKind'] as const)if(collected[k]!==p[k])throw new Error('collected_source_registered_profile_mismatch');}}
     this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(profileKey,sha);
-    for(const pr of p.prs)this.db.prepare('INSERT INTO meta VALUES(?,?)').run(sourceKey(p.repository,pr),JSON.stringify({pr,complete:false,revision:0,sequence:0,lastStartedAt:null,nextDueAt:null,lastFinishedAt:null,lastGoodAt:null,lastGoodProjectionSha256:null,projectionSha256:null,lastHint:0,consumedHint:0,changes:[],candidate:null,bindings:{},validUntilAt:null}));
-    for(const guard of eventGuards)this.db.exec(guard.sql);
+    for(const pr of p.prs)this.db.prepare('INSERT OR IGNORE INTO meta VALUES(?,?)').run(sourceKey(p.repository,pr),JSON.stringify({pr,complete:false,revision:0,sequence:0,lastStartedAt:null,nextDueAt:null,lastFinishedAt:null,lastGoodAt:null,lastGoodProjectionSha256:null,projectionSha256:null,lastHint:0,consumedHint:0,changes:[],candidate:null,bindings:{},validUntilAt:null}));
+    for(const guard of eventGuards){const old=this.db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(guard.name) as Row|undefined;if(old&&old.sql!==guard.sql)throw new Error('event_storage_guards_missing_or_unknown');if(!old)this.db.exec(guard.sql);}
     this.event('configured','event-profile',{profileSha256:sha,executionKind:p.executionKind,automaticModelDispatch:false});return {duplicate:false,profileSha256:sha,modelTasksStarted:0};
   });}
   configuration(){return this.transaction(()=>this.profile());}
@@ -81,7 +108,7 @@ export class EventRecords {
   }
   due(){return this.transaction(()=>{const all=this.dueAt(Date.now()),p=this.profile();return {subjects:all.slice(0,p.maxSubjectsPerTick),deferred:all.slice(p.maxSubjectsPerTick),modelTasksStarted:0};});}
   private knownPublished(pr:number){
-    const p=this.profile(),known:Array<{id:number;bodySha256:string}>=[];
+    const p=this.profileFor(pr),known:Array<{id:number;bodySha256:string}>=[];
     const rows=this.db.prepare("SELECT e.data,o.id AS operation,i.candidate FROM events e JOIN operations o ON e.object='publication:'||o.id JOIN items i ON i.id=o.item WHERE e.kind='publication_verified'").all() as Row[];
     for(const row of rows){const d=JSON.parse(row.data),candidate=JSON.parse(row.candidate);if(d.stage!=='comment'||candidate.repository.toLowerCase()!==p.repository.toLowerCase()||candidate.pr!==pr||!Number.isSafeInteger(d.remote?.id))continue;
       const prepared=this.db.prepare("SELECT data FROM events WHERE object=? AND kind='publication_prepared' ORDER BY id DESC LIMIT 1").get('publication:'+row.operation) as Row|undefined;
@@ -90,15 +117,15 @@ export class EventRecords {
     }
     return known.filter((k,i)=>known.findIndex(x=>x.id===k.id&&x.bodySha256===k.bodySha256)===i).sort((a,b)=>a.id-b.id);
   }
-  beginPoll(pr:number,directory:string){return this.transaction(()=>{
+  beginPoll(pr:number,directory:string,explicit=false){return this.transaction(()=>{
     if(dirname(directory)!==this.directory||!new RegExp(`^source-poll-${pr}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`).test(basename(directory)))throw new Error('event_capture_must_belong_to_original_queue');
-    const p=this.profile(),s=this.state(pr),due=this.dueAt(Date.now()).find(x=>x.pr===pr);if(!due)return {started:false as const,reason:'not_due',originalSequence:s.sequence};
-    s.sequence++;s.lastStartedAt=now();s.nextDueAt=new Date(Date.now()+p.pollIntervalMs).toISOString();
+    const p=this.profileFor(pr),s=this.state(pr),due=explicit?{reason:'explicit_collected_candidate_source_check'}:this.dueAt(Date.now()).find(x=>x.pr===pr);if(!due)return {started:false as const,reason:'not_due',originalSequence:s.sequence};
+    s.sequence++;s.lastStartedAt=now();s.nextDueAt=new Date(Date.now()+p.pollIntervalMs).toISOString();if(explicit){s.complete=false;s.lastProblem={reason:'explicit_collected_source_read_pending',sequence:s.sequence};}
     const data={pr,sequence:s.sequence,directory,startedAt:s.lastStartedAt,controllerPid:process.pid,hintWatermark:s.lastHint,reason:due.reason,profileSha256:hash(canonical(p)),knownPublished:this.knownPublished(pr)};
     this.save(pr,s);this.event('poll_started',sourceKey(p.repository,pr),data);return {started:true as const,...data};
   });}
   observe(pr:number,sequence:number,observation:EventSourceObservation){return this.transaction(()=>{
-    const p=this.profile(),s=this.state(pr),object=sourceKey(p.repository,pr),start=this.events(object,'poll_started').find(e=>e.data.sequence===sequence);
+    const p=this.profileFor(pr),s=this.state(pr),object=sourceKey(p.repository,pr),start=this.events(object,'poll_started').find(e=>e.data.sequence===sequence);
     if(!start)throw new Error('original_source_poll_required');requireEventSource(observation,p,pr);
     if(canonical(start.data.knownPublished)!==canonical(observation.knownPublished)||observation.records.some(r=>!r.directory.startsWith(start.data.directory+'/')))throw new Error('event_original_poll_capture_mismatch');
     const index={profileSha256:observation.profileSha256,pr,sequence,observedAt:observation.observedAt,knownPublished:observation.knownPublished,result:observation.result,records:observation.records.map(r=>({kind:r.kind,endpoint:r.endpoint,page:r.page,status:r.status,headers:r.headers,directory:r.directory,sha256:hash(r.body),bytes:r.body.length}))};
@@ -114,14 +141,15 @@ export class EventRecords {
     const event={pr,sequence,projectionSha256,complete:observation.result.complete,semanticSha256:observation.result.semanticSha256,revision:s.revision,changes:[...new Set(changes)],archived,rawBytes:observation.records.reduce((n,r)=>n+r.body.length,0),newModelTaskCreated:false};this.event('poll_finished',object,event);return {duplicate:false,...event,modelTasksStarted:0};
   });}
   problem(pr:number,sequence:number,reason:string){return this.transaction(()=>{
-    const p=this.profile(),s=this.state(pr),start=this.events(sourceKey(p.repository,pr),'poll_started').find(e=>e.data.sequence===sequence);if(!start)throw new Error('original_source_poll_required');
+    const p=this.profileFor(pr),s=this.state(pr),start=this.events(sourceKey(p.repository,pr),'poll_started').find(e=>e.data.sequence===sequence);if(!start)throw new Error('original_source_poll_required');
     const data={pr,sequence,reason:reason.slice(0,512),archived:sequence<s.sequence};this.event('poll_problem',sourceKey(p.repository,pr),data);if(!data.archived){s.complete=false;s.lastProblem=data;this.save(pr,s);}return data;
   });}
   /** Material changes create a local packet, not another model task. Original
    * calls, immutable W1/W2 evidence and candidate-wide dispatch limits remain. */
-  reconcilePackets(){return this.transaction(()=>{
-    this.profile();const results:Row[]=[];
-    const items=this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[];
+  reconcilePackets(selected?:string[]){return this.transaction(()=>{
+    if(!this.db.prepare("SELECT 1 FROM meta WHERE key=? OR key LIKE 'bounded_collected_source_profile:%'").get(profileKey))throw new Error('bounded_event_source_not_configured');const results:Row[]=[];
+    if(selected&&(!selected.length||selected.length>8||new Set(selected).size!==selected.length))throw new Error('event_selected_items_invalid');
+    const items=(this.db.prepare('SELECT * FROM items ORDER BY created_at,id').all() as Row[]).filter(item=>!selected||selected.includes(item.id));
     if(items.length>256)throw new Error('bounded_event_queue_limit');
     for(const item of items){
       const packet=this.db.prepare('SELECT * FROM packets WHERE id=?').get(item.current_packet) as Row,summary=JSON.parse(packet.summary),candidate=JSON.parse(item.candidate);
@@ -170,5 +198,6 @@ export class EventRecords {
     if(index)for(const ref of index.records){const b=this.bytes(ref.sha256);if(b.length!==ref.bytes)throw new Error('event_capture_length_changed');}
     return {...s,currentResult:s.lastProblem?{complete:false,gaps:[s.lastProblem.reason],candidate:null}:index?.result??null,lastCapturedResult:index?.result??null,originals:index?.records??[],next:'bounded_source_check_and_existing_queue_assessment',modelTasksStarted:0};
   }
+  source(pr:number){return this.transaction(()=>this.view(pr));}
   status(){return this.transaction(()=>{const p=this.profile();return {profileSha256:hash(canonical(p)),subjects:p.prs.map(pr=>this.view(pr)),automaticMerge:false,modelTasksStarted:0};});}
 }

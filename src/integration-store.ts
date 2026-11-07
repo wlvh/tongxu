@@ -15,7 +15,18 @@ export type IntegrationSource={
   operation:string;item:string;packet:number;fingerprint:string;current:boolean;
   context:Row;composition:Row;report:Row;manifestSha256:string;reportSha256:string;contextSha256:string;
   originals:Map<string,Buffer>;
+  materialSources?:Row[];
 };
+function sameCodeSource(first:Row,second:Row){
+  return first.manifestSha256===second.manifestSha256
+    &&first.reportSha256===second.reportSha256
+    &&first.contextSha256===second.contextSha256
+    &&canonical(first.composition)===canonical(second.composition)
+    &&canonical(first.context)===canonical(second.context);
+}
+function storedSource(source:IntegrationSource){
+  return {...source,originals:[...source.originals.keys()].sort()};
+}
 const boundIndex=`CREATE UNIQUE INDEX integration_authority_unique ON events(json_extract(data,'$.value.authorityIntent')) WHERE kind='integration_authority_bound'`;
 
 /** The producer owns only a new private Git artifact. It neither changes an
@@ -53,6 +64,47 @@ export class IntegrationRecords{
   });}
   private boundaryRecords(id:string){return this.events(id).filter(e=>e.kind==='integration_step_boundary').map(e=>{this.bytes(e.data.sha256);return {name:e.data.name as string,sha256:e.data.sha256 as string};});}
   sourceMaterial(id:string){return this.transaction(()=>{const x=this.original(id);return {request:x.request,source:x.source,directory:x.record.directory,requestSha256:x.record.requestSha256,boundaryRecords:this.boundaryRecords(id),originals:x.source.originals.map((sha256:string)=>({sha256,bytes:this.bytes(sha256)}))};});}
+  forOperation(operation:string){return this.transaction(()=>{
+    const rows=this.db.prepare("SELECT object FROM events WHERE kind='integration_prepared' AND json_extract(data,'$.value.operation')=? ORDER BY id DESC").all(operation) as Row[];
+    return rows.map(row=>{const id=row.object.slice('integration:'.length),x=this.original(id);return {request:x.request,state:this.stateOf(id)};});
+  });}
+  equivalentProduced(operation:string,preferred?:string){return this.transaction(()=>{
+    const source=this.source(operation);
+    if(!source.current)throw new Error('integration_source_not_current');
+    const matches=(this.db.prepare("SELECT object FROM events WHERE kind='integration_result' AND json_extract(data,'$.value.success')=1 ORDER BY id").all() as Row[])
+      .map(row=>row.object.slice('integration:'.length))
+      .filter(id=>sameCodeSource(this.original(id).source,source));
+    if(preferred&&matches.includes(preferred))return preferred;
+    if(matches.length>1)throw new Error('conditional_entry_original_integration_ambiguous');
+    return matches[0]??null;
+  });}
+  bindCurrentMaterial(id:string,operation:string){return this.transaction(()=>{
+    const original=this.original(id),state=this.stateOf(id),source=this.source(operation);
+    if(state.phase!=='produced'||!source.current||!sameCodeSource(original.source,source))throw new Error('integration_material_code_or_scope_changed');
+    if(original.source.operation===source.operation&&original.source.packet===source.packet&&original.source.fingerprint===source.fingerprint)return {duplicate:true,physicalCandidatePreserved:true,material:null};
+    const sourceValue=storedSource(source);
+    const semanticSha256=hash(canonical({manifestSha256:source.manifestSha256,reportSha256:source.reportSha256,contextSha256:source.contextSha256,composition:source.composition.sha256,material:(source.materialSources??[]).map(value=>({pr:value.pr,materialSha256:value.materialSha256}))}));
+    for(const [sha,bytes] of source.originals){if(hash(bytes)!==sha)throw new Error('integration_original_changed');this.blob(bytes);}
+    const sourceSha256=this.blob(Buffer.from(canonical(sourceValue))),value={operation,item:source.item,packet:source.packet,fingerprint:source.fingerprint,sourceSha256,semanticSha256};
+    const old=this.events(id).findLast(event=>event.kind==='integration_current_material');
+    if(old&&canonical(old.data)===canonical(value))return {duplicate:true,physicalCandidatePreserved:true,material:{sha256:hash(canonical(value)),...value}};
+    this.event(id,'current_material',value);
+    return {duplicate:false,physicalCandidatePreserved:true,material:{sha256:hash(canonical(value)),...value}};
+  });}
+  private materialOf(id:string,sha?:string|null){
+    const events=this.events(id).filter(event=>event.kind==='integration_current_material');
+    const selected=sha===null?undefined:sha?events.find(event=>hash(canonical(event.data))===sha):events.at(-1);
+    if(sha&&!selected)throw new Error('integration_material_original_missing');
+    if(!selected)return null;
+    const value=selected.data,source=JSON.parse(this.bytes(value.sourceSha256).toString());
+    if(!sameCodeSource(this.original(id).source,source))throw new Error('integration_material_code_or_scope_changed');
+    for(const ref of source.originals)this.bytes(ref);
+    return {sha256:hash(canonical(value)),...value,source};
+  }
+  currentMaterialSource(id:string){return this.transaction(()=>{
+    const original=this.original(id),material=this.materialOf(id);
+    return {source:material?.source??original.source,material};
+  });}
   private checkOf(id:string,observations:OwnerObservation[]){const x=this.original(id);if(x.record.directory!==join(this.directory,'integration-'+x.record.requestSha256))throw new Error('integration_original_workspace_required');const s=this.current(x.request);if(s.packet!==x.source.packet||s.fingerprint!==x.source.fingerprint)throw new Error('integration_source_packet_changed');this.authorityCheck(x.request,s,observations);return {source:s,request:x.request};}
   check(id:string,observations:OwnerObservation[]){return this.transaction(()=>this.checkOf(id,observations));}
   start(id:string,observations:OwnerObservation[]){return this.transaction(()=>{this.checkOf(id,observations);const s=this.stateOf(id);if(s.phase!=='prepared_not_started')throw new Error('integration_original_started_or_closed');this.guards();this.event(id,'started',{controllerPid:process.pid,startedAt:now()});return this.stateOf(id);});}
@@ -77,10 +129,15 @@ export class IntegrationRecords{
     for(const [sha,b] of c.originals){if(hash(b)!==sha)throw new Error('integration_original_changed');this.blob(b);}if(c.success){this.blob(c.diff);this.blob(c.bundle);}this.event(id,'result',value);return {...this.stateOf(id),duplicate:false};
   });}
   artifacts(id:string){return this.transaction(()=>{const s=this.stateOf(id);if(s.phase!=='produced')throw new Error('integration_candidate_not_produced');return {state:s,bundle:this.bytes(s.result!.bundleSha256),diff:this.bytes(s.result!.diffSha256)};});}
-  candidateMaterial(id:string){return this.transaction(()=>{
+  candidateMaterial(id:string,materialSha256?:string|null){return this.transaction(()=>{
     const original=this.original(id),state=this.stateOf(id);if(state.phase!=='produced')throw new Error('integration_candidate_not_produced');
     const encoded=(b:Buffer)=>{let text:string;try{text=new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(b);if(!Buffer.from(text).equals(b))throw new Error();return {encoding:'utf8',text};}catch{return {encoding:'base64',text:b.toString('base64')};}};
-    return {id,requestSha256:state.requestSha256,source:original.source,current:state.currentSource,selectionReason:original.request.selectionReason,selectionSource:original.request.source,candidate:state.result!.candidate,diff:{sha256:state.result!.diffSha256,...encoded(this.bytes(state.result!.diffSha256))},bundleSha256:state.result!.bundleSha256,originals:original.source.originals.map((sha256:string)=>{const b=this.bytes(sha256);return {sha256,bytes:b.length,...encoded(b)};}),sourceAcceptanceTransferred:false,permissionGranted:false};
+    const material=this.materialOf(id,materialSha256),latest=this.materialOf(id);
+    return {id,requestSha256:state.requestSha256,source:original.source,current:state.currentSource&&(material?.sha256??null)===(latest?.sha256??null),...(material?{currentMaterial:{...material,originals:material.source.originals.map((sha256:string)=>{const bytes=this.bytes(sha256);return {sha256,bytes:bytes.length,...encoded(bytes)};})}}:{}),selectionReason:original.request.selectionReason,selectionSource:original.request.source,candidate:state.result!.candidate,diff:{sha256:state.result!.diffSha256,...encoded(this.bytes(state.result!.diffSha256))},bundleSha256:state.result!.bundleSha256,originals:original.source.originals.map((sha256:string)=>{const b=this.bytes(sha256);return {sha256,bytes:b.length,...encoded(b)};}),sourceAcceptanceTransferred:false,permissionGranted:false};
+  });}
+  candidateResult(id:string){return this.transaction(()=>{
+    const x=this.original(id),result=this.events(id).find(e=>e.kind==='integration_result')?.data;if(!result?.success)throw new Error('integration_candidate_not_produced');for(const sha of result.originals)this.bytes(sha);
+    const subject=x.source.composition.subject,c=result.candidate;if(c.B!==subject.B||c.T!==subject.testedTree||c.target!==subject.targetRef||c.repository!==subject.repository)throw new Error('integration_candidate_binding_changed');return {id,requestSha256:x.record.requestSha256,source:x.source,candidate:c};
   });}
   candidateProducer(candidate:Row):string|null{return this.transaction(()=>{
     const matches=(this.db.prepare("SELECT object,data FROM events WHERE kind='integration_result' AND json_extract(data,'$.value.success')=1").all() as Row[]).filter(e=>{const c=JSON.parse(e.data).value.candidate;return c.H===candidate.H&&c.B===candidate.B&&c.target===candidate.targetRef&&c.repository.toLowerCase()===candidate.repository.toLowerCase();});
@@ -88,7 +145,7 @@ export class IntegrationRecords{
   });}
   closeUnstarted(id:string){return this.transaction(()=>{const s=this.stateOf(id);if(s.phase!=='prepared_not_started'&&s.phase!=='closed_unstarted')throw new Error('integration_original_started_or_closed');if(s.phase!=='closed_unstarted')this.event(id,'closed_unstarted',{originalRequestPreserved:true,newGitProcesses:0});return this.stateOf(id);});}
   problem(id:string,reason:string){return this.transaction(()=>{this.original(id);this.event(id,'problem',{reason,observedAt:now(),automaticResend:false});});}
-  private stateOf(id:string){const x=this.original(id),events=this.events(id),result=events.find(e=>e.kind==='integration_result')?.data;if(result)for(const sha of result.originals)this.bytes(sha);let current=false;try{const s=this.source(x.request.operation);current=s.current&&s.packet===x.source.packet&&s.fingerprint===x.source.fingerprint;}catch{}
+  private stateOf(id:string){const x=this.original(id),events=this.events(id),result=events.find(e=>e.kind==='integration_result')?.data;if(result)for(const sha of result.originals)this.bytes(sha);let current=false;try{const material=this.materialOf(id),expected=material?.source??x.source,s=this.source(expected.operation);current=s.current&&s.packet===expected.packet&&s.fingerprint===expected.fingerprint;}catch{}
     return {id,requestSha256:x.record.requestSha256,operation:x.request.operation,subjectSha256:x.request.subjectSha256,directory:x.record.directory,phase:result?(result.success?'produced':'failed_ended'):events.some(e=>e.kind==='integration_closed_unstarted')?'closed_unstarted':events.some(e=>e.kind==='integration_started')?'started_or_unknown':'prepared_not_started',currentSource:current,result:result??null,problems:events.filter(e=>e.kind==='integration_problem').map(e=>e.data),automaticResend:false,technicalAcceptanceGranted:false,targetUpdated:false,userOutcomeAccepted:false};}
   state(id:string){return this.transaction(()=>this.stateOf(id));}
 }

@@ -21,3 +21,10 @@ test('only the changed shared contract or responsibility invalidates its identit
 test('a model report cannot be declared implementation evidence, and shared paths cannot be declared independent',()=>{
   const p=plan();p.tasks[0]!.outputs[0]!.kind='message_report';assert.throws(()=>parse(p),/output_invalid/);p.tasks[0]!.outputs[0]!.kind='repair_candidate';p.tasks[0]!.independentPaths.push('src/api.ts');assert.throws(()=>parse(p),/shared_part_invalid/);p.tasks[0]!.independentPaths.pop();p.shared[0]!.blockedStages=['receive'];assert.throws(()=>parse(p),/shared_part_invalid/);
 });
+
+
+test('an integration receipt declares its exact member scope without changing a legacy individual output',()=>{
+ const p=plan(),individual=Buffer.from(JSON.stringify(p));p.tasks[1]!.outputs=[{id:'pair-accepted',stage:'receive',kind:'integration_receiver_judgment',members:['A','B']} as any];assert.doesNotThrow(()=>parse(p));assert.deepEqual(parseCoordinationPlan(individual),plan());
+ for(const members of [['A'],['A','missing'],['A','A'],['A','old-a']]){const wrong=structuredClone(p);(wrong.tasks[1]!.outputs[0] as any).members=members;assert.throws(()=>parse(wrong),/integration_output_members/);}
+ const wrong=structuredClone(p);(wrong.tasks[1]!.outputs[0] as any).kind='receiver_judgment';assert.throws(()=>parse(wrong),/output_invalid/);
+});

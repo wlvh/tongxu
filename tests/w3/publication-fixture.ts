@@ -6,15 +6,15 @@ import {runReception} from '../../src/receiver.js';
 import {hash} from '../../src/snapshot.js';
 import {nativeReceptionFixture} from '../w7/native-reception-fixture.js';
 
-export async function publicationFixture(t: test.TestContext, mode = 'normal',receiverMode='complete') {
-  const f = await setup(t,receiverMode);
+export async function publicationFixture(t: test.TestContext, mode = 'normal',receiverMode='complete',factory?:(t:test.TestContext)=>Promise<Awaited<ReturnType<typeof setup>>>) {
+  const f = factory?await factory(t):await setup(t,receiverMode);
   // Native-shaped local fixture plus a fake gh process. No supplier or GitHub
   // request is possible; this declaration is not reported as a real capture.
   const secret = 'PRIVATE_REPORT_SENTINEL @someone /Users/private/token=fixture ```';
   await nativeReceptionFixture(f.plan.claudeExecutable,f.trace,{mode:receiverMode,report:secret});
   await writeFile(f.path, JSON.stringify({ ...f.plan, executionKind: 'native_capture' }));
   const result = await runReception(f.path), remotePath = join(f.root, 'fake-remote.json');
-  const data = { mode, repository: 'fixture/reception', repositoryId: 71, actor: { id: 72, login: 'fixture-publisher' }, H: result.candidate.H, B: result.candidate.B, target: result.candidate.targetRef, comments: [], statuses: [], requests: [], posts: [], rejectionConsumed: false };
+  const data = { mode, pr:result.candidate.pr, repository: 'fixture/reception', repositoryId: 71, actor: { id: 72, login: 'fixture-publisher' }, H: result.candidate.H, B: result.candidate.B, target: result.candidate.targetRef, comments: [], statuses: [], requests: [], posts: [], rejectionConsumed: false };
   await writeFile(remotePath, JSON.stringify(data)); const gh = join(f.root, 'gh-fixture.mjs');
   await writeFile(gh, `#!${process.execPath}
 import fs from 'node:fs';
@@ -27,20 +27,20 @@ function emit(status,value){save();process.stdout.write('HTTP/2.0 '+status+' Fix
 if(method==='GET'){
  if(endpoint==='user')emit(200,r.actor);
  else if(endpoint===base)emit(200,{id:r.repositoryId,full_name:r.repository,permissions:{push:true}});
- else if(endpoint===base+'/pulls/1')emit(200,{number:1,state:'open',head:{sha:r.H,repo:{id:r.repositoryId}},base:{sha:r.B,ref:r.target,repo:{id:r.repositoryId}}});
+ else if(endpoint===base+'/pulls/'+r.pr)emit(200,{number:r.pr,state:'open',head:{sha:r.H,repo:{id:r.repositoryId}},base:{sha:r.B,ref:r.target,repo:{id:r.repositoryId}}});
  else if(endpoint.startsWith(base+'/git/ref/heads/')){if(r.mode==='stop-on-ref'){const q=await QueueStore.open(store);q.control('scope','investment','stopped','fixture:concurrent-stop');q.close();}emit(200,{ref:'refs/heads/'+r.target,object:{type:'commit',sha:r.refB??r.B}});}
- else if(endpoint.includes('/issues/1/comments?')){const page=Number(new URLSearchParams(endpoint.split('?')[1]).get('page'));emit(200,r.comments.slice((page-1)*100,page*100));}
+ else if(endpoint.includes('/issues/'+r.pr+'/comments?')){const page=Number(new URLSearchParams(endpoint.split('?')[1]).get('page'));emit(200,r.comments.slice((page-1)*100,page*100));}
  else if(endpoint.startsWith(base+'/issues/comments/')){const value=r.comments.find(x=>x.id===Number(endpoint.split('/').at(-1)));emit(value?200:404,value??{message:'missing'});}
  else if(endpoint.includes('/commits/')&&endpoint.includes('/statuses?')){const page=Number(new URLSearchParams(endpoint.split('?')[1]).get('page'));emit(200,r.statuses.slice((page-1)*100,page*100));}
  else emit(404,{message:'fixture endpoint absent'});
 }else{
- const p=JSON.parse(input),comment=endpoint===base+'/issues/1/comments';
+ const p=JSON.parse(input),comment=endpoint===base+'/issues/'+r.pr+'/comments';
  r.posts.push({endpoint,payload:p});
  if(r.mode==='empty-no-create'){save();process.exit(1);}
  if(!comment&&r.mode==='reject-status'&&!r.rejectionConsumed){r.rejectionConsumed=true;emit(403,{message:'explicit fixture rejection'});}
  else {
   if(comment&&r.mode==='slow-comment')await new Promise(resolve=>setTimeout(resolve,600));
-  const value=comment?{id:100+r.comments.length,user:r.actor,body:p.body,issue_url:'https://api.github.com/'+base+'/issues/1',html_url:'https://github.com/'+r.repository+'/pull/1#issuecomment-'+(100+r.comments.length)}:{id:200+r.statuses.length,creator:r.actor,...p};
+  const value=comment?{id:100+r.comments.length,user:r.actor,body:p.body,issue_url:'https://api.github.com/'+base+'/issues/'+r.pr,html_url:'https://github.com/'+r.repository+'/pull/'+r.pr+'#issuecomment-'+(100+r.comments.length)}:{id:200+r.statuses.length,creator:r.actor,...p};
   if(comment)r.comments.push(value);else r.statuses.unshift(value);
   if(comment&&r.mode==='change-head-after-comment')r.H='a'.repeat(40);
   save();

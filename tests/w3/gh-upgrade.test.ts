@@ -64,3 +64,11 @@ test('a gh replacement during the last GET or POST keeps raw evidence and cannot
  const f=await fixture(t);await writeFile(f.target,f.code('99.0.0')+`\nif(fs.readFileSync(${JSON.stringify(f.trace)},'utf8').trim().split('\\n').length===5)fs.appendFileSync(process.argv[1],'\\n// changed on last source read\\n');\n`,{mode:0o700});
  await assert.rejects(observeRemoteCandidate({ghExecutable:f.executable,ghSha256:f.configured,repositoryId:17} as ObservedCandidateRequest,{repository:'fixture/upgrade',pr:1,H:'a'.repeat(40),B:'b'.repeat(40),T:'c'.repeat(40),targetRef:'main'} as ObservedCandidateBinding,f.root),/changed_during_operation/);assert.equal((await readFile(f.trace,'utf8')).trim().split('\n').length,5);
 });
+
+
+test('readonly fixture capability probes and GET all use isolated credential-free environments after an executable upgrade',async t=>{
+ const f=await fixture(t),trace=join(f.root,'fixture-environments.jsonl'),marker="const args=process.argv.slice(2);",code=f.code('103.0.0');assert.ok(code.includes(marker));
+ const record="fs.appendFileSync("+JSON.stringify(trace)+",JSON.stringify({args,home:process.env.HOME,cwd:process.cwd(),hasCredential:Boolean(process.env.GH_TOKEN||process.env.GITHUB_TOKEN||process.env.OPENAI_API_KEY)})+'\\n');";await writeFile(f.target,code.replace(marker,marker+record),{mode:0o700});
+ const names=['GH_TOKEN','GITHUB_TOKEN','OPENAI_API_KEY'] as const,before=Object.fromEntries(names.map(k=>[k,process.env[k]]));try{for(const name of names)process.env[name]='explicit-fixture-sentinel';const http=new PublicationHttp(f.root,f.executable,f.configured,'fixture/upgrade',1,'a'.repeat(40),'main',true,false);assert.equal((await http.request('GET',readEndpoint)).status,200);}finally{for(const name of names){if(before[name]===undefined)delete process.env[name];else process.env[name]=before[name];}}
+ const rows=(await readFile(trace,'utf8')).trim().split('\n').map(line=>JSON.parse(line));assert.equal(rows.length,3);assert.ok(rows.every(r=>r.hasCredential===false&&r.home===r.cwd),JSON.stringify(rows));assert.deepEqual(rows.slice(0,2).map(r=>r.cwd),[f.root,f.root]);
+});

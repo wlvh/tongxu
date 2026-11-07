@@ -29,6 +29,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 ## 1. Testing Philosophy
 
+条件交付入口沿 `test:coordination`、`test:integration` 和 `test:integration-member` 验证。`conditional-entry.test.ts` 覆盖正常 CLI、完整接收及下游实际消费、来源变化、原 W1/W2 保留和候选共用三批限额。`conditional-member-repair.test.ts` 覆盖原 RETURN 到成员 H1、真实隔离验证和重组、来源过期/失败/候选变化、正文更新后的组合复用与准确接收输入。本人来源和账本由明确样例提供，运行报告分别记录实际 Git/Docker 与模型/远端样例范围。
+
 行为、契约和失败边界优先于实现形状。固定输入减少外部数据漂移；真实外部调用需明确授权与条件。缺材料、未知、部分输出、拒绝和未运行不是通过。某个文件名带 native、integration 或 live，不足以判断它实际启动了什么，必须看 fixture 和执行器。
 
 ## 2. Test Layers and What Each Proves

@@ -22,7 +22,7 @@ export function parseQueueContext(v: unknown): QueueContext {
   const reference = (r: Reference): Reference => ({ id: r.id, version: r.version, source: r.source });
   return { schemaVersion: 1, scope: reference(c.scope), arrangement: reference(c.arrangement), decisionKind: c.decisionKind, requires: c.requires.map(r => ({ item: r.item, type: r.type, version: r.version, blocks: r.blocks, source: r.source, canContinue: r.canContinue })) };
 }
-export function candidateKey(candidate: Candidate, context: QueueContext, composition?:Composition): string {
+export function candidateKey(candidate: Pick<Candidate,'repository'|'pr'|'H'|'B'|'targetRef'>, context: QueueContext, composition?:Composition): string {
   const identity=[candidate.repository.toLowerCase(), candidate.pr, candidate.H, candidate.B, candidate.targetRef, context.scope.id, context.scope.version, context.arrangement.id, context.arrangement.version];
   return hash(canonical(composition?[...identity,composition.key]:identity));
 }

@@ -21,6 +21,16 @@
   "contracts": {
     "capabilities": [
       {
+        "anchor_id": "CAPABILITY.conditional_delivery_entry",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按 Issue #9 已采用 F12 条款及 docs/conditional_delivery_entry.md，已配置项目可经有限 CLI 选择动作，由原协调、消息、组合、测试、接收和修复记录推导准确输入。相关材料与协作安排进入接收输入，顺序组合判断与下游实际消费分别保存。权限、资源、真实模型和本人使用结果按各自原条件验证。实现 src/conditional-entry*.ts、src/candidate-validation*.ts。真实生产全链和本人结果待验。",
+        "audience": ["business_user", "agent", "reviewer"],
+        "test_anchor": "tests/integration/conditional-entry.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-07"
+      },
+      {
         "anchor_id": "CAPABILITY.fixed_pr_evidence",
         "type": "capability",
         "status": "active",

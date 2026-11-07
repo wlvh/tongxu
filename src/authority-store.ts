@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
-import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, exactKeys, isAuthorityDigest, sharedAccountApprovalProjection, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type DeliveryOutcomeProposal } from './authority-contract.js';
+import { parseAuthorityProfile, parseOwnerProposal, parseActionRequest, scopeBodyHash, actionHash, roleCanRequest, ownerDecisionText, exactKeys, isAuthorityDigest, sharedAccountApprovalProjection, type AuthorityProfile, type PreparedProposal, type OwnerProposal, type AuthorityRole, type ActionRequest,type AuthorityCandidateSource,type DeliveryOutcomeProposal } from './authority-contract.js';
 import { requireOwnerObservation,inspectStoredOwnerSource, type OwnerObservation } from './authority-source.js';
 import {installRecompositionTestGuards} from './recomposition-test-guards.js';
 import {publicationConsumerKey,legacyPublicationEffectGuard,governedPublicationEffectGuard,publicationGuardsCurrent,installPublicationGuards,overallConsumerKey,overallAdmission,expectedEffectGuard,installOverallResultGuard} from './publication-guards.js';
@@ -36,7 +36,7 @@ const guards=[
  * a second operation scheduler nor a resource balance. Nothing executes here. */
 export class AuthorityRecords {
   constructor(private db:DatabaseSync,private transaction:<T>(f:()=>T)=>T,
-    private currentItem:(id:string)=>Row,private deliveryOutcomes?:{check:(p:DeliveryOutcomeProposal)=>unknown;record:(sha:string)=>unknown}){}
+    private currentItem:(id:string,source?:AuthorityCandidateSource)=>Row,private deliveryOutcomes?:{check:(p:DeliveryOutcomeProposal)=>unknown;record:(sha:string)=>unknown}){}
   private event(kind:string,object:string,data:unknown){this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run(kind,object,JSON.stringify(data),now());}
   private events(object:string,kind?:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE object=? ORDER BY id').all(object) as Row[]).filter(e=>!kind||e.kind===kind).map(e=>({...e,data:JSON.parse(e.data)}));}
   private all(kind:string):Row[]{return (this.db.prepare('SELECT * FROM events WHERE kind=? ORDER BY id').all(kind) as Row[]).map(e=>({...e,data:JSON.parse(e.data)}));}
@@ -222,7 +222,7 @@ export class AuthorityRecords {
     if(stops.some(s=>s.kind==='investment'||s.kind==='implementation'&&request.action==='implement'||s.kind==='merge'&&request.action==='merge'))throw new Error('owner_action_stopped');
     let binding:Row|null=null;
     if(request.item!==null){
-      binding=this.currentItem(request.item);const c=binding.candidate,context=binding.context;
+      if(request.candidateSource&&role!=='background')throw new Error('authority_candidate_source_role_invalid');binding=this.currentItem(request.item,request.candidateSource);if(request.candidateSource&&canonical(binding.candidateSource)!==canonical(request.candidateSource))throw new Error('authority_candidate_source_binding_required');const c=binding.candidate,context=binding.context;
       if(!binding.current||c.repository.toLowerCase()!==request.repository.toLowerCase()||c.targetRef!==request.target||c.H!==request.candidate?.H||c.B!==request.candidate?.B||(binding.subjectSha256??null)!==request.candidate?.subjectSha256||context.scope.id!==scope.scopeId||context.scope.version!==scope.scopeVersion)throw new Error('authority_current_candidate_or_scope_mismatch');
       // Coordination can record how to unblock an exact candidate. It grants
       // no implementation/receive/merge permission while prerequisites wait.

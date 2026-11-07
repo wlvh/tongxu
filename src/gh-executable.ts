@@ -11,14 +11,14 @@ const flags=['--hostname','--method','--include','--input','--header','--raw-fie
 export type GhExecutableSelection={kind:'configured-original-gh-v1'|'configured-current-gh-v1';externalSelection?:ExternalExecutable;configuredPath:string;configuredSha256:string;realpath:string;sha256:string;version?:string;apiHelpSha256?:string};
 /** A configured entry can be upgraded. Old fingerprints describe setup, while
  * one read/publication attempt still uses one observed executable throughout. */
-export async function selectGhExecutable(path:string,configuredSha256:string,signal?:AbortSignal):Promise<GhExecutableSelection>{
+export async function selectGhExecutable(path:string,configuredSha256:string,signal?:AbortSignal,probeEnvironment?:{cwd:string;env:NodeJS.ProcessEnv}):Promise<GhExecutableSelection>{
   if(signal?.aborted)throw new Error('gh_capability_check_cancelled');
   if(!isAbsolute(path)||resolve(path)!==path||!digest.test(configuredSha256))throw new Error('gh_entry_invalid');
   const externalSelection=selectExternalExecutable(path),actual=externalSelection.realpath,s=await lstat(actual);
   if(!s.isFile()||s.nlink!==1||!(s.mode&0o111)||s.size>128*1024*1024)throw new Error('gh_entry_invalid');
   const sha256=hash(await readFile(actual)),base={externalSelection,configuredPath:path,configuredSha256,realpath:actual,sha256};
   if(sha256===configuredSha256)return {kind:'configured-original-gh-v1',...base};
-  const options={signal,killSignal:'SIGKILL' as const,timeout:10000,maxBuffer:2*1024*1024,env:{...process.env,GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'}};
+  const options={signal,killSignal:'SIGKILL' as const,timeout:10000,maxBuffer:2*1024*1024,...(probeEnvironment?{cwd:probeEnvironment.cwd}:{}),env:{...(probeEnvironment?.env??process.env),GH_PROMPT_DISABLED:'1',GH_PAGER:'cat',PAGER:'cat'}};
   const probe=(args:string[])=>new Promise<string>((resolve,reject)=>{
     if(signal?.aborted){reject(new Error('gh_capability_check_cancelled'));return;}
     let ended=false,result:{error:Error|null;stdout:string}|undefined;

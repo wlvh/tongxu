@@ -47,3 +47,6 @@ export function parseLedgerReply(raw:Buffer,p:LedgerProfile,c:LedgerCommand):Led
   }
   return x;
 }
+
+/** Match a source-only H1 test to its one actual original repair operation. */
+export function controlledSourceOperationMatches(action:any,op:any):boolean{const source=action.request?.candidateSource,binding=action.binding;return Boolean(op&&source?.kind==='controlled-member-observation'&&action.role==='background'&&action.request.action==='test'&&binding?.sourceOnlyObservation===true&&binding.packet===null&&source.sha256===action.request.item&&source.sha256===binding.fingerprint&&canonical(binding.candidateSource)===canonical(source)&&binding.originalOperation===op.id&&binding.originalItem===op.item&&binding.originalPacket===op.packet);}
