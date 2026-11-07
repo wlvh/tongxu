@@ -9,7 +9,11 @@ import {memberInputFixture} from '../integration-member/repair-fixture.js';
 import {messageFixture} from '../w6/message-fixture.js';
 import {readPacket} from '../../src/queue-evidence.js';
 import {canonical} from '../../src/comparison.js';
-import {hash} from '../../src/snapshot.js';
+import {hash,Snapshot} from '../../src/snapshot.js';
+import {collectConditionalCandidate,type ConditionalCollection} from '../../src/conditional-entry-source.js';
+import {verify} from '../../src/verification.js';
+import {runObservedCandidate} from '../../src/observed-candidate.js';
+import {runReception} from '../../src/receiver.js';
 import type {CoordinationPlan} from '../../src/coordination-contract.js';
 import type {ConditionalEntryPlan} from '../../src/conditional-entry-contract.js';
 import {parseConditionalRepairProfile} from '../../src/conditional-entry-repair.js';
@@ -23,7 +27,7 @@ import {randomUUID} from 'node:crypto';
 
 const noInput=(r:any)=>r.messages.every((m:any)=>!m.sent&&!m.delivery&&!m.reply)&&r.runtimes.every((r:any)=>!r.started||r.ended?.proof.knownUnstarted===true&&r.captureVerification?.proof.knownUnstarted===true);
 
-for(const mode of ['local','owner-missing','governed','monitored','governed-monitored','second-round'])test('normal entry derives a real member RETURN through original gates: '+mode,async t=>{
+for(const mode of ['local','owner-missing','governed','monitored','governed-monitored','second-round','current-parent'])test('normal entry derives a real member RETURN through original gates: '+mode,async t=>{
  const ownerMissing=mode==='owner-missing';
  const f=await memberInputFixture(t,mode==='second-round'?'project-rounds':'project',true,mode.includes('monitored')),roles=await messageFixture(t),memberB=f.q.import(await readPacket(f.snapshots[1]!,join(f.root,'member-b-verification'),join(f.root,'integration-context.json')));
  const authorBefore=await f.authorState(),remote=f.originalSource??await memberSourceFixture(f.root,f.A,f.B,f.objects);
@@ -48,8 +52,125 @@ for(const mode of ['local','owner-missing','governed','monitored','governed-moni
   f.q.enableReceiverCorrections();f.q.authority().configure(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-owner-source-profile',repository:'fixture/reception',issue:8,ownerId:101,executorId:202,ghExecutable:f.plan.claudeExecutable,ghSha256:hash(await readFile(f.plan.claudeExecutable)),executionKind:'fixture',maxObservationAgeMs:300000,maxGrantDurationMs:86400000})));
   const before=await readFile(f.model.trace).catch(()=>Buffer.alloc(0));await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),/conditional_entry_repair_authority_required/);await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),/conditional_entry_repair_authority_required/);assert.deepEqual(await readFile(f.model.trace).catch(()=>Buffer.alloc(0)),before);assert.deepEqual(await f.authorState(),authorBefore);assert.ok(!f.q.status().events.some((e:any)=>e.kind==='coordination_normal_entry_step'&&JSON.parse(e.data).value.reference.kind==='repair'));return;
  }
+ let selectedParent=f.parent;
+ let historicalParentOriginal:string|undefined;
+ if(mode==='current-parent'){
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'));
+  historicalParentOriginal=(db.prepare('SELECT result FROM operations WHERE id=?').get(f.parent.operation) as any).result;
+  const traceBefore=await readFile(f.model.trace).catch(()=>Buffer.alloc(0));
+  const resourcesBefore=f.q.status().events.filter((e:any)=>e.kind.startsWith('resource_'));
+  await remote.publishIntegration(f.candidate.H,join(f.produced.directory,'candidate.git'));
+  const remoteState=JSON.parse(await readFile(remote.state,'utf8'));
+  remoteState.integration.body='Updated parent explanation, with the same member H and manifest.';
+  await writeFile(remote.state,canonical(remoteState));
+  const collection:ConditionalCollection={schemaVersion:1,kind:'tongxu-conditional-candidate-collection',integration:f.association.integration,integrationRequestSha256:f.produced.requestSha256,snapshot:join(f.root,'current-parent-w1'),objects:join(f.produced.directory,'candidate.git'),candidate:{repository:'fixture/reception',pr:99,H:f.candidate.H,B:f.B,T:f.candidate.T,targetRef:'fixture'},context:f.context as ConditionalCollection['context']};
+  assert.equal((await collectConditionalCandidate(entry,collection,f.root,async()=>{},async()=>{})).collectionComplete,true);
+  const verification=join(f.root,'current-parent-w2');
+  await verify({snapshots:[collection.snapshot],objects:collection.objects,plan:join(f.root,'units-test.json'),output:verification});
+  assert.equal(f.q.import(await readPacket(collection.snapshot,verification,join(f.root,'integration-context.json'))).item,f.candidateItem);
+  const currentPacket=db.prepare('SELECT packets.* FROM items JOIN packets ON packets.id=items.current_packet WHERE items.id=?').get(f.candidateItem) as any;
+  const observation=join(f.root,'current-parent-observation.json');
+  await writeFile(observation,canonical({schemaVersion:1,kind:'tongxu-observed-integration-candidate',integration:f.association.integration,item:f.candidateItem,packet:currentPacket.id,fingerprint:currentPacket.fingerprint,source:'Actual new parent collection and own Docker W2 on unchanged integration code',repositoryId:1,ghExecutable:remote.executable,ghSha256:remote.sha256,executionKind:'fixture'}));
+  await runObservedCandidate(f.store,observation);
+  assert.equal(f.q.receiverState(f.parent.operation).result.receiver.currentMaterialMatches,false);
+  // A complete historical parent alone cannot authorize a current repair.
+  await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),/conditional_entry_real_return_required/);
+  selectedParent=await runReception(f.receiverPath);
+  assert.notEqual(selectedParent.operation,f.parent.operation);
+  assert.equal(selectedParent.receiver.judgment.verdict,'RETURN_FOR_WORK');
+  assert.equal(f.q.receiverState(selectedParent.operation).result.receiver.currentMaterialMatches,true);
+
+  // Controlled corruption of this private fixture checks refusal boundaries.
+  // Every changed row/blob is restored before the actual normal repair.
+  const rejectOperation=async(operation:string,status:string,change:(result:any)=>void,reason:RegExp)=>{
+   const row=db.prepare('SELECT status,result FROM operations WHERE id=?').get(operation) as any;
+   const altered=JSON.parse(row.result);change(altered);
+   db.prepare('UPDATE operations SET status=?,result=? WHERE id=?').run(status,canonical(altered),operation);
+   try{await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),reason);}
+   finally{db.prepare('UPDATE operations SET status=?,result=? WHERE id=?').run(row.status,row.result,operation);}
+  };
+  assert.throws(()=>db.prepare("UPDATE operations SET status='repairing' WHERE id=?").run(f.parent.operation),/integration_requires_member_scoped_repair/);
+  await rejectOperation(f.parent.operation,'complete',r=>{r.receiver.controllerReturned=false;},/conditional_entry_complete_return_required/);
+  await rejectOperation(selectedParent.operation,'complete',r=>{r.receiver.controllerReturned=false;},/conditional_entry_complete_return_required/);
+  await rejectOperation(selectedParent.operation,'complete',r=>{r.receiver.phase='unknown';},/original_receiver_judgment_unavailable/);
+  for(const operation of [f.parent.operation,selectedParent.operation]){
+   const receiver=JSON.parse((db.prepare('SELECT result FROM operations WHERE id=?').get(operation) as any).result).receiver;
+   const sha=receiver.blobs['completed.json'].sha256;
+   const original=(db.prepare('SELECT bytes FROM blobs WHERE hash=?').get(sha) as any).bytes;
+   db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(Buffer.from('damaged private fixture capture'),sha);
+   try{await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),/stored_evidence_hash_mismatch/);}
+   finally{db.prepare('UPDATE blobs SET bytes=? WHERE hash=?').run(original,sha);}
+  }
+
+  // A different PR identity for the same private integration has its own real
+  // W2 and complete reception. Both parent RETURNs are current and ambiguous.
+  const snapshot=join(f.root,'other-current-parent-w1'),other=await Snapshot.create(snapshot,'fixture/reception',100,[],[]),at=new Date().toISOString();
+  other.manifest.candidate={repository:'fixture/reception',pr:100,H:f.candidate.H,B:f.B,mergeBase:f.B,targetRef:'fixture',observedAt:at};
+  await other.artifact(canonical({explicitFixture:true,H:f.candidate.H,pr:100}),{kind:'pr',round:1,retrievedAt:at,provenance:'explicit-local-fixture',status:200});
+  other.manifest.rounds.push({number:1,startedAt:at,finishedAt:at,coverage:{},sources:[],notes:[],gaps:[],limitations:['explicit_PR_identity_fixture'],current:true});await other.save();await other.close();
+  const otherVerification=join(f.root,'other-current-parent-w2');
+  await verify({snapshots:[snapshot],objects:collection.objects,plan:join(f.root,'units-test.json'),output:otherVerification});
+  const otherPacket=await readPacket(snapshot,otherVerification,join(f.root,'integration-context.json')),otherItem=f.q.import(otherPacket);
+  f.q.attachIntegrationCandidate(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-integration-candidate',integration:f.association.integration,item:otherItem.item,packet:otherItem.packet,fingerprint:otherPacket.fingerprint,source:'Explicit alternate PR identity with its own real W2'})));
+  const otherReceiverPath=join(f.root,'other-current-parent-receiver.json');
+  await writeFile(otherReceiverPath,canonical({...f.receiverPlan,item:otherItem.item}));
+  const otherReturn=await runReception(otherReceiverPath);
+  assert.equal(f.q.receiverState(otherReturn.operation).result.receiver.currentMaterialMatches,true);
+  assert.equal(f.q.receiverState(selectedParent.operation).result.receiver.currentMaterialMatches,true);
+  await assert.rejects(()=>run('repair-member','--task','A','--finding','0'),/conditional_entry_return_ambiguous/);
+  // Supersede only the alternate parent's materials without a new RETURN.
+  const laterSnapshot=join(f.root,'other-parent-later-w1');
+  const later=await Snapshot.create(laterSnapshot,'fixture/reception',100,[],[]),laterAt=new Date().toISOString();
+  later.manifest.candidate={...other.manifest.candidate,observedAt:laterAt};
+  await later.artifact(canonical({explicitFixture:true,H:f.candidate.H,pr:100,body:'New alternate parent material, no current RETURN'}),{kind:'pr',round:1,retrievedAt:laterAt,provenance:'explicit-local-fixture',status:200});
+  later.manifest.rounds.push({number:1,startedAt:laterAt,finishedAt:laterAt,coverage:{},sources:[],notes:[],gaps:[],limitations:['explicit_PR_identity_fixture'],current:true});await later.save();await later.close();
+  const laterVerification=join(f.root,'other-parent-later-w2');
+  await verify({snapshots:[laterSnapshot],objects:collection.objects,plan:join(f.root,'units-test.json'),output:laterVerification});
+  const laterPacket=await readPacket(laterSnapshot,laterVerification,join(f.root,'integration-context.json'));
+  assert.equal(f.q.import(laterPacket).item,otherItem.item);
+  assert.equal(f.q.receiverState(otherReturn.operation).result.receiver.currentMaterialMatches,false);
+  assert.equal(f.q.conditionalRepairSource(f.member.item,0).operation,selectedParent.operation);
+  assert.deepEqual(await readFile(f.model.trace).catch(()=>Buffer.alloc(0)),traceBefore);
+  assert.deepEqual(f.q.status().events.filter((e:any)=>e.kind.startsWith('resource_')),resourcesBefore);
+  assert.equal((db.prepare('SELECT result FROM operations WHERE id=?').get(f.parent.operation) as any).result,historicalParentOriginal);
+  db.close();
+ }
  const result=await run('repair-member','--task','A','--finding','0');assert.equal(result.result.repairStatus,'completed');assert.notEqual(result.result.after.H,f.A);assert.equal(result.result.counters.actualFileWrites,1);assert.equal(result.manualReportCopyRequired,false);
- const state=f.q.reviewRecords().state(result.operation).repair;assert.equal(state.result.actualRepairPerformed,true);assert.ok(state.memberReturn);const source=f.q.integrationMemberReturns().material(state.memberReturn.id);assert.equal(source.request.reception.operation,f.parent.operation);assert.deepEqual(source.request.findingIndexes,[0]);assert.equal(source.proof.parent.judgment.verdict,'RETURN_FOR_WORK');assert.equal(source.proof.individualReceptionInferred,false);assert.equal(f.q.receiverState(f.parent.operation).receiver.judgment.verdict,'RETURN_FOR_WORK');assert.equal(f.q.status().operations.find((o:any)=>o.id===result.operation).result.receiver,undefined);
+ const state=f.q.reviewRecords().state(result.operation).repair;assert.equal(state.result.actualRepairPerformed,true);assert.ok(state.memberReturn);const source=f.q.integrationMemberReturns().material(state.memberReturn.id);assert.equal(source.request.reception.operation,selectedParent.operation);assert.deepEqual(source.request.findingIndexes,[0]);assert.equal(source.proof.parent.judgment.verdict,'RETURN_FOR_WORK');assert.equal(source.proof.individualReceptionInferred,false);assert.equal(f.q.receiverState(f.parent.operation).receiver.judgment.verdict,'RETURN_FOR_WORK');assert.equal(f.q.status().operations.find((o:any)=>o.id===result.operation).result.receiver,undefined);
+ if(mode==='current-parent'){
+  const parent=f.q.receiverState(selectedParent.operation).receiver;
+  const receipt=JSON.parse(await readFile(join(parent.directory,'claude/completed.json'),'utf8'));
+  assert.equal(source.request.reception.judgmentId,parent.judgmentId);
+  assert.equal(source.request.reception.bindingHash,parent.bindingHash);
+  assert.equal(source.request.reception.inputSha256,parent.inputSha256);
+  assert.equal(source.request.reception.finalSha256,hash(receipt.finalText));
+  assert.equal(source.request.member.H,f.association.member.H);
+  assert.equal(source.request.member.manifestSha256,f.association.member.manifestSha256);
+  const request=JSON.parse(await readFile(join(f.request.executionRoot,'request.json'),'utf8'));
+  const original=f.q.reviewRecords().state(result.operation).repair;
+  assert.equal(original.phase,'returned');assert.equal(original.controllerReturned,true);
+  assert.equal(original.result.data.tests.passed,true);
+  assert.equal(request.priorReview.operation,selectedParent.operation);
+  assert.equal(request.priorReview.integrationMember.parentFinal,receipt.finalText);
+  const stableTrace=await readFile(f.model.trace),stableResources=f.q.status().events.filter((e:any)=>e.kind.startsWith('resource_')),stableAuthor=await f.authorState();
+  const duplicate=await run('repair-member','--task','A','--finding','0');
+  assert.equal(duplicate.operation,result.operation);assert.equal(duplicate.result.duplicate,true);
+  assert.deepEqual(duplicate.result.counters,result.result.counters);
+  await rm(profilePath);await rm(f.model.configPath);
+  const coldDuplicate=await run('repair-member','--task','A','--finding','0');
+  assert.equal(coldDuplicate.operation,result.operation);assert.equal(coldDuplicate.result.duplicate,true);
+  assert.deepEqual(await readFile(f.model.trace),stableTrace);
+  assert.deepEqual(f.q.status().events.filter((e:any)=>e.kind.startsWith('resource_')),stableResources);
+  assert.deepEqual(await f.authorState(),stableAuthor);
+ }
+
+ if(mode==='current-parent'){
+  const db=new DatabaseSync(join(f.store,'queue.sqlite'),{readOnly:true});
+  assert.equal((db.prepare('SELECT result FROM operations WHERE id=?').get(f.parent.operation) as any).result,historicalParentOriginal);db.close();
+  assert.ok((await run('report')).reports.some((r:any)=>r.kind==='repair'&&r.complete&&r.result.operation===result.operation));
+  if(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE)await cp(f.root,join(process.env.TONGXU_TEST_CONDITIONAL_EVIDENCE,'member-current-parent'),{recursive:true});
+  return;
+ }
  await assert.rejects(()=>run('collect-member','--task','A'),/conditional_entry_published_candidate_mismatch/);assert.ok(!f.q.status().events.some((e:any)=>e.kind==='coordination_normal_entry_step'&&JSON.parse(e.data).value.reference.kind==='member-snapshot'));
  await remote.publish(result.result.after.H,join(f.request.executionRoot,'workspace'));if(f.observeOriginalSource)await f.observeOriginalSource();const observed=await run('collect-member','--task','A');assert.equal(observed.collectionComplete,true);assert.equal(observed.candidate.H,result.result.after.H);assert.equal(observed.remoteWritePerformed,false);const firstGets=(await remote.reads()).length,frozenMember=await readFile(join(observed.snapshot,'manifest.json'));assert.equal((await run('collect-member','--task','A')).collectionComplete,true);assert.ok((await remote.reads()).length>firstGets);assert.deepEqual(await readFile(join(observed.snapshot,'manifest.json')),frozenMember);const gets=(await remote.reads()).length;
  const own=await run('validate-member','--task','A');assert.equal(own.state.phase,'recorded');assert.equal(own.newVerificationRuns,1);assert.equal(own.state.source.kind,'member-repair');assert.equal(own.state.integration,undefined);assert.equal((await run('validate-member','--task','A')).newVerificationRuns,0);

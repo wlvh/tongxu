@@ -653,14 +653,21 @@ BEGIN SELECT RAISE(ABORT,'receiver_claim_active'); END;
       const index=integration?.source.composition.subject.members.findIndex((m:Row)=>m.manifestHash===packet.manifest_hash&&['repository','pr','H','B','targetRef'].every(k=>m.candidate[k]===e.manifest.candidate[k as keyof typeof e.manifest.candidate]));
       if(finding!==undefined&&(index===undefined||index<0))continue;
       if(finding===undefined&&op.packet!==item.current_packet)continue;
-      // Once a structurally exact original is selected, preserve failures;
-      // a corrupt or stale original is not a reason to choose another one.
-      const source=this.reviewSource(op.id,requireCurrent),r=source.receiver;
+      // Members can remain unchanged across multiple parent material packets.
+      // Read the complete original before deciding whether it is only history.
+      const source=this.reviewSource(op.id,finding===undefined&&requireCurrent),r=source.receiver;
       if(!r.controllerReturned||r.judgment.verdict!=='RETURN_FOR_WORK')throw new Error('conditional_entry_complete_return_required');
       if(finding===undefined){if(r.subject)throw new Error('conditional_entry_individual_return_required');matches.push({kind:'individual',operation:op.id,item:itemId,packet:op.packet,candidate:source.candidate,context:source.context,judgmentId:r.judgmentId,bindingHash:r.bindingHash,executionKind:r.executionKind});continue;}
-      if(!Number.isSafeInteger(finding)||finding<0||finding>29||!r.judgment.findings[finding])throw new Error('integration_member_finding_not_in_original');
       const completed=r.blobs?.['completed.json'];if(!completed)throw new Error('integration_member_final_original_required');const receipt=JSON.parse(this.blob(completed.sha256).toString());
       if(!integration)throw new Error('integration_member_original_return_required');
+      if(typeof receipt.finalText!=='string'||receipt.inputSha256!==r.inputSha256)throw new Error('integration_member_final_original_changed');
+      if(requireCurrent){
+        // Only a complete, ended parent with an explicitly superseding packet
+        // can be excluded. Unknown, repairing and corrupt originals still fail.
+        if(op.status==='complete'&&op.packet!==this.item(op.item).current_packet)continue;
+        this.reviewSource(op.id,true);
+      }
+      if(!Number.isSafeInteger(finding)||finding<0||finding>29||!r.judgment.findings[finding])throw new Error('integration_member_finding_not_in_original');
       const selected=integration.source.composition.subject.members[index!],selection={schemaVersion:1 as const,kind:'tongxu-integration-member-return' as const,id:'entry-member-'+hash(canonical([op.id,itemId,packet.id,finding])).slice(0,48),integration:integration.id,reception:{operation:op.id,packet:op.packet,bindingHash:r.bindingHash,judgmentId:r.judgmentId,inputSha256:r.inputSha256,finalSha256:hash(receipt.finalText)},member:{index:index!,H:selected.candidate.H,B:selected.candidate.B,manifestSha256:selected.manifestHash,item:itemId,packet:packet.id,fingerprint:packet.fingerprint},scopeSha256:hash(canonical(e.context.scope)),arrangementSha256:hash(canonical(e.context.arrangement)),findingIndexes:[finding],source:'Original completed RETURN and current selected member; configured normal entry. No individual reception or repair authority inferred.'};
       if(requireCurrent)this.integrationMemberSource(selection);matches.push({kind:'member',operation:op.id,item:itemId,packet:packet.id,candidate:e.manifest.candidate,context:e.context,selection,executionKind:r.executionKind});
     }
