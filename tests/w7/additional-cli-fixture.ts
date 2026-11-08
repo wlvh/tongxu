@@ -10,7 +10,7 @@ export async function additionalKimiHome(t:test.TestContext,root:string){
 }
 
 export async function additionalFixture(t:test.TestContext,tool:AdditionalProgram,mode='complete',responseKind:'message'|'formal'|'formal-profile'|'receiver'|'receiver-profile'='message'){
- const f=await messageFixture(t);const binary=join(f.root,tool+'.mjs');
+ const f=await messageFixture(t);const binary=join(f.root,tool+'.mjs'),releaseFile=join(f.root,'release-late-duplicate');
  const code=`#!${process.execPath}
 import readline from 'node:readline';import fs from 'node:fs';
 const responseKind=${JSON.stringify(responseKind)},tool=${JSON.stringify(tool)},mode=${JSON.stringify(mode)},trace=${JSON.stringify(f.trace)},emit=m=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...m})+'\\n');
@@ -40,11 +40,19 @@ if(m.method==='session/prompt'){
  }emit({id:m.id,result});
  if(m.method==='session/prompt'&&mode==='duplicate-response')emit({id:m.id,error:{code:-1,message:'conflicting response'}});
  if(m.method==='session/prompt'&&mode==='late-duplicate')setTimeout(()=>emit({id:m.id,error:{code:-1,message:'late conflicting response'}}),100);
+ if(m.method==='session/prompt'&&turn===1&&mode==='gated-late-duplicate'){
+  const releaseTimer=setInterval(()=>{
+   if(!fs.existsSync(${JSON.stringify(releaseFile)}))return;
+   clearInterval(releaseTimer);
+   emit({id:m.id,error:{code:-1,message:'late conflicting response'}});
+  },5);
+  releaseTimer.unref();
+ }
  if(m.method==='session/prompt'&&mode==='unknown-response')emit({id:99999,result:{stopReason:'end_turn'}});
  if(m.method==='session/prompt'&&turn===1&&mode.startsWith('between-'))setTimeout(()=>{model='fixture/model-a';emit({method:'session/update',params:{sessionId:mode==='between-wrong-session'?'foreign':session,update:mode==='between-model'?{sessionUpdate:'config_option_update',configOptions:options()}:{sessionUpdate:'tool_call',toolCallId:'forbidden',status:'completed'}}});},50);
  if(mode==='unsolicited-between-inputs'&&m.method==='session/prompt'&&turn===1)setTimeout(()=>emit({method:'session/update',params:{sessionId:session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify({messageId:'second',consumed:[],report:'Unsolicited text before second input: never a second result'})}}}}),50);
 });
 `;
  await writeFile(binary,code,{mode:0o700});f.plan.participants=[{...f.plan.participants[0]!,id:'owner',role:'issue_owner',tool,executable:binary,executableSha256:hash(code),parent:null,aiModel:{model:'fixture/model-next',effort:'future-depth'}}];
- f.plan.messages=[{id:'first',from:null,to:'owner',body:'Inspect supplied fixed material.',replies:[]},{id:'second',from:null,to:'owner',body:'Consider a counterexample using the complete first report.',replies:['first']}];f.plan.timeoutMs=500;await f.write();return {...f,binary};
+ f.plan.messages=[{id:'first',from:null,to:'owner',body:'Inspect supplied fixed material.',replies:[]},{id:'second',from:null,to:'owner',body:'Consider a counterexample using the complete first report.',replies:['first']}];f.plan.timeoutMs=500;await f.write();return {...f,binary,releaseFile};
 }

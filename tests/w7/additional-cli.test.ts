@@ -104,8 +104,20 @@ for(const mode of ['between-model','between-tool','between-wrong-session'])test(
  const calls=await f.calls();assert.equal(calls.length,1);const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,false);assert.deepEqual(await f.calls(),calls);
 });
 
-for(const mode of ['duplicate-response','unknown-response'])test(mode+' cannot publish a reply or trigger another model input before closed replay',async t=>{
- const f=await fixture(t,'opencode',mode),result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'));const calls=await f.calls();assert.equal(calls.length,1);assert.equal(result.messages.find(m=>m.id==='first')?.reply??null,null);await runMessages(f.store,f.path,true);assert.deepEqual(await f.calls(),calls);
+for(const mode of ['duplicate-response','unknown-response'])test(mode+' leaves the current reply unusable and prevents another model input during closed replay',async t=>{
+ const f=await fixture(t,'opencode',mode),result=await runMessages(f.store,f.path);
+ assert.equal(result.completed,false);
+ assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'));
+ assert.equal(result.messages.find(m=>m.id==='first')?.state,'Unknown');
+ assert.equal(result.runtimes[0]?.captureVerification?.proof.successfulCapture,false);
+ const calls=await f.calls();
+ assert.equal(calls.length,1);
+ const again=await runMessages(f.store,f.path,true);
+ assert.equal(again.completed,false);
+ assert.equal(again.messages.find(m=>m.id==='first')?.state,'Unknown');
+ assert.equal(again.runtimes[0]?.captureVerification?.proof.successfulCapture,false);
+ assert.equal(again.newModelRequests,0);
+ assert.deepEqual(await f.calls(),calls);
 });
 
 test('legacy model selection with independent thought options is discoverable, consumable and repeatable without another input',async t=>{
@@ -117,6 +129,56 @@ test('an observed late protocol failure at the publication boundary cannot publi
  const f=await fixture(t,'opencode','late-duplicate'),original=ExtraCliSession.prototype.prompt;
  t.mock.method(ExtraCliSession.prototype,'prompt',async function(this:ExtraCliSession,...args:Parameters<ExtraCliSession['prompt']>){const result=await original.apply(this,args);await this.rpc.waitFor(m=>m.error?.message==='late conflicting response',1000);return result;});
  const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.equal((await f.calls()).length,1);assert.equal(result.messages.find(m=>m.id==='first')?.reply??null,null);assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'));
+});
+
+test('a protocol failure after the first receipt preserves its history and blocks the second actual input',async t=>{
+ const f=await fixture(t,'opencode','gated-late-duplicate');
+ const original=ExtraCliSession.prototype.prompt;
+ t.mock.method(ExtraCliSession.prototype,'prompt',async function(this:ExtraCliSession,...args:Parameters<ExtraCliSession['prompt']>){
+  if(JSON.parse(args[0]).messageId==='second'){
+   await writeFile(f.releaseFile,'release first request conflict\n');
+   await this.rpc.waitFor(m=>m.error?.message==='late conflicting response',2000);
+  }
+  return original.apply(this,args);
+ });
+
+ const result=await runMessages(f.store,f.path);
+ assert.equal(result.completed,false);
+ assert.ok(result.problems.some(p=>p.reason==='external_cli_response_ambiguous'));
+ const first=result.messages.find(m=>m.id==='first');
+ const second=result.messages.find(m=>m.id==='second');
+ assert.ok(first);
+ assert.equal(first.state,'Unknown');
+ assert.ok(first.delivery);
+ assert.ok(first.reply);
+ assert.ok(second);
+ assert.ok(second.sent);
+ assert.equal(second.state,'Unknown');
+ assert.equal(second.delivery,null);
+ assert.equal(second.reply,null);
+ assert.equal(result.runtimes[0]?.captureVerification?.proof.successfulCapture,false);
+
+ const calls=await f.calls();
+ assert.equal(calls.length,1);
+ assert.equal(calls[0]?.messageId,'first');
+ const directory=result.runtimes[0]!.started.directory;
+ const sent=(await readFile(join(directory,'stdin.ndjson'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+ assert.equal(sent.filter(message=>message.method==='session/prompt').length,1);
+
+ const again=await runMessages(f.store,f.path,true);
+ assert.equal(again.completed,false);
+ const retainedFirst=again.messages.find(m=>m.id==='first');
+ const retainedSecond=again.messages.find(m=>m.id==='second');
+ assert.equal(retainedFirst?.state,'Unknown');
+ assert.deepEqual(retainedFirst?.delivery,first.delivery);
+ assert.deepEqual(retainedFirst?.reply,first.reply);
+ assert.equal(retainedSecond?.state,'Unknown');
+ assert.deepEqual(retainedSecond?.sent,second.sent);
+ assert.equal(retainedSecond?.delivery,null);
+ assert.equal(retainedSecond?.reply,null);
+ assert.equal(again.runtimes[0]?.captureVerification?.proof.successfulCapture,false);
+ assert.equal(again.newModelRequests,0);
+ assert.deepEqual(await f.calls(),calls);
 });
 
 test('a failure in the original participant during the next participant bootstrap stops cross-participant consumption before a second input',async t=>{
