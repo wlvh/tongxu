@@ -19,7 +19,7 @@ export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,
   const server=createServer(async(req,res)=>{
     let body='';for await(const chunk of req)body+=chunk.toString();const path=req.url!;requests.push({method:req.method!,path,body,headers:req.headers});
     let status=200,value:any,headers:Record<string,string>={};
-    const override=req.method==='GET'?overrides.get(path):undefined;
+    const override=req.method==='GET'||req.method==='POST'&&path==='/graphql'?overrides.get(path):undefined;
     if(override){status=override.status;value=override.value;if(override.nextPage)headers.link='<http://127.0.0.1/explicit-fixture-next>; rel="next"';}
     else if(path==='/capabilities')value={kind:'capabilities',credentialState:mode==='credential-missing'?'unavailable':'available',actorId:33,identity:'fixture',repositoryIds:[b.repositoryId],targetRefs:[b.targetRef],merge:true,bypass:false,synchronousHeadCondition:true,sourceReference:'explicit-local-fixture-identity'};
     else if(req.method==='PUT'&&path===`${repoRoot}/pulls/${b.pr}/merge`){
@@ -28,8 +28,13 @@ export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,
         const payload=JSON.parse(body);if(payload.sha!==b.H||payload.merge_method!=='merge'||JSON.stringify(payload)!==JSON.stringify(JSON.parse(JSON.stringify(payload)))){status=409;value={message:'fixture invalid request'};}
         else{if(actualFixtureMerge)M=await actualFixtureMerge();merged=true;merges++;if(mode==='base-race')actualBase=later;if(mode==='tree-race')actualTree=later;if(mode==='wrong-target')target='other';value={merged:true,sha:M};if(mode==='lost-after-merge'){res.destroy();return;}}
       }
+    }else if(req.method==='POST'&&path==='/graphql'){
+      const query=JSON.parse(body),[owner,name]=b.repository.split('/');
+      if(!query.query?.startsWith('query TongxuMergeReviewPolicy(')||JSON.stringify(query.variables)!==JSON.stringify({name,owner,pr:b.pr,ref:'refs/heads/'+b.targetRef})){
+        status=400;value={errors:[{message:'fixture fixed readonly query required'}]};
+      }else value={data:{repository:{databaseId:b.repositoryId,nameWithOwner:b.repository,ref:{target:{__typename:'Commit',oid:b.B}},pullRequest:{number:b.pr,state:'OPEN',isDraft:false,headRefOid:b.H,baseRefName:b.targetRef,mergeStateStatus:'CLEAN',reviewDecision:'APPROVED'}}}};
     }else if(req.method!=='GET'){status=405;value={message:'fixture disallowed mutation'};}
-    else if(path===repoRoot)value={id:b.repositoryId,full_name:b.repository,archived:false,disabled:false,allow_merge_commit:true};
+    else if(path===repoRoot)value={id:b.repositoryId,full_name:b.repository,owner:{type:'Organization'},archived:false,disabled:false,allow_merge_commit:true};
     else if(path===`${repoRoot}/pulls/${b.pr}`)value=pr();
     else if(path===`${repoRoot}/git/ref/heads/${encodeURIComponent(b.targetRef)}`)value={ref:`refs/heads/${b.targetRef}`,object:{type:'commit',sha:merged?M:b.B}};
     else if(path===`${repoRoot}/branches/${encodeURIComponent(b.targetRef)}`)value={name:b.targetRef,commit:{sha:b.B},protected:true};

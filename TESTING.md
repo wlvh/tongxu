@@ -74,6 +74,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |
 | 显式共享账号来源 | 新profile严格引用与同ID、精确来源/提案和原动作门、旧字节及profile不可变、正常Owner提交/共享说明和历史成果限定、publisher仍须分离 | 复用`tests/authority/authority.test.ts`、`tests/w7/owner-controls.test.ts`、`delivery-outcomes.test.ts`、`owner-control-journey.test.ts`及原页面fixture；来源/身份为明确协议样例，不证明生产批准 |
 | 规则集与旧版保护缺项 | 仅已核凭据类别、准确classic404和本次固定管理读取200共同证明无classic；Actions关闭有效，旧配置/classic200零新增读取，错误或残缺证明及其他规则仍拒绝 | `tests/merge/contract.test.ts`、`tests/merge/policy.test.ts`、`tests/merge/managed.test.ts`；见 test:merge，仅本地HTTP/身份与资源样例 |
+| 指定审核方 | 负责人/多个团队/零门槛规则的服务端CLEAN/UNSTABLE及可空审核状态、准确仓库/PR/H/B/目标、错误/部分/矛盾来源、原普通审批/检查及未知规则、一次PUT与原恢复、旧无新增要求零query | `tests/merge/designated-reviewers.test.ts`及原merge三文件，真实子进程/HTTP，GitHub策略、身份与资源为明确样例；组织实际生效单独验证 |
 | 阶段前置 | 精确生产者材料与消费证据齐备才开始依赖阶段；独立调查不被错误阻断 | `tests/coordination/contract.test.ts`、`tests/coordination/feedback.test.ts` |
 | 启动与依赖 | 旧 Node/缺 SQLite 能力拒绝；程序升级不成为版本白名单；应用资产变化先于导入拒绝 | `tests/w7/workbench-launch.test.ts`、`tests/w4/external-dependencies.test.ts` |
 

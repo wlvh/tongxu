@@ -1,6 +1,7 @@
 import type test from 'node:test';
-import { join } from 'node:path';
+import { join,basename } from 'node:path';
 import { writeFileSync } from 'node:fs';
+import {cp,mkdir,rm,writeFile} from 'node:fs/promises';
 import { setup } from '../w3/receiver-fixture.js';
 import { runReception } from '../../src/receiver.js';
 import { fixture as ledgerFixture } from '../resources/provider-fixture.js';
@@ -17,7 +18,22 @@ import type { MergeProfile } from '../../src/merge-provider.js';
 
 const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));let commentId=7200000000;
 export async function ready(t:test.TestContext,mode='normal',credentialKind?:MergeProfile['credentialKind']){
-  const f=await setup(t);const received=await runReception(f.path);return readyFromReception(t,f,received,mode,undefined,credentialKind);
+  const evidence=process.env.TONGXU_MERGE_TEST_EVIDENCE;
+  const f=await setup(t,'complete',1,!evidence);
+  let prepared:Awaited<ReturnType<typeof readyFromReception>>|undefined;
+  if(evidence)t.after(async()=>{
+    await mkdir(evidence,{recursive:true,mode:0o700});
+    const destination=join(evidence,basename(f.root));
+    await cp(f.root,destination,{recursive:true});
+    if(prepared){
+      await cp(prepared.publisher.root,join(destination,'publisher-originals'),{recursive:true});
+      await writeFile(join(destination,'provider-observations.json'),JSON.stringify({requests:prepared.publisher.requests,publication:prepared.publisher.state(),resources:prepared.ledger.state()},null,2));
+    }
+    await rm(f.root,{recursive:true,force:true});
+  });
+  const received=await runReception(f.path);
+  prepared=await readyFromReception(t,f,received,mode,undefined,credentialKind);
+  return prepared;
 }
 export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind']){
   const operation=received.operation;
