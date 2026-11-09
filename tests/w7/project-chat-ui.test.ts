@@ -85,3 +85,9 @@ test('cancelled work with no original or a settled unstarted terminal does not k
   const p=await page(),receipt={id:A,text:'cancelled intent',target:{source:'implementation',issueNumber:74},originalRequestId:original?A:null,cancelRequested:true,problem:null,original};p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:messages(A)})})`);const pending=p.run('loadProjectChat()');p.calls[0]!.resolve(list);await flush();p.calls[1]!.resolve({messages:messages(A),workRequests:[receipt]});await pending;assert.equal(p.timers.size,0);assert.equal(p.sends.length,0);
  }
 });
+
+
+test('a tool-limit failure explains both the call budget and allowed tools without a false answer or resend',async()=>{
+ const p=await page();p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:[{id:'limited',question:'q',status:'failed',problem:'project_chat_tool_limit',answer:null,active:false,owned:false}]})});renderProjectChat()`);
+ const text=(e:any):string=>e.textContent+e.children.map(text).join('');const result=text(p.nodes.get('project-chat-lines'));assert.match(result,/每轮最多调用24次/);assert.match(result,/当前模式已登记的工具/);assert.match(result,/未形成完整回答/);assert.doesNotMatch(result,/project_chat_tool_limit|正在读取资料并回答/);assert.equal(p.sends.length,0);assert.equal(p.timers.size,0);
+});

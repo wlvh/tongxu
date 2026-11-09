@@ -8,7 +8,7 @@ import {regular,exists} from './repair-workspace.js';
 import {save} from './live-process.js';
 import {BoundedCodexSession,readRepairSession,secretarySchema} from './repair-native.js';
 import {assembleRolePrompt} from './role-prompts.js';
-import {chatId,validateProjectChatConfig,projectChatInstructionsFor,projectChatToolsFor,projectWorkTarget,type ProjectWorkTarget,type ProjectWorkOrigin,type ProjectChatConfig} from './project-chat-contract.js';
+import {chatId,validateProjectChatConfig,projectChatInstructionsFor,projectChatToolsFor,projectChatToolLimit,projectWorkTarget,type ProjectWorkTarget,type ProjectWorkOrigin,type ProjectChatConfig} from './project-chat-contract.js';
 import {exactKeys} from './authority-contract.js';
 import type {GitHubProjects} from './github-projects.js';
 import type {Candidate} from './live-codex.js';
@@ -173,7 +173,7 @@ export class ProjectChat{
   private async execute(scope:ProjectChatScope,id:string,active:Active){
     const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row,directory=this.directory(id),native=join(directory,'native');
     try{
-      await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository}},initialId=hash(canonical(initial));
+      await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit}},initialId=hash(canonical(initial));
       const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];save(join(directory,'observations.json'),observations);
       const history=this.rows(row.conversation).filter(r=>r.id!==id).map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report})),taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
       const candidate:Candidate={kind:'project-conversation',repository:scope.repository.fullName,pr:null,projectId:scope.repository.id,accountId:scope.account.id,conversationId:row.conversation,H:scope.repository.defaultHead??'',B:scope.repository.defaultHead??'',target:scope.repository.defaultHead?scope.repository.defaultBranch??'':'',sourceSha256:initialId};
@@ -184,8 +184,8 @@ export class ProjectChat{
       save(join(directory,'request.json'),{requestId:id,conversationId:row.conversation,candidate,input,system:prompt.system,config:runtimeConfig,...(aiSelection?{aiSelection}:{}),historyTransfer:'complete_saved_history_new_native_context'});
       let bytes=0,calls=0;const check=async()=>{if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');await this.verify(scope);if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');};
       const gate={check,call:async(p:{tool:string;arguments:Row;callId:string},before?:()=>void)=>{
-        await check();before?.();if(++calls>24||!projectChatToolsFor(!!work).some(t=>t.name===p.tool))throw new Error('project_chat_tool_limit');
-        const data=p.tool==='tongxu_coordinate_selected_work'?(exactKeys(p.arguments,[])?await this.coordinateWork(scope,id,()=>{before?.();if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');}):(()=>{throw new Error('project_work_empty_arguments_required');})()):await this.read(scope,p.tool,p.arguments),observation={tool:p.tool,arguments:p.arguments,observedAt:now(),data},raw=canonical(observation);bytes+=Buffer.byteLength(raw);
+        await check();before?.();if(++calls>projectChatToolLimit||!projectChatToolsFor(!!work).some(t=>t.name===p.tool))throw new Error('project_chat_tool_limit');
+        const data=p.tool==='tongxu_coordinate_selected_work'?(exactKeys(p.arguments,[])?await this.coordinateWork(scope,id,()=>{before?.();if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');}):(()=>{throw new Error('project_work_empty_arguments_required');})()):await this.read(scope,p.tool,p.arguments),observation={tool:p.tool,arguments:p.arguments,observedAt:now(),data,toolBudget:{limit:projectChatToolLimit,used:calls,remaining:projectChatToolLimit-calls}},raw=canonical(observation);bytes+=Buffer.byteLength(raw);
         if(Buffer.byteLength(raw)>128*1024||bytes>512*1024)throw new Error('project_chat_material_limit');await check();before?.();const observationId=hash(raw);observations.push({id:observationId,tool:p.tool,observation});save(join(directory,'observations.json'),observations);
         return {success:true,contentItems:[{type:'inputText',text:JSON.stringify({observationId,...observation})}]};
       }};
