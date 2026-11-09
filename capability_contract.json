@@ -72,7 +72,7 @@
         "anchor_id": "CAPABILITY.project_secretary",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。普通问答是 Codex 受限查询；用户明确选定本项目已审定工作时，该次请求增加一个空参数协调工具，完整原话进入原实施者输入、准确已有责任不重派，状态与完整结果从同一原记录回读；非通用开发派发，真实原生路径另验。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；此写作者组合的真实原生路径待验。",
+        "statement": "按 docs/project_secretary_chat.md 的项目秘书约定，已配置的右侧秘书在当前项目显式提问后运行，保留全文、来源与历史；追问使用已核历史的新原生上下文，重开历史不重复发送。普通问答是 Codex 受限查询；用户明确选定本项目已审定工作时，该次请求增加一个空参数协调工具，完整原话进入原实施者输入、准确已有责任不重派，状态与完整结果从同一原记录回读；非通用开发派发；真实原生的有界组合证据见 docs/formal_pr_review.md。实现 src/project-chat.ts。 按已采用 Issue #71，已登记实施任务运行时可先保存准确目标的补充；原回合成功提交且原资源核清后，同一逻辑负责人以新原生上下文处理并将完整原报告回原会话。收件不等于送达，秘书自身没有写权；已在专用演练中核通运行中保存补充、原回合成功后新上下文处理及全文回流；更广泛真实使用和本人结果仍沿 #9 核验。",
         "audience": [
           "business_user",
           "agent",
@@ -100,21 +100,21 @@
         "anchor_id": "CAPABILITY.issue_implementation",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "按已采用 Issue #74 及 docs/issue_implementation.md，在已配置项目从已审定 Issue 显式新建一次 Codex 受控实现：固定H0、准确实施/测试授权与原资源、获准已有文件和注册测试，成功由宿主形成H1并回读全文。重复与未知不重发；实现不等于正式审核、发布或本人接受。程序路径与真实Docker组合已验证；正常入口真实Codex仍待准确环境验证，当前不标active。",
+        "statement": "按已采用 Issue #74 及 docs/issue_implementation.md，在已配置项目从已审定 Issue 显式新建一次 Codex 受控实现：固定H0、准确实施/测试授权与原资源、获准已有文件和注册测试，成功由宿主形成H1并回读全文。重复与未知不重发；实现不等于正式审核、发布或本人接受。程序路径、真实 Docker 及正常入口真实 Codex 的有界实施已验证，证据见 docs/formal_pr_review.md；生产效果与 #9 本人成果接受仍待核验，当前不标 active。",
         "audience": [
           "business_user",
           "agent",
           "reviewer"
         ],
         "test_anchor": "tests/project-repair/integration.test.ts",
-        "test_status": "component_verified_native_pending",
+        "test_status": "component_and_bounded_native_verified",
         "since": "2026-11-04"
       },
       {
         "anchor_id": "CAPABILITY.source_reception",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。新接收可在项目设置选择已检测的Claude或严格只读Kimi，并要求原计划中所选程序适用的费用证据；旧请求及已保存未发送计划保留原选择，不因新设置变化或失效重发。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。协议场景、真实原生和本人结果分别核验，不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/receiver.ts、src/workbench.ts。",
+        "statement": "按已采用 Issue #73 的限定范围，已配置项目的原候选可从任务页补查来源，再显式进入既有受治理独立技术接收并查原报告。新接收可在项目设置选择已检测的Claude或严格只读Kimi，并要求原计划中所选程序适用的费用证据；旧请求及已保存未发送计划保留原选择，不因新设置变化或失效重发。来源补查不发送模型；新材料使用当前 packet/operation 的授权和资源，旧判断保留为历史。正常入口真实 Kimi 接收及来源新增反例评论后的新材料接收已分别核验，旧判断保留原材料归属，完整报告及重复回读零新增输入可核。证据见 docs/source_reception_entry.md；#9 的更广泛场景与本人成果接受仍待核验，不承诺正式 PR 审查或本人接受。实现 src/reception-controls.ts、src/receiver.ts、src/workbench.ts。",
         "audience": [
           "business_user",
           "agent",
@@ -128,14 +128,14 @@
         "anchor_id": "CAPABILITY.formal_pr_review",
         "type": "capability",
         "status": "pending_validation",
-        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与默认 Claude 或已冻结选择的 Kimi 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径与协议样例及真实 Git/Docker 组合正在验证，真实模型外层演练待准确环境核验。",
+        "statement": "依据已采用 Issue #72，在已配置项目从单张关联 Issue 的 PR 启动新 Codex 完整审核；P0/P1 整批进入独立 Codex 事实与默认 Claude 或已冻结选择的 Kimi 影响验证，综合后在有效授权下由原事实会话修复，实际发布形成新 head 后重新完整审核。全批反证由正式 reviewer 责任核证并追加结论；直接 PASS 不启动额外验证或修复。原候选、权限、资源、停止、原报告与发布返工计数保持准确绑定，PASS 不等于合并许可或本人接受。程序路径、协议样例、真实 Git/Docker 与正常入口 Codex/Kimi 的有界外层链已验证，证据见 docs/formal_pr_review.md；生产独立发布配置及 #9 本人成果接受仍待核验。",
         "audience": [
           "business_user",
           "agent",
           "reviewer"
         ],
         "test_anchor": "tests/w5/formal-round.test.ts",
-        "test_status": "component_validation_native_pending",
+        "test_status": "component_and_bounded_native_verified",
         "since": "2026-11-04"
       },
       {

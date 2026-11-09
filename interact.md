@@ -148,7 +148,7 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 
 <!-- capability-anchor: CAPABILITY.issue_implementation -->
 - **User goal**：在已配置项目中把一项已审定工作交给实际实施者，直接查看测试过的新提交与全文。
-- **Required context**：固定提交、采用的 Issue 正文、已有准确实施/测试权限、资源、Codex 和注册 Docker 测试配置；正常入口真实 Codex 路径仍待准确环境验证，当前能力登记为 pending_validation。
+- **Required context**：固定提交、采用的 Issue 正文、已有准确实施/测试权限、资源、Codex 和注册 Docker 测试配置；正常入口真实 Codex 的有界实施已验证，生产效果与 #9 本人成果接受仍待核验，当前能力登记为 pending_validation；证据见 [正式审核的有界真实演练](docs/formal_pr_review.md#有界真实演练与待验范围)。
 - **User action or request**：项目页选择“已审定 Issue 的受控实现”，核对目标及获准文件，点击“新建本次工作”；缺条件时沿原 ID 的“继续原请求”补准备或首次发送，也可查看、撤回未发请求或停止本次实施。
 - **Directly observable result**：登记/准备、正在处理、完整返回、H0→H1、待核和保留差异分别显示。成功报告、diff、测试输出和提交绑定从同一原请求读取；无变更不制造提交。
 - **Failure / degradation / escalation**：缺审定、准确权限/资源、队列席位或真实环境时保留具体等待原因。条件恢复后，仅完整不变且确证未派发、无执行证据/修改/竞争写者的原准备可以继续首次发送；来源改变、停止、取消或资源未知仍拒绝。已发送未知不另发，已有修改的失败现场不自动接续。部分现场不是完整报告或已结束证明。
@@ -160,7 +160,7 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 
 <!-- capability-anchor: CAPABILITY.formal_pr_review -->
 - **User goal**：对关联已采用 Issue 的 PR 得到准确版本的正式结论，必要时经过整批验证和授权修复，再审已发布的新版本。
-- **Required context**：私人项目目录、准确候选、采用 Issue/范围、固定完整角色提示、原接收/实施/测试权限及分析/修复/新候选测试资源、真实 CLI 和注册 Docker 配置；当前为 pending_validation，真实外层模型演练与本人接受分别待核。
+- **Required context**：私人项目目录、准确候选、采用 Issue/范围、固定完整角色提示、原接收/实施/测试权限及分析/修复/新候选测试资源、真实 CLI 和注册 Docker 配置；当前为 pending_validation，Codex/Kimi 的有界真实外层链已走通，生产独立发布配置与本人接受仍待核；证据见 [有界真实演练](docs/formal_pr_review.md#有界真实演练与待验范围)。
 - **User action or request**：正常“任务与完整报告”选择 PR，点击“正式 PR 审核”；查看完整报告，按需要停止后续动作或核对发布。新请求前可在项目 AI 设置为影响核实者选择已检测可用的 Kimi；未选仍用原 Claude，已冻结请求不随偏好改变。
 - **Directly observable result**：新完整 reviewer、同批新 fact/impact、原 fact 综合/有界证据交换、同会话授权修复、本地提交、待发布、新候选采集/验证、新完整审核分别保留。完整 PASS 无 P0/P1 或仅 P2 时直接结束；全批反证在未变候选上追加正式 reviewer 结论，不制造修改。原报告可全文回读。
 - **Failure / degradation / escalation**：空 finding 但覆盖不足仍待补证；三轮分歧后不强行投票；停止、权限或资源不足时不启动后续动作。H/B/target/采用要求改变后旧报告不放行当前 PR；已发未知和失去持有权的原事实会话不换 ID 重发。真正业务取舍沿原 Issue 保存问题和答复，没有获准写入路径时明确待记录。
