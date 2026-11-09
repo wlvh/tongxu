@@ -26,14 +26,27 @@ export type FormalSource={candidate:{repository:string;pr:number;H:string;B:stri
 export type FormalSourceReader=(entry:FormalEntry,source:Source)=>Promise<FormalSource>;
 async function readSource(entry:FormalEntry,source:Source):Promise<FormalSource>{await sourceTick(source.store);const q=await QueueStore.open(source.store);try{const candidate=q.formalReviews().currentSource(source.item).candidate,p=q.events().configuration();if(candidate.repository.toLowerCase()!==p.repository.toLowerCase()||!p.prs.includes(candidate.pr))throw new Error('formal_source_profile_not_selected');const directory=join(entry.root,'source-'+randomUUID());await mkdir(entry.root,{recursive:true,mode:0o700});await privateDirectory(entry.root,false);const o=await readEventSource(p,candidate.pr,directory);if(!o.result.complete||!o.result.candidate)throw new Error('formal_live_source_incomplete');const c=o.result.candidate,issueDirectory=join(entry.root,'issue-'+randomUUID());await privateDirectory(issueDirectory,true);const http=new PublicationHttp(issueDirectory,p.ghExecutable,p.ghSha256,p.repository,candidate.pr,c.H,c.targetRef,true,p.executionKind==='github',{issues:[entry.issue.number],collection:false}),r=await http.request('GET',`repos/${p.repository}/issues/${entry.issue.number}`),issue=r.value;if(r.status!==200||issue.number!==entry.issue.number||typeof issue.body!=='string'||issue.html_url!==`https://github.com/${p.repository}/issues/${entry.issue.number}`)throw new Error('formal_issue_source_invalid');return {observation:o,candidate:{repository:p.repository,pr:c.pr,H:c.H,B:c.B,target:c.targetRef},issue:{number:issue.number,body:issue.body,url:issue.html_url},evidence:{candidateMaterial:q.status().items.filter((i:Row)=>i.candidate.H===c.H&&i.candidate.B===c.B&&i.candidate.targetRef===c.targetRef&&i.candidate.pr===c.pr).map((i:Row)=>({item:i.id,packet:i.currentPacket,summary:{evidenceComplete:i.summary.evidenceComplete,gaps:i.summary.gaps,tree:i.summary.tree,reportId:i.summary.reportId,limitations:i.summary.limitations}})),source:'original_registered_source_get',materialSha256:eventMaterialHash(o.result.semantic),observedAt:o.observedAt,nonAtomicRemoteObservation:true,records:o.records.filter(r=>['pr','comments','inline','reviews','target'].includes(r.kind)).map(r=>({kind:r.kind,page:r.page,endpoint:r.endpoint,bodySha256:hash(r.body),body:JSON.parse(r.body.toString())})),checks:o.result.semantic.checks,statuses:o.result.semantic.statuses}};}finally{q.close();}}
 const paths=(v:unknown,max:number)=>Array.isArray(v)&&v.length<=max&&new Set(v).size===v.length&&v.every(safeRelativePath);
+const automaticCheckLimit=360;
 
 /** Only installation configuration selects source, adopted Issue and repair
  * boundaries. The browser chooses one option and an id, never permissions or
  * arbitrary paths. Reads never launch roles or resume an unknown native turn. */
 export class FormalReviewControls{
- private active=new Map<string,Promise<unknown>>();private hosts=new Map<string,QueueFormalRoundHost>();private accepting=true;private timer?:ReturnType<typeof setTimeout>;private checking?:Promise<void>;private checks=0;
- start(){if(this.timer||!this.accepting)return;const schedule=()=>{if(!this.accepting||this.checks>=360)return;this.timer=setTimeout(()=>{this.timer=undefined;this.checking=this.foregroundCheck().finally(()=>{this.checking=undefined;schedule();});},10000);this.timer.unref();};schedule();}
- private async foregroundCheck(){this.checks++;try{await this.advance(false);}catch{/* The original waiting record is updated by advance; no resend or inferred publication. */}}
+ private active=new Map<string,Promise<unknown>>();private hosts=new Map<string,QueueFormalRoundHost>();private accepting=true;private timer?:ReturnType<typeof setTimeout>;private checking?:Promise<void>;
+ private automaticChecks=new Map<string,number>();
+ start(){
+  if(this.timer||this.checking||!this.accepting)return;
+  const schedule=()=>{
+   if(!this.accepting)return;
+   this.timer=setTimeout(()=>{
+    this.timer=undefined;
+    this.checking=this.foregroundCheck().finally(()=>{this.checking=undefined;schedule();});
+   },10000);
+   this.timer.unref();
+  };
+  schedule();
+ }
+ private async foregroundCheck(){try{await this.advance(false);}catch{/* The original waiting record is updated by advance; no resend or inferred publication. */}}
 
  private constructor(private path:string,private sha256:string,private entries:Array<{entry:FormalEntry;source:Source}>,private read:FormalSourceReader,private verify:()=>Promise<void>,private workbenchProject?:FormalWorkbenchProject,private readPreferences?:()=>AIPreferenceSnapshot){}
  static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>,read:FormalSourceReader=readSource,verify:()=>Promise<void>=async()=>{},workbenchProject?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot){
@@ -43,7 +56,7 @@ export class FormalReviewControls{
  }
  private entry(id:string){const f=this.entries.find(f=>f.entry.id===id);if(!f)throw new Error('formal_entry_not_selected');return f;}
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
- private public(s:Row){const r=s.terminal?.result;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned})),newModelInputs:0};}
+ private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned})),newModelInputs:0};}
  async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,requests:q.formalReviews().forEntry(entry.id).map(s=>this.public(s))};}finally{q.close();}}));}
  async prepare(id:string,requestId:string,previous?:Row,explicit=true){
   if(!this.accepting||!messageId(requestId))throw new Error('formal_request_invalid');await this.catalog();const {entry,source}=this.entry(id),q=await QueueStore.open(source.store);
@@ -140,6 +153,11 @@ export class FormalReviewControls{
    let previous:Row[];
    try{previous=q.formalReviews().forEntry(entry.id);}finally{q.close();}
    for(const old of previous.filter(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&!previous.some(n=>n.request.previousOperation===s.operation))){
+    if(!explicit){
+     const used=this.automaticChecks.get(old.operation)??0;
+     if(used>=automaticCheckLimit)continue;
+     this.automaticChecks.set(old.operation,used+1);
+    }
     try{
      const live=await this.read(entry,source);
      if(live.candidate.H!==old.terminal.result.fix.H1||live.candidate.B!==old.request.candidate.B||live.candidate.target!==old.request.candidate.target)continue;
@@ -147,7 +165,7 @@ export class FormalReviewControls{
      await this.begin(entry.id,next.operation);
     }catch(error){
      const q=await QueueStore.open(source.store);
-     try{q.formalReviews().progress(old.operation,'awaiting_publication',{reason:error instanceof Error?error.message:'formal_publication_check_failed',foregroundChecks:this.checks,originalExecutionRetained:true});}finally{q.close();}
+     try{q.formalReviews().progress(old.operation,'awaiting_publication',{reason:error instanceof Error?error.message:'formal_publication_check_failed',foregroundChecks:this.automaticChecks.get(old.operation)??0,originalExecutionRetained:true});}finally{q.close();}
      if(!['formal_current_candidate_material_not_imported','formal_new_candidate_requires_new_admission'].includes((error as Error).message))throw error;
     }
    }

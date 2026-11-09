@@ -127,3 +127,5 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
 
 同一发布后完整再审场景还参数化覆盖父轮在接续前、异步材料准备中、子轮已登记未派发及 reviewer 已发时停止；停止后不新增角色，已发报告保留，冷读不重发。原 store 场景沿两代 previousOperation 验证停止祖先在原效果事务阻回调且不登记派发，未停止的已完成父轮仍合法。反证回流参数化 PASS、合法 owner 和真实覆盖缺口；同会话修复的 needs_owner/no_change 分别保留业务决定/待补证，页面脚本核原问题与原 Issue 交接提示。
+
+正式审核的自动接续沿 `tests/w5/formal-candidate-live.test.ts` 和 `tests/w7/formal-review-ui.test.ts` 核虚拟时钟下空闲360次后新工作、每操作360次上限/手动推进、checking期间重复start、drain不重新设时、停止与单一后继、耗尽提示及等待刷新。该控制器组合复用原真实Git/Docker和明确协议模型，实际模型调用另记。

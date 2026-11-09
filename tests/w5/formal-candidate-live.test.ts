@@ -13,8 +13,55 @@ import {git} from '../../src/repair-workspace.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
 
-async function publishedFixture(t:test.TestContext,incompleteItem=false){
+function foregroundClock(controls:FormalReviewControls){
+  const originalSet=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  const timers=new Map<ReturnType<typeof setTimeout>,()=>void>();
+  globalThis.setTimeout=((callback:(...args:any[])=>void,delay?:number,...args:any[])=>{
+    if(delay!==10000)return originalSet(callback,delay,...args);
+    const handle={unref(){return handle;}} as unknown as ReturnType<typeof setTimeout>;
+    timers.set(handle,()=>callback(...args));
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout=((handle:ReturnType<typeof setTimeout>)=>{
+    if(!timers.delete(handle))originalClear(handle);
+  }) as typeof clearTimeout;
+  return {
+    pending:()=>timers.size,
+    fire(){
+      const scheduled=timers.entries().next().value;
+      assert.ok(scheduled,'foreground discovery timer must remain scheduled');
+      timers.delete(scheduled[0]);scheduled[1]();
+    },
+    async tick(){this.fire();await (controls as any).checking;},
+    restore(){globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;}
+  };
+}
+
+test('formal timer start is serial during a check and drain prevents rearming',async t=>{
+  const {mkdtemp}=await import('node:fs/promises'),{tmpdir}=await import('node:os');
+  const root=await mkdtemp(join(tmpdir(),'formal-timer-'));
+  const catalog=join(root,'catalog.json'),bytes=Buffer.from(canonical({schemaVersion:1,kind:'tongxu-formal-review-catalog',entries:[]}));
+  await writeFile(catalog,bytes);
+  const controls=await FormalReviewControls.load(catalog,hash(bytes),[]),clock=foregroundClock(controls);
+  let release!:()=>void;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  let checks=0;
+  controls.advance=async()=>{checks++;await pending;};
+  try{
+    controls.start();controls.start();assert.equal(clock.pending(),1);
+    clock.fire();controls.start();controls.start();
+    assert.equal(clock.pending(),0,'start during checking cannot schedule another timer');
+    const drained=controls.drain();release();await drained;
+    controls.start();assert.equal(clock.pending(),0);assert.equal(checks,1);
+  }finally{
+    release();await controls.drain();clock.restore();
+    const {rm}=await import('node:fs/promises');await rm(root,{recursive:true,force:true});
+  }
+});
+
+async function publishedFixture(t:test.TestContext,incompleteItem=false,beforeWork?:(f:Awaited<ReturnType<typeof formalFixture>>)=>Promise<void>){
   const f=await formalFixture(t,'confirmed');
+  await beforeWork?.(f);
   const prepared=await f.controls.prepare(f.entry.id,'published-live-source');
   await f.controls.begin(f.entry.id,prepared.operation);
   const first=await ended(f,prepared.operation);
@@ -53,6 +100,67 @@ async function publishedFixture(t:test.TestContext,incompleteItem=false){
 }
 
 if(process.env.TONGXU_TEST_DOCKER_CONFIG){
+  test('formal idle ticks preserve a new work automatic publication opportunity and one successor',async t=>{
+    let clock:ReturnType<typeof foregroundClock>|undefined;
+    t.after(()=>clock?.restore());
+    const {f,first,fix}=await publishedFixture(t,false,async f=>{
+      clock=foregroundClock(f.controls);
+      const read=(f.controls as any).read;
+      let sourceReads=0;
+      (f.controls as any).read=async(...args:any[])=>{sourceReads++;return read(...args);};
+      f.controls.start();
+      for(let tick=0;tick<360;tick++)await clock.tick();
+      assert.equal(sourceReads,0,'idle discovery cannot perform remote source reads');
+      assert.equal(clock.pending(),1,'idle time cannot exhaust later automatic work');
+    });
+    try{
+      const before=(await f.calls()).length;
+      await clock!.tick();
+      const child=(await f.controls.state())[0]!.requests.find((r:any)=>r.previousOperation===first.operation);
+      assert.ok(child);assert.equal((await ended(f,child.operation)).phase,'pass');
+      assert.equal(child.candidate.H,fix.H1);
+      await clock!.tick();await f.controls.advance();await f.controls.begin(f.entry.id,child.operation);
+      assert.equal((await f.calls()).length,before+1,'repeat checks and start cannot duplicate the successor review');
+      await f.controls.drain();
+      const cold=await FormalReviewControls.load(f.catalog,hash(await readFile(f.catalog)),f.sources,undefined,async()=>f.live);
+      try{await cold.advance();await cold.begin(f.entry.id,child.operation);assert.equal((await f.calls()).length,before+1);}
+      finally{await cold.drain();}
+    }finally{await f.controls.drain();clock!.restore();}
+  });
+
+  test('formal work automatic limit is visible and manual publication check remains usable',async t=>{
+    const {f,first,fix}=await publishedFixture(t),clock=foregroundClock(f.controls);
+    const read=(f.controls as any).read;
+    let sourceReads=0;
+    (f.controls as any).read=async(...args:any[])=>{sourceReads++;return read(...args);};
+    f.live.candidate.H=first.candidate.H;
+    try{
+      f.controls.start();
+      for(let tick=0;tick<360;tick++)await clock.tick();
+      const exhausted=await f.controls.report(f.entry.id,first.operation);
+      assert.deepEqual((exhausted as any).automaticContinuation,{used:360,limit:360,exhausted:true});
+      assert.equal(sourceReads,360);
+      await clock.tick();f.controls.start();assert.equal(sourceReads,360);assert.equal(clock.pending(),1);
+      f.live.candidate.H=fix.H1;
+      await f.controls.advance();
+      const child=(await f.controls.state())[0]!.requests.find((r:any)=>r.previousOperation===first.operation);
+      assert.ok(child);assert.equal((await ended(f,child.operation)).phase,'pass');
+      assert.deepEqual((child as any).automaticContinuation,{used:0,limit:360,exhausted:false});
+      assert.equal((await f.controls.report(f.entry.id,first.operation) as any).automaticContinuation.used,360);
+    }finally{await f.controls.drain();clock.restore();}
+  });
+
+  test('formal stopped original stays stopped after timer start and publication',async t=>{
+    const {f,first}=await publishedFixture(t),clock=foregroundClock(f.controls),before=(await f.calls()).length;
+    try{
+      await f.controls.stop(f.entry.id,first.operation);
+      f.controls.start();await clock.tick();f.controls.start();await clock.tick();
+      assert.equal((await f.controls.state())[0]!.requests.length,1);
+      assert.equal((await f.calls()).length,before);
+      await f.controls.drain();f.controls.start();assert.equal(clock.pending(),0);
+    }finally{await f.controls.drain();clock.restore();}
+  });
+
   for(const incompleteItem of [false,true]){
     test('formal published candidate verifies after a recent 60000ms source read; incomplete item='+incompleteItem,async t=>{
       const {f,first,fix}=await publishedFixture(t,incompleteItem);
