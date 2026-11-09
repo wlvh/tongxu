@@ -6,7 +6,7 @@
 
 ## 开发同序
 
-本仓开发采用 [coding-workflow 固定版本 84a7ccd](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/README.md)及 [DEC-008](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/decisions.md#dec-008开发工作流采用复杂度守恒与可退役实验机制)。[AGENTS](AGENTS.md#authority-map)说明权威关系；当前工作以唯一实施 Issue 为准，例如本次接入的 [#69](https://github.com/wlvh/tongxu/issues/69)。以下是项目化导航，完整提示和规则只在采用的固定上游维护。
+本仓开发采用 [coding-workflow 固定版本 84a7ccd](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/README.md)及 [DEC-008](https://github.com/wlvh/coding-workflow/blob/84a7ccdb7e08e9f87ddfb4eaff8b2c322330a3d9/zh/docs/development_workflow/decisions.md#dec-008开发工作流采用复杂度守恒与可退役实验机制)。[AGENTS](AGENTS.md#authority-map)说明权威关系；当前工作以唯一实施 Issue 为准，例如本次接入的 [#69](https://github.com/wlvh/tongxu/issues/69)。以下是项目化导航，完整提示和规则只在采用的固定上游维护。 本轮明确的文档事实同步例外见下节。
 
 | 阶段与指定角色 | 输入、动作和产物 | 下一步与完成条件 |
 | --- | --- | --- |
@@ -20,6 +20,12 @@
 普通原任务连续接续沿 [CODEX_NEXT](docs/CODEX_NEXT.md)；第10步的修复责任按本批原事实验证会话解释，不是全局更换负责人。产品 AI 偏好按已采用角色边界执行；Issue #72 的 KI01—05 明确允许软件正式影响核实选择 Kimi，未设置时仍为 Claude，其他正式角色不随之替换；未能执行的角色如实待核，只暂停依赖其结论的动作。
 
 事实已查清后仍有实质业务取舍，才将具体事项及影响补回原 Issue，请 owner 决定，保留答复和理由；其他工作继续。owner 决定后更新 PR 并回第9步。P2 可接受并记录，不因此启动无必要修复。证据交换、模型尝试、写权交接与实际发布返工分开；返工按 [#7 原发布批次口径](https://github.com/wlvh/tongxu/issues/7#issuecomment-6355784555)计，同 head 去重，实际发布返工超过三次时沿原反思入口审视能否简化，不新增计数器。Readback/Owner Decision 是 DEC-008 的实验机制，约三次使用只作复盘提醒，不是新增门槛。
+
+## 本轮文档事实同步例外
+
+适用依据为维护者的 [#9 本轮执行安排](https://github.com/wlvh/tongxu/issues/9#issuecomment-6740604039)，仅覆盖该轮收口中的文档事实同步：运行行为、配置、权限及验收要求均未改变。按来源核对、差异检查和一次独立复核交付，无需额外启动第5—6步编码前双模型审定或重复完整代码审核；仅因措辞或已核事实更新，不重跑无关运行测试。
+
+代码变更、流程规则修改和正式产品审核继续沿上文适用流程；本节自身属于流程规则修改，不使用该例外免除审阅。独立复核应说明实际对象与依据，发现行为或要求变化即回到相应流程。该例外不扩大合并、部署或费用授权，在本轮结果交回维护者后结束；后续是否常态化依据实际反馈另行决定。当前执行顺序与进度仅在原 Issue/PR 维护。
 
 ## Available SOPs
 
