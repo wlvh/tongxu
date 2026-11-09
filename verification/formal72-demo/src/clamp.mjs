@@ -1,4 +1,5 @@
 export function clamp(value, low, high) {
-  if (value > high) return low;
-  return Math.max(low, value);
+  if (value < low) return low;
+  if (value > high) return high;
+  return value;
 }

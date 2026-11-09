@@ -1,3 +1,4 @@
 export function normalizeLabel(value, fallback = 'Untitled') {
-  return value || fallback;
+  const trimmed = value.trim();
+  return trimmed === '' ? fallback : trimmed;
 }
