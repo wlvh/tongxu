@@ -1,4 +1,6 @@
 import {readFormalSource} from './formal-review-material.js';
+import {selectedProviderOptions} from './ai-settings.js';
+import {readRejectedFormalReview} from './repair-native.js';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -12,8 +14,8 @@ import type {ActionRequest} from './authority-contract.js';
 import type {FormalStage} from './formal-review-store.js';
 import type {FormalRoundHost,OwnedFormalFact} from './formal-review.js';
 import type {RepairPlan} from './repair.js';
-import {regular,exists,tree,treeHash,git,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,type Grant,type Tree} from './repair-workspace.js';
-import {prepareProjectRepair,testProject,projectModelTestResult,bindProjectTestToCandidate,type ProjectRequest} from './project-repair.js';
+import {regular,exists,tree,treeHash,git,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,type Grant,type Tree,type Lease} from './repair-workspace.js';
+import {prepareProjectRepair,testProject,projectModelTestResult,bindProjectTestToCandidate,reconcileProjectTests,type ProjectRequest} from './project-repair.js';
 type Row=Record<string,any>;
 export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:string;item:string;round:number;previousOperation:string|null;candidate:FormalStage['candidate'];executionKind:'fixture'|'native_capture';workSha256:string;directory:string;material:FormalRoundHost['material'];config:FormalRoundHost['config'];configRef:{path:string;sha256:string};prompts:{prompts:FormalRoundHost['systems'];promptAssemblies:Row};project:ProjectRequest;authorization:{receive:string;implement:string;test:string};budgets:Array<{phase:'analysis'|'fix'|'candidate';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;aiSelections:Row;workbenchProject?:{account:number;repository:number;fullName:string}};
 
@@ -51,8 +53,56 @@ export class QueueFormalRoundHost implements FormalRoundHost{
  submit<T>(stage:FormalStage,effect:()=>T):T{this.accepting();return this.records().effect(this.operation,stage.key,this.observations,effect,true);}
  record(stage:FormalStage,result:Row,proof:Row,originals:Record<string,Buffer>){this.records().returned(this.operation,stage.key,result,proof,originals);}
  async phaseEnded(phase:'analysis'|'fix'){const intent=this.intent(phase);this.records().completeResourcePhase(this.operation,intent);for(const b of this.request.budgets.filter(b=>b.phase===phase)){const stage=this.records().state(this.operation).stages.find((s:Row)=>s.stage.budgetIntent===intent)!;const resource=stage.stage.resources.find((r:ResourceRequest)=>r.ledgerId===b.ledgerId&&r.resourceRef===b.resourceRef)!;await resourceAction(this.q.directory,resourceRequestHash(resource),'record-result','background');}}
+ /** Reconcile only the original closed, read-only first reviewer. No native
+  * input, replacement judgment or new authority is created by this cleanup. */
+ async settleRejectedReview(){
+  const state=this.records().state(this.operation);
+  if(state.stages.length!==1||this.fact)return null;
+  const original=state.stages[0]!,stage=original.stage;
+  if(stage.role!=='reviewer'||stage.key!=='round-'+this.round+'/review'||!original.dispatched||!await exists(join(stage.directory,'native-boundary-failure.json')))return null;
+  const boundary=JSON.parse((await regular(join(stage.directory,'native-boundary-failure.json'))).toString());
+  if(boundary.stage!=='turn_rejected'||boundary.reason!=='formal_pass_has_unresolved_work')return null;
+  if(stage.systemSha256!==hash(this.systems.reviewer)||stage.materialSha256!==this.material.sha256)throw new Error('formal_rejected_original_stage_changed');
+  const candidate={kind:'github-pr' as const,repository:stage.candidate.repository,pr:stage.candidate.pr,H:stage.candidate.H,B:stage.candidate.B,target:stage.candidate.target};
+  const selection=selectedProviderOptions(this.aiSelections.reviewer,'codex',this.config.codexExecutable);
+  const capture=await readRejectedFormalReview(stage.directory,{
+   operation:this.directory,candidate,materialSha256:this.material.sha256,
+   inputSha256:stage.inputSha256,system:this.systems.reviewer,
+   executable:selection.executable,executionKind:this.request.executionKind,
+   scopeSource:this.config.scopeSource,aiModel:selection.aiModel,
+   allowedInstructionSources:this.config.allowedInstructionSources,
+  });
+  const planPath=join(this.directory,'project','plan.json');
+  let release:{workspace:string;lease:Lease}|undefined;
+  if(await exists(planPath)){
+   const plan=JSON.parse((await regular(planPath)).toString()) as RepairPlan;
+   const operation=join(this.directory,'project','operation');
+   if(plan.workspace!==join(this.directory,'project','workspace')||!plan.project)throw new Error('formal_rejected_project_binding_changed');
+   await reconcileProjectTests(operation,plan.project);
+   const grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
+   if(treeHash(await tree(plan.workspace,true))!==grant.treeSha256||await git(plan.workspace,['rev-parse','HEAD'])!==candidate.H)throw new Error('formal_rejected_review_workspace_changed');
+   const lock=join(plan.workspace,'.git','tongxu-writer.json');
+   if(await exists(lock)){
+    const lease=JSON.parse((await regular(lock)).toString()) as Lease;
+    if(lease.operation!==operation||lease.status!=='held')throw new Error('formal_rejected_review_lease_changed');
+    release={workspace:plan.workspace,lease};
+   }
+  }
+  const result={report:capture.finalText,protocolRejection:capture.protocolRejection,formalJudgmentAccepted:false};
+  this.record(stage,result,{
+   role:'reviewer',candidate:stage.candidate,inputSha256:stage.inputSha256,
+   systemSha256:stage.systemSha256,completeCapture:true,executionKind:this.request.executionKind,
+   native:{sessionId:capture.binding.sessionId,threadId:capture.binding.threadId,wholeProcessCompleted:true,formalJudgmentAccepted:false},
+  },capture.originals);
+  await this.phaseEnded('analysis');
+  if(release){await releaseWorkspace(release.workspace,release.lease,'rejected formal reviewer ended');if(this.gate)this.gate.phase='closed';}
+  return this.records().finish(this.operation,{
+   status:'needs_evidence',candidate:stage.candidate,reviewKey:stage.key,
+   reason:capture.protocolRejection,formalJudgmentAccepted:false,originalExecutionRetained:true,
+  });
+ }
  ownedFact(){return this.fact;}holdFact(value:OwnedFormalFact){this.fact=value;}releaseFact(){this.fact=null;}
- async reviewGate(){return {check:async()=>{await this.refresh(this.activeStage());},call:async(p:{tool:string;arguments:any;callId:string},beforeRegistration?:()=>void)=>{await this.refresh(this.activeStage());beforeRegistration?.();if(p.tool==='tongxu_run_tests'){const gate=await this.factGate();return gate.call(p,beforeRegistration);}if(p.tool!=='tongxu_read_file'||!p.arguments||Object.keys(p.arguments).join()!=='path'||++this.readCalls>128)throw new Error('formal_readonly_review_tool_required');const result=await readFormalSource(this.request.project.objects,this.request.candidate.H,p.arguments.path);if((this.readBytes+=result.bytes)>4*1024*1024)throw new Error('formal_additional_source_input_limit');this.records().effect(this.operation,this.activeStage().key,this.observations,()=>{beforeRegistration?.();this.progress('additional_source_read',{stage:this.activeStage().key,path:result.path,H:result.H,object:result.object,sha256:result.sha256,bytes:result.bytes});});return {success:true,contentItems:[{type:'inputText',text:canonical(result)}]};}};}
+ async reviewGate(){return {check:async()=>{await this.refresh(this.activeStage());},call:async(p:{tool:string;arguments:any;callId:string},beforeRegistration?:()=>void)=>{await this.refresh(this.activeStage());beforeRegistration?.();if(p.tool==='tongxu_run_tests'){const gate=await this.factGate();return gate.call(p,beforeRegistration);}if(p.tool!=='tongxu_read_file'||!p.arguments||Object.keys(p.arguments).join()!=='path'||++this.readCalls>128)throw new Error('formal_readonly_review_tool_required');const result=await readFormalSource(this.request.project.objects,this.request.candidate.H,p.arguments.path);if((this.readBytes+=result.bytes)>4*1024*1024)throw new Error('formal_additional_source_input_limit');this.records().effect(this.operation,this.activeStage().key,this.observations,()=>{beforeRegistration?.();});this.progress('additional_source_read',{stage:this.activeStage().key,path:result.path,H:result.H,object:result.object,sha256:result.sha256,bytes:result.bytes});return {success:true,contentItems:[{type:'inputText',text:canonical(result)}]};}};}
  factGate(){return this.projectPromise??=this.prepareProject();}
  private async prepareProject(){const root=join(this.directory,'project'),request={...this.request.project,executionRoot:root},path=join(this.directory,'project-request.json');if(!await exists(path))await writeFile(path,canonical(request),{flag:'wx',mode:0o600});else if((await regular(path)).toString()!==canonical(request))throw new Error('formal_project_request_changed');await prepareProjectRepair(this.request.configRef.path,path,root);const plan=JSON.parse((await regular(join(root,'plan.json'))).toString()) as RepairPlan,grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
   await privateDirectory(join(root,'operation'),true);const lease=await acquireWorkspace(plan.workspace,join(root,'operation'),false,grant);this.plan=plan;

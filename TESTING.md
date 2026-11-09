@@ -37,6 +37,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 行为、契约和失败边界优先于实现形状。固定输入减少外部数据漂移；真实外部调用需明确授权与条件。缺材料、未知、部分输出、拒绝和未运行不是通过。某个文件名带 native、integration 或 live，不足以判断它实际启动了什么，必须看 fixture 和执行器。
 
+`tests/w5/formal-candidate-live.test.ts` 覆盖一分钟轮询间隔内的新候选验证、已有不完整条目、手动新审核、原零执行准备的显式恢复与损坏拒绝。`formal-review-rejection.test.ts` 覆盖完整但相互矛盾的正式审核原件、冷重开、原资源结算，以及输入、候选、工具回执、输出和活动进程异常时保持等待。注册测试场景运行真实 Docker，模型和 GitHub 使用明确协议样例。
+
 ## 2. Test Layers and What Each Proves
 
 | 层级 | 本项目例子与证明范围 |
