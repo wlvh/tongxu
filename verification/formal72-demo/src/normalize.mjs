@@ -1,3 +1,4 @@
 export function normalizeLabel(value, fallback = 'Untitled') {
-  throw new Error('Baseline implementation required');
+  const trimmed = value.trim();
+  return trimmed === '' ? fallback : trimmed;
 }

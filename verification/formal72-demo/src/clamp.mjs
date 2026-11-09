@@ -1,3 +1,5 @@
 export function clamp(value, low, high) {
-  throw new Error('Baseline implementation required');
+  if (value < low) return low;
+  if (value > high) return high;
+  return value;
 }
