@@ -15,11 +15,11 @@
 | 启动本机工作台 | `npm run workbench -- --plan ABS_PLAN`；[local_workbench](local_workbench.md)、[github_project_entry](github_project_entry.md)。安装清单入口为 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`。 |
 | 按项目提问/读取历史 | 工作台右侧秘书；“发送给”可选择办理已审定工作，或保存已登记原任务的补充，参见 [project_task_supplements](project_task_supplements.md)；[project_secretary_chat](project_secretary_chat.md)。旧任务查询/跟进另见 [readonly_secretary](readonly_secretary.md)、[secretary_original_reports](secretary_original_reports.md)。 |
 | 选择本机程序、模型和角色 | “AI 与角色设置”；[local_ai_roles](local_ai_roles.md)、[cli_capabilities](cli_capabilities.md)。 |
-| 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功H1不表示正式审核/发布；真实Codex路径仍待准确环境核验。 |
+| 从已审定 Issue 新建一次受控实现 | 项目页“已审定 Issue 的受控实现”；[操作、安装前置与待验边界](issue_implementation.md)。登记不表示已发，成功 H1 不表示正式审核/发布；有界真实 Codex 路径已验证，生产效果与本人接受仍另核。 |
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
 | 从已配置项目推进条件交付 | `npm run conditional-entry -- ACTION --entry ABS_ENTRY`；配置、组合、材料更新与原 RETURN 处理见[条件交付入口](conditional_delivery_entry.md)。 |
 | 来源补查后独立接收 | 选择项目 → 原任务 → “来源补查与独立技术接收”；[source_reception_entry](source_reception_entry.md)。新接收可在AI设置选择已检测的Claude或Kimi；安装者须先固定候选、来源、接收权限、资源及相应费用证据，真实使用结果另核。 |
-| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；影响核实默认 Claude，可在项目 AI 设置选已检测 Kimi 后用于新请求；真实模型外层演练仍待配置验证。 |
+| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；影响核实默认 Claude，可在项目 AI 设置选已检测 Kimi 后用于新请求；有界真实 Codex/Kimi 外层链已验证，生产独立发布配置与本人接受仍待核。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
 | 指定个人或团队审核后合并 | 安装者配置的原受管合并入口，参见 [指定审核方说明](managed_merge.md#指定审核方的有效批准)。程序核GitHub当前策略和原批准/权限/资源，条件满足后继续，缺项显示等待。实际规则启用按原Issue条件处理。 |
@@ -64,7 +64,7 @@
 3. **原任务联系其他负责人**：在预登记计划中，A 可选择允许的 B，B 全文交回 A；普通 A 报告不触发联系。缺原件/资源未处理时保留等待原因。证据：`tests/w6/task-contact-choice.test.ts`。
 
 <!-- capability-anchor: CAPABILITY.source_reception -->
-4. **来源出现新反例**：原候选评论新增“空输入仍会出错”，打开原任务并补查来源。新评论进入当前材料，旧接收只针对历史材料；点击接收后按当前授权和资源处理，完成后打开原报告全文。重复打开不重发；原接收已登记但结果待核时，使用“查回当前原接收”，停止新增投入后仍可核原结果。仅 checks 变化不会新建不必要的接收；候选 H/B/目标变了要先重新固定候选。此入口的自动场景使用明确模型/来源/账本样例，真实模型正常路径仍待验，不能代填本人验收。
+4. **来源出现新反例**：原候选评论新增“空输入仍会出错”，打开原任务并补查来源。新评论进入当前材料，旧接收只针对历史材料；点击接收后按当前授权和资源处理，完成后打开原报告全文。重复打开不重发；原接收已登记但结果待核时，使用“查回当前原接收”，停止新增投入后仍可核原结果。仅 checks 变化不会新建不必要的接收；候选 H/B/目标变了要先重新固定候选。本例的“新增反例评论后再接收”组合使用明确模型/来源/账本协议样例，#73 AC02/AC07 的精确真实场景仍待验。另一次真实正常接收已完成，其材料变化和范围见 [来源接收证据](source_reception_entry.md#等待与恢复)，不能据此代填本例或本人验收。
 
 ## 6. Reading Results
 
