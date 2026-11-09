@@ -33,7 +33,7 @@ const paths=(v:unknown,max:number)=>Array.isArray(v)&&v.length<=max&&new Set(v).
 export class FormalReviewControls{
  private active=new Map<string,Promise<unknown>>();private hosts=new Map<string,QueueFormalRoundHost>();private accepting=true;private timer?:ReturnType<typeof setTimeout>;private checking?:Promise<void>;private checks=0;
  start(){if(this.timer||!this.accepting)return;const schedule=()=>{if(!this.accepting||this.checks>=360)return;this.timer=setTimeout(()=>{this.timer=undefined;this.checking=this.foregroundCheck().finally(()=>{this.checking=undefined;schedule();});},10000);this.timer.unref();};schedule();}
- private async foregroundCheck(){this.checks++;try{await this.advance();}catch{/* The original waiting record is updated by advance; no resend or inferred publication. */}}
+ private async foregroundCheck(){this.checks++;try{await this.advance(false);}catch{/* The original waiting record is updated by advance; no resend or inferred publication. */}}
 
  private constructor(private path:string,private sha256:string,private entries:Array<{entry:FormalEntry;source:Source}>,private read:FormalSourceReader,private verify:()=>Promise<void>,private workbenchProject?:FormalWorkbenchProject,private readPreferences?:()=>AIPreferenceSnapshot){}
  static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>,read:FormalSourceReader=readSource,verify:()=>Promise<void>=async()=>{},workbenchProject?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot){
@@ -45,24 +45,85 @@ export class FormalReviewControls{
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
  private public(s:Row){const r=s.terminal?.result;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned})),newModelInputs:0};}
  async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,requests:q.formalReviews().forEntry(entry.id).map(s=>this.public(s))};}finally{q.close();}}));}
- async prepare(id:string,requestId:string,previous?:Row){
+ async prepare(id:string,requestId:string,previous?:Row,explicit=true){
   if(!this.accepting||!messageId(requestId))throw new Error('formal_request_invalid');await this.catalog();const {entry,source}=this.entry(id),q=await QueueStore.open(source.store);
-  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&s.request.round===(previous?previous.request.round+1:1));if(prior)return this.public(prior);const live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');
+  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior)return this.public(prior);let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');
    if(this.workbenchProject&&this.workbenchProject.fullName.toLowerCase()!==live.candidate.repository.toLowerCase())throw new Error('formal_entry_not_selected');
-   const candidates=q.status().items.filter((i:Row)=>i.candidate.repository.toLowerCase()===live.candidate.repository.toLowerCase()&&i.candidate.pr===live.candidate.pr&&i.candidate.H===live.candidate.H&&i.candidate.B===live.candidate.B&&i.candidate.targetRef===live.candidate.target),original=records.currentSource(source.item),selected=candidates.find((i:Row)=>canonical(i.context.scope)===canonical(original.context.scope));if(!selected)throw new Error('formal_current_candidate_material_not_imported');const current=records.currentSource(selected.id);if(!current.current||current.prerequisites.length)throw new Error('formal_current_candidate_material_not_imported');
-   if(previous){if(!live.observation)throw new Error('formal_actual_remote_publication_observation_required');records.admitPublication(previous.operation,live.observation,q.events().configuration());q.reviewRecords().publishedFormalRepair(previous.operation);const fixed=previous.terminal?.result?.fix;if(!fixed||previous.stopped||fixed.H1!==live.candidate.H||previous.request.candidate.B!==live.candidate.B||previous.request.candidate.target!==live.candidate.target)throw new Error('formal_new_candidate_requires_new_admission');}
+   const published=previous??records.forEntry(id).find(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&s.terminal.result.fix.H1===live.candidate.H&&s.request.candidate.B===live.candidate.B&&s.request.candidate.target===live.candidate.target);
+   const original=records.currentSource(source.item);
+   const select=()=>q.status().items.find((i:Row)=>i.candidate.repository.toLowerCase()===live.candidate.repository.toLowerCase()&&i.candidate.pr===live.candidate.pr&&i.candidate.H===live.candidate.H&&i.candidate.B===live.candidate.B&&i.candidate.targetRef===live.candidate.target&&canonical(i.context.scope)===canonical(original.context.scope));
+   let selected=select();
+   const verified=selected&&records.forEntry(id+':candidate-material').some(s=>s.item===selected.id&&s.terminal?.result.status==='candidate_material_recorded'&&s.resourcesSettled&&s.stages[0]?.returned?.result.run===selected.summary.reportId);
+   if(published&&!selected?.summary.evidenceComplete&&!verified){
+    const expected=canonical(live.candidate);
+    await prepareFormalCandidate(q,entry,published,live,async()=>{
+     if(!this.accepting)throw new Error('formal_controller_closing');
+     await this.catalog();
+     if(records.state(published.operation).stopped)throw new Error('formal_stopped');
+     const current=await this.read(entry,source);
+     if(canonical(current.candidate)!==expected||hash(current.issue.body)!==entry.issue.bodySha256)throw new Error('formal_candidate_or_requirements_changed');
+    },explicit);
+    live=await this.read(entry,source);
+    if(canonical(live.candidate)!==expected||hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_candidate_or_requirements_changed');
+    selected=select();
+   }
+   if(!selected)throw new Error('formal_current_candidate_material_not_imported');const current=records.currentSource(selected.id);if(!current.current||current.prerequisites.length)throw new Error('formal_current_candidate_material_not_imported');
+   if(published){
+    if(!live.observation)throw new Error('formal_actual_remote_publication_observation_required');
+    records.admitPublication(published.operation,live.observation,q.events().configuration());
+    q.reviewRecords().publishedFormalRepair(published.operation);
+    const fixed=published.terminal?.result?.fix;
+    if(!fixed||published.stopped||fixed.H1!==live.candidate.H||published.request.candidate.B!==live.candidate.B||published.request.candidate.target!==live.candidate.target)throw new Error('formal_new_candidate_requires_new_admission');
+   }
    const adoption=q.authority().forScope(current.context.scope.id,{item:selected.id,target:live.candidate.target}).currentAdoption;if(!adoption)throw new Error('formal_adopted_scope_required');const adopted=q.authority().inspectRecordedDecision(adoption),adoptedScope={adoption,proposal:adopted.proposal,source:adopted.source.sourceUrl},candidate={...live.candidate,requirementsSha256:hash(canonical({issue:live.issue,adoptedScope}))},configBytes=await regular(entry.config.path),config=JSON.parse(configBytes.toString());if(hash(configBytes)!==entry.config.sha256||!['fixture','native_capture',undefined].includes(config.executionKind)||!Number.isSafeInteger(config.timeoutMs)||config.timeoutMs<1000||config.timeoutMs>900000)throw new Error('formal_executor_configuration_invalid');
-   const policies={reviewer:(await regular(config.prompts.reviewer)).toString(),fact:(await regular(config.prompts.fact)).toString(),impact:(await regular(config.prompts.impact)).toString()},prompts=await assemblePromptSet(policies,{reviewer:'reviewer',fact:'verifier_fact',impact:'verifier_impact'}),objects=previous?.terminal?.result.fix.workspace??entry.objects,material=await formalReviewMaterial({objects,candidate,issue:live.issue,adoptedScope,requiredPaths:entry.requiredPaths,contextPaths:[...new Set([...entry.contextPaths,...entry.repair.materialPaths])],sourceEvidence:live.evidence}),round=previous?previous.request.round+1:1;
+   const policies={reviewer:(await regular(config.prompts.reviewer)).toString(),fact:(await regular(config.prompts.fact)).toString(),impact:(await regular(config.prompts.impact)).toString()},prompts=await assemblePromptSet(policies,{reviewer:'reviewer',fact:'verifier_fact',impact:'verifier_impact'}),objects=published?.terminal?.result.fix.workspace??entry.objects,material=await formalReviewMaterial({objects,candidate,issue:live.issue,adoptedScope,requiredPaths:entry.requiredPaths,contextPaths:[...new Set([...entry.contextPaths,...entry.repair.materialPaths])],sourceEvidence:live.evidence}),round=published?published.request.round+1:1;
    if(round>32)throw new Error('formal_foreground_round_bound');await mkdir(entry.root,{recursive:true,mode:0o700});await privateDirectory(entry.root,false);const directory=join(entry.root,hash(canonical([id,requestId,round])).slice(0,48));if(await exists(directory)){await privateDirectory(directory,false);if((await readdir(directory)).length)throw new Error('formal_unregistered_original_directory_not_empty');}else await mkdir(directory,{mode:0o700});
    // Read this controller's project settings at new-request freeze time, including
    // timer callers. Existing registered requests returned above keep their choices.
    const capture=()=>captureRoleAI(['reviewer','verifier_fact','verifier_impact'],candidate.repository),aiSelections=this.readPreferences?withAIPreferences(this.readPreferences(),capture):capture();
    const project:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:join(directory,'project'),objects,candidate:{kind:'github-pr',repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target},...entry.repair,findings:[],authorization:{source:entry.issue.adjudication,allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1}},workSha256=hash(canonical({materialSha256:material.sha256,configSha256:entry.config.sha256,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections}));
-   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:previous?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
+   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:published?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
   }finally{q.close();}
  }
  async begin(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);let state:Row;try{state=q.formalReviews().state(operation);if(state.request.entry!==id)throw new Error('formal_entry_not_selected');if(state.terminal||state.stopped)return this.public(state);}finally{q.close();}if(this.active.has(operation))return {...this.public(state),duplicate:true};if(!this.accepting)throw new Error('formal_controller_closing');const run=this.execute(id,operation);this.active.set(operation,run);run.catch(()=>{}).finally(()=>this.active.delete(operation));return {...this.public(state),controllerActive:true};}
- private async execute(id:string,operation:string){const {entry,source}=this.entry(id),q=this.hosts.get(operation)?.q??await QueueStore.open(source.store);try{return await withQueueRepairLock(source.store,operation,async()=>{const s=q.formalReviews().state(operation);if(s.terminal||s.stopped)return s;let host=this.hosts.get(operation);if(!host){const request=s.request as FormalFrozenRequest;host=new QueueFormalRoundHost(q,operation,request,async()=>{await this.catalog();const live=await this.read(entry,source);if(canonical(live.candidate)!==canonical({repository:request.candidate.repository,pr:request.candidate.pr,H:request.candidate.H,B:request.candidate.B,target:request.candidate.target})||hash(live.issue.body)!==entry.issue.bodySha256||(live.evidence as Row)?.materialSha256!==(request.material.sourceEvidence as Row)?.materialSha256)throw new Error('formal_candidate_or_requirements_changed');},()=>{if(!this.accepting)throw new Error('formal_controller_closing');});this.hosts.set(operation,host);}return await runFormalReviewRound(host);});}catch(error){q.formalReviews().progress(operation,'waiting',{reason:error instanceof Error?error.message:'formal_execution_unknown',originalExecutionRetained:true});throw error;}finally{if(!this.hosts.get(operation)?.ownedFact()){this.hosts.delete(operation);q.close();}}}
+ private async execute(id:string,operation:string){
+  const {entry,source}=this.entry(id);
+  const q=this.hosts.get(operation)?.q??await QueueStore.open(source.store);
+  try{
+   return await withQueueRepairLock(source.store,operation,async()=>{
+    const state=q.formalReviews().state(operation);
+    if(state.terminal||state.stopped)return state;
+    let host=this.hosts.get(operation);
+    if(!host){
+     const request=state.request as FormalFrozenRequest;
+     host=new QueueFormalRoundHost(q,operation,request,async()=>{
+      await this.catalog();
+      const live=await this.read(entry,source);
+      const expected={repository:request.candidate.repository,pr:request.candidate.pr,H:request.candidate.H,B:request.candidate.B,target:request.candidate.target};
+      if(canonical(live.candidate)!==canonical(expected)||hash(live.issue.body)!==entry.issue.bodySha256||(live.evidence as Row)?.materialSha256!==(request.material.sourceEvidence as Row)?.materialSha256)throw new Error('formal_candidate_or_requirements_changed');
+     },()=>{if(!this.accepting)throw new Error('formal_controller_closing');});
+     this.hosts.set(operation,host);
+    }
+    const closed=await host.settleRejectedReview();
+    if(closed)return closed;
+    try{
+     return await runFormalReviewRound(host);
+    }catch(error){
+     const rejected=await host.settleRejectedReview();
+     if(rejected)return rejected;
+     throw error;
+    }
+   });
+  }catch(error){
+   q.formalReviews().progress(operation,'waiting',{reason:error instanceof Error?error.message:'formal_execution_unknown',originalExecutionRetained:true});
+   throw error;
+  }finally{
+   if(!this.hosts.get(operation)?.ownedFact()){
+    this.hosts.delete(operation);
+    q.close();
+   }
+  }
+ }
  async report(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');return {...this.public(s),material:s.request.material,prompts:s.request.prompts,fullStages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,result:s.returned?.result??null,proof:s.returned?.proof??null})),result:s.terminal?.result??null,originalsRetained:true};}finally{q.close();}}
  async stop(id:string,operation:string,project:Pick<FormalWorkbenchProject,'account'|'repository'>|undefined=this.workbenchProject,legacyProject?:FormalWorkbenchProject){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');
   // New project requests retain their verified identity in the original blob,
@@ -72,6 +133,25 @@ export class FormalReviewControls{
   return this.public(q.formalReviews().stop(operation));}finally{q.close();}}
  /** Called only by the foreground controller after source/material refresh.
   * Publication is an external fact: no local commit is treated as remote H. */
- async advance(){if(!this.accepting)return;for(const {entry,source} of this.entries){const q=await QueueStore.open(source.store);let previous:Row[];try{previous=q.formalReviews().forEntry(entry.id);}finally{q.close();}for(const old of previous.filter(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&!previous.some(n=>n.request.previousOperation===s.operation))){try{const live=await this.read(entry,source);if(live.candidate.H!==old.terminal.result.fix.H1||live.candidate.B!==old.request.candidate.B||live.candidate.target!==old.request.candidate.target)continue;const q=await QueueStore.open(source.store);try{const matches=q.status().items.some((i:Row)=>i.candidate.H===live.candidate.H&&i.candidate.B===live.candidate.B&&i.candidate.targetRef===live.candidate.target&&i.candidate.pr===live.candidate.pr);if(!matches)await prepareFormalCandidate(q,entry,old,live,async()=>{if(!this.accepting)throw new Error('formal_controller_closing');await this.catalog();if(q.formalReviews().state(old.operation).stopped)throw new Error('formal_stopped');const current=await this.read(entry,source);if(canonical(current.candidate)!==canonical(live.candidate)||hash(current.issue.body)!==entry.issue.bodySha256)throw new Error('formal_candidate_or_requirements_changed');});}finally{q.close();}const next=await this.prepare(entry.id,old.request.id,old);await this.begin(entry.id,next.operation);}catch(error){const q=await QueueStore.open(source.store);try{q.formalReviews().progress(old.operation,'awaiting_publication',{reason:error instanceof Error?error.message:'formal_publication_check_failed',foregroundChecks:this.checks,originalExecutionRetained:true});}finally{q.close();}if(!['formal_current_candidate_material_not_imported','formal_new_candidate_requires_new_admission'].includes((error as Error).message))throw error;}}}}
+ async advance(explicit=true){
+  if(!this.accepting)return;
+  for(const {entry,source} of this.entries){
+   const q=await QueueStore.open(source.store);
+   let previous:Row[];
+   try{previous=q.formalReviews().forEntry(entry.id);}finally{q.close();}
+   for(const old of previous.filter(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&!previous.some(n=>n.request.previousOperation===s.operation))){
+    try{
+     const live=await this.read(entry,source);
+     if(live.candidate.H!==old.terminal.result.fix.H1||live.candidate.B!==old.request.candidate.B||live.candidate.target!==old.request.candidate.target)continue;
+     const next=await this.prepare(entry.id,old.request.id,old,explicit);
+     await this.begin(entry.id,next.operation);
+    }catch(error){
+     const q=await QueueStore.open(source.store);
+     try{q.formalReviews().progress(old.operation,'awaiting_publication',{reason:error instanceof Error?error.message:'formal_publication_check_failed',foregroundChecks:this.checks,originalExecutionRetained:true});}finally{q.close();}
+     if(!['formal_current_candidate_material_not_imported','formal_new_candidate_requires_new_admission'].includes((error as Error).message))throw error;
+    }
+   }
+  }
+ }
  async drain(){this.accepting=false;if(this.timer)clearTimeout(this.timer);this.timer=undefined;await this.checking;await Promise.allSettled(this.active.values());for(const host of this.hosts.values()){await host.ownedFact()?.session.close();host.releaseFact();host.q.close();}this.hosts.clear();}
 }

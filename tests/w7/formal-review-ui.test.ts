@@ -10,3 +10,19 @@ for(const fix of [false,true])test('formal owner report displays the original qu
  const elements:Record<string,any>={},element=(id:string)=>elements[id]??={textContent:'',hidden:true},question='Choose acceptance requirement A or B',report={candidate:{pr:1,H:'h',B:'b',target:'main'},phase:'owner_decision',material:{issue:{url:'https://github.com/fixture/reception/issues/72'}},fullStages:[{role:fix?'verifier_fact':'reviewer',key:fix?'round-1/fix':'round-1/refutation-review',result:{report:fix?question:'All prior findings refuted; a business choice remains'}}],result:fix?{report:{decision:'needs_owner',report:question}}:{review:{ownerQuestions:[question]}}},f=await ui({reportNonce:0,$:element,showWorkbenchReport:()=>{},document:{querySelector:()=>element('summary')},api:async()=>report});
  await f.run("formalReport('registered','original')");assert.match(element('report-body').textContent,/Choose acceptance requirement A or B/);assert.match(element('report-body').textContent,/需要本人决定/);assert.match(element('report-body').textContent,/https:\/\/github.com\/fixture\/reception\/issues\/72/);assert.match(element('report-body').textContent,/影响范围和答复理由/);assert.equal(element('report-original').hidden,false);
 });
+
+test('formal needs-evidence report displays the complete rejected native text and its separate rejection record',async()=>{
+ const elements:Record<string,any>={},element=(id:string)=>elements[id]??={textContent:'',hidden:true};
+ const original=JSON.stringify({verdict:'PASS',report:'Explicit complete native fixture text',coverageGaps:['The caller was not checked']});
+ const report={candidate:{pr:1,H:'h',B:'b',target:'main'},phase:'needs_evidence',
+  fullStages:[{role:'reviewer',key:'round-1/review',result:{report:original,protocolRejection:'formal_pass_has_unresolved_work',formalJudgmentAccepted:false}}],
+  result:{status:'needs_evidence',reason:'formal_pass_has_unresolved_work',formalJudgmentAccepted:false}};
+ const f=await ui({reportNonce:0,$:element,showWorkbenchReport:()=>{},document:{querySelector:()=>element('summary')},api:async()=>report});
+ await f.run("formalReport('registered','original')");
+ assert.ok(element('report-body').textContent.includes(original));
+ assert.ok(!element('report-body').textContent.includes('[object Object]'));
+ assert.match(element('report-meta').textContent,/needs_evidence/);
+ assert.match(element('report-raw').textContent,/formal_pass_has_unresolved_work/);
+ assert.equal(JSON.parse(element('report-raw').textContent).result.formalJudgmentAccepted,false);
+ assert.equal(element('report-original').hidden,false);
+});
