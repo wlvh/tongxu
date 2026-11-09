@@ -26,3 +26,33 @@ test('formal needs-evidence report displays the complete rejected native text an
  assert.equal(JSON.parse(element('report-raw').textContent).result.formalJudgmentAccepted,false);
  assert.equal(element('report-original').hidden,false);
 });
+
+for(const mode of ['exhausted','waiting','active','legacy'])test('formal waiting refresh follows automatic continuation state: '+mode,async()=>{
+ let timers=0;
+ const request={operation:'original',phase:'awaiting_publication',stopped:false,controllerActive:mode==='active',
+  ...(mode==='legacy'?{}:{automaticContinuation:{used:mode==='waiting'?1:360,limit:360,exhausted:mode!=='waiting'}})};
+ const f=await ui({setTimeout:()=>{timers++;return 0;},api:async()=>({available:true,entries:[{requests:[request]}]})});
+ await f.run('loadFormalReviews()');
+ assert.equal(timers,mode==='exhausted'?0:1);
+});
+
+test('formal automatic exhaustion shows its limit and leaves the manual check usable',async()=>{
+ type Element={tag:string;textContent:string;children:Element[];disabled:boolean;onclick?:()=>Promise<void>;append:(...children:Element[])=>void};
+ const element=(tag:string,text='',className=''):Element=>({tag,textContent:text,children:[],disabled:false,
+  append(...children:Element[]){this.children.push(...children);}});
+ const request={operation:'original',phase:'awaiting_publication',stopped:false,controllerActive:false,round:1,
+  candidate:{H:'a'.repeat(40),target:'main'},automaticContinuation:{used:360,limit:360,exhausted:true}};
+ const entry={id:'registered',source:'source',requests:[request]};
+ const f=await ui({el:element,append:(node:Element,...children:Element[])=>{node.append(...children);return node;},
+  api:async()=>({available:true,entries:[entry]})});
+ await f.run('loadFormalReviews()');
+ const panel=f.run("formalReviewPanel('source')") as Element;
+ const nodes:Element[]=[];
+ const visit=(node:Element)=>{nodes.push(node);node.children.forEach(visit);};visit(panel);
+ assert.match(nodes.map(node=>node.textContent).join('\n'),/自动核对.*360.*手动/);
+ const manual=nodes.find(node=>node.tag==='button'&&node.textContent==='核对已发布的新候选');
+ assert.ok(manual);assert.equal(manual.disabled,false);
+ const action=manual.onclick!();
+ assert.equal(f.calls.length,1);assert.match(f.calls[0].path,/registered\/check$/);
+ f.calls[0].resolve({ok:true,json:async()=>({})});await action;
+});
