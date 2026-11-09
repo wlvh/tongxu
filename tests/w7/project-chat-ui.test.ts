@@ -91,3 +91,17 @@ test('a tool-limit failure explains both the call budget and allowed tools witho
  const p=await page();p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:[{id:'limited',question:'q',status:'failed',problem:'project_chat_tool_limit',answer:null,active:false,owned:false}]})});renderProjectChat()`);
  const text=(e:any):string=>e.textContent+e.children.map(text).join('');const result=text(p.nodes.get('project-chat-lines'));assert.match(result,/每轮最多调用24次/);assert.match(result,/当前模式已登记的工具/);assert.match(result,/未形成完整回答/);assert.doesNotMatch(result,/project_chat_tool_limit|正在读取资料并回答/);assert.equal(p.sends.length,0);assert.equal(p.timers.size,0);
 });
+
+test('an invalid secretary report explains the final reference requirement without a false answer or resend', async () => {
+  const p = await page();
+  p.run(`Object.assign(chatData(),${JSON.stringify({ ...list, ready: true, initialLoaded: true, conversationId: A, messages: [{ id: 'invalid', question: 'q', status: 'failed', problem: 'invalid_secretary_report', answer: null, active: false, owned: false }] })});renderProjectChat()`);
+  const text = (element: any): string => element.textContent + element.children.map(text).join('');
+  const result = text(p.nodes.get('project-chat-lines'));
+  assert.match(result, /格式或证据引用不符合要求/);
+  assert.match(result, /1至8条/);
+  assert.match(result, /未形成完整回答/);
+  assert.match(result, /原始记录保留/);
+  assert.doesNotMatch(result, /invalid_secretary_report|正在读取资料并回答/);
+  assert.equal(p.sends.length, 0);
+  assert.equal(p.timers.size, 0);
+});

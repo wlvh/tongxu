@@ -6,7 +6,7 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {regular,exists} from './repair-workspace.js';
 import {save} from './live-process.js';
-import {BoundedCodexSession,readRepairSession,secretarySchema} from './repair-native.js';
+import {BoundedCodexSession,readRepairSession,projectSecretarySchema,isSecretaryOutputSchema} from './repair-native.js';
 import {assembleRolePrompt} from './role-prompts.js';
 import {chatId,validateProjectChatConfig,projectChatInstructionsFor,projectChatToolsFor,projectChatToolLimit,projectWorkTarget,type ProjectWorkTarget,type ProjectWorkOrigin,type ProjectChatConfig} from './project-chat-contract.js';
 import {exactKeys} from './authority-contract.js';
@@ -194,7 +194,7 @@ export class ProjectChat{
       // native executor immediately before input. No stale evidence is dated anew.
       const allowedStop=(request:{action:string;id:string})=>request.action==='interrupt'&&(active.stop&&request.id==='stop-'+id||active.timedOut&&request.id==='timeout-'+id);
       active.session=await BoundedCodexSession.start({executable:runtimeConfig.codexExecutable,...(aiSelection?{aiModel:modelChoice(aiSelection)}:{}),directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,...(work?{projectSecretaryWork:true as const}:{}),system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:work?'Project work secretary; coordinate only this saved user-selected approved work; new native context':'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:this.config.timeoutMs,executionKind:this.config.executionKind,beforeTurn:check,gate,control:{beforeControl:async request=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');send();}}});
-      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,secretarySchema);await active.session.close();await this.complete(id);
+      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,projectSecretarySchema);await active.session.close();await this.complete(id);
     }catch(e){
       let cleanupRecordProblem:string|null=null;
       if(reason(e)==='executor_wait_timeout'&&active.session){
@@ -215,6 +215,8 @@ export class ProjectChat{
   private async verified(id:string){
     const directory=this.directory(id),request=JSON.parse((await regular(join(directory,'request.json'),1024*1024)).toString()),parsed=await readRepairSession(join(directory,'native'));
     if(parsed.binding.run!==directory||parsed.binding.role!=='secretary'||canonical(parsed.binding.candidate)!==canonical(request.candidate)||parsed.binding.inputManifestSha256!==hash(canonical(request.input))||parsed.turns.length!==1||!parsed.turns[0]?.final)throw new Error('project_chat_original_mismatch');
+    const sent=(await regular(join(directory,'native','stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l)),turns=sent.filter(m=>m.method==='turn/start');
+    if(turns.length!==1||!isSecretaryOutputSchema(turns[0]?.params?.outputSchema))throw new Error('project_chat_original_mismatch');
     const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row;if(!row||request.requestId!==id||request.conversationId!==row.conversation||request.input.question!==row.question||request.candidate.conversationId!==row.conversation)throw new Error('project_chat_request_changed');
     const c=this.db.prepare('SELECT * FROM conversations WHERE id=?').get(row.conversation) as Row;if(request.candidate.projectId!==c.repository||request.candidate.accountId!==c.account)throw new Error('project_chat_original_mismatch');
     const answer=JSON.parse(parsed.turns[0].final.text),observations=JSON.parse((await regular(join(directory,'observations.json'),1024*1024)).toString()) as Row[];
@@ -222,7 +224,7 @@ export class ProjectChat{
     const pairs=JSON.parse((await regular(join(directory,'native','reconciled-tools.json'),2*1024*1024)).toString()) as Row[];
     for(const o of observations){if(hash(canonical(o.observation))!==o.id)throw new Error('project_chat_observation_changed');if(o.tool==='initial_project_context'){const {observationId,...initial}=request.input.initialObservation;if(o.id!==observationId||canonical(o.observation)!==canonical(initial))throw new Error('project_chat_observation_changed');}else if(!pairs.some(p=>p.response?.result?.contentItems?.[0]?.text===JSON.stringify({observationId:o.id,...o.observation})))throw new Error('project_chat_observation_changed');}
     let aiExecution:any;
-    if(request.aiSelection){const choice=modelChoice(request.aiSelection),sent=(await regular(join(directory,'native','stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l)),received=(await regular(join(directory,'native','stdout.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l));capturedCodexModels(sent,received,choice);const start=sent.find(m=>m.method==='thread/start'),thread=received.find(m=>m.id===start?.id&&!m.method)?.result;checkCodexSelected(thread,choice);const turn=sent.find(m=>m.method==='turn/start');for(const [k,v] of Object.entries(codexTurnChoice(choice)))if(turn?.params[k]!==v)throw new Error('ai_selected_model_not_applied');aiExecution={selection:request.aiSelection,actualModel:thread.model,actualEffort:thread.reasoningEffort};}
+    if(request.aiSelection){const choice=modelChoice(request.aiSelection),received=(await regular(join(directory,'native','stdout.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l));capturedCodexModels(sent,received,choice);const start=sent.find(m=>m.method==='thread/start'),thread=received.find(m=>m.id===start?.id&&!m.method)?.result;checkCodexSelected(thread,choice);const turn=turns[0];for(const [k,v] of Object.entries(codexTurnChoice(choice)))if(turn?.params[k]!==v)throw new Error('ai_selected_model_not_applied');aiExecution={selection:request.aiSelection,actualModel:thread.model,actualEffort:thread.reasoningEffort};}
     const receipt={sessionId:parsed.binding.sessionId,turnId:parsed.binding.turnIds[0],executionKind:parsed.binding.sourceKind,reportSha256:hash(answer.report),observationIds:answer.observationIds,observations:observations.filter(o=>answer.observationIds.includes(o.id)),continuation:'saved_history_in_new_native_context',modelExplanationIsNotApproval:true,...(aiExecution?{aiExecution}:{})};
     return {report:answer.report,receipt};
   }

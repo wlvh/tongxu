@@ -11,7 +11,7 @@ import {startWorkbench} from '../../src/workbench.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {hash} from '../../src/snapshot.js';
 import type {AIProvider} from '../../src/ai-catalog.js';
-import {BoundedCodexSession} from '../../src/repair-native.js';
+import {BoundedCodexSession,projectSecretarySchema,secretarySchema,isSecretaryOutputSchema} from '../../src/repair-native.js';
 
 async function fixture(t:test.TestContext,mode='normal'){
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-project-chat-'))),trace=join(root,'trace.ndjson'),binary=join(root,'codex.mjs');await writeFile(trace,'');
@@ -19,16 +19,21 @@ async function fixture(t:test.TestContext,mode='normal'){
 import fs from 'node:fs';import readline from 'node:readline';
 const trace=${JSON.stringify(trace)},mode=${JSON.stringify(mode)},emit=x=>process.stdout.write(JSON.stringify(x)+'\\n'),log=x=>fs.appendFileSync(trace,JSON.stringify(x)+'\\n');
 if(process.argv.includes('--version')){console.log('codex-cli 0.163.0-alpha.10.2');process.exit(0)}
-let thread,turn,context,toolReplies=0;
+let thread,turn,context,toolReplies=0,observationIds=[];
 const query=index=>emit({id:'query-'+index,method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-'+index,tool:mode==='budget-overrun'&&index===25?'tongxu_project_item':'tongxu_project_info',namespace:null,arguments:mode==='budget-overrun'&&index===25?{kind:'issues',number:999}:{}}});
-const finish=observation=>{const report={candidateH:context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无'),observationIds:[observation.observationId]},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
-readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
+const finish=observation=>{
+const counts={'citation-one':1,'citation-empty':0,'citation-nine':9};
+const references=mode.startsWith('citation-')?observationIds.slice(0,counts[mode]??8):[observation.observationId];
+if(mode==='citation-invalid-hex')references[0]='invalid-hex';
+if(mode==='citation-unobserved')references[0]='f'.repeat(64);
+const report={candidateH:mode==='citation-wrong-candidate'?'wrong-candidate':context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无'),observationIds:references},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
+readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
 if(m.method==='model/list')result={data:[{model:'fixture-astra',displayName:'Fixture Astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,reasoningEffort:m.params.config?.model_reasoning_effort??'xhigh',source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name),instructions:m.params.developerInstructions});emit({id:m.id,result:{thread,model:mode==='wrong-selected-model'?'wrong':m.params.model??'fixture-default',reasoningEffort:thread.reasoningEffort,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});if(mode==='hold'||mode==='timeout')return;if(mode.startsWith('budget-')){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
+if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout')return;if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
 if(m.method==='turn/interrupt'){log({kind:'interrupt'});emit({id:m.id,result:{}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});return;}
 emit({id:m.id,result});});
 `;
@@ -155,4 +160,110 @@ test('a model ignoring remaining0 is refused before its25th reader call and orig
  const final=await f.wait(q.conversationId,m=>m[0]&&!m[0].active);assert.equal(final.messages[0].status,'failed');assert.equal(final.messages[0].problem,'project_chat_tool_limit');assert.equal(final.messages[0].answer,null);
  const logs=await f.logs();assert.equal(logs.filter(x=>x.kind==='input').length,1);assert.equal(logs.filter(x=>x.kind==='tool-result').length,24);assert.ok(!logs.some(x=>x.kind==='read-op'&&Object.values(x.args??{}).some(v=>String(v)==='999')));const saved=JSON.parse(await readFile(join(f.root,'chats',q.requestId,'observations.json'),'utf8'));assert.equal(saved.length,25);
  assert.equal((await f.post('/api/project-secretary/ask',q)).status,202);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+});
+
+for (const mode of ['citation-one', 'citation-eight', 'citation-empty', 'citation-nine', 'citation-invalid-hex', 'citation-wrong-candidate', 'citation-unobserved']) {
+  test(mode + ' after 21 reads respects the final reference boundary without another turn', async t => {
+    const f = await fixture(t, mode), q = question('读取相关资料后选择最终引用');
+    assert.equal((await f.post('/api/project-secretary/ask', q)).status, 202);
+    const state = await f.wait(q.conversationId, messages => messages[0] && !messages[0].active);
+    const message = state.messages[0], accepted = mode === 'citation-one' || mode === 'citation-eight';
+    assert.equal(message.status, accepted ? 'completed' : 'failed');
+    const logs = await f.logs(), input = logs.find(x => x.kind === 'input');
+    assert.deepEqual(input.schema, projectSecretarySchema);
+    assert.deepEqual(input.schema.properties.observationIds, {
+      type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', pattern: '^[a-f0-9]{64}$' }
+    });
+    assert.match(logs.find(x => x.kind === 'tools').instructions, /Select 1 to 8/);
+    const directory = join(f.root, 'chats', q.requestId);
+    const observations = JSON.parse(await readFile(join(directory, 'observations.json'), 'utf8'));
+    assert.equal(observations.length, 22);
+    assert.deepEqual(observations.at(-1).observation.toolBudget, { limit: 24, used: 21, remaining: 3 });
+    if (accepted) {
+      assert.equal(message.receipt.observationIds.length, mode === 'citation-one' ? 1 : 8);
+      assert.equal(message.receipt.observations.length, message.receipt.observationIds.length);
+    } else {
+      const problem = mode === 'citation-wrong-candidate' ? 'structured_report_wrong_candidate'
+        : mode === 'citation-unobserved' ? 'project_chat_answer_unverified' : 'invalid_secretary_report';
+      assert.equal(message.problem, problem);
+      assert.equal(message.answer, null);
+      assert.equal(message.receipt, null);
+      await assert.rejects(readFile(join(directory, 'answer.json')), { code: 'ENOENT' });
+    }
+    assert.equal(logs.filter(x => x.kind === 'input').length, 1);
+    assert.equal((await f.post('/api/project-secretary/ask', q)).data.duplicate, true);
+    await f.close();
+    const reopened = await f.launch();
+    try {
+      const restored = (await reopened.get('/api/project-secretary/conversations/' + q.conversationId)).data.messages[0];
+      assert.equal(restored.status, message.status);
+      assert.equal(restored.answer, message.answer);
+      assert.deepEqual(restored.receipt, message.receipt);
+      assert.deepEqual(await f.logs(), logs);
+    } finally { await reopened.close(); }
+  });
+}
+
+test('native live profiles reject crossed, copied and non-secretary output schemas before input', async () => {
+  const cases = [
+    { role: 'secretary', projectSecretary: true, schema: secretarySchema },
+    { role: 'secretary', projectSecretary: false, schema: projectSecretarySchema },
+    { role: 'secretary', projectSecretary: true, schema: structuredClone(projectSecretarySchema) },
+    { role: 'reviewer', projectSecretary: false, schema: projectSecretarySchema },
+    { role: 'reviewer', projectSecretary: false, schema: secretarySchema }
+  ];
+  for (const { role, projectSecretary, schema } of cases) {
+    const session = Object.create(BoundedCodexSession.prototype);
+    session.o = { role, projectSecretary };
+    await assert.rejects(session.runTurn('', { H: 'a'.repeat(40) }, schema), /native_role_output_schema_mismatch/);
+  }
+});
+
+test('history accepts the exact old generic schema but refuses coherently rehashed unknown profiles', async t => {
+  const f = await fixture(t), q = question();
+  await f.post('/api/project-secretary/ask', q);
+  const original = (await f.wait(q.conversationId, messages => messages[0]?.status === 'completed')).messages[0];
+  const logs = await f.logs(), directory = join(f.root, 'chats', q.requestId), native = join(directory, 'native');
+  const request = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+  const sent = (await readFile(join(native, 'stdin.ndjson'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const inputs = JSON.parse(await readFile(join(native, 'inputs.json'), 'utf8'));
+  const binding = JSON.parse(await readFile(join(native, 'binding.json'), 'utf8'));
+  const receipt = JSON.parse(await readFile(join(native, 'completed.json'), 'utf8'));
+  const capture = JSON.parse(await readFile(join(native, 'capture-status.json'), 'utf8'));
+  const unknown = structuredClone(projectSecretarySchema);
+  unknown.properties.observationIds.maxItems = 9;
+  const profiles = [
+    { schema: secretarySchema, known: true },
+    { schema: unknown, known: false },
+    { schema: { ...secretarySchema, description: 'unregistered' }, known: false },
+    { schema: projectSecretarySchema, known: true }
+  ];
+  for (const { schema, known } of profiles) {
+    assert.equal(isSecretaryOutputSchema(schema), known);
+    // Explicit historical-wire fixtures keep the original capture hashes coherent.
+    sent.find(message => message.method === 'turn/start').params.outputSchema = schema;
+    inputs[0].schema = schema;
+    binding.promptSha256 = hash(JSON.stringify({ system: request.system, inputs }));
+    const wire = sent.map(message => JSON.stringify(message)).join('\n') + '\n', contract = JSON.stringify(sent);
+    receipt.binding = binding;
+    receipt.inputSha256 = hash(wire);
+    receipt.contractSha256 = hash(contract);
+    capture.files['stdin.ndjson'] = hash(wire);
+    for (const [name, content] of Object.entries({
+      'stdin.ndjson': wire, 'expected-requests.json': contract, 'inputs.json': JSON.stringify(inputs),
+      'binding.json': JSON.stringify(binding), 'completed.json': JSON.stringify(receipt), 'capture-status.json': JSON.stringify(capture)
+    })) await writeFile(join(native, name), content);
+    const restored = (await f.get('/api/project-secretary/conversations/' + q.conversationId)).data.messages[0];
+    if (known) {
+      assert.equal(restored.status, 'completed');
+      assert.equal(restored.answer, original.answer);
+      assert.deepEqual(restored.receipt, original.receipt);
+    } else {
+      assert.equal(restored.status, 'unavailable');
+      assert.equal(restored.problem, 'project_chat_original_mismatch');
+      assert.equal(restored.answer, null);
+      assert.equal((await f.post('/api/project-secretary/ask', question('不能用未知格式追问', q.requestId, q.conversationId))).status, 503);
+    }
+    assert.deepEqual(await f.logs(), logs);
+  }
 });

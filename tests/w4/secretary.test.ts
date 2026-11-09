@@ -26,6 +26,11 @@ test('a distinct secretary uses only registered state queries; original queue st
   const f = await fixture(t), before = f.q.status(), result = await runSecretary(f.secretaryPlan, f.output);
   assert.equal(result.status, 'completed'); assert.equal(result.queryCalls, 2); assert.equal(result.productionActionAllowed, false); assert.deepEqual(f.q.status(), before);
   const logs = await f.logs(); assert.deepEqual(logs.find(x => x.kind === 'tools').names, ['tongxu_task_status', 'tongxu_operation_status']);
+  const sent = (await readFile(join(f.output, 'codex-secretary/stdin.ndjson'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(sent.find(message => message.method === 'turn/start').params.outputSchema, {
+    type: 'object', properties: { candidateH: { type: 'string' }, report: { type: 'string' }, observationIds: { type: 'array', items: { type: 'string' } } },
+    required: ['candidateH', 'report', 'observationIds'], additionalProperties: false
+  });
   const responses = JSON.stringify(logs.filter(x => x.kind === 'observation')); assert.ok(!responses.includes(f.root)); assert.ok(!responses.includes('明确标注的模拟接收判断'));
   await writeFile(join(f.output, 'result.json'), '{"status":"forged","approval":true}');
   const again = await runSecretary(f.secretaryPlan, f.output); assert.equal(again.duplicate, true); assert.equal(again.newModelTasks, 0); assert.equal(again.report, result.report); assert.deepEqual(await f.logs(), logs); assert.deepEqual(f.q.status(), before);
