@@ -8,7 +8,7 @@ import type {Response} from './contract.js';
 
 type Row=Record<string,any>;
 type Account={id:number;login:string};
-type ProjectQuery='projects'|'project'|'issues'|'pulls'|'issue'|'pull';
+type ProjectQuery='projects'|'project'|'issues'|'pulls'|'issue'|'pull'|'issue_comments'|'pull_comments';
 export type GitHubProjectReader={query:(operation:ProjectQuery,variables:Row,signal:AbortSignal)=>Promise<Response>};
 export type GitHubReaderFactory=(signal:AbortSignal)=>Promise<GitHubProjectReader>;
 export class GitHubProjectError extends Error{
@@ -25,13 +25,16 @@ const itemFields='id:databaseId number title state updated_at:updatedAt author{l
 const pullFields='draft:isDraft merged_at:mergedAt headRefName baseRefName';
 const pageFields='pageInfo{hasNextPage endCursor}';
 const viewer='account:viewer{id:databaseId login}';
+const commentFields='comments(last:5,before:$before){totalCount edges{cursor node{databaseId author{login} createdAt updatedAt url body}} pageInfo{hasPreviousPage startCursor}}';
 const queries={
  project:`query TongxuProject($id:ID!){${viewer} repository:node(id:$id){...on Repository{${repoFields}}}}`,
  projects:`query TongxuProjects($after:String){account:viewer{id:databaseId login projects:repositories(first:50,after:$after,affiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${repoFields}} ${pageFields}}}}`,
  issues:`query TongxuIssues($id:ID!,$after:String,$states:[IssueState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:issues(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields}} ${pageFields}}}}}`,
  pulls:`query TongxuPulls($id:ID!,$after:String,$states:[PullRequestState!]){${viewer} repository:node(id:$id){...on Repository{${repoFields} items:pullRequests(first:30,after:$after,states:$states,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{${itemFields} ${pullFields}} ${pageFields}}}}}`,
  issue:`query TongxuIssue($id:ID!,$number:Int!){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:issue(number:$number){${itemFields} body comments{totalCount}}}}}`,
- pull:`query TongxuPull($id:ID!,$number:Int!){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:pullRequest(number:$number){${itemFields} ${pullFields} body comments{totalCount}}}}}`
+ pull:`query TongxuPull($id:ID!,$number:Int!){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:pullRequest(number:$number){${itemFields} ${pullFields} body comments{totalCount}}}}}`,
+ issue_comments:`query TongxuIssueComments($id:ID!,$number:Int!,$before:String){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:issue(number:$number){number ${commentFields}}}}}`,
+ pull_comments:`query TongxuPullComments($id:ID!,$number:Int!,$before:String){${viewer} repository:node(id:$id){...on Repository{${repoFields} item:pullRequest(number:$number){number ${commentFields}}}}}`
 };
 /** Uses the existing CLI account. No login, token extraction, shell command,
  * remote mutation, model request or fixed CLI release is part of this reader. */
@@ -104,6 +107,51 @@ function queryNumber(url:URL,key:string,fallback?:number){
 }
 function queryKeys(url:URL,keys:string[]){const actual=[...url.searchParams.keys()];if(new Set(actual).size!==actual.length||actual.some(k=>!keys.includes(k)))fail('github_query_invalid');}
 
+function commentPage(item:Row,repo:ReturnType<typeof repository>,kind:'issues'|'pulls',number:number,page:number){
+  if(!item||item.number!==number)fail('github_repository_unavailable');
+  const connection=item.comments,info=connection?.pageInfo,edges=connection?.edges;
+  if(!Array.isArray(edges)||edges.length>5||!Number.isSafeInteger(connection.totalCount)
+    ||connection.totalCount<edges.length||typeof info?.hasPreviousPage!=='boolean')fail();
+  if(!(info.startCursor===null||bounded(info.startCursor,2048))
+    ||info.startCursor!==(edges[0]?.cursor??null)||info.hasPreviousPage&&!edges.length)fail();
+  const itemUrl=`${repo.url}/${kind==='pulls'?'pull':'issues'}/${number}`;
+  const newestFirst=[...edges].reverse();
+  const comments=newestFirst.map((edge:Row)=>{
+    const v=edge?.node;
+    if(!bounded(edge?.cursor,2048)||!edge.cursor||!positive(v?.databaseId)
+      ||!bounded(v.body,1024*1024)||!bounded(v.createdAt,64)||!timestamp(v.createdAt)
+      ||!bounded(v.updatedAt,64)||!timestamp(v.updatedAt)
+      ||v.url!==`${itemUrl}#issuecomment-${v.databaseId}`)fail();
+    if(v.author!==null&&(!bounded(v.author?.login,128)||!v.author.login))fail();
+    return {
+      id:v.databaseId as number,author:v.author?.login??null,
+      createdAt:v.createdAt as string,updatedAt:v.updatedAt as string,url:v.url as string,
+      body:v.body as string|null,bodyOmission:null as {reason:string;bodyBytes:number}|null
+    };
+  });
+  if(new Set(comments.map(c=>c.id)).size!==comments.length||new Set(newestFirst.map(e=>e.cursor)).size!==comments.length)fail();
+  const result={
+    repository:{id:repo.id,fullName:repo.fullName,url:repo.url},kind,number,url:itemUrl,page,
+    order:'newest_created_first',totalCount:connection.totalCount,comments,
+    hasNext:info.hasPreviousPage as boolean,
+    nextCursor:info.hasPreviousPage?newestFirst.at(-1)!.cursor as string:null,
+    deferredBySize:false,livePagesMayChange:true
+  };
+  // Leave room for the existing observation wrapper below its 128KiB limit.
+  const limit=96*1024;
+  while(comments.length>1&&Buffer.byteLength(JSON.stringify(result))>limit){
+    comments.pop();result.deferredBySize=true;result.hasNext=true;
+    result.nextCursor=newestFirst[comments.length-1]!.cursor;
+  }
+  if(Buffer.byteLength(JSON.stringify(result))>limit&&comments.length===1){
+    const comment=comments[0]!;
+    comment.bodyOmission={reason:'comment_exceeds_page_size_limit',bodyBytes:Buffer.byteLength(comment.body!)};
+    comment.body=null;
+  }
+  if(Buffer.byteLength(JSON.stringify(result))>limit)fail();
+  return result;
+}
+
 /** In-memory discovery only. It never imports a candidate, grants write
  * authority, creates an execution plan or replaces the original task ledger. */
 export class GitHubProjects{
@@ -141,32 +189,38 @@ export class GitHubProjects{
     }finally{this.reads.delete(promise);this.controllers.delete(controller);}
   }
   private async readCurrent(url:URL,signal:AbortSignal,epoch:number){
-    const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)(?:\/(issues|pulls)(?:\/([1-9]\d*))?)?$/.exec(url.pathname);
+    const list=url.pathname==='/api/github/projects',match=/^\/api\/github\/repositories\/([1-9]\d*)(?:\/(issues|pulls)(?:\/([1-9]\d*)(\/comments)?)?)?$/.exec(url.pathname);
     if(!list&&!match)fail('github_route_not_found');
-    queryKeys(url,list?['page','account','cursor']:!match![2]||match![3]?['account']:['account','page','state','cursor']);
+    const readingComments=!!match?.[4];
+    queryKeys(url,list?['page','account','cursor']:readingComments?['account','page','cursor']:!match![2]||match![3]?['account']:['account','page','state','cursor']);
     const page=queryNumber(url,'page',1);if(page>1000)fail('github_page_limit');
     const expected=list&&page===1?null:queryNumber(url,'account'),repoId=match?Number(match[1]):null,kind=match?.[2] as 'issues'|'pulls'|undefined,state=url.searchParams.get('state')??'open';
     if(!['open','closed','all'].includes(state))fail('github_query_invalid');
     if(expected!==null&&this.identity?.id!==expected)fail('github_project_not_selected');
     const selected=repoId?this.repositories.get(repoId):undefined;
     if(!list&&(!positive(repoId)||!selected))fail('github_project_not_selected');
-    const group=list?'projects':`${repoId}:${kind}:${state}`;
+    const group=list?'projects':readingComments?`${repoId}:${kind}:${match![3]}:comments`:`${repoId}:${kind}:${state}`;
     const cursors=list?this.projectCursors:this.itemCursors.get(group);
     const cursor=url.searchParams.get('cursor');
     if(page===1&&cursor!==null||page>1&&(!bounded(cursor,2048)||!cursor||!cursors?.get(page)?.has(cursor)))fail('github_page_not_discovered');
     const number=match?.[3]?Number(match[3]):null;if(number!==null&&(!positive(number)||number>2147483647))fail('github_query_invalid');
-    const operation:ProjectQuery=list?'projects':!kind?'project':number!==null?(kind==='issues'?'issue':'pull'):kind!;
-    const variables=list?{after:cursor}:!kind?{id:selected!.nodeId}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursor,states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
+    const operation:ProjectQuery=list?'projects':!kind?'project':readingComments?(kind==='issues'?'issue_comments':'pull_comments'):number!==null?(kind==='issues'?'issue':'pull'):kind!;
+    const variables=list?{after:cursor}:!kind?{id:selected!.nodeId}:readingComments?{id:selected!.nodeId,number,before:cursor}:number!==null?{id:selected!.nodeId,number}:{id:selected!.nodeId,after:cursor,states:state==='all'?null:state==='open'?['OPEN']:kind==='pulls'?['CLOSED','MERGED']:['CLOSED']};
     const reader=await this.reader(signal);if(signal.aborted)fail('github_read_cancelled');
     const data=decode(await reader.query(operation,variables,signal)),observed=account(data.account);
     // Viewer identity and all returned data share this ONE authenticated query.
     if(expected!==null&&observed.id!==expected)fail('github_account_changed');
     if(epoch!==this.epoch&&this.identity?.id!==observed.id)fail('github_read_superseded');
+    if(readingComments&&epoch!==this.epoch)fail('github_read_superseded');
     let result:Row,connection:any,newRepositories:ReturnType<typeof repository>[]=[];
     if(list){connection=data.account.projects;if(!Array.isArray(connection?.nodes)||connection.nodes.length>50)fail();newRepositories=connection.nodes.map(repository);result={repositories:newRepositories,page};}
     else{
       const repo=repository(data.repository);if(repo.id!==repoId||repo.nodeId!==selected!.nodeId)fail('github_repository_identity_changed');newRepositories=[repo];
       if(!kind)result={repository:repo};
+      else if(readingComments){
+        result=commentPage(data.repository.item,repo,kind,number!,page);
+        connection={pageInfo:{hasNextPage:result.hasNext,endCursor:result.nextCursor}};
+      }
       else if(number!==null){if(!data.repository.item)fail('github_repository_unavailable');const item=entry(data.repository.item,repo.fullName,kind!,true);if(item.number!==number)fail();result={repository:repo,kind,item};}
       else{connection=data.repository.items;if(!Array.isArray(connection?.nodes)||connection.nodes.length>30)fail();result={repository:repo,kind,state,page,items:connection.nodes.map((x:Row)=>entry(x,repo.fullName,kind!))};}
     }

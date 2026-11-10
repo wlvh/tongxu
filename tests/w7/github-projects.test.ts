@@ -10,13 +10,15 @@ const updated='2026-10-30T00:00:00Z';
 const repo=(id=1,full_name='fixture/one')=>({id,nodeId:'R_'+id,full_name,description:'Explicit test repository',private:true,archived:false,defaultBranchRef:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:updated});
 const issue=(number=9)=>({id:number+100,number,title:'Original <script> text',state:'OPEN',body:'Complete original body\n<script>not executed</script>',author:{login:'fixture-user'},labels:{nodes:[{name:'needs review'}]},updated_at:updated,comments:{totalCount:2}});
 const pr=(number=65)=>({...issue(number),title:'Draft change',draft:true,headRefName:'feature',baseRefName:'main',merged_at:null});
+const comment=(id:number,body='Complete ordinary comment\n<script>data only</script>')=>({databaseId:id,author:{login:'fixture-user'} as {login:string}|null,createdAt:updated,updatedAt:updated,url:`https://github.com/fixture/one/issues/9#issuecomment-${id}`,body});
+const commentConnection=(nodes:ReturnType<typeof comment>[],older=false)=>({totalCount:nodes.length,edges:nodes.map(node=>({cursor:'comment-'+node.databaseId,node})),pageInfo:{hasPreviousPage:older,startCursor:nodes.length?'comment-'+nodes[0]!.databaseId:null}});
 function fixture(){
   let user={id:7,login:'fixture-user'},failure:string|null=null;const calls:Array<{operation:string;variables:any}>=[];const replies=new Map<string,{body:unknown;status?:number;headers?:Record<string,string>}>();
   const connection=(nodes:any[])=>({nodes,pageInfo:{hasNextPage:false,endCursor:null}});
   const factory:GitHubReaderFactory=async()=>({query:async(operation,variables,signal)=>{
     if(signal.aborted)throw new GitHubProjectError('github_read_cancelled');calls.push({operation,variables});if(failure)throw new GitHubProjectError(failure);
     const selected=variables.id==='R_2'?repo(2,'fixture/two'):repo();
-    const value=operation==='projects'?{account:{...user,projects:connection([repo(),repo(2,'fixture/two')])}}:{account:user,repository:{...selected,...(operation==='issue'||operation==='pull'?{item:operation==='issue'?issue(variables.number):pr(variables.number)}:{items:connection(operation==='issues'?[issue()]:[pr()])})}};
+    const value=operation==='projects'?{account:{...user,projects:connection([repo(),repo(2,'fixture/two')])}}:{account:user,repository:{...selected,...(operation==='issue_comments'||operation==='pull_comments'?{item:{number:variables.number,comments:commentConnection([comment(1)])}}:operation==='issue'||operation==='pull'?{item:operation==='issue'?issue(variables.number):pr(variables.number)}:{items:connection(operation==='issues'?[issue()]:[pr()])})}};
     const override=replies.get(operation);return {status:override?.status??200,headers:override?.headers??{},body:JSON.stringify(override?override.body:{data:value}),provenance:'gh-http-body'};
   }});
   return {factory,calls,replies,setUser:(id:number)=>{user={id,login:'fixture-'+id};},setFailure:(value:string|null)=>{failure=value;}};
@@ -63,7 +65,95 @@ test('normal server starts without local task records, requires its key, only re
   assert.equal(f.calls.length,0);const entry=await(await get('/api/entry')).json() as any;assert.equal(entry.githubProjects,true);assert.equal(entry.hasLocalSources,false);
   assert.equal((await fetch(u.origin+'/api/github/projects')).status,401);assert.equal((await fetch(u.origin+'/api/github/projects',{method:'POST',headers})).status,405);assert.equal((await fetch(u.origin+'/api/github/projects',{headers:{...headers,Origin:'https://elsewhere.example'}})).status,403);assert.equal(f.calls.length,0);
   const projects=await(await get('/api/github/projects')).json() as any;assert.equal(projects.repositories.length,2);const content=await(await get('/api/github/repositories/1/pulls?account=7')).json() as any;assert.equal(content.items[0].number,65);
+  const comments=await(await get('/api/github/repositories/1/issues/9/comments?account=7')).json() as any;assert.equal(comments.comments[0].body,comment(1).body);assert.equal(comments.readOnly,true);
   assert.equal((await get('/api/github/projects?extra=1')).status,503);assert.equal(parseWorkbenchPlan(Buffer.from(JSON.stringify(plan))).githubProjects,true);
+});
+
+test('ordinary Issue and PR comments preserve full sources and reverse-page toward older comments',async()=>{
+  const f=fixture(),client=new GitHubProjects(f.factory);
+  const reply=(kind:'issue_comments'|'pull_comments',nodes:ReturnType<typeof comment>[],older=false)=>f.replies.set(kind,{body:{data:{account:{id:7,login:'fixture-user'},repository:{...repo(),item:{number:kind==='issue_comments'?9:65,comments:commentConnection(nodes,older)}}}}});
+  await client.read(url('/api/github/projects'));
+  reply('issue_comments',[comment(4),{...comment(5),author:null}],true);
+  const first=await client.read(url('/api/github/repositories/1/issues/9/comments?account=7')) as any;
+  assert.deepEqual(first.comments.map((c:any)=>c.id),[5,4]);assert.equal(first.comments[0].author,null);
+  assert.equal(first.comments[1].body,comment(4).body);assert.equal(first.comments[1].createdAt,updated);assert.equal(first.comments[1].updatedAt,updated);
+  assert.equal(first.comments[1].url,comment(4).url);assert.equal(first.comments[1].bodyOmission,null);
+  assert.equal(first.nextCursor,'comment-4');assert.equal(first.order,'newest_created_first');assert.equal(first.livePagesMayChange,true);
+  reply('issue_comments',[comment(1),comment(2),comment(3)]);
+  const last=await client.read(url('/api/github/repositories/1/issues/9/comments?account=7&page=2&cursor='+first.nextCursor)) as any;
+  assert.deepEqual(last.comments.map((c:any)=>c.id),[3,2,1]);assert.equal(last.hasNext,false);assert.equal(f.calls.at(-1)!.variables.before,'comment-4');
+  reply('pull_comments',[{...comment(6),url:'https://github.com/fixture/one/pull/65#issuecomment-6'}]);
+  const pull=await client.read(url('/api/github/repositories/1/pulls/65/comments?account=7')) as any;assert.equal(pull.comments[0].url,'https://github.com/fixture/one/pull/65#issuecomment-6');assert.equal(pull.kind,'pulls');
+  reply('issue_comments',[]);const empty=await client.read(url('/api/github/repositories/1/issues/9/comments?account=7')) as any;assert.deepEqual(empty.comments,[]);assert.equal(empty.hasNext,false);assert.equal(empty.totalCount,0);
+  await client.close();
+});
+
+test('comment cursors stay within account, repository, kind and item, and malformed pages remain failures',async()=>{
+  const f=fixture(),client=new GitHubProjects(f.factory);await client.read(url('/api/github/projects'));
+  const body=(connection:any)=>({data:{account:{id:7,login:'fixture-user'},repository:{...repo(),item:{number:9,comments:connection}}}});
+  f.replies.set('issue_comments',{body:body(commentConnection([comment(5)],true))});
+  const first=await client.read(url('/api/github/repositories/1/issues/9/comments?account=7')) as any,before=f.calls.length;
+  for(const path of [
+    '/api/github/repositories/1/issues/10/comments?account=7&page=2&cursor=comment-5',
+    '/api/github/repositories/1/pulls/9/comments?account=7&page=2&cursor=comment-5',
+    '/api/github/repositories/2/issues/9/comments?account=7&page=2&cursor=comment-5',
+    '/api/github/repositories/1/issues/9/comments?account=8&page=2&cursor=comment-5',
+    '/api/github/repositories/1/issues/9/comments?account=7&page=2&cursor=guessed',
+    '/api/github/repositories/1/issues/9/comments?account=7&state=all',
+    '/api/github/repositories/1/issues/9/comments?account=7&page=1&page=2'
+  ])await assert.rejects(client.read(url(path)),/github_/);
+  assert.equal(f.calls.length,before);
+  for(const bad of [{...comment(5),url:'https://elsewhere.example/comment'}, {...comment(5),body:null}, {...comment(5),author:{}}, {...comment(5),createdAt:'invalid'}]){
+    f.replies.set('issue_comments',{body:body(commentConnection([bad as any]))});await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=7')),/response_invalid/);
+  }
+  f.replies.set('issue_comments',{body:{...body(commentConnection([])),errors:[{type:'FORBIDDEN'}]}});await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=7')),/access_denied/);
+  f.replies.delete('issue_comments');f.setUser(8);await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=7')),/account_changed/);await client.read(url('/api/github/projects'));
+  await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=8&page=2&cursor='+first.nextCursor)),/page_not_discovered/);
+  await client.close();
+});
+
+test('comment page byte limits defer whole older comments without gaps and identify a single omitted body',async()=>{
+  const f=fixture(),base=await f.factory(new AbortController().signal),all=Array.from({length:5},(_,i)=>comment(i+1,'中文🙂'.repeat(4000)));
+  const factory:GitHubReaderFactory=async()=>({query:async(op,variables,signal)=>{
+    if(op!=='issue_comments')return base.query(op,variables,signal);
+    const before=variables.before?Number(variables.before.slice('comment-'.length)):6,nodes=all.filter(c=>c.databaseId<before);
+    return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:{account:{id:7,login:'fixture-user'},repository:{...repo(),item:{number:9,comments:{...commentConnection(nodes),totalCount:all.length}}}}})};
+  }});
+  const client=new GitHubProjects(factory);await client.read(url('/api/github/projects'));
+  const seen:number[]=[];let page=1,cursor:string|null=null,first=true;
+  do{
+    const result=await client.read(url('/api/github/repositories/1/issues/9/comments?account=7&page='+page+(cursor?'&cursor='+cursor:''))) as any;
+    if(first){assert.equal(result.deferredBySize,true);assert.equal(result.nextCursor,'comment-4');first=false;}
+    assert.ok(Buffer.byteLength(JSON.stringify({tool:'tongxu_project_comments',arguments:{kind:'issues',number:9,page,cursor},observedAt:updated,data:result,toolBudget:{limit:24,used:page,remaining:24-page}}))<128*1024);
+    for(const c of result.comments){seen.push(c.id);assert.equal(c.body,all[c.id-1]!.body);assert.equal(c.bodyOmission,null);}
+    cursor=result.nextCursor;page++;
+  }while(cursor);
+  assert.deepEqual(seen,[5,4,3,2,1]);await client.close();
+  const g=fixture(),other=new GitHubProjects(g.factory);await other.read(url('/api/github/projects'));
+  const huge=comment(1,'中文🙂'.repeat(20000));g.replies.set('issue_comments',{body:{data:{account:{id:7,login:'fixture-user'},repository:{...repo(),item:{number:9,comments:commentConnection([huge])}}}}});
+  const result=await other.read(url('/api/github/repositories/1/issues/9/comments?account=7')) as any;
+  assert.equal(result.hasNext,false);assert.equal(result.comments[0].body,null);assert.deepEqual(result.comments[0].bodyOmission,{reason:'comment_exceeds_page_size_limit',bodyBytes:Buffer.byteLength(huge.body)});assert.equal(result.comments[0].url,huge.url);await other.close();
+});
+
+test('shutdown cancels an in-flight comment query and no later page is dispatched',async()=>{
+  const f=fixture(),base=await f.factory(new AbortController().signal);let entered!:()=>void;const ready=new Promise<void>(r=>entered=r);
+  const factory:GitHubReaderFactory=async()=>({query:async(op,variables,signal)=>{
+    if(op!=='issue_comments')return base.query(op,variables,signal);
+    entered();return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new GitHubProjectError('github_read_cancelled')),{once:true}));
+  }});
+  const client=new GitHubProjects(factory);await client.read(url('/api/github/projects'));
+  const pending=client.read(url('/api/github/repositories/1/issues/9/comments?account=7')),rejected=assert.rejects(pending,/cancelled/);await ready;await client.close();await rejected;
+  await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=7&page=2&cursor=unknown')),/reader_closed/);
+});
+
+test('a delayed comment page cannot restore a cursor after switching accounts away and back',async()=>{
+  const f=fixture(),base=await f.factory(new AbortController().signal);let release!:(value:any)=>void;
+  const factory:GitHubReaderFactory=async()=>({query:async(op,variables,signal)=>op==='issue_comments'?new Promise(r=>{release=r;}):base.query(op,variables,signal)});
+  const client=new GitHubProjects(factory);await client.read(url('/api/github/projects'));
+  const pending=client.read(url('/api/github/repositories/1/issues/9/comments?account=7')),refused=assert.rejects(pending,/read_superseded/);await new Promise(r=>setImmediate(r));
+  f.setUser(8);await client.read(url('/api/github/projects'));f.setUser(7);await client.read(url('/api/github/projects'));
+  release({status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:{account:{id:7,login:'fixture-user'},repository:{...repo(),item:{number:9,comments:commentConnection([comment(5)],true)}}}})});await refused;
+  await assert.rejects(client.read(url('/api/github/repositories/1/issues/9/comments?account=7&page=2&cursor=comment-5')),/page_not_discovered/);await client.close();
 });
 test('GitHub bootstrap and reads do not open unavailable legacy queues or controls',async t=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-github-lazy-')));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'plan.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Separate old history',goal:'Do not require old local sources for GitHub',sources:[{id:'old',title:'Unavailable history',store:join(root,'absent-store'),item:'a'.repeat(64)}],secretary:{path:join(root,'absent-secretary'),sha256:'b'.repeat(64)},githubProjects:true}));

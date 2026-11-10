@@ -234,6 +234,16 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     return projectChat??=ProjectChat.open(p.projectSecretary,async(scope,tool,args)=>{
       if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('project_chat_tool_arguments_invalid');
       if(tool==='tongxu_project_info'){if(!exactKeys(args,[]))throw new Error('project_chat_tool_arguments_invalid');await verifyProject(scope);return github!.selection(scope.account.id,scope.repository.id);}
+      if(tool==='tongxu_project_comments'){
+        if(Object.keys(args).some(k=>!['kind','number','page','cursor'].includes(k))
+          ||!['issues','pulls'].includes(args.kind)||!Number.isSafeInteger(args.number)||args.number<1
+          ||args.page!==undefined&&(!Number.isSafeInteger(args.page)||args.page<1||args.page>1000)
+          ||args.cursor!==undefined&&typeof args.cursor!=='string')throw new Error('project_chat_tool_arguments_invalid');
+        const url=new URL(`http://127.0.0.1/api/github/repositories/${scope.repository.id}/${args.kind}/${args.number}/comments`);
+        url.searchParams.set('account',String(scope.account.id));
+        for(const key of ['page','cursor'])if(args[key]!==undefined)url.searchParams.set(key,String(args[key]));
+        return github!.read(url);
+      }
       if(tool==='tongxu_project_items'||tool==='tongxu_project_item'){
         const detail=tool==='tongxu_project_item';if(Object.keys(args).some(k=>!(detail?['kind','number']:['kind','state','page','cursor']).includes(k))||!['issues','pulls'].includes(args.kind)||detail&&(!Number.isSafeInteger(args.number)||args.number<1))throw new Error('project_chat_tool_arguments_invalid');
         const path='/api/github/repositories/'+scope.repository.id+'/'+args.kind+(detail?'/'+args.number:'');const url=new URL('http://127.0.0.1'+path);url.searchParams.set('account',String(scope.account.id));if(!detail)for(const key of ['state','page','cursor'])if(args[key]!==undefined)url.searchParams.set(key,String(args[key]));return github!.read(url);
