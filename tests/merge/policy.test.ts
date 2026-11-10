@@ -55,6 +55,21 @@ test('ruleset-only absence needs the same live bounded administration read, incl
   assert.equal(p.requests.slice(before).filter(r=>r.path===paths.administration).length,0);
   assert.equal(p.requests.filter(r=>r.method==='PUT').length,0);
 });
+test('OAuth repo-scope classic absence additionally needs the exact repository admin and push observation',async t=>{
+  const f=await ready(t,'normal','oauth_repo_admin'),p=f.publisher,b=f.binding,root='/repos/'+b.repository;rulesetOnly(f);let n=0;
+  const inspect=()=>inspectMergePreflight(p.profile,b,join(f.root,'oauth-absence-'+(++n)));
+  assert.ok((await inspect()).result.gaps.includes('classic_protection_unavailable'));
+  const repository={id:b.repositoryId,full_name:b.repository,owner:{type:'Organization'},archived:false,disabled:false,allow_merge_commit:true};
+  for(const permissions of [{admin:false,push:true},{admin:true,push:false},{admin:'true',push:true},{admin:true}]){
+    p.setReply(root,{...repository,permissions});assert.ok((await inspect()).result.gaps.includes('classic_protection_unavailable'));
+  }
+  p.setReply(root,{...repository,permissions:{admin:true,push:true}});const good=await inspect();assert.equal(good.result.ready,true);
+  const repo=good.records.find(r=>r.command.read?.kind==='repository')!;
+  for(const records of [good.records.filter(r=>r!==repo),[...good.records,repo],good.records.map(r=>r===repo?{...r,command:{...r.command,binding:{...b,pr:b.pr+1}}}:r)]){
+    assert.ok(evaluateMergePreflight(p.profile,b,records).gaps.includes('classic_protection_unavailable'));
+  }
+  assert.equal(p.requests.filter(r=>r.method==='PUT').length,0);
+});
 
 test('unknown classic absence and incomplete administration observations never become an empty policy',async t=>{
   const f=await ready(t,'normal','fine_grained_pat'),p=f.publisher,b=f.binding,paths=rulesetOnly(f);let n=0;

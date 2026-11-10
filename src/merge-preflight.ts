@@ -15,8 +15,9 @@ const decode = (r:MergeReadRecord) => {
 };
 // A permission-masked 404 is never an empty protection policy. This narrowly
 // supported absence proof also needs a live Administration(read) observation
-// from a publisher whose deployment verified its fine-grained credential class.
-const administrationCredential=(p:MergeProfile)=>['github_app_installation','github_app_user','fine_grained_pat'].includes(p.credentialKind??'');
+// from a publisher whose deployment verified its supported credential class.
+// OAuth repo-scope additionally needs this observation's account admin/push.
+const administrationCredential=(p:MergeProfile)=>['github_app_installation','github_app_user','fine_grained_pat','oauth_repo_admin'].includes(p.credentialKind??'');
 function singleObject(records:MergeReadRecord[],b:ManagedMergeBinding,kind:MergeRead['kind'],status:number):Row|null{
   try{
     const rs=records.filter(r=>r.command.read?.kind===kind);if(rs.length!==1)return null;
@@ -111,7 +112,11 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
       // server configuration would allow it. Unknown bypass settings fail shut.
       const bypass=v.required_pull_request_reviews?.bypass_pull_request_allowances;
       if(bypass&&(!['users','teams','apps'].every(k=>Array.isArray(bypass[k]))||Object.values(bypass).some((a:any)=>!Array.isArray(a)||a.length)))gaps.push('classic_bypass_allowance_present_or_unknown');
-    } else if(!administrationCredential(p)||!knownClassicAbsence(records,b)||typeof singleObject(records,b,'administration',200)?.enabled!=='boolean')gaps.push('classic_protection_unavailable');
+    } else {
+      const accountPermissions=singleObject(records,b,'repository',200)?.permissions;
+      const oauthPermission=p.credentialKind!=='oauth_repo_admin'||accountPermissions?.admin===true&&accountPermissions?.push===true;
+      if(!administrationCredential(p)||!oauthPermission||!knownClassicAbsence(records,b)||typeof singleObject(records,b,'administration',200)?.enabled!=='boolean')gaps.push('classic_protection_unavailable');
+    }
   }
   for(const rule of rules){
     if(typeof rule.type!=='string'||!Number.isSafeInteger(rule.ruleset_id)||rule.ruleset_id<=0){gaps.push('active_rule_source_unknown');continue;}

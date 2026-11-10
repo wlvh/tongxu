@@ -56,5 +56,5 @@ if(c.command==='capabilities'){result=await (await fetch(${JSON.stringify(origin
 console.log(JSON.stringify({protocol:c.protocol,inputSha256:hash(canonical(c)),result}));}catch(e){console.error('explicit fixture transport failed');process.exitCode=1;}});`;
   await writeFile(executable,source,{mode:0o700});
   const profile:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:b.repository,repositoryId:b.repositoryId,targets:[b.targetRef],actorId,executable,executableSha256:hash(source),executionKind:'fixture',timeoutMs:5000,...(credentialKind?{credentialKind}:{})};
-  return {root,profile,requests,state:()=>({mode,merged,merges,actualBase,actualTree,target,M}),setMode:(value:string)=>{mode=value;},setReply:(path:string,value:unknown,status=200,nextPage=false)=>overrides.set(path,{value,status,nextPage}),env:async()=>JSON.parse((await readFile(envPath)).toString())};
+  return {root,origin,profile,requests,state:()=>({mode,merged,merges,actualBase,actualTree,target,M}),setMode:(value:string)=>{mode=value;},setReply:(path:string,value:unknown,status=200,nextPage=false)=>overrides.set(path,{value,status,nextPage}),env:async()=>JSON.parse((await readFile(envPath)).toString())};
 }
