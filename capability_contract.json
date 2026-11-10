@@ -21,6 +21,20 @@
   "contracts": {
     "capabilities": [
       {
+        "anchor_id": "CAPABILITY.github_cli_publisher",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按Issue10已采用GP01—GP06及docs/github_cli_publisher.md，部署者可用现有gh登录准备有限受管发布程序。程序固定每命令令牌，核真实账号、repo范围与仓库admin／push，按原有限读取和准确PR／H发送并查原结果，保留原Owner、资源、停止及单写者。原精确classic404证明对OAuth管理员类别另核同次仓库权限，旧配置／捕获继续消费。实际安装、真实合并和本人结果沿对应记录验证。实现src/github-cli-publisher*.ts、src/merge-request.ts及src/merge-preflight.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/merge/github-cli-publisher.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-10"
+      },
+      {
         "anchor_id": "CAPABILITY.designated_reviewer_merge",
         "type": "capability",
         "status": "pending_validation",

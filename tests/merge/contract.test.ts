@@ -23,7 +23,7 @@ test('shared publisher policy is explicit and strictly shaped without changing l
 test('administration proof is one fixed read and credential declarations only narrow its supported use',()=>{
   const p:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:binding.repository,repositoryId:10,targets:['main'],actorId:12,executable:'/explicit-fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000};
   assert.deepEqual(parseMergeProfile(Buffer.from(JSON.stringify(p))),p);
-  for(const kind of ['github_app_installation','github_app_user','fine_grained_pat'])assert.equal(parseMergeProfile(Buffer.from(JSON.stringify({...p,credentialKind:kind}))).credentialKind,kind);
+  for(const kind of ['github_app_installation','github_app_user','fine_grained_pat','oauth_repo_admin'])assert.equal(parseMergeProfile(Buffer.from(JSON.stringify({...p,credentialKind:kind}))).credentialKind,kind);
   for(const kind of ['oauth','classic','unknown',true,null])assert.throws(()=>parseMergeProfile(Buffer.from(JSON.stringify({...p,credentialKind:kind}))),/managed_publisher_profile_invalid/);
   const command=mergeCommand(binding,'read',{kind:'administration'});assert.deepEqual(mergeHttpRequest(command),{method:'GET',path:'/repos/fixture/merge/actions/permissions',body:null});
   for(const read of [{kind:'administration',page:2},{kind:'administration',commit:H},{kind:'administration',tip:H},{kind:'administration',reviewer:'other'}])assert.throws(()=>mergeHttpRequest(mergeCommand(binding,'read',read as any)));

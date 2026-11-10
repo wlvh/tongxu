@@ -93,6 +93,12 @@ test('ruleset-only proof reaches the original one-PUT consumer and lost-reply re
     assert.equal(f.publisher.requests.filter(r=>r.path===paths.administration).length,mode==='normal'?2:1);const puts=f.publisher.requests.filter(r=>r.method==='PUT');assert.equal(puts.length,1);assert.equal(JSON.parse(puts[0]!.body).sha,f.binding.H);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
   }
 });
+test('OAuth lack of current repository administration blocks the original consumer until the source becomes valid',async t=>{
+  const f=await ready(t,'normal','oauth_repo_admin'),p=f.publisher,b=f.binding;rulesetOnly(f);
+  const blocked=await managedMergeAction(f.store,f.operation,'run');assert.equal(blocked.newMergeCall,false);assert.ok('preflight' in blocked&&blocked.preflight.gaps.includes('classic_protection_unavailable'));assert.equal(p.requests.filter(r=>r.method==='PUT').length,0);
+  p.setReply('/repos/'+b.repository,{id:b.repositoryId,full_name:b.repository,owner:{type:'Organization'},archived:false,disabled:false,allow_merge_commit:true,permissions:{admin:true,push:true}});
+  assert.equal((await managedMergeAction(f.store,f.operation,'run')).merge.phase,'exact_merge_result_verified');assert.equal(p.requests.filter(r=>r.method==='PUT').length,1);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);
+});
 test('changed actual base/tree keeps target occupied for actual-version verification; wrong target is never repaired by a PASS',async t=>{
   for(const mode of ['base-race','tree-race','wrong-target']){
     const f=await ready(t,mode),done=await managedMergeAction(f.store,f.operation,'run');
