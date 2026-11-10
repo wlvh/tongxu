@@ -42,7 +42,7 @@ node dist/src/github-cli-publisher-cli.js prepare \
 
 同一令牌先读取 `/user` 的数字账号和类型，从响应头精确核完整 `repo` 范围，再读取固定仓库的 ID、名称、管理／写入权限和合并能力。能力回复据此给出 `account_publisher`。普通读取复用原固定请求生成，包含指定审核方需要的只读 GraphQL。仓库读取直接消费该命令刚取得的仓库响应。
 
-发送合并前，程序额外核原 PR 的两个仓库、H、目标、开放且 Ready 的状态，以及直接目标分支 B。随后至多发送一次固定 PR／H 的同步 PUT。整个命令共用一个期限，HTTP 消费有响应上限，重定向导致该请求失败。GitHub 的同步 H 条件及 B／目标的观察边界继续由原结果回读处理。
+发送合并前，程序额外核原 PR 的两个仓库、H、目标、开放且 Ready 的状态，以及直接目标分支 B。随后以单次 Node HTTPS 请求至多发送一次固定 PR／H 的同步 PUT，HTTP421也直接交回原响应判断，进入未知查回。整个命令共用一个期限，HTTP 消费有响应上限，重定向导致该请求失败。新请求使用服务器当前默认API日期，兼容升级沿运行规则核实际字段。GitHub 的同步 H 条件及 B／目标的观察边界继续由原结果回读处理。
 
 令牌读取或认证失败可产生 unavailable 能力。合并请求执行期间发生超时、断连、响应超限或不完整回执时，原队列保留已登记操作，沿 `reconcile` 查询实际 PR、commit、parents、tree 和目标。明确的服务端拒绝沿原 `retry-refused` 核条件后处理。 [合并与恢复入口](managed_merge.md)
 
@@ -54,4 +54,4 @@ node dist/src/github-cli-publisher-cli.js prepare \
 
 ## 验证范围
 
-`tests/merge/github-cli-publisher.test.ts` 通过实际子进程、本地 HTTP、原 SQLite 队列和明确的凭据／GitHub 来源样例，核认证与候选拒绝、单令牌、固定 API、发送前后故障、原一次发送和未知查回、封装漂移及捕获中的凭据边界。旧保护证明与新增 OAuth 组合的消费者验证沿原 contract／policy／managed 测试执行。真实读取、准确测试合并、安装启用及本人结果在 Issue10 的对应候选记录。
+`tests/merge/github-cli-publisher.test.ts` 通过实际子进程、本地 HTTP、原 SQLite 队列和明确的凭据／GitHub 来源样例，核认证与候选拒绝、单令牌、固定 API、发送前后故障、原一次发送和未知查回、封装漂移及捕获中的凭据边界。生产传输与原消费者的421场景按服务器实际收到的PUT计数，并核持续421、后续重复执行／查回零补发及实际请求头无固定API日期。旧保护证明与新增 OAuth 组合的消费者验证沿原 contract／policy／managed 测试执行。真实读取、准确测试合并、安装启用及本人结果在 Issue10 的对应候选记录。

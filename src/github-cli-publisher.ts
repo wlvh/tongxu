@@ -1,6 +1,8 @@
 import {execFile} from 'node:child_process';
 import {lstatSync,realpathSync} from 'node:fs';
 import {isAbsolute,relative,resolve,sep} from 'node:path';
+import https from 'node:https';
+import type {IncomingMessage} from 'node:http';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {canonical} from './comparison.js';
 import {repoPattern,validBranchRef} from './contract.js';
@@ -113,10 +115,38 @@ export const githubCliProductionRequest:GitHubCliPublisherRuntime['request']=asy
   if(url.origin!=='https://api.github.com'||!request.path.startsWith('/')||request.path.startsWith('//')||url.username||url.password){
     fail('github_cli_request_invalid');
   }
-  const response=await fetch(url,{method:request.method,redirect:'manual',signal:request.signal,
-    headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'tongxu-managed-github-cli',Authorization:'Bearer '+request.authorization,...(request.body===null?{}:{'Content-Type':'application/json'})},
-    ...(request.body===null?{}:{body:request.body})});
-  return readGitHubCliResponse(response);
+  // ClientRequest returns each HTTP response directly, including 421. A write
+  // must never be replayed below the original managed dispatch record.
+  request.signal.throwIfAborted();
+  const outgoing=https.request(url,{method:request.method,
+    headers:{Accept:'application/vnd.github+json','User-Agent':'tongxu-managed-github-cli',Authorization:'Bearer '+request.authorization,...(request.body===null?{}:{'Content-Type':'application/json'})}});
+  let response:IncomingMessage|undefined;
+  const abort=()=>{
+    const error=request.signal.reason instanceof Error?request.signal.reason:new Error('github_cli_request_incomplete');
+    outgoing.destroy(error);response?.destroy(error);
+  };
+  request.signal.addEventListener('abort',abort,{once:true});
+  try{
+    response=await new Promise<IncomingMessage>((resolve,reject)=>{
+      outgoing.once('response',resolve);
+      outgoing.once('error',reject);
+      outgoing.end(request.body??undefined);
+    });
+    const status=response.statusCode!;
+    if(status>=300&&status<400)fail('github_cli_redirect_refused');
+    const chunks:Buffer[]=[];
+    let length=0;
+    for await(const part of response){
+      const chunk=Buffer.from(part);length+=chunk.length;
+      if(length>responseLimit)fail('github_cli_response_limit');
+      chunks.push(chunk);
+    }
+    if(!response.complete)fail('github_cli_request_incomplete');
+    const headers:Record<string,string>={};
+    for(const [name,value] of Object.entries(response.headers))if(value!==undefined)headers[name]=Array.isArray(value)?value.join(', '):value;
+    return {status,body:new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)),headers};
+  }catch(error){response?.destroy();outgoing.destroy();throw error;}
+  finally{request.signal.removeEventListener('abort',abort);}
 };
 export async function readGitHubCliResponse(response:Response):Promise<HttpReply>{
   if(response.status>=300&&response.status<400){await response.body?.cancel();fail('github_cli_redirect_refused');}

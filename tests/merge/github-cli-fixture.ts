@@ -39,6 +39,9 @@ else {if(mode==='program-change')fs.appendFileSync(process.argv[1],'\\n// fixtur
     requests.push({method,path,body:raw,tokenMatches});
     if(!tokenMatches){res.writeHead(401);res.end('{}');return;}
     const isPut=method==='PUT';
+    if(isPut&&(mode==='always-421'||mode==='first-421'&&requests.filter(request=>request.method==='PUT').length===1)){
+      res.writeHead(421);res.end('{"message":"explicit fixture misdirected request"}');return;
+    }
     if(mode==='before-redirect'&&path==='/user'){res.writeHead(302,{location:'https://unrelated.invalid'});res.end('{}');return;}
     if(mode==='before-timeout'&&path==='/user'){req.on('close',()=>res.destroy());return;}
     if(mode==='before-large'&&path==='/user'){res.end('x'.repeat(5*1024*1024));return;}
@@ -67,12 +70,18 @@ else {if(mode==='program-change')fs.appendFileSync(process.argv[1],'\\n// fixtur
   t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
   const origin='http://127.0.0.1:'+(server.address() as {port:number}).port;
   const runtime:GitHubCliPublisherRuntime={identity:'fixture',request:async request=>readGitHubCliResponse(await fetch(origin+request.path,{method:request.method,headers:{Authorization:'Bearer '+request.authorization},...(request.body===null?{}:{body:request.body}),signal:request.signal,redirect:'manual'}))};
-  async function attach(){
+  async function attach(productionTransport=false){
+    // Only this explicit fixture redirects the production request destination.
+    // The real ClientRequest, response stream and all production options run.
+    const transport=productionTransport?`import https from 'node:https';
+import {request as localRequest} from 'node:http';
+https.request=(url,options)=>{const fixed=new URL(url);if(fixed.origin!=='https://api.github.com')throw Error('fixture_origin_invalid');return localRequest(origin+fixed.pathname+fixed.search,options);};
+const request=githubCliProductionRequest;`:`const request=async q=>readGitHubCliResponse(await fetch(origin+q.path,{method:q.method,headers:{Authorization:'Bearer '+q.authorization},...(q.body===null?{}:{body:q.body}),signal:q.signal,redirect:'manual'}));`;
     const code=`#!${process.execPath}
 import fs from 'node:fs';
-import {runGitHubCliCommand,readGitHubCliResponse} from ${JSON.stringify(new URL('../../src/github-cli-publisher.js',import.meta.url).href)};
+import {runGitHubCliCommand,readGitHubCliResponse,githubCliProductionRequest} from ${JSON.stringify(new URL('../../src/github-cli-publisher.js',import.meta.url).href)};
 const config=${JSON.stringify(config)},origin=${JSON.stringify(origin)};
-const request=async q=>readGitHubCliResponse(await fetch(origin+q.path,{method:q.method,headers:{Authorization:'Bearer '+q.authorization},...(q.body===null?{}:{body:q.body}),signal:q.signal,redirect:'manual'}));
+${transport}
 let raw='';for await(const part of process.stdin)raw+=part;
 try{console.log(JSON.stringify(await runGitHubCliCommand(config,Buffer.from(raw),{request,identity:'fixture'})));}catch{console.error('explicit_github_cli_fixture_unavailable');process.exitCode=1;}
 `;

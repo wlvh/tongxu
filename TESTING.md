@@ -77,7 +77,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 本人决定和原操作 | 复制配置不能授权；过期来源/停止阻新动作；失回执后查原合并而非第二次 PUT | `tests/authority/authority.test.ts`、`tests/merge/managed.test.ts` |
 | 显式共享账号来源 | 新profile严格引用与同ID、精确来源/提案和原动作门、旧字节及profile不可变、正常Owner提交/共享说明和历史成果限定、未选共享publisher仍拒绝账号重合；新模式核账号配对、旧捕获重放、原一次发送／失回执查回及撤销／停止零PUT | 复用`tests/authority/authority.test.ts`、`tests/w7/owner-controls.test.ts`、`delivery-outcomes.test.ts`、`owner-control-journey.test.ts`及原页面fixture；来源/身份为明确协议样例，不证明生产批准；共享publisher消费者复用merge的contract／policy／managed及fixture |
 | 规则集与旧版保护缺项 | 已核凭据类别、准确classic404和本次固定管理读取200共同证明无classic，OAuth用户管理员类别另需同次准确repository的admin／push；Actions关闭有效，旧配置/classic200零新增读取，错误或残缺证明及其他规则仍拒绝 | `tests/merge/contract.test.ts`、`tests/merge/policy.test.ts`、`tests/merge/managed.test.ts`；见 test:merge，仅本地HTTP/身份与资源样例 |
-| 现有gh受限发布 | 单命令一次令牌、实际账号／scope／仓库权限、发送前PR／B、PUT前后故障、固定API／分页、源码封装、凭据边界及原共享Owner→资源→一次发送／查回 | `tests/merge/github-cli-publisher.test.ts`，复用原merge fixture和明确gh凭据样例；真实登录只读和远端写入另记 |
+| 现有gh受限发布 | 单命令一次令牌、实际账号／scope／仓库权限、发送前PR／B、PUT前后故障、固定API／分页、源码封装、凭据边界及原共享Owner→资源→一次发送／查回；生产传输在本地HTTP实际计数421及持续421至多一次PUT，后续run／reconcile零补发，请求无固定API日期，流式超限／截断／UTF-8错误／取消有界 | `tests/merge/github-cli-publisher.test.ts`，复用原merge fixture和明确gh凭据样例；真实登录只读和远端写入另记 |
 | 指定审核方 | 负责人/多个团队/零门槛规则的服务端CLEAN/UNSTABLE及可空审核状态、准确仓库/PR/H/B/目标、错误/部分/矛盾来源、原普通审批/检查及未知规则、一次PUT与原恢复、旧无新增要求零query | `tests/merge/designated-reviewers.test.ts`及原merge三文件，真实子进程/HTTP，GitHub策略、身份与资源为明确样例；组织实际生效单独验证 |
 | 阶段前置 | 精确生产者材料与消费证据齐备才开始依赖阶段；独立调查不被错误阻断 | `tests/coordination/contract.test.ts`、`tests/coordination/feedback.test.ts` |
 | 启动与依赖 | 旧 Node/缺 SQLite 能力拒绝；程序升级不成为版本白名单；应用资产变化先于导入拒绝 | `tests/w7/workbench-launch.test.ts`、`tests/w4/external-dependencies.test.ts` |

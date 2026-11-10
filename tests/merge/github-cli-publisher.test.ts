@@ -5,6 +5,9 @@ import {join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
+import {createServer,request as localRequest} from 'node:http';
+import https,{type RequestOptions} from 'node:https';
+import {getEventListeners} from 'node:events';
 import {runGitHubCliCommand,githubCliProductionRequest,parseGitHubCliPublisherConfig} from '../../src/github-cli-publisher.js';
 import {prepareGitHubCliPublisher} from '../../src/github-cli-publisher-install.js';
 import {callMergeProvider,mergeCommand,readMergeProviderCapture} from '../../src/merge-provider.js';
@@ -12,7 +15,7 @@ import {managedMergeAction} from '../../src/managed-merge.js';
 import {publisherFixture} from './provider-fixture.js';
 import {cliPublisherFixture} from './github-cli-fixture.js';
 import {ready,rulesetOnly} from './fixture.js';
-import type {ManagedMergeBinding} from '../../src/merge-contract.js';
+import {mergePayload,type ManagedMergeBinding} from '../../src/merge-contract.js';
 
 const binding:ManagedMergeBinding={schemaVersion:1,operation:'00000000-0000-4000-8000-000000000001',item:'a'.repeat(64),packet:1,repository:'fixture/reception',repositoryId:99,pr:1,H:'a'.repeat(40),B:'b'.repeat(40),targetRef:'main',T:'c'.repeat(40),receptionOperation:'00000000-0000-4000-8000-000000000001',judgmentId:'fixture',receptionBindingHash:'b'.repeat(64),authorityIntent:'fixture-permission',resourceRequests:['c'.repeat(64)],scope:{id:'fixture',version:'1',bodySha256:'d'.repeat(64)},arrangement:{id:'fixture',version:'1'},subjectSha256:null,integrationReference:null,method:'merge'};
 const bytes=(value:unknown)=>Buffer.from(JSON.stringify(value));
@@ -65,13 +68,61 @@ test('gh failure stderr token limits directory permissions and current program c
   const upgraded=await runGitHubCliCommand(cli.config,bytes(mergeCommand(binding,'capabilities')),runtime);
   if(upgraded.result.kind==='capabilities')assert.equal(upgraded.result.credentialState,'available');
 });
-test('fixed API transport refuses foreign origins redirects and streamed oversize bodies without following or retrying',async t=>{
-  let mode='redirect',cancelled=false;
-  const mocked=t.mock.method(globalThis,'fetch',async()=>mode==='redirect'?new Response('{}',{status:307,headers:{Location:'https://unrelated.invalid'}}):new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(5*1024*1024));},cancel(){cancelled=true;}})));
-  const request={method:'PUT' as const,path:'/repos/fixture/reception/pulls/1/merge',authorization:'explicit-unit-only',body:'{}',signal:AbortSignal.timeout(1000)};
-  await assert.rejects(githubCliProductionRequest({...request,path:'//unrelated.invalid'}),/request_invalid/);assert.equal(mocked.mock.callCount(),0);
-  await assert.rejects(githubCliProductionRequest(request),/redirect_refused/);assert.equal(mocked.mock.callCount(),1);
-  mode='large';await assert.rejects(githubCliProductionRequest(request),/response_limit/);assert.equal(mocked.mock.callCount(),2);assert.equal(cancelled,true);
+test('fixed production transport uses one wire request for 421 and preserves bounded response failures',async t=>{
+  let mode='normal';
+  const received:Array<{method:string;path:string;body:string;headers:Record<string,unknown>}>=[];
+  const server=createServer(async(req,res)=>{
+    let body='';for await(const part of req)body+=part;
+    received.push({method:req.method!,path:req.url!,body,headers:req.headers});
+    if(mode==='redirect'){res.writeHead(307,{Location:'https://unrelated.invalid'});res.end('{}');return;}
+    if(mode==='large'){res.end('x'.repeat(5*1024*1024));return;}
+    if(mode==='invalid-utf8'){res.end(Buffer.from([0xff]));return;}
+    if(mode==='truncated'){res.writeHead(200,{'Content-Length':'100'});res.write('{}');setImmediate(()=>res.destroy());return;}
+    if(mode==='timeout'){res.writeHead(200);res.write('{');return;}
+    if(mode==='first-421'){mode='normal';res.writeHead(421);res.end('{"message":"explicit fixture 421"}');return;}
+    if(mode==='always-421'){res.writeHead(421);res.end('{"message":"explicit fixture 421"}');return;}
+    res.writeHead(200,{Link:'<https://api.github.com/repos/fixture/reception/pulls/1/reviews?per_page=100&page=2>; rel="next"','X-OAuth-Scopes':'repo, read:org'});res.end('{}');
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));});
+  const origin='http://127.0.0.1:'+(server.address() as {port:number}).port;
+  t.mock.method(https,'request',(url:URL,options:RequestOptions)=>{
+    assert.equal(url.origin,'https://api.github.com');
+    assert.equal(options.rejectUnauthorized,undefined);
+    return localRequest(origin+url.pathname+url.search,options);
+  });
+  const request={method:'PUT' as const,path:'/repos/fixture/reception/pulls/1/merge',authorization:'explicit-unit-only',body:'{}',signal:AbortSignal.timeout(5000)};
+  await assert.rejects(githubCliProductionRequest({...request,path:'//unrelated.invalid'}),/request_invalid/);assert.equal(received.length,0);
+  const failures={redirect:/redirect_refused/,large:/response_limit/,'invalid-utf8':/encoded data|encoding|valid/i,truncated:/aborted|premature|socket hang up/i,timeout:/abort/i};
+  for(const [failure,expected] of Object.entries(failures)){
+    mode=failure;const before:number=received.length,signal=AbortSignal.timeout(failure==='timeout'?100:5000);
+    await assert.rejects(githubCliProductionRequest({...request,signal}),expected);
+    assert.equal(received.length,before+1,failure);
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(getEventListeners(signal,'abort').length,0,failure);
+  }
+  for(const responseMode of ['first-421','always-421']){
+    mode=responseMode;const before:number=received.length;
+    assert.equal((await githubCliProductionRequest(request)).status,421);
+    assert.equal(received.length,before+1,responseMode);
+    t.diagnostic(JSON.stringify({scenario:responseMode,responseStatus:421,wireRequestsAdded:received.length-before}));
+  }
+  mode='normal';
+  const normal=await githubCliProductionRequest(request);assert.equal(normal.status,200);assert.match(normal.headers.link!,/rel="next"/);assert.equal(normal.headers['x-oauth-scopes'],'repo, read:org');
+  await githubCliProductionRequest({...request,method:'GET',path:'/user',body:null});
+  await githubCliProductionRequest({...request,method:'POST',path:'/graphql'});
+  assert.deepEqual([...new Set(received.map(value=>value.method))],['PUT','GET','POST']);
+  for(const observed of received){
+    assert.equal(observed.headers['x-github-api-version'],undefined);
+    assert.equal(observed.headers.authorization,'Bearer explicit-unit-only');
+    assert.equal(observed.headers.accept,'application/vnd.github+json');
+    assert.equal(observed.headers['user-agent'],'tongxu-managed-github-cli');
+    if(observed.method!=='GET'){assert.equal(observed.body,'{}');assert.equal(observed.headers['content-type'],'application/json');}
+  }
+  const before=received.length;
+  await assert.rejects(githubCliProductionRequest({...request,signal:AbortSignal.abort()}));
+  assert.equal(received.length,before);
+  assert.equal(getEventListeners(request.signal,'abort').length,0);
+  t.diagnostic(JSON.stringify({wireMethods:[...new Set(received.map(value=>value.method))],apiVersionHeaderAbsent:received.every(value=>value.headers['x-github-api-version']===undefined)}));
 });
 test('pre-PUT redirect timeout oversize and every final candidate binding change cause zero PUT',async t=>{
   const business=await publisherFixture(t,binding),cli=await cliPublisherFixture(t,business,binding);
@@ -102,9 +153,23 @@ test('sealed public deployment and normal prepare CLI check the finite runtime b
   await unlink(deployed.profile.executable);assert.deepEqual((await readMergeProviderCapture(deployed.profile,command,capture)).reply,cap.reply);
   assert.throws(()=>parseGitHubCliPublisherConfig({...cli.config,origin:'http://127.0.0.1'}),/configuration_invalid/);
 });
-for(const mode of ['normal','refused','lost-after-merge','after-redirect','after-timeout','after-large','after-malformed'])test('original shared managed consumer uses the CLI adapter and preserves '+mode,async t=>{
-  const f=await ready(t,mode==='lost-after-merge'?'lost-after-merge':mode==='refused'?'refused':'normal','oauth_repo_admin',true),cli=await cliPublisherFixture(t,f.publisher,f.binding);rulesetOnly(f);await cli.attach();
+for(const mode of ['normal','refused','lost-after-merge','after-redirect','after-timeout','after-large','after-malformed','first-421','always-421'])test('original shared managed consumer uses the production transport and preserves '+mode,async t=>{
+  const f=await ready(t,mode==='lost-after-merge'?'lost-after-merge':mode==='refused'?'refused':'normal','oauth_repo_admin',true),cli=await cliPublisherFixture(t,f.publisher,f.binding);rulesetOnly(f);await cli.attach(true);
   if(mode.startsWith('after-'))cli.setMode(mode);
+  if(mode.endsWith('421')){
+    cli.setMode(mode);
+    const sent=await managedMergeAction(f.store,f.operation,'run');
+    assert.equal(sent.merge.phase,'sent_unknown');assert.equal(sent.merge.response.status,421);assert.equal(sent.merge.attempts.length,1);
+    assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+    cli.setMode('normal');
+    assert.equal((await managedMergeAction(f.store,f.operation,'reconcile')).merge.phase,'sent_unknown');
+    await assert.rejects(managedMergeAction(f.store,f.operation,'retry-refused'),/explicit_definitive_merge_refusal_required/);
+    assert.equal(cli.requests.filter(r=>r.method==='PUT').length,1);assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,0);
+    assert.deepEqual(JSON.parse(cli.requests.find(r=>r.method==='PUT')!.body),mergePayload(f.binding));
+    assert.equal(f.publisher.state().merges,0);assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,0);
+    t.diagnostic(JSON.stringify({scenario:mode,phase:sent.merge.phase,recordedAttempts:sent.merge.attempts.length,wirePuts:cli.requests.filter(r=>r.method==='PUT').length,downstreamPuts:f.publisher.requests.filter(r=>r.method==='PUT').length,claims:f.ledger.state().claims.length,settlements:f.ledger.state().settlements.length}));
+    await scan(f.store,cli.token);await scan(f.publisher.root,cli.token);return;
+  }
   if(mode==='refused'){
     assert.equal((await managedMergeAction(f.store,f.operation,'run')).merge.phase,'refused');f.publisher.setMode('normal');
     assert.equal((await managedMergeAction(f.store,f.operation,'retry-refused')).merge.phase,'exact_merge_result_verified');
