@@ -17,6 +17,130 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { canonical } from '../../src/comparison.js';
+import { actionHash } from '../../src/authority-contract.js';
+import { resourceRequestHash } from '../../src/resource-contract.js';
+import { queueFeatureVersion,queueFormatVersion,enableAssessmentFormat,enableIntegrationFormat,enableMemberRepairFormat,enableMemberRecompositionFormat,enableMemberRefutationFormat } from '../../src/queue-format.js';
+
+test('empty-budget publisher configuration upgrades Owner format12 and preserves resource, task and physical formats',async t=>{
+  for(const format of [12,13,15,16,17,18,19,20,21]){
+    const f=await ready(t,'normal',undefined,true,{emptyBudget:true,configurePublisher:false,prepareMerge:false});
+    const db=new DatabaseSync(join(f.store,'queue.sqlite'));
+    try{
+      assert.equal(queueFeatureVersion(db),12);
+      if(format===13)f.q.resources().configure(Buffer.from(JSON.stringify(f.ledger.profile)));
+      if(format===15||format===16)f.q.enableTasks();
+      if(format===16)f.q.enableTaskLinks();
+      if(format>=17)enableAssessmentFormat(db);
+      if(format>=18)enableIntegrationFormat(db);
+      if(format>=19)enableMemberRepairFormat(db);
+      if(format>=20)enableMemberRecompositionFormat(db);
+      if(format>=21)enableMemberRefutationFormat(db);
+      const guards=db.prepare("SELECT name,sql FROM sqlite_schema WHERE type IN ('trigger','index') ORDER BY name").all();
+      f.q.merges().configure(Buffer.from(JSON.stringify(f.publisher.profile)));
+      assert.equal(queueFeatureVersion(db),format===15||format===16?format:14);assert.equal(queueFormatVersion(db),format<=13?14:format);
+      const after=db.prepare("SELECT name,sql FROM sqlite_schema WHERE type IN ('trigger','index') AND name NOT IN ('managed_merge_claim_guard','managed_merge_record_guard') ORDER BY name").all();
+      assert.deepEqual(after,guards);
+      assert.equal(f.q.merges().configure(Buffer.from(JSON.stringify(f.publisher.profile))).duplicate,true);
+      const reopened=await QueueStore.open(f.store);try{assert.equal(reopened.merges().configuration().actorId,11);}finally{reopened.close();}
+    }finally{db.close();}
+  }
+});
+
+test('shared empty-budget merge uses one PUT and zero resource claims or settlements, with original lost-reply recovery',async t=>{
+  for(const mode of ['normal','lost-after-merge']){
+    const f=await ready(t,mode,undefined,true,{emptyBudget:true});
+    assert.deepEqual(f.binding.resourceRequests,[]);assert.deepEqual(f.action.resourceRefs,[]);
+    assert.deepEqual(f.q.merges().status(f.operation).resources,[]);
+    if(mode==='lost-after-merge'){
+      await assert.rejects(managedMergeAction(f.store,f.operation,'run'),/execution_incomplete/);
+      await assert.rejects(managedMergeAction(f.store,f.operation,'cancel-unstarted'),/cannot_cancel_as_unsent/);
+      assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+      f.adopt({kind:'revoke',decision:f.confirmation.sha});writeFileSync(f.sourcePath,'{}');
+    }
+    const done=await managedMergeAction(f.store,f.operation,mode==='normal'?'run':'reconcile');
+    assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.status,'complete');assert.ok('resourceResults' in done);assert.deepEqual(done.resourceResults,[]);
+    assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);assert.equal(f.q.status().claims.length,0);
+    assert.equal(f.ledger.state().claims.length,0);assert.equal(f.ledger.state().settlements.length,0);
+    // A later configuration does not change historical success or re-send it.
+    f.q.resources().configure(Buffer.from(JSON.stringify(f.ledger.profile)));
+    const count=f.publisher.requests.length;
+    assert.equal((await prepareManagedMerge(f.store,f.plan)).duplicate,true);
+    assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+    assert.equal(f.publisher.requests.length,count);
+    assert.equal((await managedMergeAction(f.store,f.operation,'reconcile')).merge.phase,'exact_merge_result_verified');
+    assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);
+  }
+});
+
+test('empty-budget revocation and stop block sends, while known-unsent cancellation releases only the original target',async t=>{
+  for(const reason of ['revoked','stopped']){
+    const f=await ready(t,'normal',undefined,true,{emptyBudget:true});
+    if(reason==='revoked')f.adopt({kind:'revoke',decision:f.confirmation.sha});
+    else f.adopt({kind:'control',adoption:f.scope.sha,control:'merge',state:'stopped'});
+    await assert.rejects(managedMergeAction(f.store,f.operation,'run'),/revoked|stopped/);
+    assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,0);assert.equal(f.q.status().claims.length,1);
+    const done=await managedMergeAction(f.store,f.operation,'cancel-unstarted');
+    assert.equal(done.merge.phase,'cancelled_before_send');assert.ok('resourceResults' in done);assert.deepEqual(done.resourceResults,[]);assert.equal(f.q.status().claims.length,0);
+    assert.equal((await managedMergeAction(f.store,f.operation,'cancel-unstarted')).duplicate,true);
+    assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+    const reopened=await QueueStore.open(f.store);try{assert.equal(reopened.merges().status(f.operation).merge.phase,'cancelled_before_send');}finally{reopened.close();}
+    assert.equal(f.ledger.state().claims.length,0);assert.equal(f.ledger.state().settlements.length,0);
+  }
+});
+
+test('empty-budget pre-launch recovery retains the original request and permits one evidenced continuation',async t=>{
+  const f=await ready(t,'normal',undefined,true,{emptyBudget:true});
+  const preflight=await inspectMergePreflight(f.publisher.profile,f.binding,join(f.root,'empty-preflight')),m=f.q.merges(),fresh=await f.fresh();let capture='';
+  await assert.rejects(callMergeProvider(f.publisher.profile,mergeCommand(f.binding,'merge'),join(f.root,'empty-prelaunch'),dir=>{capture=dir;m.dispatch(f.operation,preflight,fresh,dir);throw new Error('explicit_fixture_before_spawn');}),/before_spawn/);
+  await assert.rejects(inspectMergeController(m.originalDispatch(f.operation)),/controller_active/);
+  m.controllerReturned(f.operation,capture);
+  assert.equal((await managedMergeAction(f.store,f.operation,'recover-controller')).merge.phase,'resources_pending');
+  const done=await managedMergeAction(f.store,f.operation,'run');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.merge.attempts.length,2);
+  assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);assert.equal(f.ledger.state().claims.length,0);
+});
+
+test('empty-budget refusal retries only under current original conditions and rolls back when a ledger is later configured',async t=>{
+  for(const addLedger of [false,true]){
+    const f=await ready(t,'refused',undefined,true,{emptyBudget:true});
+    const refused=await managedMergeAction(f.store,f.operation,'run');assert.equal(refused.merge.phase,'refused');assert.equal(refused.status,'complete');
+    assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+    f.publisher.setMode('normal');
+    if(addLedger){
+      f.q.resources().configure(Buffer.from(JSON.stringify(f.ledger.profile)));
+      const db=new DatabaseSync(join(f.store,'queue.sqlite'));
+      try{
+        const before=db.prepare('SELECT status,generation,result FROM operations WHERE id=?').get(f.operation);
+        await assert.rejects(managedMergeAction(f.store,f.operation,'retry-refused'),/managed_merge_configured_resource_required/);
+        assert.deepEqual(db.prepare('SELECT status,generation,result FROM operations WHERE id=?').get(f.operation),before);
+      }finally{db.close();}
+      assert.equal(f.q.merges().status(f.operation).merge.phase,'refused');assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);
+    }else{
+      const done=await managedMergeAction(f.store,f.operation,'retry-refused');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.merge.attempts.length,2);
+      assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,2);
+    }
+    assert.equal(f.q.status().claims.length,0);assert.equal(f.ledger.state().claims.length,0);assert.equal(f.ledger.state().settlements.length,0);
+  }
+});
+
+test('empty-budget prepare refuses configured ledgers and positive Owner resource references without leaving a target claim',async t=>{
+  for(const reason of ['ledger','positive-owner-reference','missing-ledger-request']){
+    const f=await ready(t,'normal',undefined,true,{emptyBudget:true,prepareMerge:false});
+    let plan=f.plan;
+    if(reason==='ledger')f.q.resources().configure(Buffer.from(JSON.stringify(f.ledger.profile)));
+    else{
+      const action={...f.action,resourceRefs:['existing-fixture-slot']},intent='positive-resource-intent';
+      const confirmation=f.adopt({kind:'confirm_action',adoption:f.scope.sha,performerRole:'background',request:action,expiresAt:new Date(Date.now()+3600000).toISOString()});
+      f.a.reserveAction(intent,action,'background',confirmation.sha,[f.scope.observation,confirmation.observation]);
+      const request={...f.request,authorityIntent:intent,actionSha256:actionHash(action)};
+      const resources=reason==='missing-ledger-request'?[request]:[];
+      plan=Buffer.from(JSON.stringify({binding:{...f.binding,authorityIntent:intent,resourceRequests:resources.map(resourceRequestHash)},resources}));
+    }
+    const error=reason==='ledger'?/managed_merge_configured_resource_required/:reason==='positive-owner-reference'?/managed_merge_resource_plan_mismatch/:/existing_resource_ledger_not_configured/;
+    await assert.rejects(prepareManagedMerge(f.store,plan),error);
+    assert.equal(f.q.status().claims.length,0);assert.equal(f.q.status().operations[0].status,'complete');assert.throws(()=>f.q.merges().status(f.operation),/original_managed_merge_required/);
+    assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,0);assert.equal(f.ledger.state().claims.length,0);
+  }
+});
 
 function expandedIndexFixture(f:{store:string;operation:string}){
   const db=new DatabaseSync(join(f.store,'queue.sqlite'));

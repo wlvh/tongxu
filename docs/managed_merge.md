@@ -62,7 +62,7 @@ MM07 用明确本地假服务和真实请求/响应捕获覆盖 head变化、bas
 
 ## 当前实现与使用
 
-这是原接收 operation 的后续阶段。先完成原队列的独立接收，再配置已有 Owner 来源、原账本和受管发布程序；空闲时显式升到格式14。其他旧队列保持原模式。旧客户端不能把正在合并的操作重新影子评估、清空结果或删掉占用；来源、资源和写者不齐时不创建另一个操作代替。
+这是原接收 operation 的后续阶段。先完成原队列的独立接收，配置已有 Owner 来源和受管发布程序；有资源申请时还须配置其原账本。空闲时可从Owner格式12或原资源格式13显式升到格式14，格式15／16及物理17—21的已有功能和保护继续保留。旧客户端不能把正在合并的操作重新影子评估、清空结果或删掉占用；来源、资源和写者不齐时不创建另一个操作代替。
 
 ```sh
 node dist/src/merge-cli.js configure --store /absolute/private/queue --profile /absolute/private/publisher-profile.json
@@ -76,6 +76,14 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 `binding` 的完整类型见 `src/merge-contract.ts`：准确 repository/repositoryId/pr/H/B/targetRef/T、原 operation/item/packet、接收 judgmentId/bindingHash、Owner intent、原资源请求摘要、S 的 id/version/bodySha256 与 r 的 id/version。当前单 PR 路线要求 operation 等于 receptionOperation。组合 subject 与集成 reference 不能靠文件填写来获得写入权：当前写端明确拒绝组合锚点；真实集成候选的生成/核实继续由 G05 接入，MM06 不冒称全部完成。
 
 `resources` 是原账本的完整固定 ResourceRequest 数组，摘要顺序须等于 binding.resourceRequests，且覆盖本次原授权的资源引用。生产不新建余额；测试里的 SQLite 余额是明确的假原账本，仅用于竞争与失回执反例。
+
+### 条件性空预算
+
+沿已有消费者的条件，当本队列没有配置任何资源账本，且准确Owner动作的`resourceRefs`、计划的`resources`和`binding.resourceRequests`均为空时，原合并可以继续。程序保存同一空数组计划，经原目标占用、来源、候选、权限、停止和服务器规则检查后发送；空数组对应零资源认领和零结算。该条件只说明本次动作的资源记录，模型调用或其他动作的费用条件仍按各自原授权核准。
+
+准备和每次新发送都核当前条件。有已配置账本却没有资源申请时返回`managed_merge_configured_resource_required`；Owner有资源引用而计划为空时由原资源矩阵拒绝。原明确拒绝之后若新增账本，旧空预算的`retry-refused`也会被拒绝，原完成状态、发送次数和目标释放事实保留。正常非空申请继续逐项核原账本与已持有资源。
+
+历史查看、已发未知的`reconcile`及已知未发的取消沿原操作处理。后续配置账本不会把已经发生的合并或取消改写，重复`run`继续返回原记录；已发未知保持原结果查回路径。
 
 ## 发布程序的信任边界
 

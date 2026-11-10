@@ -51,7 +51,7 @@ export class MergeRecords {
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseMergeProfile(raw),ref=hash(canonical(p)),old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;
     if(old){this.mode();if(old.value!==ref)throw new Error('managed_publisher_profile_is_fixed');return {duplicate:true,profileSha256:ref,credentialVerified:false,...sharedPublisherProjection(p)};}
-    if(![13,15,16].includes(queueFeatureVersion(this.db)))throw new Error('original_authority_and_resources_required');
+    if(![12,13,15,16].includes(queueFeatureVersion(this.db)))throw new Error('original_authority_and_resources_required');
     const authorityRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value,owner=authorityRef&&JSON.parse(this.bytes(authorityRef).toString());
     if(!owner||owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('managed_publisher_owner_configuration_mismatch');
     const shared=[owner.ownerId,owner.executorId].includes(p.actorId);
@@ -82,6 +82,7 @@ export class MergeRecords {
     if((this.profile().executionKind==='fixture')!==(s.receiver.executionKind==='fixture'))throw new Error('managed_merge_execution_kind_mismatch');
     if(b.subjectSha256!==null)throw new Error('composition_requires_verified_integration_reception');
     if(b.integrationReference!==(s.receiver.integrationSha256??null)||b.integrationReference&&j.consumedIntegration!==b.integrationReference)throw new Error('managed_merge_integration_reception_required');
+    if(!b.resourceRequests.length&&this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('managed_merge_configured_resource_required');
     return a;
   }
   prepare(raw:Buffer,observations:OwnerObservation[]){return this.transaction(()=>{

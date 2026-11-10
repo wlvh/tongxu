@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMergeBinding,mergePayload,inspectMergeCurrent,inspectMergeResponse,inspectMergedResult,type ManagedMergeBinding,type MergeWire } from '../../src/merge-contract.js';
+import { parseMergeBinding,mergeBindingHash,mergePayload,inspectMergeCurrent,inspectMergeResponse,inspectMergedResult,type ManagedMergeBinding,type MergeWire } from '../../src/merge-contract.js';
 import {parseMergeProfile,mergeCommand,mergeHttpRequest,type MergeProfile} from '../../src/merge-provider.js';
 import {canonical} from '../../src/comparison.js';
 import {hash} from '../../src/snapshot.js';
@@ -12,6 +12,15 @@ const ref=(sha:string)=>wire({ref:'refs/heads/main',object:{type:'commit',sha}})
 const pr=(merged=false)=>({number:4,state:merged?'closed':'open',draft:false,merged,mergeable:true,merge_commit_sha:merged?M:null,merged_by:merged?{id:12}:null,head:{sha:H,repo:{id:10}},base:{ref:'main',sha:'0'.repeat(40),repo:{id:10,full_name:'fixture/merge'}}});
 const commit=()=>({sha:M,tree:{sha:T},parents:[{sha:B},{sha:H}],message:'tongxu: receive PR #4\n\n'+mergePayload(binding).commit_message});
 const result=()=>({pr:wire(pr(true)),commit:wire(commit()),targetBefore:ref(M),targetAfter:ref(M),expectedActorId:12});
+test('empty resource references preserve the binding protocol and legacy canonical payload',()=>{
+  const legacy=canonical(binding),empty={...binding,resourceRequests:[]};
+  assert.deepEqual(parseMergeBinding(empty),empty);
+  assert.equal(mergeBindingHash(empty),hash(canonical(empty)));
+  assert.equal(canonical(parseMergeBinding(JSON.parse(legacy))),legacy);
+  assert.equal(mergeBindingHash(binding),hash(legacy));
+  assert.equal(mergePayload(empty).sha,mergePayload(binding).sha);
+  for(const resourceRequests of [null,{},['invalid'],['c'.repeat(64),'c'.repeat(64)],Array.from({length:9},(_,i)=>String(i).repeat(64))])assert.throws(()=>parseMergeBinding({...binding,resourceRequests}),/binding_invalid/);
+});
 test('shared publisher policy is explicit and strictly shaped without changing legacy canonical bytes',()=>{
   const p:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:binding.repository,repositoryId:10,targets:['main'],actorId:12,executable:'/explicit-fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000};
   const raw=Buffer.from(canonical(p)),before=hash(raw),parsed=parseMergeProfile(raw);
