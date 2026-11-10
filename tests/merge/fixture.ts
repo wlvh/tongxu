@@ -17,7 +17,8 @@ import { prepareManagedMerge } from '../../src/managed-merge.js';
 import type { MergeProfile } from '../../src/merge-provider.js';
 
 const bytes=(x:unknown)=>Buffer.from(JSON.stringify(x));let commentId=7200000000;
-export async function ready(t:test.TestContext,mode='normal',credentialKind?:MergeProfile['credentialKind'],sharedAccount=false){
+type MergeFixtureOptions={emptyBudget?:boolean;configurePublisher?:boolean;prepareMerge?:boolean};
+export async function ready(t:test.TestContext,mode='normal',credentialKind?:MergeProfile['credentialKind'],sharedAccount=false,options:MergeFixtureOptions={}){
   const evidence=process.env.TONGXU_MERGE_TEST_EVIDENCE;
   const f=await setup(t,'complete',1,!evidence);
   let prepared:Awaited<ReturnType<typeof readyFromReception>>|undefined;
@@ -32,10 +33,10 @@ export async function ready(t:test.TestContext,mode='normal',credentialKind?:Mer
     await rm(f.root,{recursive:true,force:true});
   });
   const received=await runReception(f.path);
-  prepared=await readyFromReception(t,f,received,mode,undefined,credentialKind,sharedAccount);
+  prepared=await readyFromReception(t,f,received,mode,undefined,credentialKind,sharedAccount,options);
   return prepared;
 }
-export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind'],sharedAccount=false){
+export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType<typeof setup>>,received:any,mode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind'],sharedAccount=false,options:MergeFixtureOptions={}){
   const operation=received.operation;
   f.q.enableSupplements();f.q.reviewRecords().enable();f.q.enableCompositions();f.q.enableReceiverCorrections();
   const sources:Record<string,any>={},sourcePath=join(f.root,'owner-provider-data.json'),exe=join(f.root,'owner-provider.mjs');
@@ -49,18 +50,18 @@ export async function readyFromReception(t:test.TestContext,f:Awaited<ReturnType
     sources[id]={graph,comment};writeFileSync(sourcePath,bytes(sources));const observation=fixtureOwnerObservation(profile,sha,id,bytes(graph),bytes(comment),at);a.apply(sha,observation);return {sha,observation};
   }
   const ledger=await ledgerFixture(t),r=f.q.receiverState(operation),e=f.q.receiverEvidence(operation),body={goals:['Exercise explicit fixture managed merge'],nonGoals:['No real GitHub update'],preserve:[],acceptance:['Exact original request and actual tree'],constraints:['No personal credential fallback']};
-  f.q.resources().configure(bytes(ledger.profile));
+  if(!options.emptyBudget)f.q.resources().configure(bytes(ledger.profile));
   const scope=adopt({kind:'adopt_scope',scopeId:e.context.scope.id,scopeVersion:e.context.scope.version,body,previousAdoption:null});
-  const c=e.manifest.candidate,action:ActionRequest={schemaVersion:1,scopeId:e.context.scope.id,scopeVersion:e.context.scope.version,scopeBodySha256:scopeBodyHash(body),repository:c.repository,target:c.targetRef,action:'merge',item:f.item,candidate:{H:c.H,B:c.B,subjectSha256:null},paths:[],resourceRefs:['existing-fixture-slot']};
+  const c=e.manifest.candidate,action:ActionRequest={schemaVersion:1,scopeId:e.context.scope.id,scopeVersion:e.context.scope.version,scopeBodySha256:scopeBodyHash(body),repository:c.repository,target:c.targetRef,action:'merge',item:f.item,candidate:{H:c.H,B:c.B,subjectSha256:null},paths:[],resourceRefs:options.emptyBudget?[]:['existing-fixture-slot']};
   const confirmation=adopt({kind:'confirm_action',adoption:scope.sha,performerRole:'background',request:action,expiresAt:new Date(Date.now()+3600000).toISOString()}),observations=[scope.observation,confirmation.observation],intent='fixture-managed-merge';a.reserveAction(intent,action,'background',confirmation.sha,observations);
   const request:ResourceRequest={schemaVersion:1,ledgerId:ledger.profile.ledgerId,repository:c.repository,operation,authorityIntent:intent,resourceRef:'existing-fixture-slot',unit:'fixture-task',quantity:1,role:'background',actionSha256:actionHash(action)};
-  const binding:ManagedMergeBinding={schemaVersion:1,operation,item:f.item,packet:r.result.packet,repository:c.repository,repositoryId:99,pr:c.pr,H:c.H,B:c.B,targetRef:c.targetRef,T:r.result.tree,receptionOperation:operation,judgmentId:r.receiver.judgmentId,receptionBindingHash:r.receiver.bindingHash,authorityIntent:intent,resourceRequests:[resourceRequestHash(request)],scope:{id:action.scopeId,version:action.scopeVersion,bodySha256:action.scopeBodySha256},arrangement:{id:e.context.arrangement.id,version:e.context.arrangement.version},subjectSha256:null,integrationReference:r.receiver.integrationSha256??null,method:'merge'};
+  const binding:ManagedMergeBinding={schemaVersion:1,operation,item:f.item,packet:r.result.packet,repository:c.repository,repositoryId:99,pr:c.pr,H:c.H,B:c.B,targetRef:c.targetRef,T:r.result.tree,receptionOperation:operation,judgmentId:r.receiver.judgmentId,receptionBindingHash:r.receiver.bindingHash,authorityIntent:intent,resourceRequests:options.emptyBudget?[]:[resourceRequestHash(request)],scope:{id:action.scopeId,version:action.scopeVersion,bodySha256:action.scopeBodySha256},arrangement:{id:e.context.arrangement.id,version:e.context.arrangement.version},subjectSha256:null,integrationReference:r.receiver.integrationSha256??null,method:'merge'};
   const publisher=await publisherFixture(t,binding,mode,actualFixtureMerge,credentialKind,sharedAccount?11:33,sharedAccount?11:44);
   if(sharedAccount)publisher.profile.sharedAccountPublisher={decisionReference:{kind:'recorded_user_decision',sha256:'b'.repeat(64)}};
-  f.q.merges().configure(bytes(publisher.profile));
-  const plan=bytes({binding,resources:[request]});await prepareManagedMerge(f.store,plan);
+  if(options.configurePublisher!==false)f.q.merges().configure(bytes(publisher.profile));
+  const plan=bytes({binding,resources:options.emptyBudget?[]:[request]});if(options.prepareMerge!==false)await prepareManagedMerge(f.store,plan);
   const fresh=async()=>{const values=[];for(const ref of a.sourceRequests(confirmation.sha))values.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(f.root,'fresh-owner-'+randomUUID())));return values;};
-  return {...f,receiverPlan:f.plan,operation,binding,request,publisher,ledger,a,scope,confirmation,adopt,observations,sourcePath,plan,fresh};
+  return {...f,receiverPlan:f.plan,operation,binding,request,action,publisher,ledger,a,scope,confirmation,adopt,observations,sourcePath,plan,fresh};
 }
 
 /** Explicit API/credential-class fixtures; not real deployment identity proof. */
