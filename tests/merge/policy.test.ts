@@ -2,7 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { ready,rulesetOnly } from './fixture.js';
+import type {MergeProfile} from '../../src/merge-provider.js';
 import { inspectMergePreflight,evaluateMergePreflight } from '../../src/merge-preflight.js';
+
+test('actual capability captures pair shared external legacy external and fixture modes and still bind current actor',async t=>{
+  const f=await ready(t,'normal',undefined,true),p=f.publisher,b=f.binding;
+  const capability={kind:'capabilities',credentialState:'available',actorId:11,identity:'account_publisher',repositoryIds:[b.repositoryId],targetRefs:[b.targetRef],merge:true,bypass:false,synchronousHeadCondition:true,sourceReference:'explicit-protocol-fixture-not-GitHub-identity'};
+  const external={...p.profile,executionKind:'external' as const};let n=0;
+  const inspect=(profile:MergeProfile=external)=>inspectMergePreflight(profile,b,join(f.root,'shared-capability-'+(++n)));
+  p.setReply('/capabilities',capability);assert.equal((await inspect()).result.ready,true);
+  const {sharedAccountPublisher:_,...legacy}=external;
+  assert.ok((await inspect(legacy)).result.gaps.includes('bounded_publisher_identity_or_permission_unavailable'));
+  assert.ok((await inspect(p.profile)).result.gaps.includes('bounded_publisher_identity_or_permission_unavailable'));
+  for(const delta of [{identity:'isolated_publisher'},{actorId:99},{identity:'unknown',credentialState:'unknown'},{credentialState:'unavailable'}]){
+    p.setReply('/capabilities',{...capability,...delta});assert.ok((await inspect()).result.gaps.includes('bounded_publisher_identity_or_permission_unavailable'));
+  }
+  p.setReply('/capabilities',{...capability,identity:'fixture'});await assert.rejects(inspect(),/fixture_publisher_cannot_be_external/);
+  assert.equal(p.requests.filter(r=>r.method==='PUT').length,0);
+});
 
 test('actual fixture reads bind required app checks and current-head approvals with collaborator permission',async t=>{
   const f=await ready(t),p=f.publisher,b=f.binding,root='/repos/'+b.repository;let n=0;

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { ready,rulesetOnly } from './fixture.js';
 import { managedMergeAction,prepareManagedMerge,validateManagedMerge } from '../../src/managed-merge.js';
 import { inspectMergePreflight } from '../../src/merge-preflight.js';
-import { callMergeProvider,mergeCommand,mergeHttpRequest,requireMergeObservation } from '../../src/merge-provider.js';
+import { callMergeProvider,mergeCommand,mergeHttpRequest,requireMergeObservation,readMergeProviderCapture } from '../../src/merge-provider.js';
 import { QueueStore } from '../../src/queue-store.js';
 import { resourceAction } from '../../src/resource-claims.js';
 import { inspectMergeController } from '../../src/merge-recovery.js';
@@ -43,6 +43,43 @@ test('lost HTTP reply after an actual fixture merge stays unknown; readback reco
   assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
   f.adopt({kind:'revoke',decision:f.confirmation.sha});writeFileSync(f.sourcePath,'{}');
   const done=await managedMergeAction(f.store,f.operation,'reconcile');assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.newMergeCall,false);assert.equal(f.publisher.state().merges,1);assert.equal(f.ledger.state().settlements.length,1);
+});
+test('shared Owner executor publisher and PR author complete once; lost reply recovers the original actor without replay',async t=>{
+  for(const mode of ['normal','lost-after-merge']){
+    const f=await ready(t,mode,undefined,true),before=f.q.merges().status(f.operation);
+    assert.equal(f.a.configuration().profile.ownerId,11);assert.equal(f.a.configuration().profile.executorId,11);assert.equal(f.publisher.profile.actorId,11);
+    assert.deepEqual(before.publisherAccount,{mode:'shared_account',configuredActorId:11,operatorSeparationProven:false,decisionReference:{kind:'recorded_user_decision',sha256:'b'.repeat(64),verification:'registered_not_rechecked'}});
+    assert.equal(before.productionActionAllowed,false);
+    if(mode==='lost-after-merge'){
+      await assert.rejects(managedMergeAction(f.store,f.operation,'run'),/execution_incomplete/);
+      assert.equal(f.q.merges().status(f.operation).merge.phase,'sent_unknown');
+      assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);
+      f.adopt({kind:'revoke',decision:f.confirmation.sha});writeFileSync(f.sourcePath,'{}');
+    }
+    const done=await managedMergeAction(f.store,f.operation,mode==='normal'?'run':'reconcile');
+    assert.equal(done.merge.phase,'exact_merge_result_verified');assert.equal(done.status,'complete');assert.equal(done.publisherAccount?.configuredActorId,11);
+    const count=f.publisher.requests.length;assert.equal((await managedMergeAction(f.store,f.operation,'run')).newMergeCall,false);assert.equal(f.publisher.requests.length,count);
+    assert.equal(f.publisher.state().merges,1);assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,1);
+    assert.equal(f.ledger.state().claims.length,1);assert.equal(f.ledger.state().settlements.length,1);assert.equal(f.q.status().claims.length,0);
+  }
+});
+test('shared account mode preserves revocation stop credentials and candidate gates before any PUT',async t=>{
+  for(const reason of ['revoked','stopped','credential-missing','head-changed']){
+    const f=await ready(t,'normal',undefined,true);
+    if(reason==='revoked')f.adopt({kind:'revoke',decision:f.confirmation.sha});
+    else if(reason==='stopped')f.adopt({kind:'control',adoption:f.scope.sha,control:'merge',state:'stopped'});
+    else f.publisher.setMode(reason);
+    let result:any,problem:unknown;try{result=await managedMergeAction(f.store,f.operation,'run');}catch(e){problem=e;}
+    assert.ok(problem||result?.newMergeCall===false,reason);assert.equal(f.publisher.requests.filter(r=>r.method==='PUT').length,0,reason);
+    assert.equal(f.publisher.state().merges,0,reason);assert.equal(f.q.merges().status(f.operation).merge.phase,'resources_pending',reason);
+  }
+});
+test('legacy capability capture reopens unchanged with no shared state defaults',async t=>{
+  const f=await ready(t),p=f.publisher.profile,c=mergeCommand(f.binding,'capabilities'),directory=join(f.root,'legacy-capability');
+  assert.equal(Object.hasOwn(f.q.merges().status(f.operation),'publisherAccount'),false);
+  const original=await callMergeProvider(p,c,directory),raw=await readFile(join(directory,'stdout.ndjson')),input=await readFile(join(directory,'fixed-input.json'));
+  const reopened=await readMergeProviderCapture(p,c,directory);requireMergeObservation(reopened,p,c);
+  assert.deepEqual(reopened.reply,original.reply);assert.ok(reopened.raw.equals(raw));assert.ok((await readFile(join(directory,'stdout.ndjson'))).equals(raw));assert.ok((await readFile(join(directory,'fixed-input.json'))).equals(input));
 });
 test('ruleset-only proof reaches the original one-PUT consumer and lost-reply recovery without replay',async t=>{
   for(const mode of ['normal','lost-after-merge']){

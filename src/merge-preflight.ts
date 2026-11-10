@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { canonical } from './comparison.js';
 import { hash,privateDirectory } from './snapshot.js';
 import { inspectMergeCurrent, type ManagedMergeBinding } from './merge-contract.js';
-import { callMergeProvider, mergeCommand, mergeWire, requireMergeObservation, type MergeCommand, type MergeObservation, type MergeProfile, type MergeRead } from './merge-provider.js';
+import { callMergeProvider, mergeCommand, mergeWire, requireMergeObservation, mergePublisherIdentity, type MergeCommand, type MergeObservation, type MergeProfile, type MergeRead } from './merge-provider.js';
 
 type Row = Record<string,any>;
 export type MergeReadRecord = { command: MergeCommand; observation: MergeObservation };
@@ -36,7 +36,7 @@ export function evaluateMergePreflight(p:MergeProfile,b:ManagedMergeBinding,reco
   const one=(kind:MergeRead['kind']):Row|null=>{try{const rs=by(kind);if(rs.length!==1)throw new Error('count');const v=decode(rs[0]!);if(!v||typeof v!=='object'||Array.isArray(v))throw new Error('shape');return v;}catch{gaps.push(`${kind}_observation_unavailable`);return null;}};
   const caps=records.filter(r=>r.command.command==='capabilities');
   const cap=caps.length===1?caps[0]!.observation.reply.result:null;
-  if(!cap||cap.kind!=='capabilities'||cap.credentialState!=='available'||cap.actorId!==p.actorId||cap.identity!==(p.executionKind==='fixture'?'fixture':'isolated_publisher')||canonical(cap.repositoryIds)!==canonical([p.repositoryId])||!cap.targetRefs.includes(b.targetRef)||cap.targetRefs.some(t=>!p.targets.includes(t))||!cap.merge||cap.bypass!==false||!cap.synchronousHeadCondition||!cap.sourceReference)gaps.push('bounded_publisher_identity_or_permission_unavailable');
+  if(!cap||cap.kind!=='capabilities'||cap.credentialState!=='available'||cap.actorId!==p.actorId||cap.identity!==mergePublisherIdentity(p)||canonical(cap.repositoryIds)!==canonical([p.repositoryId])||!cap.targetRefs.includes(b.targetRef)||cap.targetRefs.some(t=>!p.targets.includes(t))||!cap.merge||cap.bypass!==false||!cap.synchronousHeadCondition||!cap.sourceReference)gaps.push('bounded_publisher_identity_or_permission_unavailable');
   const pr=one('pr'),repo=one('repository'),branch=one('branch');
   const targets=by('target');
   let current:ReturnType<typeof inspectMergeCurrent>|null=null;

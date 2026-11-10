@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseMergeBinding,mergePayload,inspectMergeCurrent,inspectMergeResponse,inspectMergedResult,type ManagedMergeBinding,type MergeWire } from '../../src/merge-contract.js';
 import {parseMergeProfile,mergeCommand,mergeHttpRequest,type MergeProfile} from '../../src/merge-provider.js';
+import {canonical} from '../../src/comparison.js';
+import {hash} from '../../src/snapshot.js';
 
 const H='a'.repeat(40),B='b'.repeat(40),T='c'.repeat(40),M='d'.repeat(40),later='e'.repeat(40);
 const binding:ManagedMergeBinding={schemaVersion:1,operation:'00000000-0000-4000-8000-000000000001',item:'a'.repeat(64),packet:1,repository:'fixture/merge',repositoryId:10,pr:4,H,B,targetRef:'main',T,receptionOperation:'00000000-0000-4000-8000-000000000002',judgmentId:'explicit-fixture-judgment',receptionBindingHash:'b'.repeat(64),authorityIntent:'explicit-fixture-permission',resourceRequests:['c'.repeat(64)],scope:{id:'scope',version:'S1',bodySha256:'d'.repeat(64)},arrangement:{id:'team',version:'r1'},subjectSha256:null,integrationReference:null,method:'merge'};
@@ -10,6 +12,14 @@ const ref=(sha:string)=>wire({ref:'refs/heads/main',object:{type:'commit',sha}})
 const pr=(merged=false)=>({number:4,state:merged?'closed':'open',draft:false,merged,mergeable:true,merge_commit_sha:merged?M:null,merged_by:merged?{id:12}:null,head:{sha:H,repo:{id:10}},base:{ref:'main',sha:'0'.repeat(40),repo:{id:10,full_name:'fixture/merge'}}});
 const commit=()=>({sha:M,tree:{sha:T},parents:[{sha:B},{sha:H}],message:'tongxu: receive PR #4\n\n'+mergePayload(binding).commit_message});
 const result=()=>({pr:wire(pr(true)),commit:wire(commit()),targetBefore:ref(M),targetAfter:ref(M),expectedActorId:12});
+test('shared publisher policy is explicit and strictly shaped without changing legacy canonical bytes',()=>{
+  const p:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:binding.repository,repositoryId:10,targets:['main'],actorId:12,executable:'/explicit-fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000};
+  const raw=Buffer.from(canonical(p)),before=hash(raw),parsed=parseMergeProfile(raw);
+  assert.deepEqual(parsed,p);assert.equal(hash(canonical(parsed)),before);assert.equal(Object.hasOwn(parsed,'sharedAccountPublisher'),false);
+  const policy={decisionReference:{kind:'recorded_user_decision',sha256:'b'.repeat(64)}};
+  assert.deepEqual(parseMergeProfile(Buffer.from(JSON.stringify({...p,sharedAccountPublisher:policy}))),{...p,sharedAccountPublisher:policy});
+  for(const invalid of [null,true,{}, {decisionReference:'comment'}, {decisionReference:{kind:'unknown',sha256:'b'.repeat(64)}},{decisionReference:{kind:'recorded_user_decision',sha256:'B'.repeat(64)}},{decisionReference:{kind:'recorded_user_decision',sha256:'b'.repeat(63)}},{decisionReference:{kind:'recorded_user_decision',sha256:'b'.repeat(64),verified:true}},{...policy,approved:true}])assert.throws(()=>parseMergeProfile(Buffer.from(JSON.stringify({...p,sharedAccountPublisher:invalid}))),/managed_publisher_shared_account_policy_invalid/);
+});
 test('administration proof is one fixed read and credential declarations only narrow its supported use',()=>{
   const p:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:binding.repository,repositoryId:10,targets:['main'],actorId:12,executable:'/explicit-fixture/publisher',executableSha256:'a'.repeat(64),executionKind:'fixture',timeoutMs:1000};
   assert.deepEqual(parseMergeProfile(Buffer.from(JSON.stringify(p))),p);

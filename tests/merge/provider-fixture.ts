@@ -9,19 +9,19 @@ import type { MergeProfile } from '../../src/merge-provider.js';
 
 /** Real child process + HTTP requests to an explicit local fake provider.
  * No supplier, GitHub mutation, credential or real merge. */
-export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind']){
+export async function publisherFixture(t:test.TestContext,b:ManagedMergeBinding,initialMode='normal',actualFixtureMerge?:()=>Promise<string>,credentialKind?:MergeProfile['credentialKind'],actorId=33,prAuthorId=44){
   const root=await mkdtemp(join(await realpath(tmpdir()),'tongxu-merge-http-fixture-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const requests:Array<{method:string;path:string;body:string;headers:Record<string,unknown>}>=[];
   const overrides=new Map<string,{value:unknown;status:number;nextPage:boolean}>();
   let mode=initialMode,merged=false,merges=0,actualBase=b.B,actualTree=b.T,target=b.targetRef;
   let M='d'.repeat(40);const later='e'.repeat(40),repoRoot=`/repos/${b.repository}`;
-  const pr=()=>({number:b.pr,state:merged?'closed':'open',draft:mode==='draft',merged,mergeable:true,mergeable_state:'clean',merge_commit_sha:merged?M:null,merged_by:merged?{id:33}:null,user:{id:44},head:{sha:mode==='head-changed'?later:b.H,repo:{id:b.repositoryId}},base:{sha:'0'.repeat(40),ref:target,repo:{id:b.repositoryId,full_name:b.repository}}});
+  const pr=()=>({number:b.pr,state:merged?'closed':'open',draft:mode==='draft',merged,mergeable:true,mergeable_state:'clean',merge_commit_sha:merged?M:null,merged_by:merged?{id:actorId}:null,user:{id:prAuthorId},head:{sha:mode==='head-changed'?later:b.H,repo:{id:b.repositoryId}},base:{sha:'0'.repeat(40),ref:target,repo:{id:b.repositoryId,full_name:b.repository}}});
   const server=createServer(async(req,res)=>{
     let body='';for await(const chunk of req)body+=chunk.toString();const path=req.url!;requests.push({method:req.method!,path,body,headers:req.headers});
     let status=200,value:any,headers:Record<string,string>={};
     const override=req.method==='GET'||req.method==='POST'&&path==='/graphql'?overrides.get(path):undefined;
     if(override){status=override.status;value=override.value;if(override.nextPage)headers.link='<http://127.0.0.1/explicit-fixture-next>; rel="next"';}
-    else if(path==='/capabilities')value={kind:'capabilities',credentialState:mode==='credential-missing'?'unavailable':'available',actorId:33,identity:'fixture',repositoryIds:[b.repositoryId],targetRefs:[b.targetRef],merge:true,bypass:false,synchronousHeadCondition:true,sourceReference:'explicit-local-fixture-identity'};
+    else if(path==='/capabilities')value={kind:'capabilities',credentialState:mode==='credential-missing'?'unavailable':'available',actorId,identity:'fixture',repositoryIds:[b.repositoryId],targetRefs:[b.targetRef],merge:true,bypass:false,synchronousHeadCondition:true,sourceReference:'explicit-local-fixture-identity'};
     else if(req.method==='PUT'&&path===`${repoRoot}/pulls/${b.pr}/merge`){
       if(mode==='refused'){status=409;value={message:'explicit fixture head precondition refusal',merged:false};}
       else{
@@ -55,6 +55,6 @@ let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',async()=>
 if(c.command==='capabilities'){result=await (await fetch(${JSON.stringify(origin+'/capabilities')})).json();}else{const q=mergeHttpRequest(c),r=await fetch(${JSON.stringify(origin)}+q.path,{method:q.method,...(q.body?{body:q.body}:{}),redirect:'error'});result={kind:'http',status:r.status,body:await r.text(),nextPage:Boolean(r.headers.get('link')?.includes('rel="next"'))};}
 console.log(JSON.stringify({protocol:c.protocol,inputSha256:hash(canonical(c)),result}));}catch(e){console.error('explicit fixture transport failed');process.exitCode=1;}});`;
   await writeFile(executable,source,{mode:0o700});
-  const profile:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:b.repository,repositoryId:b.repositoryId,targets:[b.targetRef],actorId:33,executable,executableSha256:hash(source),executionKind:'fixture',timeoutMs:5000,...(credentialKind?{credentialKind}:{})};
+  const profile:MergeProfile={schemaVersion:1,kind:'tongxu-managed-publisher',repository:b.repository,repositoryId:b.repositoryId,targets:[b.targetRef],actorId,executable,executableSha256:hash(source),executionKind:'fixture',timeoutMs:5000,...(credentialKind?{credentialKind}:{})};
   return {root,profile,requests,state:()=>({mode,merged,merges,actualBase,actualTree,target,M}),setMode:(value:string)=>{mode=value;},setReply:(path:string,value:unknown,status=200,nextPage=false)=>overrides.set(path,{value,status,nextPage}),env:async()=>JSON.parse((await readFile(envPath)).toString())};
 }

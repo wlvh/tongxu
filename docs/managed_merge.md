@@ -1,5 +1,30 @@
 > 当前外部依赖规则：[最低要求与实际能力](runtime_compatibility.md)。旧程序摘要和版本路径只作历史来源；兼容升级按当前能力核查，已发送操作及权限仍按原记录处理。下文历史验证记录不改写。
 
+## 共享发布账号
+
+按Issue #10维护者2026-11-10的明确决定，本人、开发执行和发布可以使用同一GitHub账号。发布账号表示GitHub实际记录的账号，不证明背后操作人分离。另建账号、机器人或GitHub App不再是本轮前置。技术角色的隔离审阅继续沿原流程。
+
+部署者在新的固定`MergeProfile`中登记已给出的模式决定：
+
+```json
+{
+  "sharedAccountPublisher": {
+    "decisionReference": {
+      "kind": "recorded_user_decision",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+```
+
+示例摘要只说明格式，实际使用所保留准确决定的SHA256。该字段严格校验，publisher的`actorId`须与Owner或executor之一重合。省略字段保留旧不同账号检查及原字节／摘要，旧固定profile不静默迁移；已发送操作继续沿原捕获处理。已有Owner与executor同账号的配置仍使用`sharedAccountApproval`核原来源，两项配置分别声明其实际角色。
+
+共享external程序在原能力回执中返回`identity:account_publisher`，旧external为`isolated_publisher`，明确样例仍为`fixture`；错模式、错实际actor、仓库／目标或能力不足均在原preflight阻断发送。原协议不增字段。共享状态追加`publisherAccount`，`configuredActorId`表示配置的预期账号，实际账号证据保存在能力回执并须匹配；`operatorSeparationProven:false`与模式决定引用`registered_not_rechecked`明确说明保证范围。配置与字符串都不能替代实际认证或具体动作的批准。
+
+本次软件适配复用原Owner准确提案来源、权限／资源、停止、唯一写者、服务器规则、发送登记与未知查回。安装者明确指定的现有gh登录来源可用于后续受限发布程序；队列进程仍不向它继承个人凭据环境。该实际程序尚待另行接入和真实验证，本批没有新增gh transport、凭据类别或修改classic404权限证明。当前服务器零票数规则继续有效；CodeOwner／指定审核方强制票数在以后明确选用时按GitHub真实批准规则核准。
+
+以下历史文字中强制账号分离的要求由本节替代。原件与已完成结果仍属于当时配置。
+
 ## 指定审核方的有效批准
 
 <!-- capability-anchor: CAPABILITY.designated_reviewer_merge -->
@@ -58,7 +83,7 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 每次以固定 argv `--tongxu-managed-merge-v1` 启动它，stdin 为一个 MergeCommand，stdout 必须是一个绑定输入摘要的 MergeReply。协议类型及固定 HTTP 路径生成见 `src/merge-provider.ts`。只有 capabilities、有限 read 和固定 head 的同步 merge；不接受任意 URL、shell、目标改写、bypass 或异步 merge queue。程序仅继承固定 PATH/LANG 和私有临时目录；不继承 HOME、个人 gh、SSH agent 或 API token 环境。配置的受管程序通过自己的已核入口取得身份，缺失就失败，不回退个人身份。
 
-能力回答必须来自实际启动和完整捕获，绑定准确仓库、目标、独立 actor 和同步 head 条件。序列化 JSON 或模型报告无法导入为这次能力证明。这里仍以**固定受管程序及其部署**为信任边界：它必须如实报告并实施自己的身份、权限和无绕过行为，字符串 `isolated_publisher` 本身不构成外部身份认证。测试只安装明确 fixture 程序，真正访问本地 HTTP 假服务，未据此宣称实际 GitHub 身份已核。
+能力回答必须来自实际启动和完整捕获，绑定准确仓库、目标、配置模式对应的实际actor和同步head条件。序列化 JSON 或模型报告无法导入为这次能力证明。这里仍以**固定受管程序及其部署**为信任边界：它必须如实报告并实施自己的身份、权限和无绕过行为，字符串 `isolated_publisher` 本身不构成外部身份认证。测试只安装明确 fixture 程序，真正访问本地 HTTP 假服务，未据此宣称实际 GitHub 身份已核。
 
 规则集独立生效而没有旧版（classic）保护时，部署方可在原格式1配置中登记可选 `credentialKind`，仅支持 `github_app_installation`、`github_app_user`、`fine_grained_pat`。这表示部署方已经核实实际凭据类别，并保证同次核查的所有请求使用同一凭据；配置声明不能单独证明身份或权限。传统 OAuth/classic token 或未核实类别不能使用下面的跨接口证明。无此字段的旧配置仍可解析、仍可使用正常 classic200 路径，不静默推断其凭据类别。
 
@@ -70,7 +95,7 @@ node dist/src/merge-cli.js reconcile --store /absolute/private/queue --operation
 
 保护接口的通用404仍不能当作“没有保护”。只有本次分支 `protected=true`、唯一完整非分页 classic404 对象的 `message` 精确为 `Branch not protected`，并且原部署明确登记上述受支持凭据类别时，才追加同仓库固定 `GET /repos/{owner}/{repo}/actions/permissions`。该接口对这些凭据要求 Administration repository read；本次同一发布程序、同一候选和同一凭据取得唯一完整非分页200对象，且 `enabled` 是布尔值，才能把前一份404解释为没有classic保护。`enabled=false` 也有效，不需要开启 Actions。传统OAuth/classic的repo scope返回200不用于这项管理权限推论。
 
-这一保守文案白名单不是GitHub永久返回格式承诺，变化或未知继续拒绝。缺失、403、未知404、错误JSON/字段、重复、错候选及分页均不能完成证明；classic200不请求新增端点。证明只消除classic缺项，有效规则完整性、PR/检查/批准、当前H/B/目标、原Owner/资源/停止和无绕过条件仍全部生效；规则读取并非原子快照。固定发布程序及其部署必须真实保持凭据不切换，程序没有因接口响应而取得新的凭据或合并权。真实独立发布程序尚未装配时仍不可用，不能借个人gh的调查结果替代。
+这一保守文案白名单不是GitHub永久返回格式承诺，变化或未知继续拒绝。缺失、403、未知404、错误JSON/字段、重复、错候选及分页均不能完成证明；classic200不请求新增端点。证明只消除classic缺项，有效规则完整性、PR/检查/批准、当前H/B/目标、原Owner/资源/停止和无绕过条件仍全部生效；规则读取并非原子快照。固定发布程序及其部署必须真实保持凭据不切换，程序没有因接口响应而取得新的凭据或合并权。受限发布程序尚未装配时该动作仍不可用，现有gh只读调查不能替代受管发送和真实结果证据。
 
 完整 provider 原字节逐份保存为 blob；preflight/readback 索引仅保留摘要、字节数、请求、捕获位置和时间，不把 Buffer 展成逐字节 JSON。原大页不截断、不降低既定页数/单响应上限。实际版本补验材料从准确原引用读取完整 UTF-8 回执，保留来源而不复制数字键表示。
 
