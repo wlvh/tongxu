@@ -65,7 +65,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | 固定 PR 原件 | 非法 scope 不调用外部工具；候选变动保留缺口；恢复不覆盖旧页 | `tests/w1/cli.test.ts`、`tests/w1/collection.test.ts`；见 test:mac |
 | 完整结果与旧原件 | 截断、错误身份或矛盾回执不能成为成功；旧日志按原格式读取 | `tests/w4/codex-results.test.ts`、`tests/w4/native.test.ts`；见 test:native |
 | 项目补充与原实施 | A运行时收件，成功H1/资源后以新上下文消费并回原会话；取消/停止不续写，冷重开零输入 | `tests/project-repair/integration.test.ts` 新补充场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
-| 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
+| 项目入口及秘书 | 切账号、错项目、重复请求、超时与损坏原件应明确拒绝/保留未知；历史读取无新输入；24次工具预算随输入/观察核验并可用尽后作答，第25次继续拒绝且不重发；22条观察选1或8条最终引用完成，空/9条/非法ID/错候选拒绝，实际项目输出格式及角色隔离、旧通用格式冷读与未知格式拒绝 | `tests/w7/github-projects.test.ts`、`tests/w7/project-chat.test.ts`；见 test:workbench |
 | 秘书办理已审定工作 | 实际受限工具调用、完整origin输入、H1/同源报告、新聊天准确责任复用、并发登记、普通模式/参数拒绝、错来源、取消登记竞争/登记后关联保存中断、忙席位、旧取消项不改绑、同名目标/origin不符的读控拒绝、晚取消拒绝后的持续回流及冷重开零输入 | `tests/project-repair/integration.test.ts` 的 secretary work 场景（真实Docker、协议模型），`tests/w7/project-chat-ui.test.ts` |
 | 来源变化到正常接收 | 原项目任务页补查零模型；新材料使用新 operation 的权限/资源，重复/来源失效/停止不重发，原报告不改写；同项目拒绝经刷新仍可见，停止后从原按钮零输入查回同操作 | `tests/events/normal-entry.test.ts`、`tests/w3/receiver-authority.test.ts`；页面同项目失败/跨项目迟到回复和停止准入见 `tests/w7/github-projects-ui.test.ts`，两组复用原页面 fixture |
 | 可选 Kimi 技术接收 | 正常项目设置到新 packet 固定选择、完整原件/真实程序信息、原队列写入事务、费用适用、完整无效判断纠正、已固定未发计划及403原请求遇到新设置失效仍零重发 | `tests/w3/receiver-kimi.test.ts` 复用原 receiver/治理、normal-entry 和 ACP fixture；真实本地Git/HTTP/SQLite/子进程，模型、Owner和账本为明确协议样例。真实Kimi正常路径另记；共享ACP还回归 `tests/w5/formal-kimi.test.ts` 及原消息/角色设置消费者 |
