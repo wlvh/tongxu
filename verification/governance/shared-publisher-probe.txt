@@ -1,0 +1,9 @@
+Tongxu Issue10 shared-account managed publisher validation
+
+This marker is the fixed candidate for the existing dedicated governance
+branch and its pull-request, deletion and non-fast-forward rules.
+The registered merge must use its original accepted reception operation,
+exact Owner permission, current GitHub rules and bounded gh publisher.
+
+Target branch validation/governance10-20261110-base
+Baseline commit 6287f619a8932ebf6fd8eac2d219afca8d1537a3
