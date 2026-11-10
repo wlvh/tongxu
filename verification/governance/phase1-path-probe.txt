@@ -1,0 +1,9 @@
+Tongxu Issue10 phase1 governance validation
+
+This text marker provides a reviewable one-file candidate for a dedicated
+validation branch. The test records whether GitHub requires a pull request
+and enforces the selected branch deletion and non-fast-forward rules.
+
+Baseline commit 8a059aafda23ef36b4a082cce538e288dba9d6a3
+Target branch validation/governance10-20261110-base
+Candidate branch validation/governance10-20261110-candidate
