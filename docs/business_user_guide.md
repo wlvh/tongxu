@@ -19,7 +19,7 @@
 | 登记/联系原任务与阶段协调 | `tasks`、`messages`、`coordination` 的 package 脚本及工作台已登记入口；[task_intake](task_intake.md)、[task_contact_choice](task_contact_choice.md)、[task_coordination](task_coordination.md)。 |
 | 从已配置项目推进条件交付 | `npm run conditional-entry -- ACTION --entry ABS_ENTRY`；配置、组合、材料更新与原 RETURN 处理见[条件交付入口](conditional_delivery_entry.md)。 |
 | 来源补查后独立接收 | 选择项目 → 原任务 → “来源补查与独立技术接收”；[source_reception_entry](source_reception_entry.md)。新接收可在AI设置选择已检测的Claude或Kimi；安装者须先固定候选、来源、接收权限、资源及相应费用证据，真实使用结果另核。 |
-| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；影响核实默认 Claude，可在项目 AI 设置选已检测 Kimi 后用于新请求；有界真实 Codex/Kimi 外层链已验证，生产独立发布配置与本人接受仍待核。 |
+| 单张 PR 的正式完整审核 | 任务页“正式 PR 审核”；[formal_pr_review](formal_pr_review.md)。完整审核、批次验证、原会话修复、实际发布和新候选完整复审分别可见；影响核实默认 Claude，可在项目 AI 设置选已检测 Kimi 后用于新请求；有界真实 Codex/Kimi 外层链已验证，生产受限发布配置与本人接受仍待核。 |
 | 接收、退回、修复或集成 | [native_reception](native_reception.md)、[return_workbench](return_workbench.md)、[controlled_repair](controlled_repair.md)、[minimal_integration](minimal_integration.md)、[managed_workspace_handoff](managed_workspace_handoff.md)；按各规范的专用 CLI/计划进入。 |
 | 授权、停止、发布、合入与成果 | [owner_authority](owner_authority.md)、[scope_controls](scope_controls.md)、[result_publication](result_publication.md)、[managed_merge](managed_merge.md)、[delivery_outcomes](delivery_outcomes.md)、[delivery_assessment](delivery_assessment.md)；需要各自配置和权限。 |
 | 指定个人或团队审核后合并 | 安装者配置的原受管合并入口，参见 [指定审核方说明](managed_merge.md#指定审核方的有效批准)。程序核GitHub当前策略和原批准/权限/资源，条件满足后继续，缺项显示等待。实际规则启用按原Issue条件处理。 |
@@ -42,7 +42,7 @@
 秘书负责查询、解释和明确装配过的跟进；普通问答只读；用户明确选定本项目已审定工作时，可通过单一受限协调工具复用原实施者，完整原话与原结果关联保留。它没有通用新开发派发、业务写入、测试或合并工具。页面可为已登记任务保存补充，成功结束后的处理由原有权限与资源约束的实施消费者负责，不给秘书写权。AI 设置只决定新执行的偏好，不增加任务、文件、费用或合并权限。当前秘书使用 Codex 受限工具路径；其他程序能处理材料消息不等于支持全部角色。
 
 <!-- capability-anchor: RESPONSIBILITY.owner_decision -->
-技术判断、发布状态、实际合并和用户接受分开。本人来源或委托未配置时限制相应动作，仍可使用适用查询。 本人明确选择共享账号批准时，安装者可按[本人来源说明](owner_authority.md#显式共享账号批准)预先配置；日常仍提交准确提案的原评论链接。页面会注明同一账号、未证明操作人与执行者分离；模式决定记录仅登记引用，不能代替具体批准。旧队列不会因软件升级自动切换。未完成的广泛验收沿 [PRODUCT_GUIDE 原记录入口](PRODUCT_GUIDE.md#unfinished-work)查证，页面可用不表示全部完成。
+技术判断、发布状态、实际合并和用户接受分开。本人来源或委托未配置时限制相应动作，仍可使用适用查询。 本人明确选择共享账号批准时，安装者可按[本人来源说明](owner_authority.md#显式共享账号批准)预先配置；日常仍提交准确提案的原评论链接。页面会注明同一账号、未证明操作人与执行者分离；模式决定记录仅登记引用，不能代替具体批准。发布者也可按[共享发布账号说明](managed_merge.md#共享发布账号)在新固定配置中使用同一账号，仍核实际账号、准确批准及原执行门；当前受限发布程序的真实接入另记。旧队列不会因软件升级自动切换。未完成的广泛验收沿 [PRODUCT_GUIDE 原记录入口](PRODUCT_GUIDE.md#unfinished-work)查证，页面可用不表示全部完成。
 
 ## 4. Context to Provide
 

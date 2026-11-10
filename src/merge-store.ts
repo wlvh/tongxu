@@ -4,7 +4,7 @@ import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { now } from './contract.js';
 import { parseMergeBinding, mergeBindingHash, inspectMergeResponse, type ManagedMergeBinding } from './merge-contract.js';
-import { parseMergeProfile, mergeCommand, mergeWire, requireMergeObservation, type MergeProfile, type MergeObservation } from './merge-provider.js';
+import { parseMergeProfile, mergeCommand, mergeWire, requireMergeObservation, sharedPublisherProjection, type MergeProfile, type MergeObservation } from './merge-provider.js';
 import { requireMergePreflight, type MergePreflight, type MergeReadRecord } from './merge-preflight.js';
 import { requireMergeReadback, type MergeReadback } from './merge-readback.js';
 import { requireMergeControllerProof, type MergeControllerProof, type MergeDispatchReference } from './merge-recovery.js';
@@ -50,13 +50,16 @@ export class MergeRecords {
   private profile():MergeProfile{this.mode();const ref=(this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row)?.value;if(!ref)throw new Error('managed_publisher_not_configured');return parseMergeProfile(this.bytes(ref));}
   configure(raw:Buffer){return this.transaction(()=>{
     const p=parseMergeProfile(raw),ref=hash(canonical(p)),old=this.db.prepare('SELECT value FROM meta WHERE key=?').get(profileKey) as Row;
-    if(old){this.mode();if(old.value!==ref)throw new Error('managed_publisher_profile_is_fixed');return {duplicate:true,profileSha256:ref,credentialVerified:false};}
+    if(old){this.mode();if(old.value!==ref)throw new Error('managed_publisher_profile_is_fixed');return {duplicate:true,profileSha256:ref,credentialVerified:false,...sharedPublisherProjection(p)};}
     if(![13,15,16].includes(queueFeatureVersion(this.db)))throw new Error('original_authority_and_resources_required');
     const authorityRef=(this.db.prepare("SELECT value FROM meta WHERE key='owner_authority_profile'").get() as Row)?.value,owner=authorityRef&&JSON.parse(this.bytes(authorityRef).toString());
-    if(!owner||owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture')||[owner.ownerId,owner.executorId].includes(p.actorId))throw new Error('separate_managed_publisher_identity_required');
+    if(!owner||owner.repository.toLowerCase()!==p.repository.toLowerCase()||(owner.executionKind==='fixture')!==(p.executionKind==='fixture'))throw new Error('managed_publisher_owner_configuration_mismatch');
+    const shared=[owner.ownerId,owner.executorId].includes(p.actorId);
+    if(shared&&!p.sharedAccountPublisher)throw new Error('separate_managed_publisher_identity_required');
+    if(!shared&&p.sharedAccountPublisher)throw new Error('shared_publisher_account_must_match_owner_or_executor');
     if((this.db.prepare('SELECT COUNT(*) AS n FROM claims').get() as Row).n||(this.db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status!='complete'").get() as Row).n)throw new Error('queue_has_active_or_unknown_operation');
     this.blob(raw);this.blob(Buffer.from(canonical(p)));this.db.prepare('INSERT INTO meta VALUES(?,?)').run(profileKey,ref);this.db.exec(claimGuard+';'+recordGuard+';');if(queueFeatureVersion(this.db)<14)setQueueFeatureVersion(this.db,14);
-    this.event('configured','profile',{profileSha256:ref,executionKind:p.executionKind,credentialVerified:false});return {duplicate:false,profileSha256:ref,credentialVerified:false};
+    this.event('configured','profile',{profileSha256:ref,executionKind:p.executionKind,credentialVerified:false});return {duplicate:false,profileSha256:ref,credentialVerified:false,...sharedPublisherProjection(p)};
   });}
   configuration(){return this.transaction(()=>this.profile());}
   private original(id:string){
@@ -69,7 +72,7 @@ export class MergeRecords {
     if(stage.readback&&canonical(JSON.parse(this.bytes(stage.readback.sha256).toString()).result)!==canonical(stage.readback.result))throw new Error('managed_merge_readback_metadata_changed');
     return {op,result,stage,plan,binding};
   }
-  private view(id:string){const x=this.original(id);return {operation:id,status:x.op.status,binding:x.binding,resources:x.plan.resources,merge:x.stage,executionKind:this.profile().executionKind,duplicate:false,automaticResend:false,automaticRollback:false,productionActionAllowed:false};}
+  private view(id:string){const x=this.original(id),p=this.profile();return {operation:id,status:x.op.status,binding:x.binding,resources:x.plan.resources,merge:x.stage,executionKind:p.executionKind,...sharedPublisherProjection(p),duplicate:false,automaticResend:false,automaticRollback:false,productionActionAllowed:false};}
   status(id:string){return this.transaction(()=>this.view(id));}
   private current(b:ManagedMergeBinding,observations:OwnerObservation[]){
     const a=this.authority(b.authorityIntent,observations),s=this.source(b.receptionOperation,true),j=s.receiver.judgment,c=s.candidate;

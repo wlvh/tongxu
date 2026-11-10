@@ -54,7 +54,7 @@ node dist/src/authority-cli.js status --store ABS_QUEUE
 
 状态、历史决定和成果仅从已绑定的profile派生共享标记，不修改`OwnerObservation`、旧source或事件原件。共享时`ownerDistinctFromExecutor`仍为false，`ownerSourceIdentityAllowed`只表示账号策略允许继续核来源；`operatorSeparationProven`为false。模式决定引用显示`registered_not_rechecked`，即只登记、此处未复验。Owner/关联控制和成果接受页面同时说明“同一GitHub账号，未证明实际操作人与执行者分离”。`userOutcomeAccepted`仍可表示该模式下准确GitHub来源的接受记录，不能解释为独立人证据。
 
-此选项不改变独立publisher身份及凭据边界、GitHub自批规则、服务器保护、费用或资源；不会启用新消费者、切换安装或更改旧请求。共享账号的发布程序不是本项批准范围。
+Owner共享配置保留原凭据、GitHub有效批准、服务器保护、费用和资源检查。按Issue #10维护者2026-11-10的新决定，发布账号也可共享；该模式由[受管合并](managed_merge.md#共享发布账号)的`sharedAccountPublisher`独立登记，旧配置和旧请求不自动切换。模式决定不代替准确动作的本人批准。
 
 ## 可表达的决定
 

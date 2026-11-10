@@ -10,7 +10,7 @@ import { regular } from './repair-workspace.js';
 import { parseMergeBinding, mergePayload, type ManagedMergeBinding, type MergeWire } from './merge-contract.js';
 
 /** This is trusted deployment configuration, never supplied by a model report.
- * The separately installed publisher owns its scoped credential. The queue
+ * The configured publisher owns its verified credential source. The queue
  * process sends no token, HOME, SSH agent, gh config or API-key environment. */
 export type MergeProfile = {
   schemaVersion: 1; kind: 'tongxu-managed-publisher'; repository: string;
@@ -20,6 +20,8 @@ export type MergeProfile = {
   /** Deployment-verified credential class, not a permission or identity proof.
    * Omitted legacy profiles cannot prove classic absence through another API. */
   credentialKind?: 'github_app_installation' | 'github_app_user' | 'fine_grained_pat';
+  /** Explicit deployment choice, not an action grant or identity proof. */
+  sharedAccountPublisher?: {decisionReference:{kind:'recorded_user_decision';sha256:string}};
 };
 export type MergeRead = { kind: 'repository' | 'pr' | 'target' | 'branch' | 'protection' | 'administration' | 'rules' | 'checks' | 'statuses' | 'reviews' | 'reviewer' | 'review_policy' | 'commit' | 'comparison'; page: number; commit: string | null; tip: string | null; reviewer?:string };
 export type MergeCommand = {
@@ -30,7 +32,7 @@ export type MergeReply = {
   protocol: 'tongxu-managed-merge-v1'; inputSha256: string;
   result: { kind: 'http'; status: number; body: string; nextPage: boolean } |
     { kind: 'capabilities'; credentialState: 'available' | 'unavailable' | 'unknown';
-      actorId: number | null; identity: 'isolated_publisher' | 'fixture' | 'unknown';
+      actorId: number | null; identity: 'isolated_publisher' | 'account_publisher' | 'fixture' | 'unknown';
       repositoryIds: number[]; targetRefs: string[]; merge: boolean; bypass: false;
       synchronousHeadCondition: boolean; sourceReference: string | null };
 };
@@ -39,9 +41,16 @@ const observations = new WeakSet<object>();
 
 export function parseMergeProfile(raw: Buffer): MergeProfile {
   const p = JSON.parse(new TextDecoder('utf8', { fatal: true }).decode(raw));
-  if (!exactKeys(p, ['schemaVersion','kind','repository','repositoryId','targets','actorId','executable','executableSha256','executionKind','timeoutMs',...(p?.credentialKind!==undefined?['credentialKind']:[])]) || p.schemaVersion !== 1 || p.kind !== 'tongxu-managed-publisher' || typeof p.repository !== 'string' || !repoPattern.test(p.repository) || ![p.repositoryId,p.actorId].every(n=>Number.isSafeInteger(n)&&n>0) || !Array.isArray(p.targets) || !p.targets.length || p.targets.length > 8 || new Set(p.targets).size !== p.targets.length || !p.targets.every(validBranchRef) || typeof p.executable !== 'string' || !isAbsolute(p.executable) || resolve(p.executable) !== p.executable || !isAuthorityDigest(p.executableSha256) || !['fixture','external'].includes(p.executionKind) || !Number.isSafeInteger(p.timeoutMs) || p.timeoutMs < 100 || p.timeoutMs > 60000 || p.credentialKind!==undefined&&!['github_app_installation','github_app_user','fine_grained_pat'].includes(p.credentialKind)) throw new Error('managed_publisher_profile_invalid');
+  if (!exactKeys(p, ['schemaVersion','kind','repository','repositoryId','targets','actorId','executable','executableSha256','executionKind','timeoutMs',...(p?.credentialKind!==undefined?['credentialKind']:[]),...(p&&Object.hasOwn(p,'sharedAccountPublisher')?['sharedAccountPublisher']:[])]) || p.schemaVersion !== 1 || p.kind !== 'tongxu-managed-publisher' || typeof p.repository !== 'string' || !repoPattern.test(p.repository) || ![p.repositoryId,p.actorId].every(n=>Number.isSafeInteger(n)&&n>0) || !Array.isArray(p.targets) || !p.targets.length || p.targets.length > 8 || new Set(p.targets).size !== p.targets.length || !p.targets.every(validBranchRef) || typeof p.executable !== 'string' || !isAbsolute(p.executable) || resolve(p.executable) !== p.executable || !isAuthorityDigest(p.executableSha256) || !['fixture','external'].includes(p.executionKind) || !Number.isSafeInteger(p.timeoutMs) || p.timeoutMs < 100 || p.timeoutMs > 60000 || p.credentialKind!==undefined&&!['github_app_installation','github_app_user','fine_grained_pat'].includes(p.credentialKind)) throw new Error('managed_publisher_profile_invalid');
+  if(Object.hasOwn(p,'sharedAccountPublisher')&&(!exactKeys(p.sharedAccountPublisher,['decisionReference'])||!exactKeys(p.sharedAccountPublisher.decisionReference,['kind','sha256'])||p.sharedAccountPublisher.decisionReference.kind!=='recorded_user_decision'||!isAuthorityDigest(p.sharedAccountPublisher.decisionReference.sha256)))throw new Error('managed_publisher_shared_account_policy_invalid');
   return p;
 }
+/** Only new shared profiles add a projection. The current actor remains in the
+ * original capability observation; this configured ID is not authentication. */
+export function sharedPublisherProjection(p:MergeProfile){
+  return p.sharedAccountPublisher?{publisherAccount:{mode:'shared_account' as const,configuredActorId:p.actorId,operatorSeparationProven:false as const,decisionReference:{...p.sharedAccountPublisher.decisionReference,verification:'registered_not_rechecked' as const}}}:{};
+}
+export const mergePublisherIdentity=(p:MergeProfile)=>p.executionKind==='fixture'?'fixture':p.sharedAccountPublisher?'account_publisher':'isolated_publisher';
 export function parseMergeCommand(c: MergeCommand, p: MergeProfile): MergeCommand {
   if (!exactKeys(c, ['protocol','command','binding','read']) || c.protocol !== 'tongxu-managed-merge-v1' || !['capabilities','read','merge'].includes(c.command)) throw new Error('managed_merge_command_invalid');
   const b = parseMergeBinding(c.binding);
@@ -97,7 +106,7 @@ function parseReply(raw: Buffer, p: MergeProfile, c: MergeCommand): MergeReply {
   if (!exactKeys(x,['protocol','inputSha256','result']) || x.protocol !== c.protocol || x.inputSha256 !== hash(canonical(c))) throw new Error('managed_publisher_reply_binding_mismatch');
   const r = x.result;
   if (c.command === 'capabilities') {
-    if (!exactKeys(r,['kind','credentialState','actorId','identity','repositoryIds','targetRefs','merge','bypass','synchronousHeadCondition','sourceReference']) || r.kind !== 'capabilities' || !['available','unavailable','unknown'].includes(r.credentialState) || !(r.actorId === null || Number.isSafeInteger(r.actorId)&&r.actorId>0) || !['isolated_publisher','fixture','unknown'].includes(r.identity) || !Array.isArray(r.repositoryIds) || r.repositoryIds.length > 32 || !r.repositoryIds.every((n:unknown)=>Number.isSafeInteger(n)&&(n as number)>0) || !Array.isArray(r.targetRefs) || r.targetRefs.length > 32 || !r.targetRefs.every(validBranchRef) || typeof r.merge !== 'boolean' || r.bypass !== false || typeof r.synchronousHeadCondition !== 'boolean' || !(r.sourceReference === null || typeof r.sourceReference === 'string' && r.sourceReference.length > 0 && r.sourceReference.length <= 256)) throw new Error('managed_publisher_capability_invalid');
+    if (!exactKeys(r,['kind','credentialState','actorId','identity','repositoryIds','targetRefs','merge','bypass','synchronousHeadCondition','sourceReference']) || r.kind !== 'capabilities' || !['available','unavailable','unknown'].includes(r.credentialState) || !(r.actorId === null || Number.isSafeInteger(r.actorId)&&r.actorId>0) || !['isolated_publisher','account_publisher','fixture','unknown'].includes(r.identity) || !Array.isArray(r.repositoryIds) || r.repositoryIds.length > 32 || !r.repositoryIds.every((n:unknown)=>Number.isSafeInteger(n)&&(n as number)>0) || !Array.isArray(r.targetRefs) || r.targetRefs.length > 32 || !r.targetRefs.every(validBranchRef) || typeof r.merge !== 'boolean' || r.bypass !== false || typeof r.synchronousHeadCondition !== 'boolean' || !(r.sourceReference === null || typeof r.sourceReference === 'string' && r.sourceReference.length > 0 && r.sourceReference.length <= 256)) throw new Error('managed_publisher_capability_invalid');
     if (p.executionKind === 'external' && r.identity === 'fixture') throw new Error('fixture_publisher_cannot_be_external');
   } else if (!exactKeys(r,['kind','status','body','nextPage']) || r.kind !== 'http' || !Number.isSafeInteger(r.status) || r.status < 100 || r.status > 599 || typeof r.body !== 'string' || typeof r.nextPage !== 'boolean' || c.command === 'merge' && r.nextPage) throw new Error('managed_publisher_http_reply_invalid');
   return x;
