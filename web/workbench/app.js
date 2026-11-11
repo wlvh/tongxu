@@ -594,14 +594,35 @@ const githubView=()=>view==='projects'||view==='github';
 function githubLink(label,url){const a=el('a',label,'github-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
 async function githubApi(path){const response=await fetch(path,{headers:{Authorization:'Bearer '+key},cache:'no-store'}),value=await response.json();if(!response.ok){const e=new Error(value.error||'github_service_unavailable');e.retryAfterSeconds=value.retryAfterSeconds;throw e;}return value;}
 function dismissGithubDetail(){if(githubDetailEpoch!==null){githubDetailEpoch=null;reportNonce++;if($('report-dialog').open)$('report-dialog').close();}}
-function resetGithubIdentity(error){clearProjectView();gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.nextCursor=null;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
+// Session storage is an origin/tab-local navigation hint, never access proof.
+const workbenchPositionKey='tongxu-workbench-position';
+function validWorkbenchPosition(p){
+  return !!p&&typeof p==='object'&&!Array.isArray(p)
+    &&Number.isSafeInteger(p.accountId)&&p.accountId>0
+    &&Number.isSafeInteger(p.repositoryId)&&p.repositoryId>0
+    &&typeof p.repositoryNodeId==='string'&&p.repositoryNodeId.length>0
+    &&typeof p.repositoryFullName==='string'&&/^[\w.-]+\/[\w.-]+$/.test(p.repositoryFullName)
+    &&(p.conversationId===null||typeof p.conversationId==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.conversationId));
+}
+function forgetWorkbenchPosition(){try{sessionStorage.removeItem(workbenchPositionKey);}catch{}}
+function readWorkbenchPosition(){
+  try{const raw=sessionStorage.getItem(workbenchPositionKey);if(raw===null)return null;const p=JSON.parse(raw);if(validWorkbenchPosition(p))return p;}catch{}
+  forgetWorkbenchPosition();return null;
+}
+function rememberWorkbenchPosition(conversationId=null){
+  const p={accountId:gh.account?.id,repositoryId:gh.selected?.id,repositoryNodeId:gh.selected?.nodeId,repositoryFullName:gh.selected?.fullName,conversationId};
+  if(!entryInfo?.githubProjects||!validWorkbenchPosition(p)){forgetWorkbenchPosition();return;}
+  try{sessionStorage.setItem(workbenchPositionKey,JSON.stringify(p));}catch{forgetWorkbenchPosition();}
+}
+function resetGithubIdentity(error){forgetWorkbenchPosition();clearProjectView();gh.epoch++;gh.listRequest++;gh.account=null;gh.projects=[];gh.selected=null;gh.page=0;gh.nextCursor=null;gh.hasNext=false;gh.loading=false;gh.issues=null;gh.pulls=null;gh.error=error;view='projects';}
 function handleGithubError(error){if(['github_not_signed_in','github_account_changed','github_project_not_selected','github_project_selection_changed','github_repository_unavailable'].includes(error.message)){resetGithubIdentity(error);return true;}return false;}
 async function loadGithubProjects(more=false){
-  if(gh.loading)return;const request=++gh.listRequest,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
-  try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id+'&cursor='+encodeURIComponent(gh.nextCursor):''));if(request!==gh.listRequest)return;
-    if(gh.account&&gh.account.id!==data.connection.account.id){clearProjectView();gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
+  if(gh.loading)return;const request=++gh.listRequest,epoch=gh.epoch,page=more?gh.page+1:1;gh.loading=true;gh.error=null;if(githubView())render();
+  try{const data=await githubApi('/api/github/projects?page='+page+(more?'&account='+gh.account.id+'&cursor='+encodeURIComponent(gh.nextCursor):''));if(request!==gh.listRequest||epoch!==gh.epoch)return;
+    if(gh.account&&gh.account.id!==data.connection.account.id){forgetWorkbenchPosition();clearProjectView();gh.epoch++;gh.projects=[];gh.selected=null;gh.issues=null;gh.pulls=null;view='projects';}
     gh.account=data.connection.account;gh.projects=more?[...new Map([...gh.projects,...data.repositories].map(r=>[r.id,r])).values()]:data.repositories;gh.page=page;gh.hasNext=data.hasNext;gh.nextCursor=data.nextCursor??null;gh.checkedAt=data.connection.checkedAt;
-  }catch(error){if(request!==gh.listRequest)return;if(!handleGithubError(error))gh.error=error;}
+    return {request,account:data.connection.account,repositories:data.repositories};
+  }catch(error){if(request!==gh.listRequest||epoch!==gh.epoch)return;if(!handleGithubError(error))gh.error=error;}
   finally{if(request===gh.listRequest)gh.loading=false;if(githubView())render();}
 }
 function clearProjectView(){
@@ -609,8 +630,8 @@ function clearProjectView(){
   state=null;selected=null;reportNonce++;githubDetailEpoch=null;if($('report-dialog').open)$('report-dialog').close();
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
 }
-function chooseGithubProject(repo){
-  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
+function chooseGithubProject(repo,restoreConversationId=null){
+  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};chatData().restoreConversationId=restoreConversationId;rememberWorkbenchPosition(restoreConversationId);view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
 }
 async function loadGithubItems(kind,more=false){
   const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
@@ -680,14 +701,21 @@ async function enterView(next){
   if(next==='secretary'&&entryInfo?.githubProjects){setSecretaryOpen(true);return;}
   if(next!==view&&$('report-dialog').open)$('report-dialog').close();
   if(entryInfo?.githubProjects&&next!=='projects'&&!gh.selected){view='projects';render();return;}
-  if(next==='projects'){clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
+  if(next==='projects'){forgetWorkbenchPosition();clearProjectView();gh.epoch++;gh.selected=null;gh.issues=null;gh.pulls=null;}
   if(['projects','github'].includes(next)){if(next==='github'&&!gh.selected)return;view=next;if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notify('');render();if(next==='github'&&gh.issues&&!gh.issues.page&&!gh.issues.loading){void loadGithubItems('issues');void loadGithubItems('pulls');}return;}
   view=next;if(entryInfo?.githubProjects&&next==='ai-settings'){if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}render();await loadAISettings();return;}if(!state)await refresh();else render();
 }
 async function startEntry(){
   const notify=projectNotifier();
   if(entryLoading)return;entryLoading=true;$('refresh').disabled=true;
-  try{entryInfo=await api('/api/entry');if(entryInfo.githubProjects){view='projects';render();await loadGithubProjects();}else await refresh();}
+  try{entryInfo=await api('/api/entry');if(entryInfo.githubProjects){
+    const position=readWorkbenchPosition(),epoch=gh.epoch;view='projects';render();const result=await loadGithubProjects();
+    // Only this successful, still-current first page can justify restoration.
+    // A manual project choice (or return to the picker) changes the epoch.
+    if(epoch!==gh.epoch||gh.selected)return;
+    const repo=position&&result&&result.request===gh.listRequest&&result.account.id===position.accountId?result.repositories.find(r=>r.id===position.repositoryId&&r.nodeId===position.repositoryNodeId&&r.fullName===position.repositoryFullName):null;
+    if(repo)chooseGithubProject(repo,position.conversationId);else if(position)forgetWorkbenchPosition();
+  }else await refresh();}
   catch(error){notify('无法打开当前入口。'+(error.message==='viewer_key_required'?'请使用本次启动生成的新页面。':'请检查本机服务后重试。'));$('content').replaceChildren(el('p','入口信息尚未读取。','empty'));}
   finally{entryLoading=false;$('refresh').disabled=false;}
 }
