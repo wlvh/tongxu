@@ -22,6 +22,7 @@ import {readImplementationResult,readImplementationOwnerProof,implementationOwne
 type Row=Record<string,any>;
 type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
 type ReadEntry=Pick<Entry,'id'|'repository'|'store'|'target'>;
+type HistorySource={store:string;item:string};
 type Issue={number:number;title:string;body:string;url:string};
 type Reader=(number:number)=>Promise<Issue>;
 
@@ -30,8 +31,8 @@ type Reader=(number:number)=>Promise<Issue>;
 export class IssueImplementationControls{
   private active=new Map<string,Promise<unknown>>();private accepting=true;private finished?: (target:SupplementTarget)=>Promise<void>;
   onFinished(callback:(target:SupplementTarget)=>Promise<void>){this.finished=callback;}
-  private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>){}
-  static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>){
+  private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>,private repository:string,private historySources:()=>Promise<readonly HistorySource[]>){}
+  static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>,historySources:()=>Promise<readonly HistorySource[]>=async()=>[]){
     const bytes=await regular(path,128*1024),p=JSON.parse(bytes.toString());
     if(hash(bytes)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-issue-implementation-catalog'||!Array.isArray(p.entries)||p.entries.length>8)throw new Error('implementation_catalog_invalid');
     const entries=p.entries.filter((e:Entry)=>e.repository?.toLowerCase()===repository.toLowerCase()) as Entry[];
@@ -41,21 +42,23 @@ export class IssueImplementationControls{
       for(const issue of e.approvedIssues)if(!exactKeys(issue,['number','bodySha256','adjudication','goal','acceptance'])||!Number.isSafeInteger(issue.number)||issue.number<1||!isAuthorityDigest(issue.bodySha256)||!issue.adjudication?.trim()||!issue.goal?.trim()||!Array.isArray(issue.acceptance)||!issue.acceptance.length)throw new Error('implementation_adopted_issue_required');
     }
     if(new Set(entries.map(e=>e.id)).size!==entries.length)throw new Error('implementation_duplicate_entry');
-    return new IssueImplementationControls(path,sha256,entries,read,verify);
+    return new IssueImplementationControls(path,sha256,entries,read,verify,repository,historySources);
   }
   private entry(id:string){const entry=this.entries.find(e=>e.id===id);if(!entry)throw new Error('implementation_project_not_selected');return entry;}
   private async readEntry(id:string,requestId:string){
     const current=this.entries.find(entry=>entry.id===id);
     if(current)return {entry:current,historical:false};
     await this.catalog();
+    const sources=await this.historySources();
     let selected:ReadEntry|undefined;
-    for(const store of new Set(this.entries.map(entry=>entry.store))){
+    for(const store of new Set([...this.entries.map(entry=>entry.store),...sources.map(source=>source.store)])){
       const q=await QueueStore.open(store);
       try{
         const state=q.issueImplementations().findState(id,requestId);
         if(!state)continue;
+        if(!this.entries.some(entry=>entry.store===store)&&!sources.some(source=>source.store===store&&source.item===state.task))continue;
         const request=q.issueImplementations().original(id,requestId),definition=q.tasks().definition(state.task);
-        if(!this.entries.some(entry=>entry.store===store&&entry.repository.toLowerCase()===definition.repository.toLowerCase())||request.task!==state.task||request.workspaceRequest.candidate.target!==definition.target)throw new Error('implementation_history_project_mismatch');
+        if(definition.repository.toLowerCase()!==this.repository.toLowerCase()||request.task!==state.task||request.workspaceRequest.candidate.target!==definition.target)throw new Error('implementation_history_project_mismatch');
         if(state.phase!=='returned'||!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
         if(selected)throw new Error('implementation_history_ambiguous');
         selected={id,store,repository:definition.repository,target:definition.target};

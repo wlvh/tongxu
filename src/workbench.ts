@@ -196,6 +196,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       try{const name=await QueueStore.observeWorkbenchRepository(store,sources.map(s=>s.item));for(const source of sources){knownRepositories.set(source.id,name);if(name===repository)allowed.add(source.id);}}
       catch{for(const source of sources){const known=knownRepositories.get(source.id);if(known===repository){allowed.add(source.id);selectedSourcesUnknown=true;}if(!known||known===repository)unresolvedSourceCount++;}}
     }
+    const readOnlySources=p.sources.filter(source=>allowed.has(source.id));
     let implementationSources:WorkbenchPlan['sources']=[];if(p.issueImplementation)try{implementationSources=await(await openImplementation(selection)).taskSources();for(const source of implementationSources)allowed.add(source.id);}catch{unresolvedSourceCount++;}
     github!.assertSelection(selection);
     const plan:WorkbenchPlan={...p,title:selection.repository.fullName,goal:'本项目的任务、完整报告、协作与秘书记录。选择项目不会自动启动执行或授予新权限。',sources:[...p.sources.filter(s=>allowed.has(s.id)),...implementationSources]};
@@ -206,7 +207,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(plan.overallReviews){plan.overallReviews=plan.overallReviews.filter(r=>allowed.has(r.source));if(!plan.overallReviews.length)delete plan.overallReviews;}
       if(plan.eventPolling){plan.eventPolling=plan.eventPolling.filter(r=>allowed.has(r.source));if(!plan.eventPolling.length)delete plan.eventPolling;}
     }
-    return {plan,allowed,selectedSourcesUnknown,project:{account:selection.account,repository:selection.repository,unresolvedSourceCount}};
+    return {plan,allowed,selectedSourcesUnknown,readOnlySources,project:{account:selection.account,repository:selection.repository,unresolvedSourceCount}};
   };
   const verifyProject=async(scope:ReturnType<GitHubProjects['selection']>)=>{if(closing)throw new Error('workbench_closing');await github!.confirmSelection(scope.account.id,scope.repository.id);github!.assertSelection(scope);};
   const implementations=new Map<string,Promise<IssueImplementationControls>>();
@@ -215,7 +216,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const key=scope.account.id+':'+scope.repository.id;let selected=implementations.get(key);
     if(!selected){selected=IssueImplementationControls.load(p.issueImplementation.path,p.issueImplementation.sha256,scope.repository.fullName,async number=>{
       const url=new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id),result=await github.read(url) as Row;return result.item;
-    },()=>verifyProject(scope)).then(controls=>{controls.onFinished(async target=>{
+    },()=>verifyProject(scope),async():Promise<WorkbenchPlan['sources']>=>(await projectPlan(scope)).readOnlySources).then(controls=>{controls.onFinished(async target=>{
       if(closing)return;
       // Only the already loaded controls of this verified project can wake.
       // A read/cold open never starts an action on its own.
