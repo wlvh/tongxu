@@ -135,6 +135,43 @@ test('implementation UI keeps one request through duplicate clicks and does not 
  start.onclick();await flush();assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1,'a stale project-1 button cannot create work under project 2');
 });
 
+for(const action of ['new-prepare','new-start','prepare','start','cancel','stop'])for(const overlap of [false,true])test(`implementation action failure ${action} survives ${overlap?'overlapping':'follow-up'} source refresh`,async()=>{
+ const p=await page(true);p.run("gh.selected={id:1,fullName:'fixture/repo1'};view='github';render=()=>{};Object.assign(implementationData(),{loaded:true,available:true});");
+ const pending=p.run(action.startsWith('new-')?"startIssueWork({id:'impl'},{number:111})":`continueIssueWork('impl',{id:'original',issue:111},'${action}')`);
+ let failing=0;if(action==='new-start'){p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared'})});await flush();failing=1;}
+ let read:Promise<unknown>|undefined,readIndex=-1;if(overlap){read=p.run('loadImplementations()');readIndex=p.fetchCalls.length-1;}
+ p.fetchCalls[failing]!.resolve({ok:false,status:503,json:async()=>({error:'task_observation_size_limit'})});await flush();
+ if(!overlap)readIndex=p.fetchCalls.length-1;assert.equal(p.fetchCalls[readIndex]!.path,'/api/implementation');p.fetchCalls[readIndex]!.resolve({ok:true,status:200,json:async()=>({available:true,options:[],entries:[]})});await read;await pending;
+ const text=(n:any):string=>n.textContent+(n.children||[]).map(text).join('');assert.match(text(p.run('implementationPanel()')),/来源记录超过|task_observation_size_limit/);
+ assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,action==='new-start'?2:1);assert.equal(p.run('implementationData().pending'),false);
+});
+
+for(const stage of ['response','refresh'])for(const action of ['new','continue'])test(`implementation ${action} failure after A-B-A during ${stage} does not affect reopened A`,async()=>{
+ const p=await page(true);p.run("gh.selected={id:1,fullName:'fixture/repo1'};view='github';render=()=>{};Object.assign(implementationData(),{loaded:true,available:true});");
+ const pending=p.run(action==='new'?"startIssueWork({id:'impl'},{number:111})":"continueIssueWork('impl',{id:'original',issue:111},'prepare')");
+ if(stage==='refresh'){p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'old_prepare_failure'})});await flush();assert.equal(p.fetchCalls[1]!.path,'/api/implementation');}
+ p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'});chooseGithubProject({id:1,fullName:'fixture/repo1'});");
+ if(stage==='response')p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'old_prepare_failure'})});
+ else p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({available:true,options:[],entries:[]})});
+ await flush();
+ // An old implementation read is not allowed to schedule another read in A.
+ if(stage==='response'&&p.fetchCalls.at(-1)?.path==='/api/implementation')p.fetchCalls.at(-1)!.resolve({ok:true,status:200,json:async()=>({available:true,options:[],entries:[]})});
+ await pending;const text=(n:any):string=>n.textContent+(n.children||[]).map(text).join('');assert.doesNotMatch(text(p.run('implementationPanel()')),/old_prepare_failure|workbench_project_changed/);assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1);
+});
+
+test('a successful preparation response from the previous A cannot start work after A-B-A',async()=>{
+ const p=await page(true);p.run("gh.selected={id:1,fullName:'fixture/repo1'};view='github';render=()=>{};Object.assign(implementationData(),{loaded:true,available:true});");const pending=p.run("startIssueWork({id:'impl'},{number:111})");
+ p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'});chooseGithubProject({id:1,fullName:'fixture/repo1'});");p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared'})});await flush();
+ if(p.fetchCalls.length>1)p.fetchCalls.at(-1)!.resolve({ok:true,status:200,json:async()=>({available:true,options:[],entries:[]})});await pending;assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1);
+});
+
+test('a successful original action clears the previous action failure and retains terminal controls',async()=>{
+ const p=await page(true);p.run("gh.selected={id:1,fullName:'fixture/repo1'};view='github';render=()=>{};Object.assign(implementationData(),{loaded:true,available:true,actionError:'old_action_failure'});");
+ const pending=p.run("continueIssueWork('impl',{id:'original',issue:111},'cancel')");p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({})});await flush();
+ p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({available:true,options:[{id:'impl',H0:'a'.repeat(40),allowedPaths:['sample.js'],issues:[]}],entries:[{id:'impl',requests:[{id:'original',issue:111,phase:'returned',status:'cancelled_unstarted',controllerActive:false}]}]})});await pending;
+ const panel=p.run('implementationPanel()'),text=(n:any):string=>n.textContent+(n.children||[]).map(text).join('');assert.doesNotMatch(text(panel),/old_action_failure|继续原请求|停止本次实施/);assert.match(text(panel),/已撤回，未发送/);assert.equal(p.fetchCalls.filter(c=>c.options.method==='POST').length,1);
+});
+
 for(const supplement of [false,true])for(const [status,label] of [['no_change','核对完成，无需修改'],['owner_decision_required','需要本人决定']] as const)test(`terminal implementation ${status} is visible for ${supplement?'supplement':'initial work'} without offering a retry`,async()=>{
  const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-returned',issue:74,phase:'returned',status,stopped:false,controllerActive:false,supplement,H0:'b'.repeat(40),H1:null};
  p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);

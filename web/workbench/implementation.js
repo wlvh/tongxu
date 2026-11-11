@@ -1,15 +1,15 @@
 // The normal project page supplies an adopted option and request identity.
 // Paths, commands, permissions and native role remain with the trusted host.
 const implementationProjects=new Map();
-const implementationReason=value=>({reception_seats_full:'原队列席位正在占用；原请求已保留，席位释放后可继续原请求。',implementation_original_plan_changed:'原准备计划与固定输入不同，已保留原件并暂停。',implementation_original_input_changed:'原输入清单或初始文件树改变，不能继续发送。',implementation_initial_tree_changed:'原工作区或暂存内容已经改变，不能作为未发准备继续。',implementation_original_operation_must_be_read:'原操作含有准备之外的执行证据，请先核对原执行，不会重发。',writer_active_or_unknown:'工作区仍有写者占用或状态未知，不能开始新的写入。',fresh_original_held_resource_claim_required:'原资源领取未能确认为当前有效，等待原提供者核实。',implementation_issue_source_changed:'Issue 正文与审定版本不同，已暂停发送。请先核对采用的要求。',implementation_issue_not_adopted:'这张 Issue 还没有本入口可核对的审定依据。',implementation_original_responsibility_pending:'已有同一入口的任务尚未结束；请查看原请求。',implementation_original_resources_unresolved:'原执行的资源结果仍未核清，暂不启动下一项工作。',implementation_sent_or_unknown_never_resend:'原输入已发送或仍待核实；请查看原运行，不会另发一次。',implementation_stopped:'本次实施已请求停止，已有文件和原记录保留。',implementation_resource_binding_required:'当前资源账本还没有绑定这次实施，尚未启动。',implementation_original_catalog_changed:'本次请求采用的配置已经改变，原请求保留，不能静默换绑。',implementation_original_capture_changed:'原始捕获未能通过完整性核对，不能显示为完整成果。'}[value]||readableReason(value));
+const implementationReason=value=>({task_observation_size_limit:'本次任务的完整来源记录超过当前保存范围，尚未发送；请核对所选文件和原准备现场。',reception_seats_full:'原队列席位正在占用；原请求已保留，席位释放后可继续原请求。',implementation_original_plan_changed:'原准备计划与固定输入不同，已保留原件并暂停。',implementation_original_input_changed:'原输入清单或初始文件树改变，不能继续发送。',implementation_initial_tree_changed:'原工作区或暂存内容已经改变，不能作为未发准备继续。',implementation_original_operation_must_be_read:'原操作含有准备之外的执行证据，请先核对原执行，不会重发。',writer_active_or_unknown:'工作区仍有写者占用或状态未知，不能开始新的写入。',fresh_original_held_resource_claim_required:'原资源领取未能确认为当前有效，等待原提供者核实。',implementation_issue_source_changed:'Issue 正文与审定版本不同，已暂停发送。请先核对采用的要求。',implementation_issue_not_adopted:'这张 Issue 还没有本入口可核对的审定依据。',implementation_original_responsibility_pending:'已有同一入口的任务尚未结束；请查看原请求。',implementation_original_resources_unresolved:'原执行的资源结果仍未核清，暂不启动下一项工作。',implementation_sent_or_unknown_never_resend:'原输入已发送或仍待核实；请查看原运行，不会另发一次。',implementation_stopped:'本次实施已请求停止，已有文件和原记录保留。',implementation_resource_binding_required:'当前资源账本还没有绑定这次实施，尚未启动。',implementation_original_catalog_changed:'本次请求采用的配置已经改变，原请求保留，不能静默换绑。',implementation_original_capture_changed:'原始捕获未能通过完整性核对，不能显示为完整成果。'}[value]||readableReason(value));
 function implementationKey(){return gh.account&&gh.selected?gh.account.id+':'+gh.selected.id:null;}
-function implementationData(){const key=implementationKey();if(!key)return null;if(!implementationProjects.has(key))implementationProjects.set(key,{loaded:false,loading:false,pending:false,error:null,options:[],entries:[]});return implementationProjects.get(key);}
+function implementationData(){const key=implementationKey();if(!key)return null;if(implementationProjects.get(key)?.epoch!==gh.epoch)implementationProjects.set(key,{epoch:gh.epoch,loaded:false,loading:false,pending:false,error:null,actionError:null,options:[],entries:[]});return implementationProjects.get(key);}
 async function loadImplementations(){
-  const data=implementationData(),key=implementationKey();if(!data||data.loading)return;data.loading=true;
-  try{const result=await api('/api/implementation');if(key!==implementationKey())return;Object.assign(data,result,{loaded:true,error:null});}
-  catch(error){data.error=implementationReason(error.message);data.loaded=true;}
-  finally{data.loading=false;if(key===implementationKey()&&view==='github')render();}
-  if(key===implementationKey()&&data.entries.some(e=>e.requests.some(r=>r.controllerActive)))setTimeout(()=>{if(key===implementationKey())void loadImplementations();},1500);
+  const data=implementationData(),key=implementationKey(),epoch=gh.epoch,current=()=>key===implementationKey()&&epoch===gh.epoch;if(!data||data.loading)return;data.loading=true;
+  try{const result=await api('/api/implementation');if(!current())return;Object.assign(data,result,{loaded:true,error:null});}
+  catch(error){if(current()){data.error=implementationReason(error.message);data.loaded=true;}}
+  finally{data.loading=false;if(current()&&view==='github')render();}
+  if(current()&&data.entries.some(e=>e.requests.some(r=>r.controllerActive)))setTimeout(()=>{if(current())void loadImplementations();},1500);
 }
 async function implementationAction(entry,action,body){
   const response=await workspaceFetch('/api/implementation/'+encodeURIComponent(entry)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();
@@ -17,17 +17,17 @@ async function implementationAction(entry,action,body){
 }
 async function startIssueWork(option,issue,expectedProject=implementationKey()){
   if(expectedProject!==implementationKey())return;
-  const data=implementationData(),selected=implementationKey();if(!data||data.pending)return;data.pending=true;data.error=null;render();
+  const data=implementationData(),selected=implementationKey(),epoch=gh.epoch,current=()=>selected===implementationKey()&&epoch===gh.epoch;if(!data||data.pending)return;data.pending=true;data.error=null;data.actionError=null;render();
   const requestId=crypto.randomUUID();
-  try{await implementationAction(option.id,'prepare',{requestId,issueNumber:issue.number});if(selected!==implementationKey())return;await implementationAction(option.id,'start',{requestId});}
-  catch(error){data.error=implementationReason(error.message);}
-  finally{data.pending=false;if(selected===implementationKey())await loadImplementations();}
+  try{await implementationAction(option.id,'prepare',{requestId,issueNumber:issue.number});if(!current())return;await implementationAction(option.id,'start',{requestId});}
+  catch(error){if(current())data.actionError=implementationReason(error.message);}
+  finally{data.pending=false;if(current())await loadImplementations();}
 }
 async function continueIssueWork(entry,request,action,expectedProject=implementationKey()){
   if(expectedProject!==implementationKey())return;
-  const data=implementationData();if(!data||data.pending)return;data.pending=true;data.error=null;render();
-  const selected=implementationKey();
-  try{if(action==='prepare'){const prepared=await implementationAction(entry,'prepare',{requestId:request.id,issueNumber:request.issue});if(selected!==implementationKey()||prepared.phase!=='prepared'||prepared.stopped)return;await implementationAction(entry,'start',{requestId:request.id});}else await implementationAction(entry,action,{requestId:request.id});}catch(error){data.error=implementationReason(error.message);}finally{data.pending=false;if(selected===implementationKey())await loadImplementations();}
+  const data=implementationData();if(!data||data.pending)return;data.pending=true;data.error=null;data.actionError=null;render();
+  const selected=implementationKey(),epoch=gh.epoch,current=()=>selected===implementationKey()&&epoch===gh.epoch;
+  try{if(action==='prepare'){const prepared=await implementationAction(entry,'prepare',{requestId:request.id,issueNumber:request.issue});if(!current()||prepared.phase!=='prepared'||prepared.stopped)return;await implementationAction(entry,'start',{requestId:request.id});}else await implementationAction(entry,action,{requestId:request.id});}catch(error){if(current())data.actionError=implementationReason(error.message);}finally{data.pending=false;if(current())await loadImplementations();}
 }
 async function openImplementationReport(entry,request,expectedProject=implementationKey()){
   if(expectedProject!==implementationKey())return;
@@ -46,7 +46,7 @@ function implementationPanel(){
   if(!data.loaded){panel.append(el('p','正在读取本项目已配置的实施范围…','small'));if(!data.loading)queueMicrotask(loadImplementations);return panel;}
   if(!data.available){panel.append(el('p','此项目尚未配置受控实施入口。现有任务和报告仍从原入口查看。','small'));return panel;}
   panel.append(el('p','选择一项已审定工作，从固定提交新建本次任务。程序在准确实施、测试权限和资源具备后执行；登记不表示已经发送。','small'));
-  if(data.error)panel.append(el('p',data.error,'github-error'));
+  if(data.actionError||data.error)panel.append(el('p',data.actionError||data.error,'github-error'));
   for(const option of data.options){
     const entries=data.entries.find(e=>e.id===option.id)?.requests||[],unfinished=entries.some(r=>r.phase!=='returned');
     for(const issue of option.issues){const row=append(el('div',null,'report-row'),append(el('div'),el('strong','Issue #'+issue.number+' · '+issue.goal),el('p','从 '+option.H0.slice(0,12)+' 开始 · 获准修改：'+option.allowedPaths.join('、')+(option.executionKind==='fixture'?' · 明确模型协议样例':option.demonstrationFixture?' · Codex 实施，演练源项目':' · Codex 实施'),'small'))),button=el('button','新建本次工作');
