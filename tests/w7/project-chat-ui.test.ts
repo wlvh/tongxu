@@ -105,3 +105,31 @@ test('an invalid secretary report explains the final reference requirement witho
   assert.equal(p.sends.length, 0);
   assert.equal(p.timers.size, 0);
 });
+
+
+test('historical complete work and supplement show their full reports without actions or polling', async () => {
+  const p = await page();
+  const work = {id: A, text: 'original work', cancelRequested: false, original: {
+    historical: true, phase: 'returned', status: 'completed', controllerActive: false,
+    resourcesSettled: false, H0: 'a'.repeat(40), H1: 'b'.repeat(40),
+    report: {completeCapture: true, report: {report: 'COMPLETE HISTORICAL WORK'}}}};
+  const supplement = {id: B, text: 'original supplement', cancelled: false, original: {
+    historical: true, status: 'returned', ready: false, successful: false,
+    completeCapture: true, report: {report: 'COMPLETE HISTORICAL SUPPLEMENT'}}};
+  p.run(`Object.assign(chatData(),${JSON.stringify({...list, ready: true, initialLoaded: true, conversationId: A, messages: messages(A)})});renderProjectChat()`);
+  const pending = p.run('loadProjectChat()');
+  p.calls[0]!.resolve(list);
+  await flush();
+  p.calls[1]!.resolve({messages: messages(A), workRequests: [work], supplements: [supplement]});
+  await pending;
+  const text = (node: any): string => node.textContent + node.children.map(text).join('');
+  const buttons = (node: any): any[] => [...(node.tag === 'button' ? [node] : []), ...node.children.flatMap(buttons)];
+  for (const id of ['project-chat-work', 'project-chat-supplements']) {
+    assert.match(text(p.nodes.get(id)), /历史完整报告/);
+    assert.equal(buttons(p.nodes.get(id)).length, 0);
+  }
+  assert.match(text(p.nodes.get('project-chat-work')), /COMPLETE HISTORICAL WORK/);
+  assert.match(text(p.nodes.get('project-chat-supplements')), /COMPLETE HISTORICAL SUPPLEMENT/);
+  assert.equal(p.timers.size, 0);
+  assert.equal(p.sends.length, 0);
+});
