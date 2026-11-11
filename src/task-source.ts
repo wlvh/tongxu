@@ -39,7 +39,9 @@ export async function observeTaskWorkspace(p:DevelopmentTask):Promise<TaskObserv
   const material=await files(p),again=await files(p);
   if((await git(['rev-parse','--abbrev-ref','HEAD'])).trim()!==branch||(await git(['rev-parse','--verify','HEAD^{commit}'])).trim()!==head||canonical(material)!==canonical(again))throw new Error('task_workspace_changed_during_observation');
   const value:TaskObservation={schemaVersion:2,kind:'tongxu-task-workspace-observation',taskId:developmentTaskId(p),definitionSha256:hash(canonical(p)),workspace:p.workspace,head,branch,base,target:p.target,mergeBase,tree,observedAt:new Date().toISOString(),files:material,headFiles,indexObserved:false,materialSha256:'',selectedPathsOnly:true,unobservedWorkspaceState:true,testsExecuted:false,businessCorrectness:'unverified',commands};
-  value.materialSha256=identity(value);if(Buffer.byteLength(canonical(value))>512*1024)throw new Error('task_observation_size_limit');issued.set(value,hash(canonical(value)));return value;
+  // The evidence retains working files, HEAD files and raw Git output. Bound
+  // that envelope separately from selected source and model-context limits.
+  value.materialSha256=identity(value);if(Buffer.byteLength(canonical(value))>2*1024*1024)throw new Error('task_observation_size_limit');issued.set(value,hash(canonical(value)));return value;
 }
 export function inspectTaskObservation(v:TaskObservation,p:DevelopmentTask){
   if(v.kind!=='tongxu-task-workspace-observation'||![1,2].includes(v.schemaVersion)||v.taskId!==developmentTaskId(p)||v.definitionSha256!==hash(canonical(p))||v.workspace!==p.workspace||v.base!==p.base||v.target!==p.target||typeof v.branch!=='string'||!v.branch||v.branch.length>256||!shaPattern.test(v.head)||!shaPattern.test(v.tree)||!shaPattern.test(v.mergeBase)||v.materialSha256!==identity(v)||v.testsExecuted!==false||v.selectedPathsOnly!==true||v.unobservedWorkspaceState!==true||v.businessCorrectness!=='unverified'||canonical(v.files.map(x=>x.path))!==canonical(p.paths)||!Number.isFinite(Date.parse(v.observedAt)))throw new Error('task_original_observation_changed');

@@ -53,6 +53,35 @@ test('no PR: actual dirty bytes, stable task identity, retained old packet, no i
   assert.throws(()=>f.q.tasks().observe(f.definition,JSON.parse(canonical(s.report))),/actual_task_workspace_observation_required/);
 });
 
+test('large selected files retain complete observation originals and cold history without enlarging task-owner input',async t=>{
+  const f=await fixture(t),text='// selected source\n'+ 'x'.repeat(190000)+'\n',workspace=f.definition.workspace;
+  await writeFile(join(workspace,'sample.js'),text);
+  const git=(...args:string[])=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-C',workspace,...args],{stdio:'pipe'});
+  git('add','sample.js');git('-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','large selected source');
+  const observation=await observeTaskWorkspace(f.definition);assert.ok(Buffer.byteLength(canonical(observation))>512*1024);assert.ok(Buffer.byteLength(canonical(observation))<2*1024*1024);
+  assert.equal(observation.files[0]!.text,text);assert.equal(observation.headFiles![0]!.text,text);assert.equal(observation.commands.find(c=>c.argv.includes('cat-file'))!.stdout,text);
+  const added=f.q.tasks().observe(f.definition,observation),again=f.q.tasks().observe(f.definition,await observeTaskWorkspace(f.definition));assert.equal(added.item,f.a.item);assert.equal(again.packet,added.packet);assert.equal(again.duplicate,true);
+  const cold=await QueueStore.open(f.store);try{const saved=cold.tasks().current(added.item);assert.deepEqual(saved.report,observation);assert.equal(cold.tasks().status(added.item).history.length,2);}finally{cold.close();}
+  const request=f.request('large-owner-input');f.q.taskInbox().enqueue(raw(request));const before=await f.calls();
+  assert.throws(()=>f.q.taskInbox().prepare(added.item,request.id),/task_complete_context_limit/);assert.equal(f.q.taskInbox().status(added.item).at(-1)!.run,null);assert.deepEqual(await f.calls(),before);
+});
+
+test('observation evidence allowance preserves individual and total selected-source limits',async t=>{
+  const f=await fixture(t),workspace=f.definition.workspace;
+  await writeFile(join(workspace,'sample.js'),'x'.repeat(256*1024+1));await assert.rejects(observeTaskWorkspace(f.definition),/invalid_repair_file/);
+  await writeFile(join(workspace,'sample.js'),'x'.repeat(200*1024));await writeFile(join(workspace,'second.js'),'y'.repeat(200*1024));
+  await assert.rejects(observeTaskWorkspace({...f.definition,paths:['sample.js','second.js']}),/task_selected_material_limit/);
+});
+
+test('an oversized complete observation still refuses even when current selected files are small',async t=>{
+  const f=await fixture(t),workspace=f.definition.workspace,paths=Array.from({length:5},(_,i)=>'head-'+i+'.js');
+  for(const path of paths)await writeFile(join(workspace,path),'x'.repeat(220*1024));
+  execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-C',workspace,'add','--',...paths]);
+  execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-C',workspace,'-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','large HEAD evidence']);
+  for(const path of paths)await writeFile(join(workspace,path),'small current selected source\n');
+  await assert.rejects(observeTaskWorkspace({...f.definition,paths}),/task_observation_size_limit/);
+});
+
 test('one worker consumes requests arriving during a real child turn, retaining exact original report in new context',async t=>{
   const f=await fixture(t,'delay');f.q.taskInbox().enqueue(raw(f.request('first')));const work=workTaskOwner(f.store,f.a.item,3);await waitInput(f);
   f.q.taskInbox().enqueue(raw(f.request('followup')));assert.throws(()=>f.q.taskInbox().prepare(f.a.item,'followup'),/task_original_responsibility_pending/);
