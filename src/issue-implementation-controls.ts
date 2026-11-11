@@ -21,6 +21,7 @@ import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './projec
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
 type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
+type ReadEntry=Pick<Entry,'id'|'repository'|'store'|'target'>;
 type Issue={number:number;title:string;body:string;url:string};
 type Reader=(number:number)=>Promise<Issue>;
 
@@ -43,6 +44,26 @@ export class IssueImplementationControls{
     return new IssueImplementationControls(path,sha256,entries,read,verify);
   }
   private entry(id:string){const entry=this.entries.find(e=>e.id===id);if(!entry)throw new Error('implementation_project_not_selected');return entry;}
+  private async readEntry(id:string,requestId:string){
+    const current=this.entries.find(entry=>entry.id===id);
+    if(current)return {entry:current,historical:false};
+    await this.catalog();
+    let selected:ReadEntry|undefined;
+    for(const store of new Set(this.entries.map(entry=>entry.store))){
+      const q=await QueueStore.open(store);
+      try{
+        const state=q.issueImplementations().findState(id,requestId);
+        if(!state)continue;
+        const request=q.issueImplementations().original(id,requestId),definition=q.tasks().definition(state.task);
+        if(!this.entries.some(entry=>entry.store===store&&entry.repository.toLowerCase()===definition.repository.toLowerCase())||request.task!==state.task||request.workspaceRequest.candidate.target!==definition.target)throw new Error('implementation_history_project_mismatch');
+        if(state.phase!=='returned'||!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
+        if(selected)throw new Error('implementation_history_ambiguous');
+        selected={id,store,repository:definition.repository,target:definition.target};
+      }finally{q.close();}
+    }
+    if(!selected)throw new Error('implementation_history_not_configured');
+    return {entry:selected,historical:true};
+  }
   private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('implementation_catalog_changed');}
   options(){return this.entries.map(e=>({id:e.id,issues:e.approvedIssues.map(i=>({number:i.number,goal:i.goal,adjudication:i.adjudication,bodySha256:i.bodySha256})),H0:e.H0,allowedPaths:e.allowedPaths,executionKind:e.executionKind,demonstrationFixture:e.demonstrationFixture}));}
   async prepare(id:string,body:Row){
@@ -61,7 +82,7 @@ export class IssueImplementationControls{
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
       original=previousQueue.issueImplementations().original(id,body.requestId);
       if(work?.origin&&canonical(original.origin??null)!==canonical(work.origin))throw new Error('implementation_request_id_is_fixed');
-      if(original.continuation)await this.checkSupplementPredecessor(id,original,previous.phase==='registered'&&!previous.stopped);
+      if(original.continuation)await this.checkSupplementPredecessor(entry,original,previous.phase==='registered'&&!previous.stopped);
       if(previous.phase!=='registered'||previous.stopped)return this.publicState(previous);
       if(original.continuation)entry={...entry,H0:original.workspaceRequest.candidate.H,objects:original.workspaceRequest.objects};
       originalTitle=previousQueue.tasks().definition(original.task).title;
@@ -101,7 +122,7 @@ export class IssueImplementationControls{
     });
     if(matches.length>1)throw new Error('implementation_project_work_original_ambiguous');return matches[0]??null;
   }
-  private projectWorkState(q:QueueStore,entry:Entry,issueNumber:number,request:ProjectWorkRequest){
+  private projectWorkState(q:QueueStore,entry:ReadEntry,issueNumber:number,request:ProjectWorkRequest){
     const {origin,original}=request;if(!projectWorkOrigin(origin,origin.requestId))throw new Error('project_work_origin_invalid');
     const requestId=original?.requestId??origin.requestId,state=q.issueImplementations().requests(entry.id).find(s=>s.id===requestId);
     if(!state){if(original)throw new Error('project_work_original_not_registered');return null;}
@@ -128,12 +149,12 @@ export class IssueImplementationControls{
     throw new Error('implementation_project_work_original_changed');
   }
   async readProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
-    const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row,resourcesSettled=false;try{const checked=this.projectWorkState(q,entry,issueNumber,request);if(!checked)return null;s=checked;if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,s.id,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
-    const requestId=s.id;
+    if(!projectWorkOrigin(request.origin,request.origin?.requestId))throw new Error('project_work_origin_invalid');
+    const {entry,historical}=await this.readEntry(id,request.original?.requestId??request.origin.requestId),q=await QueueStore.open(entry.store);let s:Row,resourcesSettled=false;try{const checked=this.projectWorkState(q,entry,issueNumber,request);if(!checked)return null;s=checked;if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,s.id,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
     // Capture liveness alongside the resource snapshot. Reading the complete
     // report may yield while the controller settles resources and exits.
-    const state=this.publicState(s),report=s.result?.completeCapture?await this.report(id,requestId):null;
-    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false};
+    const state=this.publicState(s),report=s.result?.completeCapture?await readImplementationResult(s):null;
+    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false,...(historical?{historical:true}:{})};
   }
   async cancelProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
     // Even without a saved chat link, inspect the queue after the cancellation
@@ -160,7 +181,7 @@ export class IssueImplementationControls{
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
         const refresh=async()=>{
-          if(fixed.request.continuation)await this.checkSupplementPredecessor(id,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.sha256)throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+          if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.sha256)throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
           const authority=q.authority(),profile=authority.configuration().profile,refs=new Map<string,ReturnType<typeof authority.sourceRequests>[number]>();
           for(const authorization of Object.values(fixed.authorization) as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
           const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];
@@ -182,7 +203,7 @@ export class IssueImplementationControls{
     }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{q.close();}
   }
   async cancel(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const request=q.issueImplementations().original(id,requestId);if(request.continuation)await this.checkSupplementPredecessor(id,request,false);
+    const request=q.issueImplementations().original(id,requestId);if(request.continuation)await this.checkSupplementPredecessor(entry,request,false);
     q.issueImplementations().cancel(id,requestId);const state=q.issueImplementations().state(id,requestId);
     for(const resource of state.plan?.resourceRequests??[]){try{let value=q.issueImplementations().terminalResource(id,requestId,resource);if(!value)continue;if(value.pendingResultAttempt)value=await resourceAction(entry.store,resource,'lookup','implementer');if(value.claim?.state==='held')await resourceAction(entry.store,resource,'record-result','implementer');}catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_resource_result_pending');}}
     return this.publicState(q.issueImplementations().state(id,requestId));
@@ -203,27 +224,27 @@ export class IssueImplementationControls{
       const proof=await readImplementationOwnerProof(snapshot);q.tasks().observe(proof.definition,proof.observation);return proof;
     }finally{q.close();}
   }
-  private async checkSupplementPredecessor(source:string,request:ImplementationRequest,current=true){
+  private async checkSupplementPredecessor(entry:ReadEntry,request:ImplementationRequest,current=true){
     const continuation=request.continuation!;
-    const target=continuation.originalTarget,entry=this.entry(source),q=await QueueStore.open(entry.store);try{
+    const target=continuation.originalTarget,source=entry.id,q=await QueueStore.open(entry.store);try{
       const records=q.issueImplementations(),fixed=records.original(source,request.id),root=records.state(source,target.requestId),rootRequest=records.original(source,target.requestId),parent=records.state(source,continuation.predecessor.requestId),parentRequest=records.original(source,parent.id);
       if(target.source!==source||canonical(fixed)!==canonical(request)||rootRequest.continuation||root.task!==continuation.logicalOwner||root.task!==target.task||root.operation!==target.operation||request.id!==continuation.supplement.id||request.issue.number!==root.issue||request.workspaceRequest.candidate.H!==continuation.predecessor.H1||request.workspaceRequest.objects!==parent.plan?.workspace||parent.operation!==continuation.predecessor.operation||parent.result?.status!=='completed'||!parent.result.completeCapture||parent.result.H1!==continuation.predecessor.H1||hash(canonical(parent.result))!==continuation.predecessor.resultSha256||parent.id!==root.id&&(parentRequest.continuation?.logicalOwner!==root.task||canonical(parentRequest.continuation.originalTarget)!==canonical(target)))throw new Error('project_supplement_predecessor_changed');
-      await this.report(source,parent.id);
+      await readImplementationResult(parent);
       if(current){
         for(const resource of parent.plan.resourceRequests as string[])if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
         if(await exists(join(parent.plan.workspace,'.git','tongxu-writer.json'))||await git(parent.plan.workspace,['rev-parse','HEAD'])!==parent.result.H1||treeHash(await tree(parent.plan.workspace,true))!==parent.result.treeSha256||await git(parent.plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('project_supplement_committed_result_changed');
       }
     }finally{q.close();}
   }
-  private async boundSupplement(target:SupplementTarget,id:string,text:string){
-    const q=await QueueStore.open(this.entry(target.source).store);let request:ImplementationRequest;
+  private async boundSupplement(target:SupplementTarget,id:string,text:string,entry:ReadEntry=this.entry(target.source)){
+    const q=await QueueStore.open(entry.store);let request:ImplementationRequest;
     try{
       request=q.issueImplementations().original(target.source,id);const continuation=request.continuation;
       if(!continuation||continuation.logicalOwner!==target.task||canonical(continuation.originalTarget)!==canonical(target)||canonical(continuation.supplement)!==canonical({id,text}))throw new Error('project_supplement_compiled_target_changed');
     }finally{q.close();}
     // Identity and original capture must also hold for history/cancellation;
     // a later workspace edit blocks sending, but must not block unsent cancel.
-    await this.checkSupplementPredecessor(target.source,request,false);return request;
+    await this.checkSupplementPredecessor(entry,request,false);return request;
   }
   async cancelSupplement(target:SupplementTarget,id:string,text:string){
     const q=await QueueStore.open(this.entry(target.source).store);
@@ -241,9 +262,23 @@ export class IssueImplementationControls{
       return {entry,root,rootRequest,latest,request,ready:true,reason:null};
     }finally{q.close();}
   }
-  async readSupplement(target:SupplementTarget,compiled:string|null,text:string){
+  async readSupplement(target:SupplementTarget,compiled:string|null,text:string):Promise<Row>{
     if(!compiled){const original=await this.supplementSource(target);return {ready:original.ready,reason:original.reason,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null};}
-    await this.boundSupplement(target,compiled,text);const entry=this.entry(target.source),q=await QueueStore.open(entry.store);try{let original:{ready:boolean;reason:string|null};try{original=await this.supplementSource(target);}catch(error){original={ready:false,reason:error instanceof Error?error.message:'project_supplement_original_pending_or_unknown'};}const state=q.issueImplementations().state(target.source,compiled),report=state.result?.completeCapture?await this.report(target.source,compiled):null;return {ready:false,successful:['completed','no_change'].includes(state.result?.status)&&original.ready,status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false};}finally{q.close();}
+    const {entry,historical}=await this.readEntry(target.source,target.requestId);
+    const request=await this.boundSupplement(target,compiled,text,entry);
+    const q=await QueueStore.open(entry.store);
+    try{
+      let original:{ready:boolean;reason:string|null}={ready:false,reason:null};
+      if(!historical)try{original=await this.supplementSource(target);}catch(error){original={ready:false,reason:error instanceof Error?error.message:'project_supplement_original_pending_or_unknown'};}
+      const state=q.issueImplementations().state(target.source,compiled);
+      if(historical){
+        const definition=q.tasks().definition(state.task);
+        if(definition.repository.toLowerCase()!==entry.repository.toLowerCase()||definition.target!==entry.target||request.workspaceRequest.candidate.target!==entry.target)throw new Error('implementation_history_project_mismatch');
+        if(!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
+      }
+      const report=state.result?.completeCapture?await readImplementationResult(state):null;
+      return {ready:false,successful:!historical&&['completed','no_change'].includes(state.result?.status)&&original.ready,status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
+    }finally{q.close();}
   }
   async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){
     await this.catalog();await this.verify();const entry=this.entry(target.source),q=await QueueStore.open(entry.store);let existing:ImplementationRequest|undefined;

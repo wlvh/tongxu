@@ -7,7 +7,7 @@ import type {SupplementTarget} from '../../src/project-chat.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {canonical} from '../../src/comparison.js';
 import {projectSecretarySchema} from '../../src/repair-native.js';
-import {DatabaseSync} from 'node:sqlite';
+import {DatabaseSync,backup} from 'node:sqlite';
 import nodeTest, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile, chmod, readdir, rm, cp } from 'node:fs/promises';
@@ -21,6 +21,7 @@ import {runMessages} from '../../src/messages.js';
 import {TaskControls} from '../../src/task-controls.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {QueueStore} from '../../src/queue-store.js';
+import {TaskRecords} from '../../src/task-store.js';
 import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
 import { execFile } from 'node:child_process';
@@ -846,4 +847,174 @@ test('secretary work rejected late cancel preserves observation until the same o
  let f:Awaited<ReturnType<typeof secretaryWorkPage>>|undefined,release!:()=>void,signal!:()=>void;const reached=new Promise<void>(r=>signal=r),blocked=new Promise<void>(r=>release=r);f=await secretaryWorkPage(t,'coordinate',async()=>{if(f?.messages.q.issueImplementations().requests('implementation').some(s=>s.phase==='active_or_unknown')){signal();await blocked;}},'no_change');
  try{const body=f.workBody();await supplementPost(f,'ask',body);let timeout:ReturnType<typeof setTimeout>|undefined;try{await Promise.race([reached,new Promise((_,reject)=>timeout=setTimeout(()=>reject(new Error('fixture_dispatch_not_reached')),10000))]);}finally{clearTimeout(timeout);}await f.wait(body.conversationId,v=>v.messages[0]?.status==='completed');const cancelled=await supplementPost(f,'cancel-work',{requestId:body.requestId}),during=(await f.get('/api/project-secretary/conversations/'+body.conversationId)).value;assert.equal(cancelled.status,503);assert.equal(cancelled.value.error,'implementation_sent_or_unknown_cannot_cancel');assert.equal(during.workRequests[0].cancelRequested,true);assert.equal(during.workRequests[0].original.controllerActive,true);assert.equal(during.workRequests[0].originalRequestId,body.requestId);release();const done=await f.wait(body.conversationId,v=>v.workRequests[0]?.original?.status==='no_change'&&v.workRequests[0].original.resourcesSettled&&!v.workRequests[0].original.controllerActive);assert.equal(done.workRequests[0].cancelRequested,true);assert.equal(done.workRequests[0].original.report.completeCapture,true);assert.equal(done.workRequests[0].original.H1,null);assert.equal((await f.trace()).filter((r:any)=>r.kind==='model-input').length,2);
  }finally{release();}
+});
+
+
+test('completed secretary work and supplement remain readable after their execution source is removed', async t => {
+  const f = await secretaryWorkPage(t);
+  const capacity = new DatabaseSync(join(f.ledger!.root, 'original-fixture.sqlite'));
+  capacity.exec('UPDATE capacity SET n=2');
+  capacity.close();
+  const binary = f.project.config.codexExecutable;
+  const script = await readFile(binary, 'utf8');
+  const readStage = "if(stage==='tongxu_read_file'){";
+  assert.ok(script.includes(readStage));
+  await writeFile(binary, script.replace(readStage,
+    "if(stage==='tongxu_read_file'&&context.request?.continuation){finish({candidateH:context.candidate.H,decision:'no_change',report:'The historical supplement checked the original committed result.'});return;}" + readStage));
+  const body = f.workBody();
+  assert.equal((await supplementPost(f, 'ask', body)).status, 202);
+  await f.wait(body.conversationId, value => value.workRequests[0]?.original?.status === 'completed'
+    && value.workRequests[0].original.resourcesSettled && !value.workRequests[0].original.controllerActive);
+  const {title, ...target} = (await f.get('/api/project-secretary')).value.supplementTargets[0];
+  const supplement = {conversationId: body.conversationId, requestId: randomUUID(), target,
+    text: 'Read the completed original result and preserve the full reply in this conversation.'};
+  assert.equal((await supplementPost(f, 'supplement', supplement)).status, 202);
+  const compiled = 'supplement-' + supplement.requestId;
+  assert.equal((await f.settled(compiled)).status, 'no_change');
+  const before = (await f.get('/api/project-secretary/conversations/' + body.conversationId)).value;
+  const trace = await f.trace();
+  const eventCount = () => {
+    const db = new DatabaseSync(join(f.messages.store, 'queue.sqlite'), {readOnly: true});
+    try { return db.prepare('SELECT COUNT(*) AS n FROM events').get()!.n; }
+    finally { db.close(); }
+  };
+  const events = eventCount();
+  await f.app.close();
+  const catalogPath = join(f.project.root, 'implementation-catalog.json');
+  const currentEntry = {...f.entry, id: 'current-source'};
+  await writeFile(catalogPath, JSON.stringify({schemaVersion: 1, kind: 'tongxu-issue-implementation-catalog', entries: [currentEntry]}));
+  const plan = JSON.parse(await readFile(f.planPath, 'utf8'));
+  plan.issueImplementation.sha256 = hash(await readFile(catalogPath));
+  await writeFile(f.planPath, JSON.stringify(plan));
+  const app = await startWorkbench(f.planPath, undefined, {githubReader: f.github});
+  t.after(() => app.close());
+  const url = new URL(app.url);
+  const headers = {...f.headers, Authorization: 'Bearer ' + url.hash.slice(1)};
+  await fetch(url.origin + '/api/github/projects', {headers});
+  const get = async (path: string) => (await fetch(url.origin + path, {headers})).json() as Promise<any>;
+  for (let n = 0; n < 2; n++) {
+    const recovered = await get('/api/project-secretary/conversations/' + body.conversationId);
+    assert.equal(recovered.workRequests[0].original?.historical, true, JSON.stringify(recovered.workRequests[0]));
+    assert.deepEqual(recovered.workRequests[0].original.report, before.workRequests[0].original.report);
+    assert.equal(recovered.workRequests[0].original.permissionsGranted, false);
+    assert.equal(recovered.supplements[0].original.historical, true);
+    assert.equal(recovered.supplements[0].original.ready, false);
+    assert.equal(recovered.supplements[0].original.successful, false);
+    assert.deepEqual(recovered.supplements[0].original.report, before.supplements[0].original.report);
+    assert.equal(recovered.supplements[0].original.operation, before.supplements[0].original.operation);
+  }
+  assert.deepEqual((await get('/api/project-secretary')).supplementTargets, []);
+  assert.deepEqual((await get('/api/state')).tasks, []);
+  const post = async (action: string, value: unknown) => fetch(url.origin + '/api/project-secretary/' + action,
+    {method: 'POST', headers: {...headers, Origin: url.origin, 'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+  for (const action of ['continue-work', 'stop-work', 'cancel-work']) {
+    assert.equal((await post(action, {requestId: body.requestId})).status, 503);
+  }
+  assert.equal((await post('supplement', {...supplement, requestId: randomUUID()})).status, 503);
+  await post('continue-supplements', {target});
+  assert.deepEqual(await f.trace(), trace);
+  assert.equal(eventCount(), events);
+
+  const historicalControls = async (entries: typeof currentEntry[]) => {
+    const path = join(f.project.root, 'history-catalog-' + randomUUID() + '.json');
+    await writeFile(path, JSON.stringify({schemaVersion: 1, kind: 'tongxu-issue-implementation-catalog', entries}));
+    return IssueImplementationControls.load(path, hash(await readFile(path)), entries[0]?.repository ?? f.entry.repository,
+      async () => { throw new Error('history_must_not_refresh_the_adopted_issue'); }, async () => {});
+  };
+  const controls = await historicalControls([currentEntry]);
+  const origin = f.messages.q.issueImplementations().original('implementation', body.requestId).origin!;
+  const work = {origin, original: {requestId: body.requestId, linked: false}};
+  for (const changed of [
+    {...work, origin: {...origin, text: origin.text + ' replaced'}},
+    {...work, original: {...work.original, linked: true}},
+    {...work, original: {...work.original, requestId: compiled}},
+  ]) await assert.rejects(controls.readProjectWork('implementation', 74, changed), /project_work_original_mismatch/);
+  await assert.rejects(controls.readProjectWork('implementation', 75, work), /project_work_original_mismatch/);
+  for (const changed of [{...target, task: 'f'.repeat(64)}, {...target, operation: 'wrong-operation'}]) {
+    await assert.rejects(controls.readSupplement(changed, compiled, supplement.text), /compiled_target_changed/);
+  }
+  await assert.rejects(controls.readSupplement(target, compiled, supplement.text + ' changed'), /compiled_target_changed/);
+  await assert.rejects(controls.readSupplement(target, body.requestId, supplement.text), /compiled_target_changed/);
+  const definition=TaskRecords.prototype.definition;
+  const childTask=f.messages.q.issueImplementations().state('implementation',compiled).task;
+  for(const changed of [{repository:'fixture/other'},{target:'other-target'}]){
+    TaskRecords.prototype.definition=function(this:TaskRecords,id:string){
+      const original=definition.call(this,id);
+      return id===childTask?{...original,...changed}:original;
+    };
+    try{await assert.rejects(controls.readSupplement(target,compiled,supplement.text),/implementation_history_project_mismatch/);}
+    finally{TaskRecords.prototype.definition=definition;}
+  }
+  const unavailable = await historicalControls([]);
+  await assert.rejects(unavailable.readProjectWork('implementation', 74, work), /implementation_history_not_configured/);
+  await assert.rejects(unavailable.readSupplement(target, compiled, supplement.text), /implementation_history_not_configured/);
+  const otherProject = await historicalControls([{...currentEntry, repository: 'fixture/other'}]);
+  await assert.rejects(otherProject.readProjectWork('implementation', 74, work), /implementation_history_project_mismatch/);
+  await assert.rejects(otherProject.readSupplement(target, compiled, supplement.text), /implementation_history_project_mismatch/);
+  const wrongAccount = await fetch(url.origin + '/api/project-secretary/conversations/' + body.conversationId,
+    {headers: {...headers, 'X-Tongxu-Account': '8'}});
+  assert.notEqual(wrongAccount.status, 200);
+  for (const id of [body.requestId, compiled]) {
+    const state = f.messages.q.issueImplementations().state('implementation', id);
+    const path = join(state.plan.operationRoot, 'implementer', 'completed.json');
+    const original = await readFile(path);
+    try {
+      await writeFile(path, '{}');
+      if (id === body.requestId) await assert.rejects(controls.readProjectWork('implementation', 74, work));
+      await assert.rejects(controls.readSupplement(target, compiled, supplement.text));
+    } finally { await writeFile(path, original); }
+  }
+  const copiedStore = join(f.project.root, 'copied-queue');
+  await cp(f.messages.store, copiedStore, {recursive: true});
+  for (const name of ['queue.sqlite', 'queue.sqlite-wal', 'queue.sqlite-shm']) await rm(join(copiedStore, name), {force: true});
+  const db = new DatabaseSync(join(f.messages.store, 'queue.sqlite'), {readOnly: true});
+  try { await backup(db, join(copiedStore, 'queue.sqlite')); }
+  finally { db.close(); }
+  await chmod(join(copiedStore, 'queue.sqlite'), 0o600);
+  const ambiguous = await historicalControls([currentEntry, {...currentEntry, id: 'copied-source', store: copiedStore}]);
+  await assert.rejects(ambiguous.readProjectWork('implementation', 74, work), /implementation_history_ambiguous/);
+  await assert.rejects(ambiguous.readSupplement(target, compiled, supplement.text), /implementation_history_ambiguous/);
+  const broken = new DatabaseSync(join(copiedStore, 'queue.sqlite'));
+  try { broken.prepare("DELETE FROM events WHERE kind='issue_implementation_registered' AND json_extract(data,'$.value.id')=?").run(body.requestId); }
+  finally { broken.close(); }
+  const damaged = await historicalControls([{...currentEntry, id: 'broken-source', store: copiedStore}, currentEntry]);
+  await assert.rejects(damaged.readProjectWork('implementation', 74, work), /implementation_request_not_registered/);
+  await assert.rejects(damaged.readSupplement(target, compiled, supplement.text), /implementation_request_not_registered/);
+  assert.equal((await controls.readProjectWork('implementation', 74, work))!.historical, true);
+  assert.equal((await controls.readSupplement(target, compiled, supplement.text)).historical, true);
+  await assert.rejects(controls.begin('implementation', body.requestId), /implementation_project_not_selected/);
+  await assert.rejects(controls.stop('implementation', body.requestId), /implementation_project_not_selected/);
+  await assert.rejects(controls.cancelSupplement(target, compiled, supplement.text), /implementation_project_not_selected/);
+  assert.deepEqual(await f.trace(), trace);
+  assert.equal(eventCount(), events);
+});
+
+
+for (const outcome of ['no_change', 'incomplete'] as const) test('historical secretary work preserves ' + outcome + ' without enabling execution', async t => {
+  const f = await secretaryWorkPage(t, 'coordinate', undefined, outcome);
+  const body = f.workBody();
+  assert.equal((await supplementPost(f, 'ask', body)).status, 202);
+  const before = await f.wait(body.conversationId, value => value.workRequests[0]?.original
+    && !value.workRequests[0].original.controllerActive && value.messages[0]?.status === 'completed');
+  const trace = await f.trace();
+  await f.app.close();
+  const path = join(f.project.root, 'implementation-catalog.json');
+  await writeFile(path, JSON.stringify({schemaVersion: 1, kind: 'tongxu-issue-implementation-catalog', entries: [{...f.entry, id: 'current-source'}]}));
+  const plan = JSON.parse(await readFile(f.planPath, 'utf8'));
+  plan.issueImplementation.sha256 = hash(await readFile(path));
+  await writeFile(f.planPath, JSON.stringify(plan));
+  const app = await startWorkbench(f.planPath, undefined, {githubReader: f.github});
+  t.after(() => app.close());
+  const url = new URL(app.url), headers = {...f.headers, Authorization: 'Bearer ' + url.hash.slice(1)};
+  await fetch(url.origin + '/api/github/projects', {headers});
+  const recovered = await (await fetch(url.origin + '/api/project-secretary/conversations/' + body.conversationId, {headers})).json() as any;
+  if (outcome === 'no_change') {
+    assert.equal(recovered.workRequests[0].original.historical, true);
+    assert.equal(recovered.workRequests[0].original.H1, null);
+    assert.deepEqual(recovered.workRequests[0].original.report, before.workRequests[0].original.report);
+  } else {
+    assert.equal(recovered.workRequests[0].original, null);
+    assert.equal(recovered.workRequests[0].problem, 'implementation_history_incomplete');
+  }
+  assert.deepEqual(await f.trace(), trace);
 });

@@ -72,6 +72,10 @@ export class IssueImplementations {
   }
   check(source:string,id:string,observations:OwnerObservation[],effect?:()=>void){return this.transaction(()=>this.checkValue(source,id,observations,effect));}
   original(source:string,id:string){return this.fixed(source,id).request;}
+  findState(source:string,id:string){
+    const recorded=this.db.prepare("SELECT 1 FROM events WHERE object=? AND kind LIKE 'issue_implementation_%' LIMIT 1").get(this.key(source,id));
+    return recorded?this.state(source,id):null;
+  }
   unsent(source:string,id:string,observations:OwnerObservation[]){return this.transaction(()=>{
     if(this.fixed(source,id).dispatched)throw new Error('implementation_sent_or_unknown_never_resend');
     return this.checkValue(source,id,observations);
