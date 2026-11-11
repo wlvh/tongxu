@@ -890,7 +890,8 @@ test('completed secretary work and supplement remain readable after their execut
   plan.issueImplementation.sha256 = hash(await readFile(catalogPath));
   await writeFile(f.planPath, JSON.stringify(plan));
   const app = await startWorkbench(f.planPath, undefined, {githubReader: f.github});
-  t.after(() => app.close());
+  let appOpen = true;
+  t.after(async () => { if (appOpen) await app.close(); });
   const url = new URL(app.url);
   const headers = {...f.headers, Authorization: 'Bearer ' + url.hash.slice(1)};
   await fetch(url.origin + '/api/github/projects', {headers});
@@ -918,15 +919,62 @@ test('completed secretary work and supplement remain readable after their execut
   assert.deepEqual(await f.trace(), trace);
   assert.equal(eventCount(), events);
 
-  const historicalControls = async (entries: typeof currentEntry[]) => {
+  const resourceClaimsBeforeHistory = f.ledger!.state().claims;
+  const resourceSettlementsBeforeHistory = f.ledger!.state().settlements;
+  appOpen = false;
+  await app.close();
+  await writeFile(catalogPath, JSON.stringify({schemaVersion: 1, kind: 'tongxu-issue-implementation-catalog', entries: []}));
+  plan.issueImplementation.sha256 = hash(await readFile(catalogPath));
+  const retainedSource = {id: 'retained-history', title: 'Original completed task', store: f.messages.store, item: target.task};
+  plan.sources = [retainedSource];
+  await writeFile(f.planPath, JSON.stringify(plan));
+  for (let cold = 0; cold < 2; cold++) {
+    const historyApp = await startWorkbench(f.planPath, undefined, {githubReader: f.github});
+    try {
+      const historyUrl = new URL(historyApp.url), historyHeaders = {...f.headers, Authorization: 'Bearer ' + historyUrl.hash.slice(1)};
+      const read = async (path: string) => (await fetch(historyUrl.origin + path, {headers: historyHeaders})).json() as Promise<any>;
+      const action = async (path: string, value: unknown) => fetch(historyUrl.origin + '/api/project-secretary/' + path,
+        {method: 'POST', headers: {...historyHeaders, Origin: historyUrl.origin, 'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+      await read('/api/github/projects');
+      const state = await read('/api/state');
+      assert.equal(state.tasks.length, 1);assert.equal(state.tasks[0].available, true);assert.equal(state.project.unresolvedSourceCount, 0);
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const recovered = await read('/api/project-secretary/conversations/' + body.conversationId);
+        assert.equal(recovered.workRequests[0].original?.historical, true);
+        assert.deepEqual(recovered.workRequests[0].original.report, before.workRequests[0].original.report);
+        assert.equal(recovered.workRequests[0].original.permissionsGranted, false);
+        assert.equal(recovered.supplements[0].original.historical, true);
+        assert.equal(recovered.supplements[0].original.ready, false);assert.equal(recovered.supplements[0].original.successful, false);
+        assert.deepEqual(recovered.supplements[0].original.report, before.supplements[0].original.report);
+      }
+      const choices = await read('/api/project-secretary');
+      assert.deepEqual(choices.supplementTargets, []);assert.deepEqual(choices.work.options, []);
+      const wrongAccount = await fetch(historyUrl.origin + '/api/project-secretary/conversations/' + body.conversationId,
+        {headers: {...historyHeaders, 'X-Tongxu-Account': '8'}});
+      assert.notEqual(wrongAccount.status, 200);
+      for (const name of ['continue-work', 'stop-work', 'cancel-work']) assert.equal((await action(name, {requestId: body.requestId})).status, 503);
+      assert.equal((await action('supplement', {...supplement, requestId: randomUUID()})).status, 503);
+      await action('continue-supplements', {target});
+      assert.deepEqual(await f.trace(), trace);assert.equal(eventCount(), events);assert.deepEqual(f.ledger!.state().claims, resourceClaimsBeforeHistory);assert.deepEqual(f.ledger!.state().settlements, resourceSettlementsBeforeHistory);
+    } finally { await historyApp.close(); }
+  }
+
+  const historicalControls = async (entries: typeof currentEntry[], sources: Array<{store:string;item:string}> = [], repository = entries[0]?.repository ?? f.entry.repository) => {
     const path = join(f.project.root, 'history-catalog-' + randomUUID() + '.json');
     await writeFile(path, JSON.stringify({schemaVersion: 1, kind: 'tongxu-issue-implementation-catalog', entries}));
-    return IssueImplementationControls.load(path, hash(await readFile(path)), entries[0]?.repository ?? f.entry.repository,
-      async () => { throw new Error('history_must_not_refresh_the_adopted_issue'); }, async () => {});
+    return IssueImplementationControls.load(path, hash(await readFile(path)), repository,
+      async () => { throw new Error('history_must_not_refresh_the_adopted_issue'); }, async () => {}, async () => sources);
   };
   const controls = await historicalControls([currentEntry]);
   const origin = f.messages.q.issueImplementations().original('implementation', body.requestId).origin!;
   const work = {origin, original: {requestId: body.requestId, linked: false}};
+  const readOnlyControls = await historicalControls([], [retainedSource]);
+  assert.deepEqual((await readOnlyControls.readProjectWork('implementation', 74, work))!.report, before.workRequests[0].original.report);
+  assert.deepEqual((await readOnlyControls.readSupplement(target, compiled, supplement.text)).report, before.supplements[0].original.report);
+  await assert.rejects(readOnlyControls.readProjectWork('implementation', 74, {...work, origin: {...origin, text: origin.text + ' replaced'}}), /project_work_original_mismatch/);
+  await assert.rejects(readOnlyControls.readProjectWork('implementation', 74, {...work, original: {...work.original, requestId: compiled}}), /implementation_history_not_configured/);
+  await assert.rejects(readOnlyControls.readProjectWork('implementation', 75, work), /project_work_original_mismatch/);
+  await assert.rejects(readOnlyControls.readSupplement(target, compiled, supplement.text + ' changed'), /compiled_target_changed/);
   for (const changed of [
     {...work, origin: {...origin, text: origin.text + ' replaced'}},
     {...work, original: {...work.original, linked: true}},
@@ -951,12 +999,15 @@ test('completed secretary work and supplement remain readable after their execut
   const unavailable = await historicalControls([]);
   await assert.rejects(unavailable.readProjectWork('implementation', 74, work), /implementation_history_not_configured/);
   await assert.rejects(unavailable.readSupplement(target, compiled, supplement.text), /implementation_history_not_configured/);
+  const wrongTask = await historicalControls([], [{store: f.messages.store, item: f.messages.item}]);
+  await assert.rejects(wrongTask.readProjectWork('implementation', 74, work), /implementation_history_not_configured/);
+  await assert.rejects(wrongTask.readSupplement(target, compiled, supplement.text), /implementation_history_not_configured/);
+  const wrongProject = await historicalControls([], [retainedSource], 'fixture/other');
+  await assert.rejects(wrongProject.readProjectWork('implementation', 74, work), /implementation_history_project_mismatch/);
+  await assert.rejects(wrongProject.readSupplement(target, compiled, supplement.text), /implementation_history_project_mismatch/);
   const otherProject = await historicalControls([{...currentEntry, repository: 'fixture/other'}]);
   await assert.rejects(otherProject.readProjectWork('implementation', 74, work), /implementation_history_project_mismatch/);
   await assert.rejects(otherProject.readSupplement(target, compiled, supplement.text), /implementation_history_project_mismatch/);
-  const wrongAccount = await fetch(url.origin + '/api/project-secretary/conversations/' + body.conversationId,
-    {headers: {...headers, 'X-Tongxu-Account': '8'}});
-  assert.notEqual(wrongAccount.status, 200);
   for (const id of [body.requestId, compiled]) {
     const state = f.messages.q.issueImplementations().state('implementation', id);
     const path = join(state.plan.operationRoot, 'implementer', 'completed.json');
@@ -974,7 +1025,7 @@ test('completed secretary work and supplement remain readable after their execut
   try { await backup(db, join(copiedStore, 'queue.sqlite')); }
   finally { db.close(); }
   await chmod(join(copiedStore, 'queue.sqlite'), 0o600);
-  const ambiguous = await historicalControls([currentEntry, {...currentEntry, id: 'copied-source', store: copiedStore}]);
+  const ambiguous = await historicalControls([], [retainedSource, {...retainedSource, store: copiedStore}]);
   await assert.rejects(ambiguous.readProjectWork('implementation', 74, work), /implementation_history_ambiguous/);
   await assert.rejects(ambiguous.readSupplement(target, compiled, supplement.text), /implementation_history_ambiguous/);
   const broken = new DatabaseSync(join(copiedStore, 'queue.sqlite'));
