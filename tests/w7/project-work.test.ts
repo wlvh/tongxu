@@ -6,7 +6,8 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {git} from '../../src/repair-workspace.js';
+import {git,exists} from '../../src/repair-workspace.js';
+import {QueueStore} from '../../src/queue-store.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
 import {ProjectWorkStore} from '../../src/project-work-store.js';
@@ -112,4 +113,45 @@ test('missing preparation conditions preserve new initial words without rewritin
   let next:any;for(let i=0;i<100;i++){const state=await work.state(scope);if(!state.works.find(w=>w.id===fixedId)?.active){next=(await work.detail(scope,fixedId)).draft;break;}await new Promise(r=>setTimeout(r,5));}
   assert.equal(next.version,2);assert.equal(next.goal,'new words before missing location');assert.equal(next.draftGoal==null,true);assert.equal(next.prior[0].version,1);
   store.close();
+});
+
+// Explicit queue/report boundary samples below exercise selection and real Git
+// receipt recovery; they do not claim these rows came from a model execution.
+async function pendingWork(t:any,latestKind:string){
+  const f=await repository(t),execution=join(f.root,'execution');await mkdir(execution);await git(execution,['init']);await git(execution,['fetch',f.source,f.H]);await git(execution,['checkout','--detach','FETCH_HEAD']);
+  const commit=async(value:number)=>{await writeFile(join(execution,'code.mjs'),`export const value=${value};\n`);await git(execution,['add','.']);await git(execution,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','explicit result sample '+value]);return git(execution,['rev-parse','HEAD']);};
+  const H1=await commit(2),H2=await commit(3),root=join(f.root,'work'),id=randomUUID(),directory=join(root,'works',id,'version-1'),workspace=join(directory,'result'),branch='tongxu/result',evidence=join(directory,'receipt-'+H1);
+  const options={repositoryPath:f.source,executionWorkspace:execution,H:H1,previous:null,branch,workspace,evidence},spawn=childProcess.spawn;
+  childProcess.spawn=((command:any,args:any,opts:any)=>{if(command==='/usr/bin/git'&&args.includes(workspace)&&args.includes('checkout'))throw Error('fixture_original_receipt_interruption');return spawn(command,args,opts);}) as typeof spawn;syncBuiltinESMExports();
+  try{await assert.rejects(receiveWorkResult(options),/fixture_original_receipt_interruption/);}finally{childProcess.spawn=spawn;syncBuiltinESMExports();}
+  const original={id:'original',plan:{workspace:execution,resourceRequests:['resource-original']},result:{status:'completed',completeCapture:true,H1}},latest={id:'latest',plan:{workspace:execution,resourceRequests:['resource-latest']},...(latestKind==='incomplete'?{}:{result:latestKind==='completed'?{status:'completed',completeCapture:true,H1:H2}:latestKind==='no_change'?{status:'no_change',completeCapture:true,H1:null}:{status:'active_or_unknown',completeCapture:false,H1:null}})};
+  let rows:any[]=[original,latest],unsettled='',badReport='';const reports:string[]=[],resources:string[]=[];
+  t.mock.method(QueueStore,'open',async()=>({issueImplementations:()=>({requests:()=>rows}),resources:()=>({settledOutcome:(id:string)=>{resources.push(id);return id!==unsettled;}}),close:()=>{}}));
+  const controls={report:async(_source:string,id:string)=>{reports.push(id);if(id===badReport)throw Error('fixture_original_report_changed');return {};}};
+  const catalog={entries:[{store:join(f.root,'explicit-queue-sample'),objects:f.source,target:branch}]},catalogPath=join(f.root,'catalog.json');await writeFile(catalogPath,canonical(catalog));
+  const store=await ProjectWorkStore.open(root),at=new Date().toISOString();t.after(()=>store.close());store.create(scope,{id,conversationId:randomUUID(),issue:{number:1,title:'explicit receipt sample',body:'fixed',url:'https://github.com/fixture/project/issues/1',bodySha256:hash('fixed')},goal:'fixed',createdAt:at,updatedAt:at,revision:0,version:1,requestId:'original',stage:'waiting_return',problem:'fixture_original_receipt_interruption',source:'work',catalog:{path:catalogPath,sha256:hash(canonical(catalog))},delivery:{H:H1,previous:null,branch,workspace,status:'pending',problem:'fixture_original_receipt_interruption'},events:[]});
+  const config={root,executor:{path:join(f.root,'unused.json'),sha256:'a'.repeat(64)},verification:{kind:'docker',client:'/usr/bin/unused-docker',endpoint:'unix:///unused.sock',image:'sha256:'+'a'.repeat(64),node:'/usr/bin/node'},owner:{ownerId:1,executorId:1,ghExecutable:'/usr/bin/unused-gh',ghSha256:'a'.repeat(64),executionKind:'fixture',maxObservationAgeMs:300000,maxGrantDurationMs:86400000,sharedAccountApproval:{decisionReference:{kind:'recorded_user_decision',sha256:'a'.repeat(64)}}}},path=join(f.root,'config.json');await writeFile(path,canonical(config));
+  const work=await ProjectWork.open({path,sha256:hash(canonical(config))},async()=>{throw Error('must_not_read_issue');},async()=>{},async()=>controls as any);t.after(()=>work.drain());
+  return {...f,work,id,H1,H2,workspace,branch,directory,evidence,reports,resources,state:()=>store.get(scope,id),setRows:(value:any[])=>{rows=value;},original,latest,setUnsettled:(value:string)=>{unsettled=value;},setBadReport:(value:string)=>{badReport=value;}};
+}
+for(const latest of ['no_change','incomplete','unknown'])for(const blocked of [false,true])test('pending receipt precedes explicit '+latest+' latest sample, original blocked='+blocked,async t=>{
+  const f=await pendingWork(t,latest),intent=await readFile(join(f.evidence,'receipt-'+f.H1+'.json'));
+  if(blocked)await writeFile(join(f.workspace,'external.txt'),'retain external work');
+  if(blocked)await assert.rejects(f.work.receive(scope,f.id),/workspace_changed/);else if(latest==='no_change')assert.deepEqual(await f.work.receive(scope,f.id),{status:'no_change',newCommit:false});else await assert.rejects(f.work.receive(scope,f.id),/result_not_complete/);
+  const d=f.state();assert.equal(d.delivery!.H,f.H1);assert.equal(d.delivery!.status,blocked?'pending':'received');assert.equal(d.stage,blocked||latest!=='no_change'?'waiting_return':'delivered');assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);if(!blocked)assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H1);
+  assert.deepEqual(f.reports,['original']);assert.deepEqual(f.resources,['resource-original']);assert.deepEqual(await readFile(join(f.evidence,'receipt-'+f.H1+'.json')),intent);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
+});
+for(const match of ['missing','ambiguous'])test('pending receipt refuses '+match+' original result sample',async t=>{
+  const f=await pendingWork(t,'completed');f.setRows(match==='missing'?[f.latest]:[f.original,{...f.original,id:'other'},f.latest]);await assert.rejects(f.work.receive(scope,f.id),/pending_result_not_unique/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,'pending');assert.deepEqual(f.reports,[]);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
+});
+for(const target of ['original','latest'])for(const gate of ['report','resources'])test('pending receipt retains exact result at explicit '+target+' '+gate+' refusal',async t=>{
+  const f=await pendingWork(t,'completed');if(gate==='report')f.setBadReport(target);else f.setUnsettled('resource-'+target);
+  await assert.rejects(f.work.receive(scope,f.id),gate==='report'?/report_changed/:/resources_unresolved/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,target==='original'?'pending':'received');assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);
+});
+test('a failed latest receipt retains H2 pending with the truly received H1 predecessor',async t=>{
+  const f=await pendingWork(t,'completed'),spawn=childProcess.spawn;
+  childProcess.spawn=((command:any,args:any,opts:any)=>{if(command==='/usr/bin/git'&&args.includes(f.workspace)&&args.includes('merge'))throw Error('fixture_latest_receipt_interruption');return spawn(command,args,opts);}) as typeof spawn;syncBuiltinESMExports();
+  try{await assert.rejects(f.work.receive(scope,f.id),/fixture_latest_receipt_interruption/);}finally{childProcess.spawn=spawn;syncBuiltinESMExports();}
+  const d=f.state();assert.equal(d.delivery!.H,f.H2);assert.equal(d.delivery!.previous,f.H1);assert.equal(d.delivery!.status,'pending');assert.equal(d.stage,'waiting_return');assert.equal(d.events.filter(e=>e.kind==='result_received').length,1);assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H1);
+  assert.equal((await f.work.receive(scope,f.id) as any).H,f.H2);assert.equal(f.state().delivery!.status,'received');assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H2);
 });

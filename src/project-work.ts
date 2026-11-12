@@ -170,11 +170,28 @@ export class ProjectWork{
   }
   private async receiveOriginal(scope:ProjectChatScope,id:string){
     let d=this.store.get(scope,id);if(!d.catalog||!d.source)throw new Error('project_work_original_not_registered');await this.verify(scope);
-    const catalog=JSON.parse((await regular(d.catalog.path)).toString()),entry=catalog.entries[0] as ImplementationEntry;
+    const source=d.source,catalog=JSON.parse((await regular(d.catalog.path)).toString()),entry=catalog.entries[0] as ImplementationEntry;
     if(hash(canonical(catalog))!==d.catalog.sha256)throw new Error('project_work_fixed_input_changed');
+    // A later supplement does not replace an already persisted receipt. Finish
+    // that exact result before selecting the latest request (including no-change
+    // or unfinished requests). Ambiguous/missing original results stay pending.
+    if(d.delivery?.status==='pending'){
+      const pending=d.delivery,q=await QueueStore.open(entry.store);let original:Row;
+      try{
+        const matches=q.issueImplementations().requests(source).filter(r=>r.result?.status==='completed'&&r.result.completeCapture&&r.result.H1===pending.H);
+        if(matches.length!==1)throw new Error('project_work_pending_result_not_unique');
+        original=matches[0]!;
+        for(const resource of original.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
+      }finally{q.close();}
+      const controls=await this.controls(scope);await controls.report(source,original.id);
+      try{
+        await receiveWorkResult({repositoryPath:entry.objects,executionWorkspace:original.plan.workspace,H:pending.H,previous:pending.previous,branch:pending.branch,workspace:pending.workspace,evidence:join(this.directory(d),'receipt-'+pending.H)});
+        d=this.store.get(scope,id);d=this.save(scope,{...d,stage:'delivered',problem:null,delivery:{...pending,status:'received',problem:null}},'result_received',pending.H+' returned to the real project branch and result workspace');
+      }catch(e){d=this.store.get(scope,id);this.save(scope,{...d,stage:'waiting_return',problem:problem(e),delivery:{...pending,problem:problem(e)}},'result_receipt_waiting',problem(e));throw e;}
+    }
     const q=await QueueStore.open(entry.store);let latest:Row;
-    try{const rows=q.issueImplementations().requests(d.source);latest=rows.at(-1)!;if(latest?.result?.status==='no_change'&&latest.result.completeCapture){this.save(scope,{...d,stage:d.delivery?.status==='received'?'delivered':'no_change',problem:null},'no_change','Original complete no-change result retained; no new commit claimed');return {status:'no_change',newCommit:false};}if(!latest||latest.result?.status!=='completed'||!latest.result.completeCapture||!latest.result.H1)throw new Error('project_work_result_not_complete');for(const resource of latest.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');}finally{q.close();}
-    const controls=await this.controls(scope);await controls.report(d.source,latest.id);
+    try{const rows=q.issueImplementations().requests(source);latest=rows.at(-1)!;if(latest?.result?.status==='no_change'&&latest.result.completeCapture){this.save(scope,{...d,stage:d.delivery?.status==='received'?'delivered':'no_change',problem:null},'no_change','Original complete no-change result retained; no new commit claimed');return {status:'no_change',newCommit:false};}if(!latest||latest.result?.status!=='completed'||!latest.result.completeCapture||!latest.result.H1){this.save(scope,{...d,stage:'waiting_return',problem:'project_work_result_not_complete'},'result_waiting','Latest original request has no complete committed result');throw new Error('project_work_result_not_complete');}for(const resource of latest.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');}finally{q.close();}
+    const controls=await this.controls(scope);await controls.report(source,latest.id);
     const H=latest.result.H1;
     if(d.delivery?.status==='received'&&d.delivery.H===H){
       try{return await receiveWorkResult({repositoryPath:entry.objects,executionWorkspace:latest.plan.workspace,H,previous:d.delivery.previous,branch:entry.target,workspace:d.delivery.workspace,evidence:join(this.directory(d),'receipt-'+H)});}

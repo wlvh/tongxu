@@ -1,3 +1,5 @@
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
 import {randomUUID} from 'node:crypto';
 import {messageFixture} from '../w6/message-fixture.js';
 import {messageAuthority} from '../w6/message-authority-fixture.js';
@@ -280,9 +282,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    assert.deepEqual(detail.draft.preparation.proposal.allowedPaths,['src/normalize.mjs']);const confirm={version:detail.draft.version,proposalSha256:detail.draft.preparation.proposalDigest};
    const start=await post('/api/project-work/'+id+'/start',confirm);assert.equal(start.status,202);assert.equal(start.value.waitingForOwner,true);const ownerURL=new URL(ownerURLs.at(-1)!),capability=ownerURL.hash.slice(1);assert.equal(JSON.stringify(start.value).includes(capability),false);
    assert.equal((await get('/api/project-owner')).status,401);const ownerHeaders={Authorization:'Owner '+capability,Origin:url.origin,'Content-Type':'application/json'};const rejected=await fetch(url.origin+'/api/project-owner/approve',{method:'POST',headers:{...ownerHeaders,Origin:'https://untrusted.invalid'},body:'{}'});assert.equal(rejected.status,403);
-   if(fault){const hold=fault.startsWith('stop-')?fault.slice(5):fault==='drain'?'adopt-comments':null;await writeFile(originals+'.fault',JSON.stringify(hold?{hold}:fault==='unknown-adopt'?{unknown:true}:{lose:fault==='lost-delegate'?2:1}));if(hold)await writeFile(originals+'.hold','1');}
+   if(fault&&fault!=='receipt-pending'){const hold=fault.startsWith('stop-')?fault.slice(5):fault==='drain'?'adopt-comments':null;await writeFile(originals+'.fault',JSON.stringify(hold?{hold}:fault==='unknown-adopt'?{unknown:true}:{lose:fault==='lost-delegate'?2:1}));if(hold)await writeFile(originals+'.hold','1');}
+   const spawn=childProcess.spawn;let receiptFailures=0;
+   const resultDirectory=join(config.root,'works',id,'version-1'),resultWorkspace=join(resultDirectory,'result');
+   if(fault==='receipt-pending'){
+     childProcess.spawn=((command:any,args:any,options:any)=>{if(command==='/usr/bin/git'&&args.includes(resultWorkspace)&&args.includes('checkout')){receiptFailures++;throw Error('fixture_receipt_checkout_interruption');}return spawn(command,args,options);}) as typeof spawn;syncBuiltinESMExports();
+     t.after(()=>{childProcess.spawn=spawn;syncBuiltinESMExports();});
+   }
    const approval=await fetch(url.origin+'/api/project-owner/approve',{method:'POST',headers:ownerHeaders,body:'{}'});assert.equal(approval.status,202);
-   if(fault){
+   if(fault&&fault!=='receipt-pending'){
      if(fault.startsWith('stop-')||fault==='drain'){
        for(let i=0;i<500&&!await exists(originals+'.waiting');i++)await new Promise(r=>setTimeout(r,10));assert.equal(await exists(originals+'.waiting'),true);
        const expected=fault==='stop-delegate-comments'?1:0;assert.equal(JSON.parse(await readFile(originals,'utf8')).length,expected);
@@ -301,6 +309,23 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      if(fault==='unknown-adopt'){const waiting=await wait(id,'authorizing');assert.equal(waiting.problem,'project_work_owner_source_unknown');assert.equal(JSON.parse(await readFile(originals,'utf8')).length,0);assert.deepEqual(await readFile(f.trace),before);return;}
      await wait(id,'delivered');const recovered=(await get('/api/project-work/'+id)).value;assert.equal(recovered.draft.version,1);assert.equal(recovered.draft.requestId,detail.draft.requestId);assert.equal(recovered.execution.reports.length,1);assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);assert.equal((await readFile(f.trace,'utf8')).split('model-input').length-1,2);assert.equal(await git(f.objects,['rev-parse',recovered.draft.delivery.branch]),recovered.execution.reports[0].H1);return;
    }
+   if(fault==='receipt-pending'){
+     const pending=async()=>{for(let i=0;i<1000;i++){const v=(await get('/api/project-work/'+id)).value;if(v.draft.delivery?.problem==='fixture_receipt_checkout_interruption')return v;await new Promise(r=>setTimeout(r,25));}throw Error('pending_receipt_timeout');};
+     const original=await pending(),h1=original.execution.reports[0].H1,receipt1=join(resultDirectory,'receipt-'+h1),intent1=join(receipt1,'receipt-'+h1+'.json'),intentBytes=await readFile(intent1),oldEvidence=await readdir(receipt1);
+     const target=(await get('/api/project-secretary')).value.supplementTargets.find((x:any)=>x.source===original.draft.source&&x.requestId===original.draft.requestId);assert.ok(target);const {title,...identity}=target;
+     assert.equal((await post('/api/project-secretary/supplement',{conversationId:first.conversationId,requestId:randomUUID(),target:identity,text:'Add the original-scope comment while the original receipt is interrupted.'})).status,202);
+     let supplemented:any;for(let i=0;i<1000;i++){const v=(await get('/api/project-work/'+id)).value;if(v.execution.reports.length===2&&v.execution.requests.every((r:any)=>!r.controllerActive)&&receiptFailures>=2){supplemented=v;break;}await new Promise(r=>setTimeout(r,25));}assert.ok(supplemented,'normal supplement must finish and attempt its callback');
+     // Keep the original fault through the automatic H2 callback, then let one
+     // normal receive request recover H1 and advance H2 without another model.
+     assert.equal((await post('/api/project-work/'+id+'/receive',{})).status,503);
+     const blocked=(await get('/api/project-work/'+id)).value,h2=supplemented.execution.reports[1].H1;assert.notEqual(h2,h1);assert.equal(blocked.draft.delivery.H,h1);assert.equal(blocked.draft.delivery.status,'pending');assert.equal(await exists(join(resultDirectory,'receipt-'+h2)),false);
+     const trace=await readFile(f.trace);childProcess.spawn=spawn;syncBuiltinESMExports();
+     const received=await post('/api/project-work/'+id+'/receive',{});assert.equal(received.status,200,JSON.stringify(received));assert.equal(received.value.H,h2);
+     const done=(await get('/api/project-work/'+id)).value;assert.equal(done.draft.stage,'delivered');assert.equal(done.draft.delivery.status,'received');assert.equal(done.draft.delivery.H,h2);assert.equal(done.draft.delivery.previous,h1);assert.equal(await git(f.objects,['rev-parse',done.draft.delivery.branch]),h2);assert.equal(await git(resultWorkspace,['rev-parse','HEAD']),h2);
+     assert.deepEqual(done.execution.reports, supplemented.execution.reports);assert.deepEqual(await readFile(intent1),intentBytes);for(const name of oldEvidence)assert.ok((await readdir(receipt1)).includes(name));assert.deepEqual(done.draft.events.filter((e:any)=>e.kind==='result_received').map((e:any)=>e.detail.split(' ')[0]),[h1,h2]);
+     const h2Intent=JSON.parse(await readFile(join(resultDirectory,'receipt-'+h2,'receipt-'+h2+'.json'),'utf8'));assert.equal(h2Intent.previous,h1);assert.equal((await post('/api/project-work/'+id+'/receive',{})).status,200);assert.deepEqual(await readFile(f.trace),trace);
+     await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');assert.equal((await post('/api/project-work/'+id+'/receive',{})).status,200);assert.equal((await get('/api/project-work/'+id)).value.draft.delivery.H,h2);assert.deepEqual(await readFile(f.trace),trace);assert.equal(trace.toString().split('model-input').length-1,3);return;
+   }
    await wait(id,'delivered');const afterApproval=await readFile(f.trace);const duplicateApproval=await fetch(url.origin+'/api/project-owner/approve',{method:'POST',headers:ownerHeaders,body:'{}'});assert.equal((await duplicateApproval.json() as any).duplicate,true);assert.deepEqual(await readFile(f.trace),afterApproval);
    const done=(await get('/api/project-work/'+id)).value;assert.equal(done.execution.reports.length,1);assert.equal(done.execution.reports[0].tests.passed,true);assert.equal(await git(f.objects,['rev-parse',done.draft.delivery.branch]),done.execution.reports[0].H1);assert.equal(await git(f.objects,['rev-parse','HEAD']),H);
    const trace=await readFile(f.trace);await post('/api/project-work/'+id+'/start',confirm);for(let i=0;i<100&&((await get('/api/project-work')).value.works.find((w:any)=>w.id===id).active);i++)await new Promise(r=>setTimeout(r,20));assert.deepEqual(await readFile(f.trace),trace);
@@ -312,6 +337,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  const before=await readFile(f.trace);await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');const final=await get('/api/project-work');assert.equal(final.value.works.length,2);assert.equal(final.value.settings.repositoryPath,f.objects);for(const w of final.value.works)assert.equal((await get('/api/project-work/'+w.id)).value.execution.reports.length,w.id===first.requestId?2:1);assert.deepEqual(await readFile(f.trace),before);
  assert.equal(JSON.parse(await readFile(originals,'utf8')).length,4);assert.equal((await readFile(f.trace,'utf8')).trim().split('\n').map(s=>JSON.parse(s)).filter(x=>x.kind==='model-input').length,5);
 }
+
+test('first use normal HTTP receives the pending original result before its completed supplement',t=>firstUseProjectWork(t,'receipt-pending'));
 
 test('first use normal HTTP prepares two unconfigured works, preserves a missing-location draft, returns real branches and cold reads without duplicate inputs',t=>firstUseProjectWork(t));
 for(const fault of ['stop-adopt-comments','stop-adopt-user','stop-delegate-comments','drain','lost-adopt','lost-delegate','unknown-adopt'])test('first use normal HTTP original authorization fault: '+fault,t=>firstUseProjectWork(t,fault));
