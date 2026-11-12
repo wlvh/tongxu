@@ -1,3 +1,4 @@
+import {workValidationInvocation,workPreparationBudgets,workValidationProblem} from './work-validation-invocation.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,writeFile} from 'node:fs/promises';
@@ -8,7 +9,7 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {regular,safeEnv} from './repair-workspace.js';
 import {exactKeys} from './authority-contract.js';
-import {parseWorkProposal,preparationToolSpecs,workPreparationInstructions,workPreparationInstructionsV1,type WorkProposal} from './project-work-contract.js';
+import {parseWorkProposal,preparationToolSpecs,workPreparationInstructions,workPreparationInstructionsV1,workPreparationInstructionsV2,type WorkProposal} from './project-work-contract.js';
 import type {RepairConfig} from './repair.js';
 import {checkConfig,type Candidate} from './live-codex.js';
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
@@ -34,8 +35,8 @@ export async function repositoryFile(source:FixedRepository,path:string){
 }
 export async function checkWorkMaterial(source:FixedRepository,proposal:WorkProposal){
   let total=0,editable=0;const material:Record<string,unknown>={};for(const path of proposal.materialPaths){const f=await repositoryFile(source,path);total+=f.bytes;material[path]=f;if(proposal.allowedPaths.includes(path))editable+=f.bytes;}
-  // Generic task observations cover this work's editable paths; the original
-  // implementation separately retains and checks all protected/read material.
+  // This is the initial editable/material budget. Generic observations use a
+  // representative file; execution still checks the complete selected tree.
   if(editable>384*1024||Buffer.byteLength(canonical(material))>768*1024)throw new Error('project_work_material_limit');
   return total;
 }
@@ -46,7 +47,7 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const T=(await fixedGit(o.source,['rev-parse',o.source.H+'^{tree}'])).toString().trim();
   const validationEnvironment=await prepareWorkEnvironment(o.verification,join(o.directory,'environment'),o.source.H,T,{refresh:check,start:effect=>{if(o.stopped())throw new Error('project_work_preparation_stopped');effect();}});
   await check();
-  const input={preparationVersion:2,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
+  const input={preparationVersion:3,validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
   const bytes=canonical(input);if(Buffer.byteLength(bytes)>512*1024)throw new Error('project_work_preparation_input_limit');
   await writeFile(join(o.directory,'input.json'),bytes,{flag:'wx',mode:0o600});
   const candidate:Candidate={kind:'local-git',repository:'local/project-work-preparation',pr:null,H:o.source.H,B:o.source.H,target:'preparation'},observations:unknown[]=[];let calls=0,total=0,turnStarted:number|null=null;
@@ -76,7 +77,9 @@ export async function readWorkProposal(directory:string,source:FixedRepository){
   await checkPreparationBinding(directory,source,bytes,instructions,capture.binding);
   const result=JSON.parse(capture.turns[0].final.text);if(!['confirmed','needs_owner'].includes(result.decision)||result.candidateH!==source.H)throw new Error('project_work_preparation_invalid_result');
   const proposal=parseWorkProposal(JSON.parse(result.report));if(result.decision==='confirmed'&&!proposal.questions.length){const names=new Set((await repositoryFiles(source)).map(f=>f.path));for(const path of proposal.allowedPaths){const parts=path.split('/');for(let n=0;n<parts.length;n++){const instruction=[...parts.slice(0,n),'AGENTS.md'].join('/');if(names.has(instruction)&&(!proposal.materialPaths.includes(instruction)||!proposal.protectedPaths.includes(instruction)))throw new Error('project_work_instructions_material_required');}}}await checkWorkMaterial(source,proposal);
-  return {proposal,proposalDigest:hash(canonical(proposal)),inputSha256:hash(bytes),captureSha256:hash(await regular(join(directory,'native','completed.json'))),ready:result.decision==='confirmed'&&!proposal.questions.length,...(input.preparationVersion===2?{preparationVersion:2 as const,validationEnvironment:input.validationEnvironment}:{})};
+  const fileList=await repositoryFiles(source),observationFits=proposal.allowedPaths.some(path=>fileList.some(f=>f.path===path&&f.bytes<=64*1024));
+  const validationProblem=(proposal.validation.script?workValidationProblem(proposal.validation.script):null)??(!proposal.questions.length&&!observationFits?'project_work_observation_material_limit':null);
+  return {proposal,...(validationProblem?{validationProblem}:{}),proposalDigest:hash(canonical(proposal)),inputSha256:hash(bytes),captureSha256:hash(await regular(join(directory,'native','completed.json'))),ready:result.decision==='confirmed'&&!proposal.questions.length&&!validationProblem,...([2,3].includes(input.preparationVersion)?{preparationVersion:input.preparationVersion as 2|3,validationEnvironment:input.validationEnvironment}:{})};
 }
 
 async function readPreparationInput(directory:string,source:FixedRepository){
@@ -85,11 +88,12 @@ async function readPreparationInput(directory:string,source:FixedRepository){
   const sent=(await regular(join(directory,'native','stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l)),starts=sent.filter((m:any)=>m.method==='thread/start'),turns=sent.filter((m:any)=>m.method==='turn/start');
   if(starts.length!==1||turns.length!==1)throw new Error('project_work_preparation_capture_changed');
   const instructions=starts[0].params.baseInstructions;
-  if(instructions===workPreparationInstructionsV1){if(input.preparationVersion!==undefined||input.validationEnvironment!==undefined)throw new Error('project_work_preparation_version_changed');}
-  else if(instructions===workPreparationInstructions){
-    if(input.preparationVersion!==2)throw new Error('project_work_preparation_version_changed');
+  if(instructions===workPreparationInstructionsV1){if(input.preparationVersion!==undefined||input.validationEnvironment!==undefined||input.validationInvocation!==undefined||input.materialBudgets!==undefined)throw new Error('project_work_preparation_version_changed');}
+  else if(instructions===workPreparationInstructions||instructions===workPreparationInstructionsV2){
+    if(input.preparationVersion!==(instructions===workPreparationInstructions?3:2))throw new Error('project_work_preparation_version_changed');
     const T=(await fixedGit(source,['rev-parse',source.H+'^{tree}'])).toString().trim();
     if(canonical(input.validationEnvironment)!==canonical(await readWorkEnvironment(join(directory,'environment'),source.H,T)))throw new Error('project_work_environment_binding_changed');
+    if(input.preparationVersion===3){const evidence=JSON.parse((await regular(join(directory,'environment/observation.json'))).toString());if(canonical(input.validationInvocation)!==canonical(workValidationInvocation(evidence.configuration.node))||canonical(input.materialBudgets)!==canonical(workPreparationBudgets))throw new Error('project_work_validation_invocation_changed');}else if(input.validationInvocation!==undefined||input.materialBudgets!==undefined)throw new Error('project_work_preparation_version_changed');
   }else throw new Error('project_work_preparation_version_unknown');
   if(!isDeepStrictEqual(starts[0].params.dynamicTools,preparationToolSpecs)||turns[0].params.input?.[0]?.text!==bytes.toString()||!isDeepStrictEqual(turns[0].params.outputSchema,findingSchema))throw new Error('project_work_preparation_capture_changed');
   return {bytes,input,instructions,sent,start:starts[0],turn:turns[0]};

@@ -143,3 +143,7 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 首次准备反馈的定向回归沿 `tests/w7/project-work.test.ts` / `project-work-ui.test.ts` 核 V1 完整读回/确认/开始预检、未知或错配提示拒绝、旧失败有界诊断冷读零写入/零输入、损坏/错角色/缺结束证明拒绝、项目测试准确路径边界和显式新版本页面。`tests/project-repair/integration.test.ts` 的 fixed preparation environment / rejected preparation questions 场景使用真实登记 Docker，核无源/结果/依赖挂载、固定能力原件及绑定/损坏/停止/未知拒绝，以及正常 HTTP 冷开问题回流与同工作新版本。模型为合成协议程序；私有实际任务原件只在仓外另核，不提交到测试。
 
 首次输入补修继续复用原 integration fixture：合成完整 Git 含未选且未检出的不变链接，真实 Docker 基线与实现测试、历史早登记后同 request/op 的唯一显式首次输入、旧全部原件字节保留、原资源不重复及成果/原负责人统一捕获读取。直接/UI 反例核链接改动与 stage/gitlink、metadata 的活跃控制者/子进程、inputs/intent/tool/部分帧/损坏/改动/歧义/停止，刷新和重复零新增；`implementation-native-profile.test.ts` 核同步门的 inputs/intent→派发→turn/start 次序及拒绝派发时零 wire 输入。私有实际工作只做仓外只读核对；旧控制者仍活跃时预期拒绝，真正接续须正常停止旧宿主后在正常页面另行留证。
+
+已知验证失败的定向回归沿原project-repair integration的 `bounded known validation correction` 场景：未来范围中的可读定义、旧S材料同意、原partial树到首次H1、owner proof／补充／正常接回、再次failed／H1空及占用收尾、中断未知不重发、树／索引／保护／捕获／测试／定义／预算／来源／停止拒绝与冷读。模型及Owner为明确协议样例，Git／HTTP／SQLite／Docker实际执行，真实任务另记。原unselected-source日志隐私、first-input旧捕获及单轮正常成功继续回归；project-work-ui核显式按钮，既有V1/V2提示原字节不变。
+
+V3准备回归核固定ESM eval/cwd/no-args调用和预算输入绑定；旧完整不兼容require/argv方案仍可读但确认／开始前拒绝。大editable场景以真实Git/Docker使改后总量超过384KiB，保留全部Grant/material写范围，同时小TaskObservation、owner proof、补充／接回可用；改变未被代表观察的获准路径仍由完整树当前性门拒绝。

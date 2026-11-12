@@ -4,7 +4,7 @@ import {promisify} from 'node:util';
 import {canonical} from './comparison.js';
 import type {ProjectChatScope} from './project-chat.js';
 const exec=promisify(execFile);
-type Confirmation={scope:ProjectChatScope;work:string;payload:{version:number;proposalSha256:string};preview:unknown;expiresAt:number;decision:null|'approved'|'declined'};
+type Confirmation={scope:ProjectChatScope;work:string;payload:{version:number;proposalSha256:string;purpose?:'validation'};preview:unknown;expiresAt:number;decision:null|'approved'|'declined'};
 /** Read access can request a local prompt, never receive its approval secret.
  * The short-lived, single-use capability goes only to the host's browser. */
 export class ProjectWorkOwner{
