@@ -1,5 +1,5 @@
 import {projectChatToolsFor,projectChatInstructionsFor} from './project-chat-contract.js';
-import {preparationToolSpecs} from './project-work-contract.js';
+import {preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,preparationSchemaFamily,isWorkPreparationSchema,parseWorkPreparationOutput} from './project-work-contract.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels,recordedCodexTurnChoice} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
@@ -90,6 +90,7 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
   // The caller subsequently checks the reference against its fixed original
   // manifest/batch. Here the common native transport checks the actual schema
   // and candidate before recording this turn as a complete structured result.
+  if(preparationSchemaFamily(schema)){if(!isWorkPreparationSchema(schema,candidate.H))throw new Error('native_project_preparation_output_required');parseWorkPreparationOutput(report,candidate.H);return;}
   if(isDeepStrictEqual(schema,formalReviewSchema)){validateFormalReview(report,candidate.H,report?.reviewedInputSha256);return;}
   if(isDeepStrictEqual(schema,formalVerificationSchema)){validateFormalVerificationReport(report,candidate.H,report?.batchSha256);return;}
   if(isMessageReplySchema(schema)){
@@ -307,7 +308,12 @@ export class BoundedCodexSession {
     }finally{this.turnRunning=false;}
   }
   private async runTurn(input: string, candidate: Candidate, schema: unknown) {
-    if(this.o.projectPreparation&&!isDeepStrictEqual(schema,findingSchema))throw new Error('native_project_preparation_output_required');
+    const typed=preparationSchemaFamily(schema);
+    if(typed&&!this.o.projectPreparation)throw new Error('native_project_preparation_output_profile_mismatch');
+    if(this.o.projectPreparation){
+      const version=workPreparationVersion(this.o.system,JSON.parse(input),candidate.H),expected=version===4?workPreparationSchema(candidate.H):findingSchema;
+      if(!isDeepStrictEqual(schema,expected)||version<4&&this.o.executionKind!=='fixture')throw new Error('native_project_preparation_output_required');
+    }
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
     if ((this.o.role==='implementer')!==isImplementationOutputSchema(schema,candidate.H))throw new Error('native_implementation_output_profile_mismatch');
     const expectedSecretarySchema = this.o.projectSecretary ? projectSecretarySchema : secretarySchema;
@@ -449,7 +455,16 @@ export async function readRepairSession(directory: string) {
   if (exit.code !== 0 || exit.signal != null || hash(raw) !== receipt.rawSha256 || hash(input) !== receipt.inputSha256 || hash(await readFile(join(directory, 'expected-requests.json'))) !== receipt.contractSha256 || hash(await readFile(join(directory, 'reconciled-tools.json'))) !== receipt.reconciledSha256 || !isDeepStrictEqual(binding, receipt.binding)) throw new Error('controlled_capture_integrity_failed');
   const sent = input.toString().trim().split('\n').map(x => JSON.parse(x));
   if (!isDeepStrictEqual(canonicalReplies(sent, raw, pairs, true), canonicalReplies(contract, raw, pairs, false)) || pairs.some((x: any) => !sent.some(m => isDeepStrictEqual(m, x.response)))) throw new Error('controlled_request_contract_changed');
-  const parsed = parseCodexResult(raw, binding, pairs); if (parsed.status !== 'final_observed') throw new Error('controlled_result_not_final'); return parsed;
+  const parsed = parseCodexResult(raw, binding, pairs); if (parsed.status !== 'final_observed') throw new Error('controlled_result_not_final');
+  const starts=sent.filter(m=>m.method==='thread/start'),turns=sent.filter(m=>m.method==='turn/start');
+  if(binding.candidate?.repository==='local/project-work-preparation'||starts.some(m=>m.params?.baseInstructions===workPreparationInstructions)||turns.some(m=>preparationSchemaFamily(m.params?.outputSchema))){
+    const inputs=await read('inputs.json'),c=binding.candidate,start=starts[0],turn=turns[0];
+    if(binding.role!=='verifier_fact'||c.kind!=='local-git'||c.repository!=='local/project-work-preparation'||c.pr!==null||c.B!==c.H||c.target!=='preparation'||starts.length!==1||turns.length!==1||parsed.turns.length!==1||inputs.length!==1||binding.run!==dirname(directory)||binding.workspace!==join(directory,'workspace')||!isDeepStrictEqual(start.params.dynamicTools,preparationToolSpecs)||turn.params.input?.length!==1||turn.params.input[0].type!=='text')throw new Error('native_project_preparation_capture_changed');
+    const text=turn.params.input[0].text,version=workPreparationVersion(start.params.baseInstructions,JSON.parse(text),c.H),schema=version===4?workPreparationSchema(c.H):findingSchema;
+    if(!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
+    validateNativeReport(JSON.parse(parsed.turns[0]!.final!.text),c,schema);
+  }
+  return parsed;
 }
 
 /** A rejected judgment can still have a known, fully closed transport. This
