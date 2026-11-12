@@ -1,3 +1,4 @@
+import {requireFirstSendProof,type FirstSendProof} from './implementation-first-send.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
@@ -101,10 +102,23 @@ export class IssueImplementations {
     this.checkValue(source,id,observations);this.event('dispatched',this.key(source,id),{operation:f.selected!.operation,newNativeContext:true,nativeSessionResumed:false});
     this.updateOperation(f.selected!.operation,{...this.operation(f.selected!.operation),phase:'active_or_unknown'});
   });}
+  firstSendCandidate(source:string,id:string){
+    const f=this.fixed(source,id),dispatches=f.events.filter(e=>e.kind==='issue_implementation_dispatched');
+    if(f.terminal||f.events.some(e=>e.kind==='issue_implementation_stopped')||!f.selected||dispatches.length!==1||f.events.some(e=>e.kind==='issue_implementation_first_input'))throw new Error('implementation_first_send_not_available');
+    return {dispatchEvent:dispatches[0]!.id,plan:f.selected.plan};
+  }
+  firstInput(source:string,id:string,proof:FirstSendProof,observations:OwnerObservation[]){return this.transaction(()=>{
+    const record=requireFirstSendProof(proof),candidate=this.firstSendCandidate(source,id),f=this.fixed(source,id);
+    if(candidate.dispatchEvent!==record.dispatchEvent||f.registered.requestSha256!==record.requestSha256||candidate.plan.sha256!==record.planSha256||candidate.plan.operationRoot!==record.operationRoot)throw new Error('implementation_first_send_binding_changed');
+    this.checkValue(source,id,observations);
+    const ref={nativeDirectory:record.nativeDirectory,requestSha256:record.requestSha256,planSha256:record.planSha256,firstInputSha256:record.firstInputSha256,proofSha256:hash(canonical(record)),proof:record};
+    this.event('first_input',this.key(source,id),ref);return ref;
+  });}
   complete(source:string,id:string,result:Row){return this.transaction(()=>{
     const f=this.fixed(source,id);if(f.terminal){if(f.terminal.resultSha256!==hash(canonical(result)))throw new Error('implementation_terminal_is_fixed');return this.state(source,id);}
     if(!f.dispatched||!result.completeCapture||result.task!==f.request.task||result.requestId!==id||!['completed','no_change','owner_decision_required'].includes(result.status))throw new Error('implementation_complete_capture_required');
     if(result.H0!==f.request.workspaceRequest.candidate.H||result.status==='completed'&&(!/^[a-f0-9]{40}$/.test(result.H1)||result.H1===result.H0||result.testCandidateBinding?.candidate?.H!==result.H1))throw new Error('implementation_success_commit_required');
+    const continuation=f.events.find(e=>e.kind==='issue_implementation_first_input')?.data;if(canonical(result.firstInputContinuation??null)!==canonical(continuation??null))throw new Error('implementation_first_send_capture_changed');
     const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:f.selected!.operation,resultSha256});
     this.updateOperation(f.selected!.operation,{...this.operation(f.selected!.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
   });}
@@ -145,6 +159,6 @@ export class IssueImplementations {
     const result=JSON.parse(this.bytes(value.resultSha256).toString()),state=result.status==='completed'?'completed':['no_change','cancelled_unstarted'].includes(result.status)?'cancelled':'failed';
     return {state,executionKind:action.executionKind==='fixture'?'fixture':'external',source:'verified_issue_implementation_capture',proof:Buffer.from(canonical({operation,resultSha256:value.resultSha256,state,completeCapture:result.completeCapture,H1:result.H1}))};
   }
-  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
+  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
   requests(source:string){return (this.db.prepare("SELECT data FROM events WHERE kind='issue_implementation_registered' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data).value).filter(e=>e.source===source).map(e=>this.state(source,e.id));}
 }

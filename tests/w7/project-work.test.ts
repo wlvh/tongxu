@@ -2,11 +2,11 @@ import test from 'node:test';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,rm,readdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,readdir,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {git,exists} from '../../src/repair-workspace.js';
+import {git,exists,checkRepairIndex,tree} from '../../src/repair-workspace.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
@@ -197,4 +197,20 @@ test('ended rejected V1 questions are cold readable as unaccepted diagnostics wi
 test('a changed project test can be proposed, while protected paths and the frozen verifier remain distinct',()=>{
   const base={goal:'Synchronize an adopted premise',acceptance:['new behavior'],allowedPaths:['code.mjs','test/existing.test.mjs'],materialPaths:['code.mjs','test/existing.test.mjs','AGENTS.md'],protectedPaths:['AGENTS.md'],validation:{description:'Independent frozen verification',script:'import assert from "node:assert/strict";assert.ok(true);'},questions:[],report:'Path control fixture only; it does not prove the test semantics.'};
   assert.deepEqual(parseWorkProposal(base).allowedPaths,base.allowedPaths);assert.throws(()=>parseWorkProposal({...base,protectedPaths:['AGENTS.md','test/existing.test.mjs']}),/proposal_invalid/);
+});
+
+test('selected Git view preserves only unchanged omitted links; all link changes and gitlinks are refused',async t=>{
+ const f=await repository(t);await symlink('synthetic-never-read-target',join(f.source,'omitted-link'));await git(f.source,['add','omitted-link']);await git(f.source,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic link']);const H=await git(f.source,['rev-parse','HEAD']),workspace=join(f.root,'sparse'),operation=join(f.root,'index-operation');await mkdir(workspace);await mkdir(operation);await git(workspace,['init','--template=']);await git(workspace,['config','core.sparseCheckout','true']);await git(workspace,['config','core.sparseCheckoutCone','false']);await git(workspace,['config','index.sparse','false']);await mkdir(join(workspace,'.git/info'),{recursive:true});await writeFile(join(workspace,'.git/info/sparse-checkout'),'/code.mjs\n');await git(workspace,['fetch',f.source,H]);await git(workspace,['checkout','--detach','FETCH_HEAD']);
+ const current=await tree(workspace,true),view={materialView:'selected_files' as const,materialPaths:['code.mjs']},index=await readFile(join(workspace,'.git/index')),object=await git(workspace,['rev-parse','HEAD:omitted-link']);assert.equal(await exists(join(workspace,'omitted-link')),false);
+ await checkRepairIndex(workspace,operation,['code.mjs'],current,view);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current),/unsupported/);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,{...view,materialPaths:['code.mjs','omitted-link']}),/unsupported/);
+ for(const change of ['delete','object','mode','new','stage','gitlink'] as const){
+  if(change==='delete')await git(workspace,['update-index','--force-remove','omitted-link']);
+  if(change==='object'){await writeFile(join(f.root,'new-link-target'),'changed');const oid=await git(workspace,['hash-object','-w',join(f.root,'new-link-target')]);await git(workspace,['update-index','--cacheinfo','120000,'+oid+',omitted-link']);}
+  if(change==='mode')await git(workspace,['update-index','--cacheinfo','100644,'+object+',omitted-link']);
+  if(change==='new')await git(workspace,['update-index','--add','--cacheinfo','120000,'+object+',added-link']);
+  if(change==='gitlink')await git(workspace,['update-index','--add','--cacheinfo','160000,'+H+',module']);
+  if(change==='stage'){await git(workspace,['update-index','--force-remove','omitted-link']);childProcess.execFileSync('/usr/bin/git',['-C',workspace,'update-index','--index-info'],{input:'120000 '+object+' 1\tomitted-link\n'});}
+  await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported|reconciliation/);await writeFile(join(workspace,'.git/index'),index);
+ }
+ await symlink('synthetic-never-read-target',join(workspace,'omitted-link'));await assert.rejects(tree(workspace,true),/unsafe_workspace_entry/);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported/);await rm(join(workspace,'omitted-link'));assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
 });
