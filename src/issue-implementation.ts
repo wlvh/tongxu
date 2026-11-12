@@ -1,5 +1,6 @@
 import {implementationFirstInput} from './implementation-first-input.js';
 import {checkFirstSendFiles,type FirstSendProof} from './implementation-first-send.js';
+import {requireValidationFailure,verifyValidationFiles,type ValidationFailureProof,readFailedValidationTests} from './implementation-validation.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {mkdir,writeFile,readdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -16,7 +17,7 @@ import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
 export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
-export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void};
+export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void;validationDefinition?:unknown};
 
 /** The existing fixed-project preparer is used with an empty finding list.
  * Execution below is a new implementer consumer, never the repair/fact loop. */
@@ -86,7 +87,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     // This report belongs to its original H0. A test tool may also identify a
     // temporary tested commit; only the host can form the final H1 afterwards.
     const outputSchema=implementationOutputSchema(plan.candidate.H);
-    const input=firstSend?firstSend.proof.input:implementationFirstInput(request,plan,initial,baseline);
+    const input=firstSend?firstSend.proof.input:implementationFirstInput(request,plan,initial,baseline,external.validationDefinition);
     const report=await session.turn(input,plan.candidate,outputSchema);
     const sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
     const capture=await readRepairSession(nativeDirectory);
@@ -111,4 +112,35 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   }catch(error){
     save(join(operation,firstSend?'first-input/failure.json':'failure.json'),{reason:error instanceof Error?error.message:'implementation_unknown',originalFilesPreserved:true,automaticRetry:false});throw error;
   }finally{await session?.close();}
+}
+
+export function validationCorrectionInput(proof:ValidationFailureProof,request:ImplementationRequest,definition:unknown){
+ requireValidationFailure(proof);return 'Explicitly correct the retained implementation within the same adopted scope. This is one new bounded context, not a resume, repeated original input, new task or authority grant. Preserve the original H0 and protected files. Read the frozen validation definition but never edit it. Actually use the registered tools to fix and test the current tree. A lexical check failing does not prove a business requirement should change; never weaken the validator. Return implemented with your complete honest report; only the host can form H1 after passing tests.\n'+canonical({request,candidate:proof.plan.candidate,contract:proof.plan.project.contract,source:projectMaterial(proof.current,proof.plan.project),allowedPaths:request.workspaceRequest.allowedPaths,protectedPaths:proof.plan.project.protectedPaths,originalReport:proof.record.report,failedTests:proof.record.tests,validationDefinition:definition});
+}
+/** One explicit correction of a proved healthy validation failure. All new
+ * artifacts are children; the original initial tree remains the commit base. */
+export async function runValidationCorrection(proof:ValidationFailureProof,request:ImplementationRequest,reference:Row,input:string,firstInputContinuation:Row|null,external:ImplementationGate){
+ const record=requireValidationFailure(proof),plan=proof.plan as RepairPlan,operation=record.operationRoot,directory=join(operation,'validation-correction'),grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
+ await verifyValidationFiles(record);validateProjectContract(plan.project!,grant);
+ if(reference.failureSha256!==hash(canonical(record))||reference.inputSha256!==hash(input)||reference.nativeDirectory!==join(directory,'native')||grant.maxRepairRounds!==1||plan.project?.materialView!=='selected_files')throw new Error('implementation_validation_binding_changed');
+ const billing=plan.billing;if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||hash(await regular(billing.evidence))!==billing.evidenceSha256||!Number.isFinite(Date.parse(billing.observedAt))||Date.now()-Date.parse(billing.observedAt)>86400000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
+ const lease=await acquireWorkspace(plan.workspace,operation,false,grant);let session:BoundedCodexSession|undefined;
+ const refresh=async()=>{await external.refresh();await verifyValidationFiles(record);if(await exists(join(operation,'revoked.json')))throw new Error('repair_revoked');};
+ const gate=new RepairTools(plan.workspace,directory,grant,lease,plan.nodeExecutable,structuredClone(proof.current),plan.candidate.H,async d=>{const t=await testProject(plan.workspace,d,plan.project!,{refresh,start:effect=>external.check(effect)});if(!t.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(t);},effect=>external.check(effect),refresh,{materialView:'selected_files',materialPaths:[...plan.project!.materialPaths,...plan.project!.protectedPaths]});
+ try{
+  await mkdir(join(directory,'commit'),{mode:0o700});
+  session=await BoundedCodexSession.start({executable:plan.codexExecutable,directory:reference.nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:proof.manifest.prompt.system,inputManifestSha256:proof.manifest.inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,gate,beforeTurn:refresh,beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
+  await gate.handoff(session.sessionId,'new_implementer_context');const report=await session.turn(input,plan.candidate,implementationOutputSchema(plan.candidate.H)),sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
+  const capture=await readRepairSession(reference.nativeDirectory);if(capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_validation_complete_implemented_required');
+  const current=await gate.check(),changed=scopeChanges(proof.initial,current,grant.allowedPaths);
+  const testsDirectory=join(directory,'post-repair'),tests=await testProject(plan.workspace,testsDirectory,plan.project!,{refresh,start:effect=>external.check(effect)});
+  if(!tests.executionHealthy)throw new Error('project_test_environment_or_capture_failed');
+  const common={requestId:request.id,task:request.task,H0:request.workspaceRequest.candidate.H,report,sessionId,completeCapture:true,newNativeContext:true,nativeSessionResumed:false,validationCorrection:reference,...(firstInputContinuation?{firstInputContinuation}:{}),testsDirectory,tests,modelTests:projectModelTestResult(tests),treeSha256:treeHash(current)};
+  if(!tests.passed){await readFailedValidationTests(testsDirectory,plan);const result={...common,status:'failed' as const,H1:null};save(join(directory,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,'failed');return result;}
+  if(report.decision!=='implemented'||!changed.length||!['tongxu_read_file','tongxu_replace_file','tongxu_run_tests'].every(n=>exercised.includes(n)))throw new Error('implementation_actual_change_and_tests_required');
+  const calls=await Promise.all((await readdir(join(directory,'calls'))).filter(n=>n.endsWith('.json')).map(async n=>JSON.parse((await regular(join(directory,'calls',n))).toString())));
+  if(!calls.some(c=>c.request.tool==='tongxu_run_tests'&&JSON.parse(c.response.contentItems[0].text).passed===true&&JSON.parse(c.response.contentItems[0].text).candidateTreeSha256===treeHash(current)))throw new Error('implementation_agent_did_not_test_current_tree');
+  const committed=await commitScopedCandidate(plan.workspace,directory,'commit',1,plan.candidate,current,grant,gate,'implement: correct registered validation for adopted Issue #'+request.issue.number,'tongxu controlled implementation runner');await assertUnselectedGitUnchanged(plan.workspace,request.workspaceRequest.candidate.H,committed.candidate.H,[...plan.project!.materialPaths,...plan.project!.protectedPaths]);
+  const result={...common,status:'completed' as const,H1:committed.candidate.H,candidate:committed.candidate,changed,diff:committed.diff,testCandidateBinding:await bindProjectTestToCandidate(plan.workspace,committed.candidate,tests),formalReview:false,published:false,userAccepted:false};save(join(directory,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,'completed');return result;
+ }catch(e){save(join(directory,'failure.json'),{reason:e instanceof Error?e.message:'implementation_unknown',automaticRetry:false,originalFilesPreserved:true});throw e;}finally{await session?.close();}
 }

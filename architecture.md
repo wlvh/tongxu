@@ -149,3 +149,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 `implementation-first-send` 只在原实施控制器的显式动作内核准一次仅元数据结束的旧请求，原基线与 `implementation-first-input` 重建的完整首条输入一起封存；普通读取只派生资格。原 store 追加关联事件，原锁、claim、批准与资源继续使用。`implementation-owner-feedback` 的报告与负责人证明共同解析被该事件绑定的捕获目录，旧无关联结果保持原目录。新请求沿 Native 的同步 dispatchGate 在写 turn/start 前持久化派发；公共结果解析器不变。
 
 共享变动为 selected_files 的完整 Git 稀疏工作树、Docker材料副本与测试树核验、原实施发送前的基线测试、生成目录的当前版本准入以及工作台启动器资源清单。必须回归原 repair/native/authority/resources、project-repair integration、w7 项目切换／秘书／启动器；新增单元／页面测试见 project-work*.test.ts。无第二套执行器或批准账本。能力和部署边界见[首次工作](docs/project_first_use.md)。
+
+`implementation-validation`只读核单次完整原生报告、注册写回执及健康失败Docker原件，固定已知失败；原store登记唯一验证修正，`issue-implementation`在同operation追加一次上下文／测试／提交。`work-validation-definition`核产品准备与准确材料同意，复用原Authority基线来源，不增动作授权。结果／owner proof通过共同capture读取链核新旧原件；失败终态不进入成功补充／接回。
+
+新selected_files任务的TaskDefinition.paths由宿主从固定H选择小代表材料，仅从原allowedPaths选择不超过64KiB的小文件；已有定义原样。TaskObservation仍只承诺其声明路径和完整HEAD/tree，完整当前性另由RepairTools／implementation-owner-feedback及补充前任的全selected树/index/捕获门承担。V3准备显式给出ESM eval/cwd/no argv ABI与分开的材料预算，V1/V2准确分派保持。

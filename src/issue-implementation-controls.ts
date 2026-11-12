@@ -1,6 +1,9 @@
+import {fixedGit} from './project-work-preparation.js';
+import {observeValidationFailure,checkValidationWorkspace,readRecordedValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
+import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
-import {mkdir} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
@@ -15,7 +18,7 @@ import {observeTaskWorkspace} from './task-source.js';
 import {readOwnerSource,type OwnerObservation} from './authority-source.js';
 import {prepareResourceRequest,resourceAction} from './resource-claims.js';
 import {withQueueRepairLock} from './queue-repair.js';
-import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from './issue-implementation.js';
+import {prepareIssueImplementation,runIssueImplementation,runValidationCorrection,validationCorrectionInput,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectRequest} from './project-repair.js';
 import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
 import {readFirstSendProof} from './implementation-first-send.js';
@@ -64,7 +67,7 @@ export class IssueImplementationControls{
         if(!this.entries.some(entry=>entry.store===store)&&!sources.some(source=>source.store===store&&source.item===state.task))continue;
         const request=q.issueImplementations().original(id,requestId),definition=q.tasks().definition(state.task);
         if(definition.repository.toLowerCase()!==this.repository.toLowerCase()||request.task!==state.task||request.workspaceRequest.candidate.target!==definition.target)throw new Error('implementation_history_project_mismatch');
-        if(state.phase!=='returned'||!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
+        if(state.phase!=='returned'||!['completed','no_change','failed'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
         if(selected)throw new Error('implementation_history_ambiguous');
         selected={id,store,repository:definition.repository,target:definition.target};
       }finally{q.close();}
@@ -99,7 +102,7 @@ export class IssueImplementationControls{
   private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
     await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');if(entry.workRequestId&&body.requestId!==entry.workRequestId&&!followup)throw new Error('implementation_prepared_work_identity_required');const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
-    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined;
+    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined,originalPaths:string[]|undefined;
     try{const previous=previousQueue.issueImplementations().requests(id).find(r=>r.id===body.requestId);if(previous){
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
       original=previousQueue.issueImplementations().original(id,body.requestId);
@@ -107,11 +110,16 @@ export class IssueImplementationControls{
       if(original.continuation)await this.checkSupplementPredecessor(entry,original,previous.phase==='registered'&&!previous.stopped);
       if(previous.phase!=='registered'||previous.stopped)return this.publicState(previous);
       if(original.continuation)entry={...entry,H0:original.workspaceRequest.candidate.H,objects:original.workspaceRequest.objects};
-      originalTitle=previousQueue.tasks().definition(original.task).title;
+      const savedDefinition=previousQueue.tasks().definition(original.task);originalTitle=savedDefinition.title;originalPaths=savedDefinition.paths;
     }}finally{previousQueue.close();}
     const issue=await this.read(adopted.number);if(issue.number!==adopted.number||hash(issue.body)!==adopted.bodySha256)throw new Error('implementation_issue_source_changed');
     const root=join(entry.root,body.requestId),workspace=join(root,'workspace');
-    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:entry.materialView?entry.allowedPaths:entry.materialPaths})));
+    let observedPaths=originalPaths??entry.materialPaths;
+    if(!originalPaths&&entry.materialView==='selected_files'){
+      const candidates=await Promise.all(entry.allowedPaths.map(async path=>({path,bytes:Number((await fixedGit({path:entry.objects,H:entry.H0,repository:entry.repository},['cat-file','-s',entry.H0+':'+path])).toString().trim()),protected:false})));
+      candidates.sort((a,b)=>a.bytes-b.bytes||a.path.localeCompare(b.path));if(!candidates.length||!Number.isSafeInteger(candidates[0]!.bytes)||candidates[0]!.bytes>64*1024)throw new Error('implementation_observation_material_missing');observedPaths=[candidates[0]!.path];
+    }
+    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:observedPaths})));
     const task=developmentTaskId(definition);
     const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'];try{const authority=scopeQueue.authority(),adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
     const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{})};
@@ -188,7 +196,7 @@ export class IssueImplementationControls{
     return {cancelled:true,originalRegistered:true,original:await this.cancel(id,s.id),newModelInputs:0};
   }
   async stopProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}if(!s)throw new Error('project_work_original_not_registered');return this.stop(id,s.id);}
-  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??null,stopped:s.stopped,completeCapture:s.result?.completeCapture===true};}
+  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
   async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
@@ -202,13 +210,13 @@ export class IssueImplementationControls{
   private async execute(id:string,requestId:string,firstSend=false){
     const entry=this.entry(id),q=await QueueStore.open(entry.store);let observations:OwnerObservation[]=[];
     try{
-      const original=q.issueImplementations().state(id,requestId);if(original.result||original.phase==='active_or_unknown'&&!firstSend)return original;
+      const original=q.issueImplementations().state(id,requestId);if(original.result||(original.phase==='active_or_unknown'||original.validationFailure)&&!firstSend)return original;
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
         const refresh=async()=>{
           if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.catalogHash(entry.id))throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
           const authority=q.authority(),profile=authority.configuration().profile,refs=new Map<string,ReturnType<typeof authority.sourceRequests>[number]>();
-          for(const authorization of Object.values(fixed.authorization) as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
+          for(const authorization of [...Object.values(fixed.authorization),...(this.definitionConsentBaseline(q,entry,original)?[this.definitionConsentBaseline(q,entry,original)!]:[])] as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
           const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];
           for(const ref of refs.values())observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,ref.proposalSha256)));
           for(const resource of fixed.resourceRequests as string[]){let state:Row;try{state=q.resources().status(resource);}catch(error){if((error as Error).message==='original_resource_request_required')continue;throw error;}if(!['prepared_not_sent','refused'].includes(state.state))await resourceAction(entry.store,resource,'lookup','implementer');}
@@ -220,11 +228,12 @@ export class IssueImplementationControls{
         for(const request of fixed.resourceRequestDefinitions as Row[]){const prepared=await prepareResourceRequest(entry.store,Buffer.from(canonical(request)),'implementer');if(prepared.state==='prepared_not_sent')await resourceAction(entry.store,prepared.id,'claim','implementer');}
         }
         await refresh();
+        const validationDefinition=await this.readableDefinition(entry,original,observations,false);
         const continuation=proof?q.issueImplementations().firstInput(id,requestId,proof,observations):null;
         if(proof){await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});await releaseWorkspace(fixed.workspace,proof.lease,'verified_unstarted_metadata');}
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        const result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
@@ -232,6 +241,52 @@ export class IssueImplementationControls{
       });
     }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{q.close();}
   }
+  private async persistValidationFailure(q:QueueStore,id:string,requestId:string,p:ValidationFailureProof){
+    const path=join(p.record.operationRoot,'validation-failure.json'),bytes=canonical(p.record);try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path,32*1024*1024)).toString()!==bytes)throw e;}q.issueImplementations().recordValidationFailure(id,requestId,p);
+  }
+  private definitionConsentBaseline(q:QueueStore,entry:Entry,s:Row){return (s.plan.request.continuation&&entry.workRequestId?q.issueImplementations().state(entry.id,entry.workRequestId):s).definitionConsent?.baseline as string|undefined;}
+  private async readableDefinition(entry:Entry,state:Row,observations:OwnerObservation[],required:boolean){
+    if(entry.workRequestId&&!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(!entry.workRequestId){if(required)throw new Error('work_validation_definition_not_product_work');return undefined;}const d=await workValidationDefinition(entry,state.plan.request);
+    if(definitionScopeAllows(state.plan.request,d))return d;
+    const q=await QueueStore.open(entry.store);try{
+      const root=state.plan.request.continuation?q.issueImplementations().state(entry.id,entry.workRequestId!):state,ref=root.definitionConsent;if(!ref){if(required)throw new Error('work_validation_material_consent_required');return undefined;}
+      const contents=q.authority().baselineContents(ref.baseline),expected=definitionConsentContents(d);if(contents.adoption!==d.adoption||contents.material.some(m=>m.text!==expected[m.role as keyof typeof expected]))throw new Error('work_validation_material_consent_changed');
+      q.authority().adoptionBaseline(d.adoption,observations);q.authority().acceptedBaseline(ref.baseline,contents.material.map(({name,sha256})=>({name,sha256})),observations);return {...d,materialConsent:ref.baseline};
+    }finally{q.close();}
+  }
+  async validationState(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const s=q.issueImplementations().state(id,requestId);if(s.result||s.validationCorrection)return null;const p=await observeValidationFailure(s);let reason:string|null=null;
+    try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');await workValidationDefinition(entry,s.plan.request);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
+    return {eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
+  }catch{return null;}finally{q.close();}}
+  async definitionConsentPreview(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);
+    const d=await workValidationDefinition(entry,s.plan.request);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
+    const proposal=q.authority().baselineProposal(d.adoption,definitionConsentContents(d)),prepared=q.authority().prepare('work-validation-material-'+hash(canonical(proposal)),Buffer.from(canonical(proposal)));
+    return {proposalSha256:prepared.proposalSha256,definition:d,adoption:d.adoption};
+  }finally{q.close();}}
+  async recordDefinitionConsent(id:string,requestId:string,baseline:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const s=q.issueImplementations().state(id,requestId),d=await workValidationDefinition(entry,s.plan.request),contents=q.authority().baselineContents(baseline),expected=definitionConsentContents(d);
+    if(contents.adoption!==d.adoption||contents.material.some(m=>m.text!==expected[m.role as keyof typeof expected]))throw new Error('work_validation_material_consent_changed');q.authority().inspectRecordedDecision(baseline);return q.issueImplementations().recordDefinitionConsent(id,requestId,baseline);
+  }finally{q.close();}}
+  async correctValidation(id:string,requestId:string){
+    if(!this.accepting||!messageId(requestId))throw new Error('implementation_request_invalid');await this.catalog();this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');const key=id+':'+requestId;if(this.active.has(key))return {id:requestId,controllerActive:true,duplicate:true};
+    const work=this.executeValidation(id,requestId).then(async s=>{if(s.result?.status==='completed'&&this.finished){const q=await QueueStore.open(this.entry(id).store);try{const r=q.issueImplementations().original(id,requestId);await this.finished(r.continuation?.originalTarget??{source:id,requestId,task:r.task,operation:s.operation});}finally{q.close();}}return s;});this.active.set(key,work);work.catch(()=>{}).finally(()=>this.active.delete(key));return {id:requestId,controllerActive:true,registrationIsNotExecution:true};
+  }
+  private async executeValidation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const original=q.issueImplementations().state(id,requestId);return await withQueueRepairLock(entry.store,original.operation,async()=>{
+      const current=q.issueImplementations().state(id,requestId);if(current.result)return current;if(current.validationCorrection)throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);
+      const p=await observeValidationFailure(current);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);let observations:OwnerObservation[]=[];
+      const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==current.plan.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+        const a=q.authority(),profile=a.configuration().profile,refs=new Map<string,ReturnType<typeof a.sourceRequests>[number]>(),s=q.issueImplementations().state(id,requestId);for(const auth of [...Object.values(current.plan.authorization),...(s.definitionConsent?[s.definitionConsent.baseline]:[])] as string[])for(const r of a.sourceRequests(auth))refs.set(r.proposalSha256,r);
+        const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];for(const r of refs.values())observations.push(await readOwnerSource(profile,r.proposalSha256,r.commentId,join(root,r.proposalSha256)));q.issueImplementations().check(id,requestId,observations);
+      };
+      await refresh();const definition=await this.readableDefinition(entry,q.issueImplementations().state(id,requestId),observations,true),input=validationCorrectionInput(p,current.plan.request,definition);await checkValidationWorkspace(p,true);await refresh();
+      const ref=q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,observations);await mkdir(join(current.plan.operationRoot,'validation-correction'),{mode:0o700});await releaseWorkspace(current.plan.workspace,p.lease as any,'verified_known_validation_failure');
+      const result=await runValidationCorrection(p,current.plan.request,ref,input,current.firstInputContinuation,{refresh,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{q.issueImplementations().check(id,requestId,observations);}});
+      const state=q.issueImplementations().complete(id,requestId,result);if(result.status==='completed')q.tasks().observe(q.tasks().definition(current.task),await observeTaskWorkspace(q.tasks().definition(current.task)));return state;
+    });
+  }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{q.close();}}
   async cancel(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const request=q.issueImplementations().original(id,requestId);if(request.continuation)await this.checkSupplementPredecessor(entry,request,false);
     q.issueImplementations().cancel(id,requestId);const state=q.issueImplementations().state(id,requestId);
@@ -240,7 +295,7 @@ export class IssueImplementationControls{
   }finally{q.close();}}
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const state=q.issueImplementations().state(id,requestId);if(!state.result){if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
+    const state=q.issueImplementations().state(id,requestId);if(!state.result){try{const record=state.validationFailure?await readRecordedValidationFailure(state):(await observeValidationFailure(state)).record;return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};}catch{}if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
     return readImplementationResult(state);
   }finally{q.close();}}
   async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){

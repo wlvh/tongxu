@@ -1,3 +1,4 @@
+import {workValidationProblem,workValidationInvocation} from '../../src/work-validation-invocation.js';
 import test from 'node:test';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
@@ -157,10 +158,10 @@ test('a failed latest receipt retains H2 pending with the truly received H1 pred
 });
 
 // Synthetic preparation captures; no private project source or real model.
-async function preparationCapture(t:any,kind:'complete'|'questions'|'unknown'|'version-mismatch'='complete'){
+async function preparationCapture(t:any,kind:'complete'|'questions'|'unknown'|'version-mismatch'='complete',validationScript?:string){
   const f=await repository(t),{fixture}=await import('../w5/repair-fixture.js'),native=await fixture(t),{BoundedCodexSession,findingSchema}=await import('../../src/repair-native.js'),{workPreparationInstructionsV1,preparationToolSpecs}=await import('../../src/project-work-contract.js');
   const directory=join(f.root,'preparation');await mkdir(directory);
-  const proposal={goal:'Set the selected value',acceptance:['value equals2'],allowedPaths:['code.mjs'],materialPaths:['code.mjs'],protectedPaths:[],validation:{description:'Independent fixed assertion',script:"import assert from 'node:assert/strict';import{value}from './code.mjs';assert.equal(value,2);"},questions:kind==='questions'?['Synthetic old premise conflicts with the adopted result.']:[],report:'Explicit protocol fixture, not a real project result.'};
+  const proposal={goal:'Set the selected value',acceptance:['value equals2'],allowedPaths:['code.mjs'],materialPaths:['code.mjs'],protectedPaths:[],validation:{description:'Independent fixed assertion',script:validationScript??"import assert from 'node:assert/strict';import{value}from './code.mjs';assert.equal(value,2);"},questions:kind==='questions'?['Synthetic old premise conflicts with the adopted result.']:[],report:'Explicit protocol fixture, not a real project result.'};
   const source={path:f.source,H:f.H,repository:'fixture/project'},input={kind:'project_work_engineering_preparation',source,issue:{number:1},userGoal:'exact',files:[],...(kind==='version-mismatch'?{preparationVersion:2}:{})},bytes=canonical(input);await writeFile(join(directory,'input.json'),bytes);
   let code=await readFile(native.config.codexExecutable,'utf8');code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){${kind==='questions'?`emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic old premise conflicts with the adopted result.',options:null}],text:'This is a synthetic question, not a final result.'}}});`:''}finish({candidateH:context.source.H,decision:'${kind==='questions'?'needs_owner':'confirmed'}',report:JSON.stringify(${JSON.stringify(proposal)})});return;}if(stage==='tongxu_read_file'){`);
   code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){tool('tongxu_repository_file',{path:'code.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");await writeFile(native.config.codexExecutable,code);
@@ -213,4 +214,15 @@ test('selected Git view preserves only unchanged omitted links; all link changes
   await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported|reconciliation/);await writeFile(join(workspace,'.git/index'),index);
  }
  await symlink('synthetic-never-read-target',join(workspace,'omitted-link'));await assert.rejects(tree(workspace,true),/unsafe_workspace_entry/);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported/);await rm(join(workspace,'omitted-link'));assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
+});
+
+test('fixed validation invocation explains ESM/cwd/no argv and narrowly refuses the two unsupported forms without execution',()=>{
+ assert.deepEqual(workValidationInvocation('/fixed/node').argv,['/fixed/node','--input-type=module','--eval','<frozen validation.script>']);assert.equal(workValidationInvocation('/fixed/node').cwd,'/work');assert.equal(workValidationInvocation('/fixed/node').timeoutMs,30000);
+ assert.equal(workValidationProblem("const fs=require('node:fs');"),'project_work_validation_esm_import_required');assert.equal(workValidationProblem("import assert from 'node:assert/strict';assert.equal(process.argv.length,3);"),'project_work_validation_no_script_arguments');assert.equal(workValidationProblem("const root=process.argv[2];"),'project_work_validation_no_script_arguments');
+ assert.equal(workValidationProblem("import fs from 'node:fs';const root=process.cwd();"),null);assert.equal(workValidationProblem("// require('data'); process.argv[2]\nconst text='require process.argv';"),null);assert.equal(workValidationProblem("import{createRequire}from'node:module';const require=createRequire(import.meta.url);require('node:fs');"),null);
+});
+
+for(const script of ["const fs=require('node:fs');", "const root=process.argv[2];"])test('legacy complete proposal stays readable but known incompatible invocation cannot start: '+script,async t=>{
+ const f=await preparationCapture(t,'complete',script),{readWorkProposal}=await import('../../src/project-work-preparation.js'),r=await readWorkProposal(f.directory,f.source),trace=await readFile(f.trace);assert.equal(r.ready,false);assert.ok(r.validationProblem);assert.equal(r.proposal.validation.script,script);assert.equal(r.proposalDigest,hash(canonical(f.proposal)));const d={version:1,stage:'prepared',stopRequested:false,issue:{number:1,body:'fixed',bodySha256:hash('fixed')},preparation:{directory:f.directory,repositoryPath:f.source.path,H:f.H,proposal:r.proposal}};
+ const w=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(d)},active:new Map(),verify:async()=>{},readIssue:async()=>({...d.issue,defaultHead:f.H})});await assert.rejects(w.confirmation(scope,'fixture',{version:1,proposalSha256:r.proposalDigest}),/project_work_validation_/);assert.deepEqual(await readFile(f.trace),trace);
 });

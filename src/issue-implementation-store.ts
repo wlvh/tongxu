@@ -1,3 +1,4 @@
+import {requireValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
 import {requireFirstSendProof,type FirstSendProof} from './implementation-first-send.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {canonical} from './comparison.js';
@@ -86,6 +87,8 @@ export class IssueImplementations {
     const f=this.fixed(source,id),s=f.selected;
     if(!s||f.terminal)throw new Error('implementation_request_not_active');
     if(f.events.some(e=>e.kind==='issue_implementation_stopped'))throw new Error('implementation_stopped');
+    const owner=f.request.continuation?this.fixed(source,f.request.continuation.originalTarget.requestId):f,consent=owner.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data;
+    if(consent){const contents=this.authority.baselineContents(consent.baseline);if(contents.adoption!==f.request.adoptedScope.adoption)throw new Error('work_validation_material_consent_changed');this.authority.acceptedBaseline(consent.baseline,contents.material.map(({name,sha256})=>({name,sha256})),observations);}
     const current=this.tasks.current(f.request.task),op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(s.operation) as Row,claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(s.operation) as Row;
     if(!op||op.status!=='running'||!claim||claim.generation!==op.generation||current.packet!==f.registered.packet||current.fingerprint!==f.registered.fingerprint)throw new Error('implementation_original_binding_changed');
     if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind IN ('implementation','investment') AND stopped=1").get(current.context.scope.id))throw new Error('implementation_stopped');
@@ -114,11 +117,24 @@ export class IssueImplementations {
     const ref={nativeDirectory:record.nativeDirectory,requestSha256:record.requestSha256,planSha256:record.planSha256,firstInputSha256:record.firstInputSha256,proofSha256:hash(canonical(record)),proof:record};
     this.event('first_input',this.key(source,id),ref);return ref;
   });}
+  recordValidationFailure(source:string,id:string,proof:ValidationFailureProof){return this.transaction(()=>{
+    const record=requireValidationFailure(proof),f=this.fixed(source,id);if(!f.dispatched||f.terminal||record.requestSha256!==f.registered.requestSha256||record.operationRoot!==f.selected?.plan.operationRoot||record.planSha256!==f.selected.plan.sha256)throw new Error('implementation_validation_binding_changed');
+    const old=f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data;if(old){if(canonical(old)!==canonical(record))throw new Error('implementation_validation_original_changed');return old;}
+    this.event('validation_failed',this.key(source,id),record);return record;
+  });}
+  recordDefinitionConsent(source:string,id:string,baseline:string){return this.transaction(()=>{const f=this.fixed(source,id);if(f.terminal)throw new Error('implementation_request_ended');const old=f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data;if(old&&old.baseline!==baseline)throw new Error('work_validation_consent_is_fixed');if(!old)this.event('definition_consent',this.key(source,id),{baseline});return {baseline};});}
+  requireValidationBudget(source:string,id:string){const f=this.fixed(source,id);if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');}
+  reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,observations:OwnerObservation[]){return this.transaction(()=>{
+    const f=this.fixed(source,id),record=requireValidationFailure(proof);if(f.events.some(e=>e.kind==='issue_implementation_validation_correction')||!f.events.some(e=>e.kind==='issue_implementation_validation_failed'&&canonical(e.data)===canonical(record)))throw new Error('implementation_validation_correction_consumed');
+    if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');
+    this.checkValue(source,id,observations);const ref={failureSha256:hash(canonical(record)),inputSha256:hash(input),definition, nativeDirectory:record.operationRoot+'/validation-correction/native'};this.event('validation_correction',this.key(source,id),ref);return ref;
+  });}
   complete(source:string,id:string,result:Row){return this.transaction(()=>{
     const f=this.fixed(source,id);if(f.terminal){if(f.terminal.resultSha256!==hash(canonical(result)))throw new Error('implementation_terminal_is_fixed');return this.state(source,id);}
-    if(!f.dispatched||!result.completeCapture||result.task!==f.request.task||result.requestId!==id||!['completed','no_change','owner_decision_required'].includes(result.status))throw new Error('implementation_complete_capture_required');
+    if(!f.dispatched||!result.completeCapture||result.task!==f.request.task||result.requestId!==id||!['completed','no_change','owner_decision_required','failed'].includes(result.status))throw new Error('implementation_complete_capture_required');
     if(result.H0!==f.request.workspaceRequest.candidate.H||result.status==='completed'&&(!/^[a-f0-9]{40}$/.test(result.H1)||result.H1===result.H0||result.testCandidateBinding?.candidate?.H!==result.H1))throw new Error('implementation_success_commit_required');
     const continuation=f.events.find(e=>e.kind==='issue_implementation_first_input')?.data;if(canonical(result.firstInputContinuation??null)!==canonical(continuation??null))throw new Error('implementation_first_send_capture_changed');
+    const correction=f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data;if(canonical(result.validationCorrection??null)!==canonical(correction??null)||result.status==='failed'&&(!correction||result.H1!==null))throw new Error('implementation_validation_capture_changed');
     const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:f.selected!.operation,resultSha256});
     this.updateOperation(f.selected!.operation,{...this.operation(f.selected!.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
   });}
@@ -159,6 +175,6 @@ export class IssueImplementations {
     const result=JSON.parse(this.bytes(value.resultSha256).toString()),state=result.status==='completed'?'completed':['no_change','cancelled_unstarted'].includes(result.status)?'cancelled':'failed';
     return {state,executionKind:action.executionKind==='fixture'?'fixture':'external',source:'verified_issue_implementation_capture',proof:Buffer.from(canonical({operation,resultSha256:value.resultSha256,state,completeCapture:result.completeCapture,H1:result.H1}))};
   }
-  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
+  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.events.some(e=>e.kind==='issue_implementation_validation_failed')&&!f.events.some(e=>e.kind==='issue_implementation_validation_correction')?'validation_failed':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,definitionConsent:f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data??null,validationFailure:f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data??null,validationCorrection:f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
   requests(source:string){return (this.db.prepare("SELECT data FROM events WHERE kind='issue_implementation_registered' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data).value).filter(e=>e.source===source).map(e=>this.state(source,e.id));}
 }

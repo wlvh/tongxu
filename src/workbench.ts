@@ -305,7 +305,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
         if(!exactKeys(JSON.parse(Buffer.concat(chunks).toString()),[]))throw new Error('project_work_confirmation_invalid');
         if(url.pathname.endsWith('/decline'))json(res,200,workOwner.decline(capability[1]!));
-        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload)):work.start(scope,id,payload);}));return;
+        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();if(payload.purpose==='validation')return work.approveValidationMaterial(scope,id,payload);return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload)):work.start(scope,id,payload);}));return;
       }
       if(url.pathname==='/api/entry'||url.pathname.startsWith('/api/github/')){
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
@@ -351,7 +351,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/project-work'){json(res,200,{available:false,works:[]});return;}throw new Error('project_work_not_configured');}
         const work=await openProjectWork(),detail=/^\/api\/project-work\/([0-9a-f-]{36})$/.exec(url.pathname);
         if(req.method==='GET'){if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});else if(detail)json(res,200,await work.detail(selection,detail[1]!));else json(res,404,{error:'route_not_found'});return;}
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input)$/.exec(url.pathname);
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
@@ -360,6 +360,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(url.pathname.endsWith('/create')){const draft=await work.create(selection,body);(await openProjectChat()).ensureWorkConversation(selection,draft.conversationId,'工作：Issue #'+draft.issue.number+' '+draft.issue.title);json(res,200,draft);}
         else if(action?.[2]==='prepare')json(res,202,await withAI(()=>work.prepare(selection,action[1]!,body)));
         else if(action?.[2]==='start'){try{const preview=await work.confirmation(selection,action[1]!,body),result=preview.active||preview.alreadyAuthorized?await withAI(()=>work.start(selection,action[1]!,body)):await workOwner.request(selection,action[1]!,body,preview);if(!preview.active&&!preview.alreadyAuthorized)work.recordActionProblem(selection,action[1]!,body.version,null);json(res,202,result);}catch(e){work.recordActionProblem(selection,action[1]!,body.version,safeError(e));throw e;}}
+        else if(action?.[2]==='correct-validation'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
         else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
         else if(action?.[2]==='receive'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,200,await work.receive(selection,action[1]!));}
         return;
