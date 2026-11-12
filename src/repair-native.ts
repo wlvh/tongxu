@@ -1,4 +1,5 @@
 import {projectChatToolsFor,projectChatInstructionsFor} from './project-chat-contract.js';
+import {preparationToolSpecs} from './project-work-contract.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels,recordedCodexTurnChoice} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
@@ -29,6 +30,7 @@ export type NativeOptions = {
   readonlyMessage?:true;
   projectSecretary?:true;
   projectSecretaryWork?:true;
+  projectPreparation?:true;
   dispatchGate?:<T>(effect:()=>T)=>T;
   expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
@@ -130,6 +132,7 @@ export class BoundedCodexSession {
     if (o.role === 'secretary' && (!o.gate || !o.arrangementSource || !o.beforeTurn)) throw new Error('secretary_query_boundary_missing');
     if((o.secretaryContacts||o.secretaryDeliveries||o.secretaryDeliveryReports||o.secretaryWorkbench||o.secretaryScopeFollowupReports||o.secretaryQueueActions||o.secretaryReceptionReports||o.secretaryTaskSources)&&o.role!=='secretary')throw new Error('secretary_contact_role_required');
     if(o.projectSecretaryWork&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
+    if(o.projectPreparation&&(o.role!=='verifier_fact'||!o.gate||o.projectRepair||o.projectSecretary||o.persistent||!o.beforeTurn||!o.arrangementSource))throw new Error('native_project_preparation_boundary_required');
     if(o.projectSecretary&&(o.role!=='secretary'||o.candidate.kind!=='project-conversation'||!o.gate)||o.candidate.kind==='project-conversation'&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
     if(o.role==='implementer'&&(!o.gate||!o.projectRepair||o.persistent||o.readonlyMessage||!o.arrangementSource))throw new Error('native_implementation_profile_required');
     const session = new BoundedCodexSession(o);try{await session.initialize();return session;}catch(e){await session.close();throw e;}
@@ -182,7 +185,7 @@ export class BoundedCodexSession {
       entry.receipt=receipt;entry.phase='acknowledged';save(join(this.o.directory,prefix+'-ack.json'),receipt);return structuredClone(receipt);
     }catch(e){pending?.catch(()=>{});const reason=e instanceof Error?e.message:'native_control_unknown';entry.problem=reason;if(entry.phase!=='sent')entry.phase='held';save(join(this.o.directory,prefix+'-problem.json'),{requestSha256,reason,phase:entry.phase,automaticResend:false});throw e;}
   }
-  private get toolSpecs() { return this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
+  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);
@@ -283,7 +286,7 @@ export class BoundedCodexSession {
         const current=await this.request('thread/read',{threadId:b.threadId,includeTurns:true});save(join(o.directory,'resume-history.json'),current);
         if(!sameOwnedThread(current.thread,b)||current.thread.status?.type!=='idle'||canonical(current.thread.turns?.map((x:any)=>({id:x.id,status:x.status})))!==canonical(this.previous.parsed.turns.map(x=>({id:x.id,status:x.terminal}))))throw new Error('native_resume_history_changed_or_active');
       }
-      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage||o.role==='implementer' ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
+      this.binding = this.previous?structuredClone(this.previous.binding):{ schemaVersion: 1, ...currentCodexProtocol(t.cliVersion), sourceKind: o.executionKind, role: o.role, run: o.operation, sessionId: t.sessionId, threadId: t.id, turnIds: [], workspace: cwd, scopeSource: o.scopeSource, arrangementSource: o.role === 'secretary'||o.readonlyMessage||o.role==='implementer'||o.projectPreparation ? o.arrangementSource! : 'Issue7 CW01-CW08: fact/impact/synthesis/explicit writer handoff/repair/fresh review', inputManifestSha256: o.inputManifestSha256, promptSha256: hash(o.system), candidate: o.candidate };
       save(join(o.directory, 'binding.json'), this.binding); save(join(o.directory, 'reconciled-tools.json'), this.pairs);
     } catch (e) { await this.close(); throw e; }
   }
@@ -304,6 +307,7 @@ export class BoundedCodexSession {
     }finally{this.turnRunning=false;}
   }
   private async runTurn(input: string, candidate: Candidate, schema: unknown) {
+    if(this.o.projectPreparation&&!isDeepStrictEqual(schema,findingSchema))throw new Error('native_project_preparation_output_required');
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
     if ((this.o.role==='implementer')!==isImplementationOutputSchema(schema,candidate.H))throw new Error('native_implementation_output_profile_mismatch');
     const expectedSecretarySchema = this.o.projectSecretary ? projectSecretarySchema : secretarySchema;

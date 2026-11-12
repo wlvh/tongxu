@@ -51,6 +51,16 @@ export class ProjectChat{
     if(!c||c.account!==scope.account.id||c.repository!==scope.repository.id||c.node_id!==scope.repository.nodeId)throw new Error('project_chat_outside_project');return c;
   }
   private rows(id:string){return this.db.prepare('SELECT * FROM messages WHERE conversation=? ORDER BY rowid').all(id) as Row[];}
+  /** A preparation page may create the same conversation without inventing
+   * a secretary question, answer or model execution. */
+  ensureWorkConversation(scope:ProjectChatScope,id:string,title:string){
+    if(!chatId(id))throw new Error('project_chat_id_invalid');
+    return this.transaction(()=>{const old=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(id);
+      if(old){this.conversationRow(scope,id);return {id,duplicate:true};}
+      const count=this.db.prepare('SELECT COUNT(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;
+      if(count.n>=128)throw new Error('project_chat_history_limit');
+      this.db.prepare('INSERT INTO conversations VALUES(?,?,?,?,?,?,?)').run(id,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,title.slice(0,80),now());return {id,newModelInputs:0};});
+  }
   private directory(id:string){if(!chatId(id))throw new Error('project_chat_id_invalid');return join(this.config.root,id);}
   private async recover(row:Row){
     if(!activePhase(row.phase)||this.active.has(row.id)||row.owner!==this.owner&&row.pid&&alive(row.pid))return;

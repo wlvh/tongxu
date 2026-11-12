@@ -166,3 +166,7 @@ Node 最低要求与实际能力核查见运行环境规范；版本满足不表
 - **Failure / degradation / escalation**：空 finding 但覆盖不足仍待补证；三轮分歧后不强行投票；停止、权限或资源不足时不启动后续动作。H/B/target/采用要求改变后旧报告不放行当前 PR；已发未知和失去持有权的原事实会话不换 ID 重发。真正业务取舍沿原 Issue 保存问题和答复，没有获准写入路径时明确待记录。
 - **Acceptance assertion**：本地 H2 不等于远端发布；准确远端 head、对应 PR 修复记录和当前新材料核清后才新审。每轮新 reviewer/new batch 独立，修复确属本批原 fact session/thread；单轮完整捕获不冒称原生进程已经退出。发布返工使用原记录并按同 head 去重；查看、重开和直接 PASS 后新增模型输入为零。
 - **Evidence**：`tests/w5/formal-*.test.ts`、`tests/w7/formal-workbench.test.ts` 及共享领域回归；[正式入口、安装条件与证据范围](docs/formal_pr_review.md)。协议样例、真实 Docker、真实模型和本人接受分别报告。
+
+## 项目首次准备、执行和成果回流（Issue114）
+
+项目首页、Issue 详情及秘书工作入口打开同一持久草案；首次填写项目文件夹，同序只读调查范围、测试及缺项。准确准备经独立本机本人窗口确认并核真实批准来源后，交原实施消费者。完整成果自动进入真实项目独立分支，补充沿原对话／原责任接回。失败、未知、停止、项目隔离和重复处理沿原记录，读页面不发任务；不包含自动合并。当前支持和具体边界见[首次工作](docs/project_first_use.md)。测试见 `tests/w7/project-work.test.ts`、`tests/w7/project-work-ui.test.ts` 及原 project-repair integration 的 first use / selected material 场景；真实使用另记。

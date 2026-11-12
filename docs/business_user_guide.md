@@ -79,3 +79,5 @@
 ## 8. Feedback and Ownership
 
 反馈沿本仓库[原 Issue 或新 Issue](https://github.com/wlvh/tongxu/issues)关联入口、预期与实际，删除私人材料。没有单独配置文档值班负责人或紧急响应时限，GitHub 留言不表示已有人接手。本机安装与私人记录由实际操作者管理，本页不承诺远程代管。
+
+项目第一次从 Issue 开始实际工作，见[首次工作准备与成果返回](project_first_use.md)。项目设置可复用；三个入口、本人确认、原实施和同项目成果分支沿同一工作保存。
