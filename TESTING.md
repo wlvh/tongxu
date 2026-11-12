@@ -137,3 +137,5 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 ## Issue114 首次使用直接验证
 
 `tests/w7/project-work.test.ts` 核设置／草案冷重开、项目隔离、固定Git读取、脏工作目录不覆盖、完整成果分支及接回恢复、本机确认短期能力不泄露和单次消费；`project-work-ui.test.ts` 核三个入口、重复点击、项目切换迟到响应及失败提示。原 `tests/project-repair/integration.test.ts` 的 selected material / first use normal HTTP 场景使用真实 Docker、Git、SQLite 与显式协议模型，完成两条未登记工作及一次原责任补充、Owner窗口批准、完整树与冷读零新增输入。它们不是正常浏览器或真实模型验收；Issue114 AC1—AC5 必须在合并主干正常入口另行记录。
+
+首次工作的同批故障恢复复用 `tests/project-repair/integration.test.ts`：批准评论读取／账号读取／委托读取中的停止、服务关闭、adopt／delegate丢回执后的同版本页面入口和冷开查回，以及原意图查无评论时零重发。`tests/w7/project-work.test.ts` 核自身目录在init／fetch／checkout边界中断后的同成果接回、外部内容／索引／ref／Git配置／未知进程原件拒绝，并核缺条件时新原话与旧固定目标分开；`project-work-ui.test.ts` 核第二Issue不继承旧工作、原批准按钮和待准备原话冷读。秘书工具参数回归沿 `secretary-entry.test.ts` 的原工作台组合和各开关原生元数据声明。模型与远端仍为明确样例，真实主干正常入口验收另记。

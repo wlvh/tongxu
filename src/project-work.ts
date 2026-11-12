@@ -77,14 +77,14 @@ export class ProjectWork{
   private job(scope:ProjectChatScope,id:string,action:(job:Job)=>Promise<void>){
     if(!this.accepting)throw new Error('project_work_closing');if(this.active.has(id))return {id,active:true,duplicate:true};
     const job:Job={stop:false,promise:Promise.resolve()};this.active.set(id,job);
-    job.promise=action(job).catch(e=>{const d=this.store.get(scope,id);this.save(scope,{...d,stage:d.catalog?'execution':'needs_input',problem:problem(e)},'action_failed',problem(e));}).finally(()=>this.active.delete(id));
+    job.promise=action(job).catch(e=>{const d=this.store.get(scope,id);this.save(scope,{...d,stage:d.catalog?'execution':d.stage==='authorizing'?'authorizing':'needs_input',problem:problem(e)},'action_failed',problem(e));}).finally(()=>this.active.delete(id));
     return {id,active:true,registrationIsNotExecution:true};
   }
   async prepare(scope:ProjectChatScope,id:string,b:Row){
     if(!exactKeys(b,['goal'])||typeof b.goal!=='string'||b.goal.length>2048||b.goal.includes('\0'))throw new Error('project_work_goal_invalid');const current=await this.recover(scope,this.store.get(scope,id));
     if(current.stage==='preparing')return {id,active:!!this.active.get(id),originalRetained:true};
     return this.job(scope,id,async job=>{
-      let d=this.store.get(scope,id);const setting=this.store.settings(scope);if(!setting)throw new Error('project_work_repository_location_required');await this.verify(scope);
+      let d=this.store.get(scope,id);d=this.save(scope,{...d,...(d.version===0&&!d.preparation&&!d.catalog?{goal:b.goal}:{draftGoal:b.goal})},'preparation_goal_saved','Explicit draft input retained before checking conditions; fixed version goal stays unchanged');const setting=this.store.settings(scope);if(!setting)throw new Error('project_work_repository_location_required');await this.verify(scope);
       if(setting.verified===false)throw new Error(setting.problem??'project_work_repository_location_required');
       if(d.catalog){
         const controls=await this.controls(scope),entry=(await controls.state()).find(x=>x.id===d.source);
@@ -99,7 +99,7 @@ export class ProjectWork{
       const version=d.version+1,directory=join(this.config.root,'works',d.id,'version-'+version,'preparation');await mkdir(join(directory,'..'),{recursive:true,mode:0o700});
       const prior=d.version?[...(d.prior??[]),{version:d.version,requestId:d.requestId,source:d.source,catalog:d.catalog,preparation:d.preparation,delivery:d.delivery}]:d.prior;
       if((prior?.length??0)>32)throw new Error('project_work_history_limit');
-      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,stopRequested:false,goal:b.goal,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
+      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,stopRequested:false,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
       const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(),check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
@@ -136,9 +136,16 @@ export class ProjectWork{
       const {store,profile}=await this.initializeQueue(draft,scope),proposal=verified.proposal,source='work-'+draft.id+'-v'+draft.version,target='tongxu/work-'+draft.id+'-v'+draft.version;
       const scopeId=source,body:ScopeBody={goals:[...new Set([proposal.goal,...(draft.goal?[draft.goal]:[])])],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['All unselected files and original user checkout','Original Issue, captures, results and same logical owner for supplements'],acceptance:proposal.acceptance,constraints:['Issue body '+draft.issue.bodySha256,'Initial full Git commit '+draft.preparation!.H,'Work '+draft.id,'Registered test '+hash(proposal.validation.script)]};
       const ownerDirectory=join(this.directory(draft),'owner');
-      const adoption=await applyWorkOwnerProposal(store,profile,{kind:'adopt_scope',scopeId,scopeVersion:'work-v'+draft.version,body,previousAdoption:null},source+'-adopt',ownerDirectory);
+      // This synchronous gate runs inside the sender after its last await.
+      // A prior explicit approval does not cancel a later persisted stop.
+      const beforePost=()=>{
+        const current=this.store.get(scope,id);
+        if(job.stop||!this.accepting||current.stopRequested)throw new Error('project_work_stopped');
+        if(current.version!==draft.version||current.requestId!==draft.requestId||canonical(current.issue)!==canonical(draft.issue)||canonical(current.preparation)!==canonical(draft.preparation))throw new Error('project_work_preparation_changed');
+      };
+      const adoption=await applyWorkOwnerProposal(store,profile,{kind:'adopt_scope',scopeId,scopeVersion:'work-v'+draft.version,body,previousAdoption:null},source+'-adopt',ownerDirectory,beforePost);
       if(job.stop)throw new Error('project_work_preparation_stopped');
-      const delegation=await applyWorkOwnerProposal(store,profile,{kind:'delegate',adoption,roles:['implementer'],targets:[target],actions:['implement','test'],paths:proposal.materialPaths,resourceRefs:[],expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000)).toISOString()},source+'-delegate',ownerDirectory);
+      const delegation=await applyWorkOwnerProposal(store,profile,{kind:'delegate',adoption,roles:['implementer'],targets:[target],actions:['implement','test'],paths:proposal.materialPaths,resourceRefs:[],expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000)).toISOString()},source+'-delegate',ownerDirectory,beforePost);
       if(job.stop||this.store.get(scope,id).stopRequested)throw new Error('project_work_stopped');
       const config=await this.executor(),billingEvidence=join(draft.preparation!.directory,'native','completed.json');
       config.scopeSource=draft.issue.url+' adopted scope '+adoption;

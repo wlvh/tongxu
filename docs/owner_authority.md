@@ -50,7 +50,7 @@ node dist/src/authority-cli.js status --store ABS_QUEUE
 
 上例摘要只是格式样例，实际安装使用所保留准确决定记录的SHA256。设置此字段时，`ownerId`和`executorId`必须是同一个正整数账号ID；未知字段、其他引用形式、错误摘要或不同ID均拒绝。省略字段不补默认值，旧profile的原字节和canonical摘要不变。已配置profile仍固定，不能通过重新configure把旧队列静默切成共享模式；本增量不提供迁移器。
 
-共享模式只条件化原来源读取器的账号相等拒绝，viewer仍须匹配预期执行账号，作者/最后编辑者仍须匹配预期Owner。每份采用、确认、委托和停止决定仍须真实REST/GraphQL原评论、准确提案及原时效、撤销、范围、候选和资源检查。模式本身没有签署、批准或执行权；页面也不会代发评论。
+共享模式只条件化原来源读取器的账号相等拒绝，viewer仍须匹配预期执行账号，作者/最后编辑者仍须匹配预期Owner。每份采用、确认、委托和停止决定仍须真实REST/GraphQL原评论、准确提案及原时效、撤销、范围、候选和资源检查。模式本身没有签署、批准或执行权；旧 OwnerControls 页面也不会代发评论。项目首次工作入口另按[首次工作](project_first_use.md)在独立本机窗口明确确认准确版本后，代发并读回该次范围及实施／测试批准；它仍须经过真实来源核验。
 
 状态、历史决定和成果仅从已绑定的profile派生共享标记，不修改`OwnerObservation`、旧source或事件原件。共享时`ownerDistinctFromExecutor`仍为false，`ownerSourceIdentityAllowed`只表示账号策略允许继续核来源；`operatorSeparationProven`为false。模式决定引用显示`registered_not_rechecked`，即只登记、此处未复验。Owner/关联控制和成果接受页面同时说明“同一GitHub账号，未证明实际操作人与执行者分离”。`userOutcomeAccepted`仍可表示该模式下准确GitHub来源的接受记录，不能解释为独立人证据。
 
