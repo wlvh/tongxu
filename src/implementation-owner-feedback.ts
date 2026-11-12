@@ -1,3 +1,5 @@
+import {implementationCaptureDirectory} from './implementation-first-send.js';
+import {assertUnselectedGitUnchanged} from './repair-workspace.js';
 import {lstatSync,readFileSync,readdirSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
@@ -30,10 +32,11 @@ export function ownerContactReference(value:unknown):value is OwnerContactRefere
 export async function readImplementationResult(state:Row){
  if(!state.result)throw new Error('implementation_original_report_not_available');
  if(state.result.completeCapture){
-  const root=state.plan.operationRoot,capture=await readRepairSession(join(root,'implementer'));
+  const root=state.plan.operationRoot,capture=await readRepairSession(await implementationCaptureDirectory(state));
   const manifest=JSON.parse((await regular(join(root,'input-manifest.json'))).toString()),{inputManifestSha256,...original}=manifest;
   if(hash(canonical(original))!==inputManifestSha256||capture.binding.inputManifestSha256!==inputManifestSha256||capture.binding.role!=='implementer'||capture.binding.sessionId!==state.result.sessionId||manifest.planSha256!==state.plan.sha256||canonical(manifest.request)!==canonical(state.plan.request)||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(state.result.report))throw new Error('implementation_original_capture_changed');
  }
+ if(state.result.status==='completed'&&state.plan.request.workspaceRequest.materialView==='selected_files')await assertUnselectedGitUnchanged(state.plan.workspace,state.H0,state.result.H1,[...state.plan.request.workspaceRequest.materialPaths,...state.plan.request.workspaceRequest.protectedPaths]);
  return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,...state.result};
 }
 
@@ -74,9 +77,11 @@ export async function readImplementationOwnerProof(snapshot:ImplementationOwnerS
  if(result.H0!==r.workspaceRequest.candidate.H||result.status==='completed'&&(!result.H1||result.H1===result.H0||result.testCandidateBinding?.candidate?.H!==H)||definition.workspace!==s.plan.workspace)throw new Error('owner_feedback_original_result_changed');
  const current=await tree(definition.workspace,true),expected=result.status==='completed'?result.treeSha256:treeHash(JSON.parse((await regular(join(s.plan.operationRoot,'initial-tree.json'),20*1024*1024)).toString()));
  if(treeHash(current)!==expected)throw new Error('owner_feedback_source_no_longer_current');
- const native=join(s.plan.operationRoot,'implementer'),names=['completed.json','binding.json','reconciled-tools.json','expected-requests.json','exit.json','stdout.ndjson','stdin.ndjson','stderr.txt','capture-status.json','capture-failure.json','native-tool-transports.json'];
+ const native=await implementationCaptureDirectory(s),names=['completed.json','binding.json','reconciled-tools.json','expected-requests.json','exit.json','stdout.ndjson','stdin.ndjson','stderr.txt','capture-status.json','capture-failure.json','native-tool-transports.json'];
+ if(s.firstInputContinuation)names.push('inputs.json','thread.json','executable.json','effective-config.json','launch.json','process.json');
  const files:FileRef[]=[];for(const name of names){const path=join(native,name);try{files.push({path,sha256:hash(await regular(path,32*1024*1024))});}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;files.push({path,sha256:null});}}
  for(const name of ['input-manifest.json','initial-tree.json']){const path=join(s.plan.operationRoot,name);files.push({path,sha256:hash(await regular(path,20*1024*1024))});}
+ for(const [name,sha256] of Object.entries(s.firstInputContinuation?.proof.files??{}) as Array<[string,string]>)files.push({path:join(r.workspaceRequest.executionRoot,name),sha256});
  const observation=await observeTaskWorkspace(definition);
  if(observation.head!==H)throw new Error('owner_feedback_source_no_longer_current');
  const proof:ImplementationOwnerProof={target:snapshot.target,logicalOwner:s.logicalOwner,resultSha256:hash(canonical(s.result)),H,treeSha256:expected,adoption:r.adoptedScope.adoption,definition,observation,files,

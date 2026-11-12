@@ -139,3 +139,7 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 `tests/w7/project-work.test.ts` 核设置／草案冷重开、项目隔离、固定Git读取、脏工作目录不覆盖、完整成果分支及接回恢复、本机确认短期能力不泄露和单次消费；`project-work-ui.test.ts` 核三个入口、重复点击、项目切换迟到响应及失败提示。原 `tests/project-repair/integration.test.ts` 的 selected material / first use normal HTTP 场景使用真实 Docker、Git、SQLite 与显式协议模型，完成两条未登记工作及一次原责任补充、Owner窗口批准、完整树与冷读零新增输入。它们不是正常浏览器或真实模型验收；Issue114 AC1—AC5 必须在合并主干正常入口另行记录。
 
 首次工作的同批故障恢复复用 `tests/project-repair/integration.test.ts`：批准评论读取／账号读取／委托读取中的停止、服务关闭、adopt／delegate丢回执后的同版本页面入口和冷开查回，以及原意图查无评论时零重发。`tests/w7/project-work.test.ts` 核自身目录在init／fetch／checkout边界中断后的同成果接回、外部内容／索引／ref／Git配置／未知进程原件拒绝，并核缺条件时新原话与旧固定目标分开；`project-work-ui.test.ts` 核第二Issue不继承旧工作、原批准按钮和待准备原话冷读。秘书工具参数回归沿 `secretary-entry.test.ts` 的原工作台组合和各开关原生元数据声明。模型与远端仍为明确样例，真实主干正常入口验收另记。
+
+首次准备反馈的定向回归沿 `tests/w7/project-work.test.ts` / `project-work-ui.test.ts` 核 V1 完整读回/确认/开始预检、未知或错配提示拒绝、旧失败有界诊断冷读零写入/零输入、损坏/错角色/缺结束证明拒绝、项目测试准确路径边界和显式新版本页面。`tests/project-repair/integration.test.ts` 的 fixed preparation environment / rejected preparation questions 场景使用真实登记 Docker，核无源/结果/依赖挂载、固定能力原件及绑定/损坏/停止/未知拒绝，以及正常 HTTP 冷开问题回流与同工作新版本。模型为合成协议程序；私有实际任务原件只在仓外另核，不提交到测试。
+
+首次输入补修继续复用原 integration fixture：合成完整 Git 含未选且未检出的不变链接，真实 Docker 基线与实现测试、历史早登记后同 request/op 的唯一显式首次输入、旧全部原件字节保留、原资源不重复及成果/原负责人统一捕获读取。直接/UI 反例核链接改动与 stage/gitlink、metadata 的活跃控制者/子进程、inputs/intent/tool/部分帧/损坏/改动/歧义/停止，刷新和重复零新增；`implementation-native-profile.test.ts` 核同步门的 inputs/intent→派发→turn/start 次序及拒绝派发时零 wire 输入。私有实际工作只做仓外只读核对；旧控制者仍活跃时预期拒绝，真正接续须正常停止旧宿主后在正常页面另行留证。

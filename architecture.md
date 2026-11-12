@@ -146,4 +146,6 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `workbench → project-work → project-work-preparation → BoundedCodexSession` 只读调查固定 Git 材料；`project-work-store` 保存设置／草案／版本及原请求引用。查看钥匙只请求宿主打开短期 `project-work-owner` 窗口，准确确认后由 `project-work-runtime` 发布并读回真实批准，再编译不可变单条目录交原 `issue-implementation-controls → issue-implementation`。后者及原 QueueStore 仍是派发／权限／资源／报告事实来源。完成回调把完整提交接回真实项目独立分支与成果目录，补充复用原责任，历史仍从原消费者读取。
 
+`implementation-first-send` 只在原实施控制器的显式动作内核准一次仅元数据结束的旧请求，原基线与 `implementation-first-input` 重建的完整首条输入一起封存；普通读取只派生资格。原 store 追加关联事件，原锁、claim、批准与资源继续使用。`implementation-owner-feedback` 的报告与负责人证明共同解析被该事件绑定的捕获目录，旧无关联结果保持原目录。新请求沿 Native 的同步 dispatchGate 在写 turn/start 前持久化派发；公共结果解析器不变。
+
 共享变动为 selected_files 的完整 Git 稀疏工作树、Docker材料副本与测试树核验、原实施发送前的基线测试、生成目录的当前版本准入以及工作台启动器资源清单。必须回归原 repair/native/authority/resources、project-repair integration、w7 项目切换／秘书／启动器；新增单元／页面测试见 project-work*.test.ts。无第二套执行器或批准账本。能力和部署边界见[首次工作](docs/project_first_use.md)。

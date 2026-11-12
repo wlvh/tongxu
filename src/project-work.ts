@@ -1,8 +1,9 @@
 import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {assertWorkEnvironmentEnded} from './project-work-environment.js';
 import {ProjectWorkStore,type ProjectWorkDraft} from './project-work-store.js';
-import {prepareWorkProposal,readWorkProposal,checkWorkMaterial,fixedGit,type FixedRepository} from './project-work-preparation.js';
+import {prepareWorkProposal,readWorkProposal,checkWorkMaterial,fixedGit,readWorkPreparationDiagnostic,type FixedRepository} from './project-work-preparation.js';
 import {applyWorkOwnerProposal,receiveWorkResult,verifyRepositoryPath,ensureWorkCommit,workAuthorityProfile,writeFixed} from './project-work-runtime.js';
 import {exactKeys,isAuthorityDigest,type AuthorityProfile,type ScopeBody} from './authority-contract.js';
 import {canonical} from './comparison.js';
@@ -71,8 +72,9 @@ export class ProjectWork{
   }
   async detail(scope:ProjectChatScope,id:string){
     const draft=await this.recover(scope,this.store.get(scope,id));const result=draft.catalog?await this.implementationState(scope,draft):null;
-    const history=[];for(const previous of draft.prior??[])if(previous.catalog)history.push({version:previous.version,delivery:previous.delivery,execution:await this.implementationState(scope,{...draft,...previous})});
-    return {draft,execution:result,history,newModelInputs:0};
+    const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
+    const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
+    return {draft,execution:result,history,preparationDiagnostic:await diagnostic(draft),firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
   }
   private job(scope:ProjectChatScope,id:string,action:(job:Job)=>Promise<void>){
     if(!this.accepting)throw new Error('project_work_closing');if(this.active.has(id))return {id,active:true,duplicate:true};
@@ -92,6 +94,7 @@ export class ProjectWork{
         for(const r of entry?.requests??[])if(['registered','prepared'].includes(r.phase))await controls.cancel(d.source!,r.id);
         if(d.delivery?.status==='pending')throw new Error('project_work_previous_result_not_received');
       }
+      if(d.preparation&&await exists(join(d.preparation.directory,'environment')))await assertWorkEnvironmentEnded(join(d.preparation.directory,'environment'),d.preparation.verification??this.config.verification);
       const issue=await this.readIssue(scope,d.issue.number),repositoryPath=await verifyRepositoryPath(scope,setting.repositoryPath),H=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;
       if(!H||!/^[a-f0-9]{40}$/.test(H))throw new Error('project_work_repository_commit_required');
       const source:FixedRepository={path:repositoryPath,H,repository:scope.repository.fullName};
@@ -99,12 +102,13 @@ export class ProjectWork{
       const version=d.version+1,directory=join(this.config.root,'works',d.id,'version-'+version,'preparation');await mkdir(join(directory,'..'),{recursive:true,mode:0o700});
       const prior=d.version?[...(d.prior??[]),{version:d.version,requestId:d.requestId,source:d.source,catalog:d.catalog,preparation:d.preparation,delivery:d.delivery}]:d.prior;
       if((prior?.length??0)>32)throw new Error('project_work_history_limit');
-      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,stopRequested:false,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
-      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(),check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
+      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,stopRequested:false,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
+      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(),verification:this.config.verification,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
     });
   }
+  async continueFirstInput(scope:ProjectChatScope,id:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');await this.verify(scope);return(await this.controls(scope)).continueFirstInput(d.source,d.requestId);}
   async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stop(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(d:ProjectWorkDraft,scope:ProjectChatScope){
@@ -118,6 +122,7 @@ export class ProjectWork{
     const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
     if(this.active.has(id))return {active:true};if(d.catalog)return {alreadyAuthorized:true};
     await this.verify(scope);const verified=await readWorkProposal(d.preparation.directory,sourceFor(scope,d)),issue=await this.readIssue(scope,d.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;
+    if(verified.validationEnvironment&&verified.validationEnvironment.configurationSha256!==hash(canonical(this.config.verification)))throw new Error('project_work_environment_changed_prepare_again');
     if(!verified.ready||hash(issue.body)!==d.issue.bodySha256||head!==d.preparation.H)throw new Error('project_work_source_changed_prepare_again');
     const profile=workAuthorityProfile(this.config.owner,scope,d.issue.number);if(profile.executorId!==scope.account.id)throw new Error('project_work_owner_identity_not_configured');
     const expiresAt=Date.parse(d.preparation.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000);if(!Number.isFinite(expiresAt)||expiresAt<=Date.now())throw new Error('project_work_source_changed_prepare_again');
@@ -130,6 +135,7 @@ export class ProjectWork{
       let draft=this.store.get(scope,id);await this.verify(scope);
       if(draft.catalog){const controls=await this.controls(scope);await controls.prepare(draft.source!,{requestId:draft.requestId,issueNumber:draft.issue.number});if(!job.stop)await controls.begin(draft.source!,draft.requestId);return;}
       const verified=await readWorkProposal(draft.preparation!.directory,sourceFor(scope,draft));if(!verified.ready||canonical(verified.proposal)!==canonical(draft.preparation!.proposal))throw new Error('project_work_preparation_changed');
+      if(verified.validationEnvironment&&verified.validationEnvironment.configurationSha256!==hash(canonical(this.config.verification)))throw new Error('project_work_environment_changed_prepare_again');
       const issue=await this.readIssue(scope,draft.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;if(hash(issue.body)!==draft.issue.bodySha256||head!==draft.preparation!.H)throw new Error('project_work_source_changed_prepare_again');
       await verifyRepositoryPath(scope,draft.preparation!.repositoryPath);await checkWorkMaterial(sourceFor(scope,draft),verified.proposal);
       draft=this.save(scope,{...draft,stage:'authorizing',problem:null},'confirmation_requested','Explicit scope/implementation/test confirmation; exact Owner source still required');

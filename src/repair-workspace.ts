@@ -66,15 +66,24 @@ export function processState(pid: unknown): 'alive' | 'ended' | 'unknown' {
  * or commit unrelated staged paths. Preserve the exact index and staged
  * blobs before refusing; matching staged bytes from registered repair tools
  * remain recoverable under the original allowed paths. No filters run. */
-export async function checkRepairIndex(workspace:string,operation:string,allowedPaths:string[],current:Tree){
+export type SelectedGitView={materialView:'selected_files';materialPaths:readonly string[]};
+export async function checkRepairIndex(workspace:string,operation:string,allowedPaths:string[],current:Tree,view?:SelectedGitView,readOnly=false){
   const directory=join(workspace,'.git');if(await exists(join(directory,'index.lock')))throw new Error('git_write_active_or_unknown');
   const index=await regular(join(directory,'index'),8*1024*1024),capture=async(args:string[])=>{
     const r=await exec('/usr/bin/git',['--literal-pathspecs','--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},encoding:'buffer',maxBuffer:8*1024*1024,timeout:15000});return r.stdout;
   };
   const H=(await capture(['rev-parse','HEAD'])).toString().trim(),headRaw=await capture(['ls-tree','-r','-z',H]),indexRaw=await capture(['ls-files','--stage','-z']);
   const head=new Map<string,{mode:string;object:string}>(),staged=new Map<string,Array<{mode:string;object:string;stage:number}>>();
-  for(const row of headRaw.toString().split('\0').filter(Boolean)){const x=/^(100644|100755) blob ([a-f0-9]{40})\t([A-Za-z0-9_.\/-]+)$/.exec(row);if(!x)throw new Error('repair_index_file_type_unsupported');head.set(x[3]!,{mode:x[1]!,object:x[2]!});}
-  for(const row of indexRaw.toString().split('\0').filter(Boolean)){const x=/^(100644|100755) ([a-f0-9]{40}) ([0-3])\t([A-Za-z0-9_.\/-]+)$/.exec(row);if(!x)throw new Error('repair_index_file_type_unsupported');const list=staged.get(x[4]!)??[];list.push({mode:x[1]!,object:x[2]!,stage:Number(x[3])});staged.set(x[4]!,list);}
+  for(const row of headRaw.toString().split('\0').filter(Boolean)){const x=/^(100644|100755|120000) blob ([a-f0-9]{40})\t([A-Za-z0-9_.\/-]+)$/.exec(row);if(!x)throw new Error('repair_index_file_type_unsupported');head.set(x[3]!,{mode:x[1]!,object:x[2]!});}
+  for(const row of indexRaw.toString().split('\0').filter(Boolean)){const x=/^(100644|100755|120000) ([a-f0-9]{40}) ([0-3])\t([A-Za-z0-9_.\/-]+)$/.exec(row);if(!x)throw new Error('repair_index_file_type_unsupported');const list=staged.get(x[4]!)??[];list.push({mode:x[1]!,object:x[2]!,stage:Number(x[3])});staged.set(x[4]!,list);}
+  // Only fixed selected_files plans may preserve an opaque, unselected link.
+  // Never read its blob/target or materialize it in the selected workspace.
+  for(const path of new Set([...head.keys(),...staged.keys()])){
+    const h=head.get(path),v=staged.get(path);
+    if(h?.mode!=='120000'&&!v?.some(x=>x.mode==='120000'))continue;
+    if(view?.materialView!=='selected_files'||view.materialPaths.includes(path)||await exists(join(workspace,path)))throw new Error('repair_index_file_type_unsupported');
+    if(h?.mode!=='120000'||v?.length!==1||v[0]!.stage!==0||v[0]!.mode!==h.mode||v[0]!.object!==h.object)throw new Error('repair_preserved_index_requires_explicit_reconciliation');
+  }
   const changed=[...new Set([...head.keys(),...staged.keys()])].filter(path=>{const h=head.get(path),v=staged.get(path);return !h||v?.length!==1||v[0]!.stage!==0||v[0]!.mode!==h.mode||v[0]!.object!==h.object;});
   const blobs:Record<string,string>={},changes=[];let matched=true,total=0;
   for(const path of changed){const v=staged.get(path)??[],file=current[path];let same=false;
@@ -83,6 +92,7 @@ export async function checkRepairIndex(workspace:string,operation:string,allowed
     const accepted=same&&allowedPaths.includes(path);matched&&=accepted;changes.push({path,head:head.get(path)??null,index:v,working:file??null,accepted});
   }
   if(await exists(join(directory,'index.lock'))||!index.equals(await regular(join(directory,'index'),8*1024*1024))||!(await capture(['ls-files','--stage','-z'])).equals(indexRaw)||(await capture(['rev-parse','HEAD'])).toString().trim()!==H)throw new Error('repair_index_changed_during_observation');
+  if(changed.length&&readOnly)throw new Error('implementation_first_send_index_changed');
   if(changed.length){const b=Buffer.from(JSON.stringify({H,indexBase64:index.toString('base64'),headRaw:headRaw.toString(),indexRaw:indexRaw.toString(),blobs,changes,matched,policy:'preserve_original_index; only registered allowed-path bytes may be committed'})),folder=join(operation,'index-observations'),path=join(folder,hash(b)+'.json');await mkdir(folder,{recursive:true,mode:0o700});try{await writeFile(path,b,{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST'||!(await regular(path,32*1024*1024)).equals(b))throw e;}}
   if(!matched)throw new Error('repair_preserved_index_requires_explicit_reconciliation');
 }
@@ -215,7 +225,7 @@ export class RepairTools {
   private serial = 0;
   private handoffSerial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView) { this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
     await this.refreshExternal?.();
@@ -227,7 +237,7 @@ export class RepairTools {
     if (await git(this.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== this.grant.H || await git(this.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
     const current = await tree(this.workspace, project);
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool');
-    await checkRepairIndex(this.workspace,this.operation,this.grant.allowedPaths,current);return current;
+    await checkRepairIndex(this.workspace,this.operation,this.grant.allowedPaths,current,this.indexView);return current;
   }
   async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session') {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
@@ -305,4 +315,10 @@ export async function commitScopedCandidate(workspace:string,operation:string,at
   }
   const after=await localCandidate(workspace,candidate.B,grant.profile==='project-v1');gate.adoptCommittedHead(after.H);
   return {candidate:after,diff};
+}
+
+/** Complete Git tree comparison, independent of the selected filesystem view. */
+export async function assertUnselectedGitUnchanged(workspace:string,H0:string,H1:string,selected:readonly string[]){
+  const rows=async(H:string)=>(await git(workspace,['ls-tree','-r',H])).split('\n').filter(Boolean).filter(row=>!selected.includes(row.slice(row.indexOf('\t')+1)));
+  if(JSON.stringify(await rows(H0))!==JSON.stringify(await rows(H1)))throw new Error('implementation_unselected_git_changed');
 }

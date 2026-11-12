@@ -351,7 +351,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/project-work'){json(res,200,{available:false,works:[]});return;}throw new Error('project_work_not_configured');}
         const work=await openProjectWork(),detail=/^\/api\/project-work\/([0-9a-f-]{36})$/.exec(url.pathname);
         if(req.method==='GET'){if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});else if(detail)json(res,200,await work.detail(selection,detail[1]!));else json(res,404,{error:'route_not_found'});return;}
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive)$/.exec(url.pathname);
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
@@ -360,6 +360,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(url.pathname.endsWith('/create')){const draft=await work.create(selection,body);(await openProjectChat()).ensureWorkConversation(selection,draft.conversationId,'工作：Issue #'+draft.issue.number+' '+draft.issue.title);json(res,200,draft);}
         else if(action?.[2]==='prepare')json(res,202,await withAI(()=>work.prepare(selection,action[1]!,body)));
         else if(action?.[2]==='start'){try{const preview=await work.confirmation(selection,action[1]!,body),result=preview.active||preview.alreadyAuthorized?await withAI(()=>work.start(selection,action[1]!,body)):await workOwner.request(selection,action[1]!,body,preview);if(!preview.active&&!preview.alreadyAuthorized)work.recordActionProblem(selection,action[1]!,body.version,null);json(res,202,result);}catch(e){work.recordActionProblem(selection,action[1]!,body.version,safeError(e));throw e;}}
+        else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
         else if(action?.[2]==='receive'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,200,await work.receive(selection,action[1]!));}
         return;
       }
@@ -370,14 +371,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(req.method==='GET'&&url.pathname==='/api/implementation'){json(res,200,{available:true,options:controls.options(),entries:await controls.state()});return;}
         const report=/^\/api\/implementation-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
         if(req.method==='GET'&&report){json(res,200,await controls.report(report[1]!,report[2]!));return;}
-        const action=/^\/api\/implementation\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|cancel|stop)$/.exec(url.pathname);
+        const action=/^\/api\/implementation\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|cancel|stop|continue-first-input)$/.exec(url.pathname);
         if(req.method!=='POST'||!action){json(res,405,{error:'implementation_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'implementation_request_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
         if(action[2]==='prepare'){json(res,200,await controls.prepare(action[1]!,body));return;}
         if(!exactKeys(body,['requestId']))throw new Error('implementation_request_invalid');
-        json(res,action[2]==='start'?202:200,action[2]==='start'?await controls.begin(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
+        json(res,['start','continue-first-input'].includes(action[2]!)?202:200,action[2]==='continue-first-input'?await controls.continueFirstInput(action[1]!,body.requestId):action[2]==='start'?await controls.begin(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
       }
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');

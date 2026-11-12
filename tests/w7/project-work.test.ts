@@ -2,11 +2,11 @@ import test from 'node:test';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,rm,readdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,readdir,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {git,exists} from '../../src/repair-workspace.js';
+import {git,exists,checkRepairIndex,tree} from '../../src/repair-workspace.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
@@ -154,4 +154,63 @@ test('a failed latest receipt retains H2 pending with the truly received H1 pred
   try{await assert.rejects(f.work.receive(scope,f.id),/fixture_latest_receipt_interruption/);}finally{childProcess.spawn=spawn;syncBuiltinESMExports();}
   const d=f.state();assert.equal(d.delivery!.H,f.H2);assert.equal(d.delivery!.previous,f.H1);assert.equal(d.delivery!.status,'pending');assert.equal(d.stage,'waiting_return');assert.equal(d.events.filter(e=>e.kind==='result_received').length,1);assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H1);
   assert.equal((await f.work.receive(scope,f.id) as any).H,f.H2);assert.equal(f.state().delivery!.status,'received');assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H2);
+});
+
+// Synthetic preparation captures; no private project source or real model.
+async function preparationCapture(t:any,kind:'complete'|'questions'|'unknown'|'version-mismatch'='complete'){
+  const f=await repository(t),{fixture}=await import('../w5/repair-fixture.js'),native=await fixture(t),{BoundedCodexSession,findingSchema}=await import('../../src/repair-native.js'),{workPreparationInstructionsV1,preparationToolSpecs}=await import('../../src/project-work-contract.js');
+  const directory=join(f.root,'preparation');await mkdir(directory);
+  const proposal={goal:'Set the selected value',acceptance:['value equals2'],allowedPaths:['code.mjs'],materialPaths:['code.mjs'],protectedPaths:[],validation:{description:'Independent fixed assertion',script:"import assert from 'node:assert/strict';import{value}from './code.mjs';assert.equal(value,2);"},questions:kind==='questions'?['Synthetic old premise conflicts with the adopted result.']:[],report:'Explicit protocol fixture, not a real project result.'};
+  const source={path:f.source,H:f.H,repository:'fixture/project'},input={kind:'project_work_engineering_preparation',source,issue:{number:1},userGoal:'exact',files:[],...(kind==='version-mismatch'?{preparationVersion:2}:{})},bytes=canonical(input);await writeFile(join(directory,'input.json'),bytes);
+  let code=await readFile(native.config.codexExecutable,'utf8');code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){${kind==='questions'?`emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic old premise conflicts with the adopted result.',options:null}],text:'This is a synthetic question, not a final result.'}}});`:''}finish({candidateH:context.source.H,decision:'${kind==='questions'?'needs_owner':'confirmed'}',report:JSON.stringify(${JSON.stringify(proposal)})});return;}if(stage==='tongxu_read_file'){`);
+  code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){tool('tongxu_repository_file',{path:'code.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");await writeFile(native.config.codexExecutable,code);
+  const system=kind==='unknown'?workPreparationInstructionsV1+' unknown-version':workPreparationInstructionsV1,candidate={kind:'local-git' as const,repository:'local/project-work-preparation',pr:null,H:f.H,B:f.H,target:'preparation'};
+  const session=await BoundedCodexSession.start({executable:native.config.codexExecutable,directory:join(directory,'native'),operation:directory,candidate,role:'verifier_fact',projectPreparation:true,system,inputManifestSha256:hash(bytes),scopeSource:'Synthetic preparation fixture',arrangementSource:'Read-only fixture; no permission',disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,executionKind:'fixture',beforeTurn:async()=>{},gate:{check:async()=>{},call:async()=>({success:true,contentItems:[{type:'inputText',text:'{}'}]})}});
+  try{if(kind==='questions')await assert.rejects(session.turn(bytes,candidate,findingSchema),/non_terminal_agent_message/);else await session.turn(bytes,candidate,findingSchema);}finally{await session.close();}
+  const start=(await readFile(join(directory,'native','stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x)).find(x=>x.method==='thread/start');assert.deepEqual(start.params.dynamicTools,preparationToolSpecs);
+  return {...f,directory,source,proposal,trace:native.trace};
+}
+test('known V1 full capture retains detail, confirmation and start preflight after V2 prompt introduction',async t=>{
+  const f=await preparationCapture(t),{readWorkProposal}=await import('../../src/project-work-preparation.js'),read=await readWorkProposal(f.directory,f.source),at=new Date().toISOString(),trace=await readFile(f.trace);
+  assert.equal(read.ready,true);const id=randomUUID(),draft={id,issue:{number:1,title:'Synthetic V1',body:'fixed',bodySha256:hash('fixed')},version:1,stage:'prepared',goal:'exact',revision:0,events:[],preparation:{directory:f.directory,H:f.H,repositoryPath:f.source.path,...read,observedAt:at}};
+  const owner={ownerId:1,executorId:1,ghExecutable:'/usr/bin/unused-gh',ghSha256:'a'.repeat(64),executionKind:'fixture',maxObservationAgeMs:300000,maxGrantDurationMs:86400000,sharedAccountApproval:{decisionReference:{kind:'recorded_user_decision',sha256:'a'.repeat(64)}}};
+  const work=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(draft)},active:new Map(),config:{owner},verify:async()=>{},readIssue:async()=>({...draft.issue,defaultHead:f.H}),save:(_scope:any,d:any)=>d,initializeQueue:async()=>{throw Error('synthetic_start_preflight_passed');},job:(_scope:any,_id:any,fn:any)=>fn({stop:false})});
+  const detail=await work.detail(scope,id);assert.equal(detail.draft.preparation.proposalDigest,read.proposalDigest);
+  const payload={version:1,proposalSha256:read.proposalDigest};assert.deepEqual((await work.confirmation(scope,id,payload)).allowedPaths,['code.mjs']);
+  await assert.rejects(work.start(scope,id,payload),/synthetic_start_preflight_passed/);assert.deepEqual(await readFile(f.trace),trace);assert.equal(await exists(join(f.directory,'environment')),false);
+});
+for(const kind of ['unknown','version-mismatch'] as const)test('unknown or mismatched preparation instructions never adopt a plan: '+kind,async t=>{
+  const f=await preparationCapture(t,kind),{readWorkProposal}=await import('../../src/project-work-preparation.js');await assert.rejects(readWorkProposal(f.directory,f.source),/preparation_version/);
+});
+test('ended rejected V1 questions are cold readable as unaccepted diagnostics with zero mutations or inputs',async t=>{
+  const f=await preparationCapture(t,'questions'),{readWorkPreparationDiagnostic,readWorkProposal}=await import('../../src/project-work-preparation.js'),before=await readFile(join(f.directory,'native','stdout.ndjson')),trace=await readFile(f.trace);
+  await assert.rejects(readWorkProposal(f.directory,f.source),/ENOENT|controlled/);
+  const diagnostic=await readWorkPreparationDiagnostic(f.directory,f.source);assert.equal(diagnostic?.accepted,false);assert.deepEqual(diagnostic?.questions,f.proposal.questions);assert.equal((diagnostic as any).proposal,undefined);assert.equal((diagnostic as any).ready,undefined);assert.equal(await exists(join(f.directory,'native','completed.json')),false);
+  const draft={id:'fixture',stage:'needs_input',version:1,problem:'controlled_result_not_final:non_terminal_agent_message',preparation:{directory:f.directory,repositoryPath:f.source.path,H:f.H}};
+  const work=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(draft)}});
+  assert.deepEqual((await work.detail(scope,'fixture')).preparationDiagnostic,diagnostic);assert.deepEqual((await work.detail(scope,'fixture')).preparationDiagnostic,diagnostic);assert.deepEqual(await readFile(f.trace),trace);assert.deepEqual(await readFile(join(f.directory,'native','stdout.ndjson')),before);
+  const bindingPath=join(f.directory,'native','binding.json'),original=await readFile(bindingPath),binding=JSON.parse(original.toString());await writeFile(bindingPath,canonical({...binding,role:'reviewer'}));assert.equal(await readWorkPreparationDiagnostic(f.directory,f.source),null);await writeFile(bindingPath,original);
+  assert.equal(await readWorkPreparationDiagnostic(f.directory,{...f.source,H:'f'.repeat(40)}),null);await writeFile(bindingPath,canonical({...binding,turnIds:['wrong-original-turn']}));assert.equal(await readWorkPreparationDiagnostic(f.directory,f.source),null);await writeFile(bindingPath,original);
+  await writeFile(join(f.directory,'native','stdout.ndjson'),Buffer.concat([before,Buffer.from('bad\n')]));assert.equal(await readWorkPreparationDiagnostic(f.directory,f.source),null);await writeFile(join(f.directory,'native','stdout.ndjson'),before);
+  await rm(join(f.directory,'native','exit.json'));assert.equal(await readWorkPreparationDiagnostic(f.directory,f.source),null);
+});
+test('a changed project test can be proposed, while protected paths and the frozen verifier remain distinct',()=>{
+  const base={goal:'Synchronize an adopted premise',acceptance:['new behavior'],allowedPaths:['code.mjs','test/existing.test.mjs'],materialPaths:['code.mjs','test/existing.test.mjs','AGENTS.md'],protectedPaths:['AGENTS.md'],validation:{description:'Independent frozen verification',script:'import assert from "node:assert/strict";assert.ok(true);'},questions:[],report:'Path control fixture only; it does not prove the test semantics.'};
+  assert.deepEqual(parseWorkProposal(base).allowedPaths,base.allowedPaths);assert.throws(()=>parseWorkProposal({...base,protectedPaths:['AGENTS.md','test/existing.test.mjs']}),/proposal_invalid/);
+});
+
+test('selected Git view preserves only unchanged omitted links; all link changes and gitlinks are refused',async t=>{
+ const f=await repository(t);await symlink('synthetic-never-read-target',join(f.source,'omitted-link'));await git(f.source,['add','omitted-link']);await git(f.source,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic link']);const H=await git(f.source,['rev-parse','HEAD']),workspace=join(f.root,'sparse'),operation=join(f.root,'index-operation');await mkdir(workspace);await mkdir(operation);await git(workspace,['init','--template=']);await git(workspace,['config','core.sparseCheckout','true']);await git(workspace,['config','core.sparseCheckoutCone','false']);await git(workspace,['config','index.sparse','false']);await mkdir(join(workspace,'.git/info'),{recursive:true});await writeFile(join(workspace,'.git/info/sparse-checkout'),'/code.mjs\n');await git(workspace,['fetch',f.source,H]);await git(workspace,['checkout','--detach','FETCH_HEAD']);
+ const current=await tree(workspace,true),view={materialView:'selected_files' as const,materialPaths:['code.mjs']},index=await readFile(join(workspace,'.git/index')),object=await git(workspace,['rev-parse','HEAD:omitted-link']);assert.equal(await exists(join(workspace,'omitted-link')),false);
+ await checkRepairIndex(workspace,operation,['code.mjs'],current,view);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current),/unsupported/);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,{...view,materialPaths:['code.mjs','omitted-link']}),/unsupported/);
+ for(const change of ['delete','object','mode','new','stage','gitlink'] as const){
+  if(change==='delete')await git(workspace,['update-index','--force-remove','omitted-link']);
+  if(change==='object'){await writeFile(join(f.root,'new-link-target'),'changed');const oid=await git(workspace,['hash-object','-w',join(f.root,'new-link-target')]);await git(workspace,['update-index','--cacheinfo','120000,'+oid+',omitted-link']);}
+  if(change==='mode')await git(workspace,['update-index','--cacheinfo','100644,'+object+',omitted-link']);
+  if(change==='new')await git(workspace,['update-index','--add','--cacheinfo','120000,'+object+',added-link']);
+  if(change==='gitlink')await git(workspace,['update-index','--add','--cacheinfo','160000,'+H+',module']);
+  if(change==='stage'){await git(workspace,['update-index','--force-remove','omitted-link']);childProcess.execFileSync('/usr/bin/git',['-C',workspace,'update-index','--index-info'],{input:'120000 '+object+' 1\tomitted-link\n'});}
+  await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported|reconciliation/);await writeFile(join(workspace,'.git/index'),index);
+ }
+ await symlink('synthetic-never-read-target',join(workspace,'omitted-link'));await assert.rejects(tree(workspace,true),/unsafe_workspace_entry/);await assert.rejects(checkRepairIndex(workspace,operation,['code.mjs'],current,view),/unsupported/);await rm(join(workspace,'omitted-link'));assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
 });
