@@ -1,5 +1,5 @@
 import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve,dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
@@ -20,6 +20,7 @@ export type ProjectContract = {
   testPlan: string; testPlanSha256: string; dependencyHash: string | null; generatedDirectories: string[];
   priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown;continuation?:unknown };
   queueOperation?: { store: string; operation: string;sourceReviewOperation?:string;memberReturnSha256?:string };
+  materialView?: 'selected_files';
 };
 export type ProjectRequest = {
   schemaVersion: 1; kind: 'tongxu-project-repair-request'; executionRoot: string; objects: string; candidate: Candidate;
@@ -29,14 +30,28 @@ export type ProjectRequest = {
   demonstrationFixture: boolean; generatedDirectories: string[];
   priorReview?: ProjectContract['priorReview'];
   queueOperation?: ProjectContract['queueOperation'];
+  materialView?: 'selected_files';
 };
 export function validateProjectContract(p: ProjectContract, grant: Grant) {
+  if(p.materialView!==undefined&&p.materialView!=='selected_files')throw new Error('invalid_project_material_view');
   const c = p?.sourceCandidate;
   if (!c || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !commit.test(c.H) || !commit.test(c.B) || typeof c.target !== 'string' || !c.target || /[\x00-\x20]/.test(c.target) || !(c.kind === 'local-git' ? c.repository.startsWith('local/') && c.pr === null : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr! > 0)) throw new Error('invalid_project_source_candidate');
   if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || !paths(grant.allowedPaths, 32) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
   if (!Array.isArray(p.generatedDirectories) || p.generatedDirectories.length > 16 || p.generatedDirectories.some(x => !relative(x) || p.generatedDirectories.some(y => y !== x && (x.startsWith(y + '/') || y.startsWith(x + '/')))) || new Set(p.generatedDirectories).size !== p.generatedDirectories.length) throw new Error('invalid_project_output_directories');
   if (p.priorReview && (!digest.test(p.priorReview.bindingHash) || !digest.test(p.priorReview.inputSha256) || typeof p.priorReview.report !== 'string' || Buffer.byteLength(JSON.stringify(p.priorReview)) > 192 * 1024)) throw new Error('invalid_project_prior_review');
   if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || (p.queueOperation.sourceReviewOperation??p.queueOperation.operation) !== p.priorReview?.operation || (p.queueOperation.sourceReviewOperation!==undefined||p.queueOperation.memberReturnSha256!==undefined||p.priorReview?.integrationMember!==undefined)&&(!/^[a-f0-9-]{36}$/.test(p.queueOperation.sourceReviewOperation??'')||!digest.test(p.queueOperation.memberReturnSha256??'')||!p.priorReview?.integrationMember))) throw new Error('invalid_project_queue_binding');
+}
+/** Keep the complete commit/index while exposing only the fixed material.
+ * Non-cone anchored patterns avoid implicitly exposing unrelated root files. */
+async function selectMaterialView(workspace:string,p:ProjectContract,mutate:(args:string[])=>Promise<string>){
+  if(!p.materialView)return;
+  const selected=[...new Set([...p.materialPaths,...p.protectedPaths])].sort();
+  if(selected.some(path=>!relative(path)))throw new Error('invalid_project_material_view');
+  await mutate(['config','core.sparseCheckout','true']);
+  await mutate(['config','core.sparseCheckoutCone','false']);
+  await mutate(['config','index.sparse','false']);
+  await mkdir(join(workspace,'.git','info'),{recursive:true,mode:0o700});
+  await writeFile(join(workspace,'.git','info','sparse-checkout'),selected.map(path=>'/'+path).join('\n')+'\n',{flag:'wx',mode:0o600});
 }
 export async function projectTestPlan(p: ProjectContract) {
   const bytes = await regular(p.testPlan);
@@ -128,7 +143,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   const dependencyHash = await dependencyDigest(await validateDependencies(test.dependencyDirectory));
   const workspace = join(root, 'workspace');
   const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths };
-  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}) };
+  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}),...(r.materialView?{materialView:r.materialView}:{}) };
   validateProjectContract(project, grant);
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
   const sourceMergeBase = await git(r.objects, ['merge-base', r.candidate.B, r.candidate.H]);
@@ -142,6 +157,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   // not an ancestor of H. Private refs retain them without changing checkout.
   // No credential, hook, config, uncommitted file or publishing setup is copied.
   await prepareGit(['init', '--template=', '--initial-branch=project-base']);
+  await selectMaterialView(workspace,project,prepareGit);
   await prepareGit(['fetch', '--no-tags', '--no-recurse-submodules', r.objects, r.candidate.H + ':refs/tongxu/source-head', r.candidate.B + ':refs/tongxu/source-base']);
   for (const [ref, h] of [['source-head', r.candidate.H], ['source-base', r.candidate.B]]) if (await git(workspace, ['rev-parse', 'refs/tongxu/' + ref + '^{commit}']) !== h) throw new Error('project_fixed_history_changed');
   if (await git(workspace, ['merge-base', r.candidate.B, r.candidate.H]) !== sourceMergeBase) throw new Error('project_fixed_history_changed');
@@ -175,6 +191,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   let setupIndex = 0;
   const setupGit = (args: string[]) => mutateGit(work, args, join(directory, 'git-setup-' + setupIndex++));
   await setupGit(['init', '--template=']);
+  await selectMaterialView(work,p,setupGit);
   await setupGit(['fetch', '--no-tags', '--no-recurse-submodules', workspace, await git(workspace, ['rev-parse', 'HEAD'])]);
   await setupGit(['checkout', '--detach', 'FETCH_HEAD']);
   for (const [path, entry] of Object.entries(current)) { const full = join(work, path); await writeFile(full, entry.text, { mode: 0o600 }); await chmod(full, 0o600 | (entry.executable ?? 0)); }
@@ -190,13 +207,21 @@ export async function testProject(workspace: string, directory: string, p: Proje
   }
   const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
+  // Keep Git metadata in the host fingerprint, outside the candidate mount.
+  // Tests see byte-identical selected files and cannot recover omitted blobs.
+  const executionWork=p.materialView?join(directory,'material-work'):work;
+  if(p.materialView){
+    await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,entry.text,{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
+    for(const path of p.generatedDirectories)await mkdir(join(executionWork,path),{recursive:true,mode:0o700});if(fixed.dependencies)await mkdir(join(executionWork,'node_modules'),{mode:0o700});
+    if(treeHash(await tree(executionWork,true))!==inputHash)throw new Error('project_test_material_copy_changed');
+  }
   save(join(directory, 'test-progress.json'), { phase: 'runtime_requested' });
   const runtime = await DockerRuntime.prepare(fixed.plan.executor, join(directory, 'runtime'),startGate), tools = [];
   let executionHealthy = true;
   for (const [index, tool] of fixed.plan.tools.entries()) {
     let observed: unknown[] = [];
     const currentInput = await fingerprint(work, Object.keys(current), entries => { observed = entries; }), currentDependencies = await dependencyDigest(fixed.dependencies);
-    if (currentInput !== pre || currentDependencies !== p.dependencyHash) {
+    if (currentInput !== pre || currentDependencies !== p.dependencyHash || p.materialView&&treeHash(await tree(executionWork,true))!==inputHash) {
       const expected = new Map<string, unknown>(JSON.parse((await regular(join(directory, 'input-state.json'), 16 * 1024 * 1024)).toString()));
       const actual = new Map<string, unknown>(observed as Array<[string, unknown]>);
       const changed = [...new Set([...expected.keys(), ...actual.keys()])].filter(path => JSON.stringify(expected.get(path)) !== JSON.stringify(actual.get(path)));
@@ -206,12 +231,12 @@ export async function testProject(workspace: string, directory: string, p: Proje
     const resultDirectory = join(output, String(index)); await mkdir(resultDirectory, { mode: 0o700 });
     save(join(directory, 'test-progress.json'), { phase: 'tool_requested', toolIndex: index });
     const writable: string[] = (tool as any).writableOutputs ?? [];
-    const r = await runtime.run({ directory: join(directory, 'tool-' + index), work, readOnlyWork: true, outputMounts: generated.map(m => ({ ...m, writable: writable.includes(m.path) })), resultDirectory, dependencies: fixed.dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, binding: { run: inputHash, stage: index, tool: tool.id, head: H, tree: T, planHash: p.testPlanSha256 },startGate });
+    const r = await runtime.run({ directory: join(directory, 'tool-' + index), work:executionWork, readOnlyWork: true, outputMounts: generated.map(m => ({ ...m, writable: writable.includes(m.path) })), resultDirectory, dependencies: fixed.dependencies, argv: tool.argv, timeoutMs: tool.timeoutMs, maxBytes: 4 * 1024 * 1024, binding: { run: inputHash, stage: index, tool: tool.id, head: H, tree: T, planHash: p.testPlanSha256 },startGate });
     // Never invoke Git in a checkout after candidate-controlled commands.
     const artifacts = await generatedEvidence(generated);
     save(join(directory, 'generated-state-' + index + '.json'), artifacts);
     const generatedArtifacts = { valid: artifacts.valid, count: artifacts.files.length, sha256: artifacts.sha256 };
-    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid, dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
+    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid&&(!p.materialView||treeHash(await tree(executionWork,true))===inputHash), dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
     executionHealthy &&= inputUnchanged && dependenciesUnchanged && ['completed', 'failed'].includes(r.status);
     const resultFiles = await readdir(resultDirectory);
     if (resultFiles.some(name => name !== 'result.json')) executionHealthy = false;
@@ -228,7 +253,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   if (treeHash(await tree(workspace, true)) !== inputHash) throw new Error('repair_workspace_changed_during_tests');
   const passed = executionHealthy && tools.length === fixed.plan.tools.length && tools.every(t => t.status === 'completed' && t.exitCode === 0 && (!t.sampleSet || t.sampleSet.complete && t.sampleSet.samples.every(s => s.status === 'ok')));
   const result = { kind: 'registered-project-tests-v1', passed, executionHealthy, candidateTreeSha256: inputHash, H, T,
-    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding' },
+    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding',...(p.materialView?{executionView:'selected_material_files',gitMetadataMounted:false,unselectedRuntimeBehavior:'not_executed'}:{}) },
     tools, failure: executionHealthy ? null : 'test_execution_or_input_unverified', exit: { code: passed ? 0 : 1, signal: null }, businessCorrectness: 'requires_independent_review', testPlanSha256: p.testPlanSha256 };
   save(join(directory, 'result.json'), result); save(join(directory, 'test-progress.json'), { phase: 'completed', toolsRequested: tools.length }); return result;
 }
@@ -240,7 +265,7 @@ export async function reconcileProjectTests(operation: string, p: ProjectContrac
       const intent = JSON.parse((await regular(join(directory, 'test-intent.json'))).toString());
       const progress = JSON.parse((await regular(join(directory, 'test-progress.json'))).toString());
       if (intent.directory !== directory || intent.testPlanSha256 !== p.testPlanSha256 || JSON.stringify(intent.generatedDirectories) !== JSON.stringify(p.generatedDirectories) || !['preparing_input', 'runtime_requested', 'tool_requested', 'completed'].includes(progress.phase)) throw new Error('project_test_intent_unverified');
-      testDataDirectories.add('work'); testDataDirectories.add('output');
+      testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');
       p.generatedDirectories.forEach((_, i) => testDataDirectories.add('generated-' + i));
       if (progress.phase !== 'preparing_input' && !await exists(join(directory, 'runtime/probe/execution.json'))) throw new Error('project_test_capture_missing');
       const requested = progress.phase === 'completed' ? progress.toolsRequested : progress.phase === 'tool_requested' ? progress.toolIndex + 1 : 0;

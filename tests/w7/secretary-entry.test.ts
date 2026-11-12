@@ -198,3 +198,20 @@ test('an unsolicited tool with null turn before the first input never reaches th
   const requestId='null-turn-tool';await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>s.secretaries[0].questions[0]&&!s.secretaries[0].questions[0].active);assert.equal(backendCalls,0);assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);const trace=await readFile(f.trace);
   assert.equal((await f.post('close-unstarted',{requestId})).status,503);await f.post('ask',{requestId,question:'不能让尚无轮次的工具调用进入后台。'});await waitFor(f,s=>!s.secretaries[0].questions[0].active);assert.deepEqual(await readFile(f.trace),trace);assert.equal(backendCalls,0);
 });
+
+test('native secretary metadata keeps queue, reception and source capabilities independent',async t=>{
+  const f=await secretaryFixture(t),base=['tongxu_task_status','tongxu_operation_status'];
+  const cases=[
+    {flags:{secretaryQueueActions:true},names:[...base,'tongxu_queue_options','tongxu_queue_action']},
+    {flags:{secretaryReceptionReports:true},names:[...base,'tongxu_reception_report']},
+    {flags:{secretaryTaskSources:true},names:[...base,'tongxu_task_sources']},
+    {flags:{},names:base},
+    {flags:{secretaryQueueActions:true,secretaryReceptionReports:true,secretaryTaskSources:true},names:[...base,'tongxu_queue_options','tongxu_queue_action','tongxu_reception_report','tongxu_task_sources']},
+    {flags:{secretaryContacts:true,secretaryDeliveries:true,secretaryDeliveryReports:true,secretaryWorkbench:true,secretaryScopeFollowupReports:true,secretaryQueueActions:true,secretaryReceptionReports:true,secretaryTaskSources:true},names:[...base,'tongxu_contact_options','tongxu_contact_task','tongxu_contact_report','tongxu_delivery_outcomes','tongxu_delivery_assessment_report','tongxu_owner_controls','tongxu_overall_reviews','tongxu_overall_report','tongxu_scope_followup_report','tongxu_queue_options','tongxu_queue_action','tongxu_reception_report','tongxu_task_sources']}
+  ];
+  for(const [i,c] of cases.entries()){
+    const session=await BoundedCodexSession.start({executable:f.p.codexExecutable,directory:join(f.root,'metadata-'+i),operation:'metadata-'+i,candidate:f.p.candidate,role:'secretary',system:'Explicit read-only capability fixture',inputManifestSha256:'a'.repeat(64),scopeSource:f.p.scopeSource,arrangementSource:f.p.arrangementSource,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,executionKind:'fixture',beforeTurn:async()=>{},gate:{check:async()=>{},call:async()=>{throw Error('metadata_must_not_call_tools');}},...c.flags});
+    await session.close();assert.deepEqual((await f.logs()).filter(x=>x.kind==='tools').at(-1).names,c.names);
+  }
+  assert.equal((await f.logs()).filter(x=>x.kind==='model-input').length,0);
+});

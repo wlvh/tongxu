@@ -21,6 +21,20 @@
   "contracts": {
     "capabilities": [
       {
+        "anchor_id": "CAPABILITY.project_first_use",
+        "type": "capability",
+        "status": "pending_validation",
+        "statement": "按 Issue114 已采用首次使用范围及 docs/project_first_use.md，已部署项目工作环境可从项目首页、Issue 或秘书保存同一草案，复用项目位置；同序只读调查固定提交并提出文件与注册验证建议。准确范围经独立本机本人窗口确认及真实来源核验后，复用原实施／补充消费者，把完整提交自动接回真实项目独立分支与成果目录。普通查看钥匙及模型不能自行批准，不自动合并；缺条件、未知、停止和重复操作保留原记录，真实主干正常入口验收另记。实现 src/project-work*.ts。",
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
+        "test_anchor": "tests/w7/project-work.test.ts",
+        "test_status": "automated",
+        "since": "2026-11-12"
+      },
+      {
         "anchor_id": "CAPABILITY.github_cli_publisher",
         "type": "capability",
         "status": "pending_validation",
@@ -39,7 +53,11 @@
         "type": "capability",
         "status": "pending_validation",
         "statement": "按 Issue #10 已采用 CO01—CO06及 docs/managed_merge.md，原受管合并对指定个人或团队审核保存实际适用规则，核准确仓库/PR/H/目标及GitHub当前整体策略证据，并保留原普通审批、检查、Owner/资源、停止和发送回读门。满足条件后继续原请求，缺项显示具体等待。按Issue #10最新账号政策，新固定配置可显式登记共享publisher，实际账号／仓库／目标仍核对，状态说明未证明操作人分离；旧配置与捕获不自动变化。无账本且准确Owner资源引用、计划和binding申请均为空时沿原条件性空预算执行，准备与每次新发送重核，后来账本配置不改写历史与查回；对应验证见 tests/merge/managed.test.ts。真实受限发布程序接入和服务器规则生效分别验证。实现 src/merge-preflight.ts、src/merge-provider.ts、src/merge-store.ts。",
-        "audience": ["business_user", "agent", "reviewer"],
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
         "test_anchor": "tests/merge/designated-reviewers.test.ts",
         "test_status": "automated",
         "since": "2026-11-07"
@@ -49,7 +67,11 @@
         "type": "capability",
         "status": "pending_validation",
         "statement": "按 Issue #9 已采用 F12 条款及 docs/conditional_delivery_entry.md，已配置项目可经有限 CLI 选择动作，由原协调、消息、组合、测试、接收和修复记录推导准确输入。相关材料与协作安排进入接收输入，顺序组合判断与下游实际消费分别保存。权限、资源、真实模型和本人使用结果按各自原条件验证。实现 src/conditional-entry*.ts、src/candidate-validation*.ts。真实生产全链和本人结果待验。",
-        "audience": ["business_user", "agent", "reviewer"],
+        "audience": [
+          "business_user",
+          "agent",
+          "reviewer"
+        ],
         "test_anchor": "tests/integration/conditional-entry.test.ts",
         "test_status": "automated",
         "since": "2026-11-07"

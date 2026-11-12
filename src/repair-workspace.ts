@@ -107,7 +107,7 @@ export async function acquireWorkspace(workspace: string, operation: string, rec
       if (projectTest) {
         const intent = JSON.parse((await regular(join(dir, 'test-intent.json'))).toString());
         if (intent.directory !== dir || intent.workspace !== workspace || intent.kind !== 'registered-project-tests-v1' || !Array.isArray(intent.generatedDirectories) || intent.generatedDirectories.length > 16) throw new Error('project_test_intent_unverified');
-        testDataDirectories.add('work'); testDataDirectories.add('output');
+        testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');
         intent.generatedDirectories.forEach((_: unknown, i: number) => testDataDirectories.add('generated-' + i));
       }
       for (const e of await readdir(dir, { withFileTypes: true })) {

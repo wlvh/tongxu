@@ -141,3 +141,9 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 新候选材料通过 `FormalReviewControls.prepare` 共用检查，自动接续与手动新请求均核完整材料或原受管验证终态。`formal-candidate` 复用 EventRecords 的显式来源读取，原未登记准备只有在手动核清 Docker 零执行原件后才进入保留关联的新目录。`repair-native.readRejectedFormalReview` 只读核验原单轮正式 reviewer 的完整拒绝捕获，`QueueFormalRoundHost.settleRejectedReview` 再核原测试和未变工作区，沿原资源及操作记录结束为待补证。原报告、判断拒绝和进程结束分别保存，正常报告读取与未知执行规则继续沿原入口。传播测试包括 `formal-candidate-live`、`formal-review-rejection`、既有 formal/native、资源和工作台场景。
 
 改变这些共享点时核 authority/resources、普通 receiver/repair、发布批次、工作台项目隔离和启动器完整文件清单；具体测试见 TESTING 的 Issue #72 段。页面脚本和全部 dist/src 模块由原运行清单核对。
+
+### 项目首次准备的直接影响面
+
+`workbench → project-work → project-work-preparation → BoundedCodexSession` 只读调查固定 Git 材料；`project-work-store` 保存设置／草案／版本及原请求引用。查看钥匙只请求宿主打开短期 `project-work-owner` 窗口，准确确认后由 `project-work-runtime` 发布并读回真实批准，再编译不可变单条目录交原 `issue-implementation-controls → issue-implementation`。后者及原 QueueStore 仍是派发／权限／资源／报告事实来源。完成回调把完整提交接回真实项目独立分支与成果目录，补充复用原责任，历史仍从原消费者读取。
+
+共享变动为 selected_files 的完整 Git 稀疏工作树、Docker材料副本与测试树核验、原实施发送前的基线测试、生成目录的当前版本准入以及工作台启动器资源清单。必须回归原 repair/native/authority/resources、project-repair integration、w7 项目切换／秘书／启动器；新增单元／页面测试见 project-work*.test.ts。无第二套执行器或批准账本。能力和部署边界见[首次工作](docs/project_first_use.md)。

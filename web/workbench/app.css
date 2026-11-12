@@ -55,3 +55,5 @@ dialog[data-project-panel=true]{position:fixed;inset:100px calc(var(--secretary-
 @media(max-height:600px){.secretary-dock-content{display:block}.secretary-dock .chat-lines{flex:none;min-height:100px;max-height:40dvh;margin:10px 0}.secretary-dock .chat-composer{margin-top:0}}
 
 .ai-choice-preview{padding:14px 16px;margin:12px 0 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);overflow-wrap:anywhere}.ai-choice-preview>strong{display:block;font-size:13px;margin-bottom:6px}.ai-choice-preview p+p{margin-top:5px}
+
+.owner-confirmation{max-width:820px;margin:40px auto;padding:28px}.owner-confirmation pre{white-space:pre-wrap;overflow-wrap:anywhere}.owner-confirmation button{margin-right:12px}

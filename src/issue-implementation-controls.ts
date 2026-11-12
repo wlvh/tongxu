@@ -20,7 +20,8 @@ import type {ProjectRequest} from './project-repair.js';
 import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
-type Entry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean};
+export type ImplementationEntry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean;materialView?:'selected_files';workRequestId?:string};
+type Entry=ImplementationEntry;
 type ReadEntry=Pick<Entry,'id'|'repository'|'store'|'target'>;
 type HistorySource={store:string;item:string};
 type Issue={number:number;title:string;body:string;url:string};
@@ -30,6 +31,8 @@ type Reader=(number:number)=>Promise<Issue>;
  * scope. The browser supplies only an option and a stable request identity. */
 export class IssueImplementationControls{
   private active=new Map<string,Promise<unknown>>();private accepting=true;private finished?: (target:SupplementTarget)=>Promise<void>;
+  private generated=new Map<string,{path:string;sha256:string}>();
+  private retired=new Set<string>();
   onFinished(callback:(target:SupplementTarget)=>Promise<void>){this.finished=callback;}
   private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>,private repository:string,private historySources:()=>Promise<readonly HistorySource[]>){}
   static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>,historySources:()=>Promise<readonly HistorySource[]>=async()=>[]){
@@ -37,7 +40,7 @@ export class IssueImplementationControls{
     if(hash(bytes)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-issue-implementation-catalog'||!Array.isArray(p.entries)||p.entries.length>8)throw new Error('implementation_catalog_invalid');
     const entries=p.entries.filter((e:Entry)=>e.repository?.toLowerCase()===repository.toLowerCase()) as Entry[];
     for(const e of entries){
-      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture'])||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
+      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture',...(e.materialView!==undefined?['materialView']:[]),...(e.workRequestId!==undefined?['workRequestId']:[])])||e.materialView!==undefined&&e.materialView!=='selected_files'||e.workRequestId!==undefined&&!messageId(e.workRequestId)||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
       e.context=parseQueueContext(e.context);if(new Set(e.approvedIssues.map(issue=>issue.number)).size!==e.approvedIssues.length)throw new Error('implementation_duplicate_adopted_issue');
       for(const issue of e.approvedIssues)if(!exactKeys(issue,['number','bodySha256','adjudication','goal','acceptance'])||!Number.isSafeInteger(issue.number)||issue.number<1||!isAuthorityDigest(issue.bodySha256)||!issue.adjudication?.trim()||!issue.goal?.trim()||!Array.isArray(issue.acceptance)||!issue.acceptance.length)throw new Error('implementation_adopted_issue_required');
     }
@@ -47,7 +50,7 @@ export class IssueImplementationControls{
   private entry(id:string){const entry=this.entries.find(e=>e.id===id);if(!entry)throw new Error('implementation_project_not_selected');return entry;}
   private async readEntry(id:string,requestId:string){
     const current=this.entries.find(entry=>entry.id===id);
-    if(current)return {entry:current,historical:false};
+    if(current)return {entry:current,historical:this.retired.has(id)};
     await this.catalog();
     const sources=await this.historySources();
     let selected:ReadEntry|undefined;
@@ -67,8 +70,22 @@ export class IssueImplementationControls{
     if(!selected)throw new Error('implementation_history_not_configured');
     return {entry:selected,historical:true};
   }
-  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('implementation_catalog_changed');}
-  options(){return this.entries.map(e=>({id:e.id,issues:e.approvedIssues.map(i=>({number:i.number,goal:i.goal,adjudication:i.adjudication,bodySha256:i.bodySha256})),H0:e.H0,allowedPaths:e.allowedPaths,executionKind:e.executionKind,demonstrationFixture:e.demonstrationFixture}));}
+  /** Product preparation supplies immutable catalogues, never browser entries.
+   * Each original request stays bound to its own catalogue as other work grows. */
+  async includeGenerated(refs:readonly {path:string;sha256:string}[]){
+    if(refs.length>128)throw new Error('implementation_history_limit');
+    for(const ref of refs){
+      const selected=await IssueImplementationControls.load(ref.path,ref.sha256,this.repository,this.read,this.verify,this.historySources);
+      if(selected.entries.length!==1)throw new Error('implementation_generated_entry_invalid');
+      const entry=selected.entries[0]!,previous=this.entries.find(x=>x.id===entry.id),known=this.generated.get(entry.id);
+      if(previous){if(!known||canonical(known)!==canonical(ref)||canonical(previous)!==canonical(entry))throw new Error('implementation_generated_entry_changed');}
+      else{this.entries.push(entry);this.generated.set(entry.id,{...ref});}
+    }
+  }
+  markGeneratedCurrent(ids:ReadonlySet<string>){this.retired=new Set([...this.generated.keys()].filter(id=>!ids.has(id)));}
+  private catalogHash(id:string){return this.generated.get(id)?.sha256??this.sha256;}
+  private async catalog(){for(const ref of [{path:this.path,sha256:this.sha256},...this.generated.values()])if(hash(await regular(ref.path,128*1024))!==ref.sha256)throw new Error('implementation_catalog_changed');}
+  options(){return this.entries.filter(e=>!this.generated.has(e.id)).map(e=>({id:e.id,issues:e.approvedIssues.map(i=>({number:i.number,goal:i.goal,adjudication:i.adjudication,bodySha256:i.bodySha256})),H0:e.H0,allowedPaths:e.allowedPaths,executionKind:e.executionKind,demonstrationFixture:e.demonstrationFixture}));}
   async prepare(id:string,body:Row){
     try{return await this.prepareSelected(id,body);}catch(error){
       const entry=this.entries.find(e=>e.id===id);if(entry&&messageId(body?.requestId)){
@@ -79,7 +96,7 @@ export class IssueImplementationControls{
   }
   private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
-    await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
+    await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');if(entry.workRequestId&&body.requestId!==entry.workRequestId&&!followup)throw new Error('implementation_prepared_work_identity_required');const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
     const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined;
     try{const previous=previousQueue.issueImplementations().requests(id).find(r=>r.id===body.requestId);if(previous){
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
@@ -92,10 +109,10 @@ export class IssueImplementationControls{
     }}finally{previousQueue.close();}
     const issue=await this.read(adopted.number);if(issue.number!==adopted.number||hash(issue.body)!==adopted.bodySha256)throw new Error('implementation_issue_source_changed');
     const root=join(entry.root,body.requestId),workspace=join(root,'workspace');
-    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:entry.materialPaths})));
+    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:entry.materialView?entry.allowedPaths:entry.materialPaths})));
     const task=developmentTaskId(definition);
     const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'];try{const authority=scopeQueue.authority(),adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
-    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[]};
+    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{})};
     const continuation=original?.continuation??followup?.continuation;
     const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
     if(original&&canonical(request)!==canonical(original))throw new Error('implementation_request_id_is_fixed');
@@ -114,7 +131,7 @@ export class IssueImplementationControls{
       const prefix='implementation-'+hash(canonical([id,body.requestId])).slice(0,40),implementIntent=prefix+'-implement',testIntent=prefix+'-test';
       const action=(kind:'implement'|'test'):ActionRequest=>({schemaVersion:1,scopeId:current.context.scope.id,scopeVersion:current.context.scope.version,scopeBodySha256,repository:entry.repository,target:definition.target,action:kind,item:task,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},paths:kind==='implement'?entry.allowedPaths:entry.materialPaths,resourceRefs:entry.budgets.filter(b=>b.action===kind).map(b=>b.resourceRef),...(kind==='test'?{payloadSha256:entry.testPlanSha256}:{})});
       const actions={implement:action('implement'),test:action('test')};
-      work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.sha256,path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request}));
+      work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.catalogHash(entry.id),path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request}));
     }finally{q.close();}
   }
   private projectWorkOriginal(q:QueueStore,id:string,entry:Entry,issueNumber:number,adoption?:string){
@@ -173,7 +190,7 @@ export class IssueImplementationControls{
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
   async begin(id:string,requestId:string){
-    if(!this.accepting||!messageId(requestId))throw new Error('implementation_request_invalid');await this.catalog();this.entry(id);const key=id+':'+requestId;
+    if(!this.accepting||!messageId(requestId))throw new Error('implementation_request_invalid');await this.catalog();this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');const key=id+':'+requestId;
     if(this.active.has(key))return {id:requestId,controllerActive:true,duplicate:true};
     const work=this.execute(id,requestId).then(async result=>{if(['completed','no_change'].includes(result?.result?.status)&&this.finished){const q=await QueueStore.open(this.entry(id).store);let target:SupplementTarget;try{const request=q.issueImplementations().original(id,requestId);target=request.continuation?.originalTarget??{source:id,requestId,task:request.task,operation:result.operation};}finally{q.close();}await this.finished(target);}return result;});this.active.set(key,work);work.catch(()=>{}).finally(()=>this.active.delete(key));return {id:requestId,controllerActive:true,registrationIsNotExecution:true};
   }
@@ -184,7 +201,7 @@ export class IssueImplementationControls{
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
         const refresh=async()=>{
-          if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.sha256)throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+          if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.catalogHash(entry.id))throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
           const authority=q.authority(),profile=authority.configuration().profile,refs=new Map<string,ReturnType<typeof authority.sourceRequests>[number]>();
           for(const authorization of Object.values(fixed.authorization) as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
           const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];
@@ -254,7 +271,7 @@ export class IssueImplementationControls{
     try{if(!q.issueImplementations().requests(target.source).some(r=>r.id===id))return;}finally{q.close();}
     await this.boundSupplement(target,id,text);return this.cancel(target.source,id);
   }
-  async supplementTargets(){const targets:Array<SupplementTarget&{title:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const s of q.issueImplementations().requests(entry.id)){const request=q.issueImplementations().original(entry.id,s.id);if(!request.continuation&&s.operation)targets.push({source:entry.id,requestId:s.id,task:s.task,operation:s.operation,title:'Issue #'+s.issue+' · '+q.tasks().definition(s.task).title});}}finally{q.close();}}return targets;}
+  async supplementTargets(){const targets:Array<SupplementTarget&{title:string}>=[];for(const entry of this.entries){if(this.retired.has(entry.id))continue;const q=await QueueStore.open(entry.store);try{for(const s of q.issueImplementations().requests(entry.id)){const request=q.issueImplementations().original(entry.id,s.id);if(!request.continuation&&s.operation)targets.push({source:entry.id,requestId:s.id,task:s.task,operation:s.operation,title:'Issue #'+s.issue+' · '+q.tasks().definition(s.task).title});}}finally{q.close();}}return targets;}
   private async supplementSource(target:SupplementTarget){
     await this.catalog();await this.verify();const entry=this.entry(target.source),q=await QueueStore.open(entry.store);
     try{const records=q.issueImplementations(),root=records.state(entry.id,target.requestId),rootRequest=records.original(entry.id,target.requestId);if(root.task!==target.task||root.operation!==target.operation||rootRequest.continuation)throw new Error('project_supplement_original_target_changed');
@@ -284,7 +301,7 @@ export class IssueImplementationControls{
     }finally{q.close();}
   }
   async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){
-    await this.catalog();await this.verify();const entry=this.entry(target.source),q=await QueueStore.open(entry.store);let existing:ImplementationRequest|undefined;
+    await this.catalog();await this.verify();if(this.retired.has(target.source))throw new Error('implementation_prepared_work_retired');const entry=this.entry(target.source),q=await QueueStore.open(entry.store);let existing:ImplementationRequest|undefined;
     try{if(q.issueImplementations().requests(target.source).some(r=>r.id===id))existing=q.issueImplementations().original(target.source,id);}finally{q.close();}
     if(existing){
       await this.boundSupplement(target,id,text);beforeRegistration();
