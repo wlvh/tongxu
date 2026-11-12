@@ -105,8 +105,11 @@ export class ProjectWork{
       const version=d.version+1,directory=join(this.config.root,'works',d.id,'version-'+version,'preparation');await mkdir(join(directory,'..'),{recursive:true,mode:0o700});
       const prior=d.version?[...(d.prior??[]),{version:d.version,requestId:d.requestId,source:d.source,catalog:d.catalog,preparation:d.preparation,delivery:d.delivery}]:d.prior;
       if((prior?.length??0)>32)throw new Error('project_work_history_limit');
+      // Only the immediately preceding version obtained through this scoped
+      // store may contribute data. Never search older works or caller paths.
+      const previous=!d.catalog&&d.preparation?.directory===join(this.directory(d),'preparation')?{directory:d.preparation.directory,source:{path:d.preparation.repositoryPath,H:d.preparation.H,repository:scope.repository.fullName},issue:{number:d.issue.number,bodySha256:d.issue.bodySha256},goal:d.goal}:undefined;
       d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,stopRequested:false,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
-      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
+      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
     });

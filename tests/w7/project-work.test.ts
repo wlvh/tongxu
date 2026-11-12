@@ -15,6 +15,8 @@ import {ProjectWorkStore} from '../../src/project-work-store.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {ProjectWorkOwner} from '../../src/project-work-owner.js';
 import {parseWorkProposal} from '../../src/project-work-contract.js';
+import {workPreparationSchema,workPreparationInstructions,workPreparationInstructionsV1,workPreparationInstructionsV2,workPreparationInstructionsV3,workPreparationVersion,parseWorkPreparationOutput} from '../../src/project-work-contract.js';
+import {preparationInputBytes,previousPreparationContext} from '../../src/project-work-preparation.js';
 import {verifyRepositoryPath,receiveWorkResult} from '../../src/project-work-runtime.js';
 import {repositoryFiles,repositoryFile,checkWorkMaterial} from '../../src/project-work-preparation.js';
 import type {ProjectChatScope} from '../../src/project-chat.js';
@@ -158,12 +160,12 @@ test('a failed latest receipt retains H2 pending with the truly received H1 pred
 });
 
 // Synthetic preparation captures; no private project source or real model.
-async function preparationCapture(t:any,kind:'complete'|'questions'|'unknown'|'version-mismatch'='complete',validationScript?:string){
+async function preparationCapture(t:any,kind:'complete'|'questions'|'unknown'|'version-mismatch'='complete',validationScript?:string,rawReport?:string){
   const f=await repository(t),{fixture}=await import('../w5/repair-fixture.js'),native=await fixture(t),{BoundedCodexSession,findingSchema}=await import('../../src/repair-native.js'),{workPreparationInstructionsV1,preparationToolSpecs}=await import('../../src/project-work-contract.js');
   const directory=join(f.root,'preparation');await mkdir(directory);
   const proposal={goal:'Set the selected value',acceptance:['value equals2'],allowedPaths:['code.mjs'],materialPaths:['code.mjs'],protectedPaths:[],validation:{description:'Independent fixed assertion',script:validationScript??"import assert from 'node:assert/strict';import{value}from './code.mjs';assert.equal(value,2);"},questions:kind==='questions'?['Synthetic old premise conflicts with the adopted result.']:[],report:'Explicit protocol fixture, not a real project result.'};
-  const source={path:f.source,H:f.H,repository:'fixture/project'},input={kind:'project_work_engineering_preparation',source,issue:{number:1},userGoal:'exact',files:[],...(kind==='version-mismatch'?{preparationVersion:2}:{})},bytes=canonical(input);await writeFile(join(directory,'input.json'),bytes);
-  let code=await readFile(native.config.codexExecutable,'utf8');code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){${kind==='questions'?`emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic old premise conflicts with the adopted result.',options:null}],text:'This is a synthetic question, not a final result.'}}});`:''}finish({candidateH:context.source.H,decision:'${kind==='questions'?'needs_owner':'confirmed'}',report:JSON.stringify(${JSON.stringify(proposal)})});return;}if(stage==='tongxu_read_file'){`);
+  const source={path:f.source,H:f.H,repository:'fixture/project'},input={kind:'project_work_engineering_preparation',source,issue:{number:1,body:'fixed',bodySha256:hash('fixed')},userGoal:'exact',files:[],...(kind==='version-mismatch'?{preparationVersion:2}:{})},bytes=canonical(input);await writeFile(join(directory,'input.json'),bytes);
+  let code=await readFile(native.config.codexExecutable,'utf8');code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){${kind==='questions'?`emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic old premise conflicts with the adopted result.',options:null}],text:'This is a synthetic question, not a final result.'}}});`:''}finish({candidateH:context.source.H,decision:'${kind==='questions'?'needs_owner':'confirmed'}',report:${rawReport===undefined?'JSON.stringify('+JSON.stringify(proposal)+')':JSON.stringify(rawReport)}});return;}if(stage==='tongxu_read_file'){`);
   code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){tool('tongxu_repository_file',{path:'code.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");await writeFile(native.config.codexExecutable,code);
   const system=kind==='unknown'?workPreparationInstructionsV1+' unknown-version':workPreparationInstructionsV1,candidate={kind:'local-git' as const,repository:'local/project-work-preparation',pr:null,H:f.H,B:f.H,target:'preparation'};
   const session=await BoundedCodexSession.start({executable:native.config.codexExecutable,directory:join(directory,'native'),operation:directory,candidate,role:'verifier_fact',projectPreparation:true,system,inputManifestSha256:hash(bytes),scopeSource:'Synthetic preparation fixture',arrangementSource:'Read-only fixture; no permission',disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,executionKind:'fixture',beforeTurn:async()=>{},gate:{check:async()=>{},call:async()=>({success:true,contentItems:[{type:'inputText',text:'{}'}]})}});
@@ -181,7 +183,7 @@ test('known V1 full capture retains detail, confirmation and start preflight aft
   await assert.rejects(work.start(scope,id,payload),/synthetic_start_preflight_passed/);assert.deepEqual(await readFile(f.trace),trace);assert.equal(await exists(join(f.directory,'environment')),false);
 });
 for(const kind of ['unknown','version-mismatch'] as const)test('unknown or mismatched preparation instructions never adopt a plan: '+kind,async t=>{
-  const f=await preparationCapture(t,kind),{readWorkProposal}=await import('../../src/project-work-preparation.js');await assert.rejects(readWorkProposal(f.directory,f.source),/preparation_version/);
+  await assert.rejects(preparationCapture(t,kind),/preparation_version/);
 });
 test('ended rejected V1 questions are cold readable as unaccepted diagnostics with zero mutations or inputs',async t=>{
   const f=await preparationCapture(t,'questions'),{readWorkPreparationDiagnostic,readWorkProposal}=await import('../../src/project-work-preparation.js'),before=await readFile(join(f.directory,'native','stdout.ndjson')),trace=await readFile(f.trace);
@@ -225,4 +227,32 @@ test('fixed validation invocation explains ESM/cwd/no argv and narrowly refuses 
 for(const script of ["const fs=require('node:fs');", "const root=process.argv[2];"])test('legacy complete proposal stays readable but known incompatible invocation cannot start: '+script,async t=>{
  const f=await preparationCapture(t,'complete',script),{readWorkProposal}=await import('../../src/project-work-preparation.js'),r=await readWorkProposal(f.directory,f.source),trace=await readFile(f.trace);assert.equal(r.ready,false);assert.ok(r.validationProblem);assert.equal(r.proposal.validation.script,script);assert.equal(r.proposalDigest,hash(canonical(f.proposal)));const d={version:1,stage:'prepared',stopRequested:false,issue:{number:1,body:'fixed',bodySha256:hash('fixed')},preparation:{directory:f.directory,repositoryPath:f.source.path,H:f.H,proposal:r.proposal}};
  const w=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(d)},active:new Map(),verify:async()=>{},readIssue:async()=>({...d.issue,defaultHead:f.H})});await assert.rejects(w.confirmation(scope,'fixture',{version:1,proposalSha256:r.proposalDigest}),/project_work_validation_/);assert.deepEqual(await readFile(f.trace),trace);
+});
+
+test('complete legacy bad inner JSON is retained as unaccepted data with exact hashes and no new input',async t=>{
+ const raw=String.raw`{"validation":{"script":"const re=/\d/;"}}`,f=await preparationCapture(t,'complete',undefined,raw),{readWorkProposal}=await import('../../src/project-work-preparation.js');
+ await assert.rejects(readWorkProposal(f.directory,f.source),/project_work_proposal_json_invalid/);
+ const before=await readFile(f.trace),issue={number:1,bodySha256:hash('fixed')},prior={directory:f.directory,source:f.source,issue,goal:'exact'},read=await previousPreparationContext(prior,f.source,issue,'exact'),c=read.context as any;
+ assert.equal(c.report,raw);assert.equal(c.accepted,false);assert.equal(c.errorCode,'project_work_proposal_json_invalid');assert.equal(c.reportSha256,hash(Buffer.from(raw)));assert.equal(c.inputSha256,hash(await readFile(join(f.directory,'input.json'))));assert.equal(c.captureSha256,hash(await readFile(join(f.directory,'native/completed.json'))));read.assertCurrent();
+ for(const [p,source,changedIssue,goal] of [[{...prior,goal:'other'},f.source,issue,'exact'],[prior,{...f.source,H:'f'.repeat(40)},issue,'exact'],[prior,f.source,{...issue,bodySha256:hash('changed')},'exact'],[prior,f.source,issue,'changed']] as const){assert.equal((await previousPreparationContext(p,source,changedIssue,goal)).context?.omitted,'project_work_previous_source_changed');}
+ const path=join(f.directory,'native/inputs.json'),saved=await readFile(path);await writeFile(path,'[]');assert.throws(read.assertCurrent,/previous_preparation_changed/);assert.equal((await previousPreparationContext(prior,f.source,issue,'exact')).context?.omitted,'project_work_previous_unavailable');await writeFile(path,saved);read.assertCurrent();
+ assert.deepEqual(await readFile(f.trace),before);assert.equal((read as any).proposal,undefined);
+});
+
+for(const bytes of [65536,65537])test('previous report uses UTF8 bytes, no truncation at '+bytes,async t=>{
+ const prefix=String.raw`{"bad":"\d`,remaining=bytes-Buffer.byteLength(prefix),raw=prefix+'中'.repeat(Math.floor(remaining/3))+'x'.repeat(remaining%3),f=await preparationCapture(t,'complete',undefined,raw),issue={number:1,bodySha256:hash('fixed')};
+ assert.equal(Buffer.byteLength(raw),bytes);const r=await previousPreparationContext({directory:f.directory,source:f.source,issue,goal:'exact'},f.source,issue,'exact');if(bytes===65536)assert.equal((r.context as any).report,raw);else{assert.equal(r.context?.omitted,'project_work_previous_report_limit');assert.equal((r.context as any).report,undefined);}
+});
+
+test('preparation full input keeps the 512KiB UTF8 boundary after previous context',()=>{
+ const base={previousPreparation:{report:''}},overhead=Buffer.byteLength(canonical(base)),remaining=512*1024-overhead,body='中'.repeat(Math.floor(remaining/3))+'x'.repeat(remaining%3);assert.equal(Buffer.byteLength(preparationInputBytes({previousPreparation:{report:body}})),512*1024);assert.throws(()=>preparationInputBytes({previousPreparation:{report:body+'中'}}),/preparation_input_limit/);
+});
+
+test('prior reader never accepts missing, partial or async question captures',async t=>{
+ const f=await preparationCapture(t,'questions'),issue={number:1,bodySha256:hash('fixed')};assert.equal((await previousPreparationContext({directory:f.directory,source:f.source,issue,goal:'exact'},f.source,issue,'exact')).context?.omitted,'project_work_previous_unavailable');assert.equal((await previousPreparationContext({directory:join(f.root,'absent'),source:f.source,issue,goal:'exact'},f.source,issue,'exact')).context?.omitted,'project_work_previous_unavailable');
+});
+
+test('V1 to V4 prompt and input versions are exact, never inferred from a JSON-looking report',()=>{
+ const H='a'.repeat(40),base={kind:'project_work_engineering_preparation',source:{H}};
+ for(const [version,system] of [[1,workPreparationInstructionsV1],[2,workPreparationInstructionsV2],[3,workPreparationInstructionsV3],[4,workPreparationInstructions]] as const){const input={...base,...(version>1?{preparationVersion:version,validationEnvironment:{}}:{}),...(version>=3?{validationInvocation:{},materialBudgets:{}}:{})};assert.equal(workPreparationVersion(system,input,H),version);assert.throws(()=>workPreparationVersion(system,{...input,preparationVersion:version===4?3:4},H),/version_changed/);}
 });

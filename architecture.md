@@ -153,3 +153,6 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 `implementation-validation`只读核单次完整原生报告、注册写回执及健康失败Docker原件，固定已知失败；原store登记唯一验证修正，`issue-implementation`在同operation追加一次上下文／测试／提交。`work-validation-definition`核产品准备与准确材料同意，复用原Authority基线来源，不增动作授权。结果／owner proof通过共同capture读取链核新旧原件；失败终态不进入成功补充／接回。
 
 新selected_files任务的TaskDefinition.paths由宿主从固定H选择小代表材料，仅从原allowedPaths选择不超过64KiB的小文件；已有定义原样。TaskObservation仍只承诺其声明路径和完整HEAD/tree，完整当前性另由RepairTools／implementation-owner-feedback及补充前任的全selected树/index/捕获门承担。V3准备显式给出ESM eval/cwd/no argv ABI与分开的材料预算，V1/V2准确分派保持。
+
+
+准备输出V4由`project-work-contract`定义专用proposal对象schema；`repair-native`对live与cold按明确preparation profile及准确prompt/input/schema元组双向隔离，旧V1—V3保持各自字符串解析路径。`project-work`只从ScopedStore取得紧邻版本和固定工作目录，`project-work-preparation`核完整原capture与同source／Issue／goal，追加有界未接受报告数据并在发送前同步核原件。它不改原版本或提供执行／材料批准；新proposal仍走原所有验证和Owner门。相关测试沿原project-work／implementation-native-profile及first-use HTTP fixture。

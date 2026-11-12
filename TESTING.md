@@ -147,3 +147,6 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 已知验证失败的定向回归沿原project-repair integration的 `bounded known validation correction` 场景：未来范围中的可读定义、旧S材料同意、原partial树到首次H1、owner proof／补充／正常接回、再次failed／H1空及占用收尾、中断未知不重发、树／索引／保护／捕获／测试／定义／预算／来源／停止拒绝与冷读。模型及Owner为明确协议样例，Git／HTTP／SQLite／Docker实际执行，真实任务另记。原unselected-source日志隐私、first-input旧捕获及单轮正常成功继续回归；project-work-ui核显式按钮，既有V1/V2提示原字节不变。
 
 V3准备回归核固定ESM eval/cwd/no-args调用和预算输入绑定；旧完整不兼容require/argv方案仍可读但确认／开始前拒绝。大editable场景以真实Git/Docker使改后总量超过384KiB，保留全部Grant/material写范围，同时小TaskObservation、owner proof、补充／接回可用；改变未被代表观察的获准路径仍由完整树当前性门拒绝。
+
+
+V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；模型及Owner为协议样例，实际真实准备另记。
