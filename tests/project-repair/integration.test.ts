@@ -29,6 +29,7 @@ import { hash } from '../../src/snapshot.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
+import {prepareWorkEnvironment,readWorkEnvironment,assertWorkEnvironmentEnded} from '../../src/project-work-environment.js';
 import { parseDockerConfig } from '../../src/docker-sandbox.js';
 import { dependencyDigest } from '../../src/sandbox.js';
 import {parseDevelopmentTask} from '../../src/task-contract.js';
@@ -256,8 +257,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  const f=await implementationProject(t);await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);const H=await git(f.objects,['rev-parse','HEAD']);
  const proposal={goal:'Preserve trim/default and implement the optional fallback',acceptance:['Blank with Draft returns Draft','Default remains Untitled'],allowedPaths:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md','policy-a.md','policy-b.md','policy-c.md'],protectedPaths:['test/normalize.test.mjs','policy-a.md','policy-b.md','policy-c.md'],validation:{description:'Actual normalized optional fallback',script:"import assert from 'node:assert/strict';import fs from 'node:fs';import{normalizeLabel}from './src/index.mjs';assert.equal(fs.existsSync('.git'),false);assert.equal(normalizeLabel('  Alpha  '),'Alpha');assert.equal(normalizeLabel(' '),'Untitled');assert.equal(normalizeLabel(' ','Draft'),'Draft');"},questions:[],report:'Protocol preparation read actual source; this is not real model acceptance.'};
  let code=await readFile(f.config.codexExecutable,'utf8');
- code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){finish({candidateH:context.source.H,decision:'confirmed',report:JSON.stringify(${JSON.stringify(proposal)})});return;}if(stage==='tongxu_read_file'){`);
- code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
+ code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){const rejected=${fault==='preparation-questions'}&&!fs.existsSync(trace+'.preparation-question');if(rejected){fs.writeFileSync(trace+'.preparation-question','1');emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic project test premise changed; propose a bounded adjustment.',options:null}],text:'Synthetic unaccepted question.'}}});}finish({candidateH:context.source.H,decision:rejected?'needs_owner':'confirmed',report:JSON.stringify({...${JSON.stringify(proposal)},questions:rejected?['Synthetic project test premise changed; propose a bounded adjustment.']:[]})});return;}if(stage==='tongxu_read_file'){`);
+ code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(context.preparationVersion!==2||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
  code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation)args.text+='\\n// clarification from original supplement\\n';stage=name;const serial=");
  await writeFile(f.config.codexExecutable,code);
  const originals=join(f.root,'work-owner-comments.json'),gh=join(f.root,'work-owner.mjs');await writeFile(originals,'[]');
@@ -278,7 +279,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  assert.equal((await post('/api/project-work/settings',{repositoryPath:f.objects})).status,200);
  for(const n of [201,202]){
    let id=first.requestId;if(n===202){const second=await post('/api/project-work/create',{...first,requestId:randomUUID(),issueNumber:n});assert.equal(second.status,200);id=second.value.id;}
-   assert.equal((await post('/api/project-work/'+id+'/prepare',{goal:first.goal})).status,202);await wait(id,'prepared');const detail=(await get('/api/project-work/'+id)).value;
+   assert.equal((await post('/api/project-work/'+id+'/prepare',{goal:first.goal})).status,202);
+   if(fault==='preparation-questions'){
+     await wait(id,'needs_input');const rejected=(await get('/api/project-work/'+id)).value,originalDirectory=rejected.draft.preparation.directory,original=await readFile(join(originalDirectory,'native/stdout.ndjson')),trace=await readFile(f.trace);
+     assert.equal(rejected.draft.problem,'controlled_result_not_final:non_terminal_agent_message');assert.equal(rejected.draft.preparation.proposal==null,true);assert.equal(rejected.draft.catalog==null,true);assert.equal(await exists(join(originalDirectory,'native/completed.json')),false);assert.equal(rejected.preparationDiagnostic.accepted,false);assert.equal(rejected.preparationDiagnostic.questions.length,1);
+     await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');
+     assert.deepEqual((await get('/api/project-work/'+id)).value.preparationDiagnostic,rejected.preparationDiagnostic);assert.deepEqual(await readFile(f.trace),trace);
+     assert.equal((await post('/api/project-work/'+id+'/prepare',{goal:'Explicit answer for the same work next version.'})).status,202);await wait(id,'prepared');const next=(await get('/api/project-work/'+id)).value;assert.equal(next.draft.version,2);assert.equal(next.history[0].version,1);assert.deepEqual(next.history[0].preparationDiagnostic,rejected.preparationDiagnostic);assert.deepEqual(await readFile(join(originalDirectory,'native/stdout.ndjson')),original);assert.equal(JSON.parse(await readFile(originals,'utf8')).length,0);assert.equal((await readFile(f.trace,'utf8')).split('model-input').length-1,2);return;
+   }
+   await wait(id,'prepared');const detail=(await get('/api/project-work/'+id)).value;
    assert.deepEqual(detail.draft.preparation.proposal.allowedPaths,['src/normalize.mjs']);const confirm={version:detail.draft.version,proposalSha256:detail.draft.preparation.proposalDigest};
    const start=await post('/api/project-work/'+id+'/start',confirm);assert.equal(start.status,202);assert.equal(start.value.waitingForOwner,true);const ownerURL=new URL(ownerURLs.at(-1)!),capability=ownerURL.hash.slice(1);assert.equal(JSON.stringify(start.value).includes(capability),false);
    assert.equal((await get('/api/project-owner')).status,401);const ownerHeaders={Authorization:'Owner '+capability,Origin:url.origin,'Content-Type':'application/json'};const rejected=await fetch(url.origin+'/api/project-owner/approve',{method:'POST',headers:{...ownerHeaders,Origin:'https://untrusted.invalid'},body:'{}'});assert.equal(rejected.status,403);
@@ -337,6 +346,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  const before=await readFile(f.trace);await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');const final=await get('/api/project-work');assert.equal(final.value.works.length,2);assert.equal(final.value.settings.repositoryPath,f.objects);for(const w of final.value.works)assert.equal((await get('/api/project-work/'+w.id)).value.execution.reports.length,w.id===first.requestId?2:1);assert.deepEqual(await readFile(f.trace),before);
  assert.equal(JSON.parse(await readFile(originals,'utf8')).length,4);assert.equal((await readFile(f.trace,'utf8')).trim().split('\n').map(s=>JSON.parse(s)).filter(x=>x.kind==='model-input').length,5);
 }
+
+test('first use normal HTTP rejected preparation questions cold read and explicit same-work next version',t=>firstUseProjectWork(t,'preparation-questions'));
 
 test('first use normal HTTP receives the pending original result before its completed supplement',t=>firstUseProjectWork(t,'receipt-pending'));
 
@@ -1176,4 +1187,17 @@ for (const outcome of ['no_change', 'incomplete'] as const) test('historical sec
     assert.equal(recovered.workRequests[0].problem, 'implementation_history_incomplete');
   }
   assert.deepEqual(await f.trace(), trace);
+});
+
+
+test('fixed preparation environment uses no source mounts, binds original evidence and preserves stop/unknown',async t=>{
+ const f=await fixture(t);fixtureRoots.get(t)!.push(f.root);const H='a'.repeat(40),T='b'.repeat(40),directory=join(f.root,'work-environment');
+ const observed=await prepareWorkEnvironment(docker,directory,H,T,{refresh:async()=>{},start:effect=>effect()});assert.equal(observed.sourceMounted,false);assert.equal(observed.networkAccess,false);assert.equal(observed.observed.workPresent,false);assert.equal(typeof observed.observed.childProcess,'boolean');assert.deepEqual(await readWorkEnvironment(directory,H,T),observed);
+ const recordPath=join(directory,'capability/execution.json'),bytes=await readFile(recordPath),record=JSON.parse(bytes.toString());assert.deepEqual(record.paths,{});assert.ok(record.createArgs.includes('--network=none'));assert.equal(record.createArgs.includes('--mount'),false);assert.equal(record.binding.head,H);assert.equal(record.binding.tree,T);
+ const proofPath=join(directory,'observation.json'),proofBytes=await readFile(proofPath),proof=JSON.parse(proofBytes.toString());
+ for(const change of [{imageId:'sha256:'+'c'.repeat(64)},{configuration:{...proof.configuration,image:'sha256:'+'d'.repeat(64)}}]){await writeFile(proofPath,canonical({...proof,...change}));await assert.rejects(readWorkEnvironment(directory,H,T),/binding_changed/);}await writeFile(proofPath,proofBytes);
+ await assert.rejects(readWorkEnvironment(directory,'c'.repeat(40),T),/binding_changed/);
+ const out=join(directory,'capability/stdout'),original=await readFile(out);await writeFile(out,'{}');await assert.rejects(readWorkEnvironment(directory,H,T),/evidence_changed/);await writeFile(out,original);
+ await writeFile(recordPath,canonical({...record,phase:'unknown'}));await assert.rejects(assertWorkEnvironmentEnded(directory,docker),/original_unknown/);await writeFile(recordPath,bytes);await assertWorkEnvironmentEnded(directory,docker);
+ const stopped=join(f.root,'stopped-work-environment');await assert.rejects(prepareWorkEnvironment(docker,stopped,H,T,{start:()=>{throw Error('synthetic_stopped_before_probe');}}));assert.equal(await exists(join(stopped,'capability')),false);await assertWorkEnvironmentEnded(stopped,docker);
 });
