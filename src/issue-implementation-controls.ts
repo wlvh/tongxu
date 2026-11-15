@@ -1,5 +1,8 @@
+import {readEndedReadonlyImplementationFailure,requireEndedReadonlyProof,readHostReadonlyFailure,observeReadonlyWorkspace,type EndedReadonlyProof} from './implementation-readonly-failure.js';
+import {captureImplementationAI,parseImplementationAI,type ImplementationAI} from './implementation-ai.js';
+import {assertWorkCurrent,type CurrentCheckRef} from './project-work-current.js';
 import {fixedGit} from './project-work-preparation.js';
-import {observeValidationFailure,checkValidationWorkspace,readRecordedValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
+import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,readRecordedValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
@@ -9,7 +12,7 @@ import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
 import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
-import {regular,git,tree,treeHash,exists} from './repair-workspace.js';
+import {regular,gitReadOnly as git,tree,treeHash,exists} from './repair-workspace.js';
 import {messageId} from './message-contract.js';
 import {exactKeys,isAuthorityDigest,type ActionRequest} from './authority-contract.js';
 import {parseDevelopmentTask,developmentTaskId} from './task-contract.js';
@@ -25,7 +28,7 @@ import {readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
-export type ImplementationEntry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean;materialView?:'selected_files';workRequestId?:string};
+export type ImplementationEntry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean;materialView?:'selected_files';workRequestId?:string;currentCheck?:CurrentCheckRef;initialRepairRounds?:0};
 type Entry=ImplementationEntry;
 type ReadEntry=Pick<Entry,'id'|'repository'|'store'|'target'>;
 type HistorySource={store:string;item:string};
@@ -45,7 +48,7 @@ export class IssueImplementationControls{
     if(hash(bytes)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-issue-implementation-catalog'||!Array.isArray(p.entries)||p.entries.length>8)throw new Error('implementation_catalog_invalid');
     const entries=p.entries.filter((e:Entry)=>e.repository?.toLowerCase()===repository.toLowerCase()) as Entry[];
     for(const e of entries){
-      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture',...(e.materialView!==undefined?['materialView']:[]),...(e.workRequestId!==undefined?['workRequestId']:[])])||e.materialView!==undefined&&e.materialView!=='selected_files'||e.workRequestId!==undefined&&!messageId(e.workRequestId)||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
+      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture',...(e.materialView!==undefined?['materialView']:[]),...(e.workRequestId!==undefined?['workRequestId']:[]),...(e.currentCheck!==undefined?['currentCheck']:[]),...(e.initialRepairRounds!==undefined?['initialRepairRounds']:[])])||e.initialRepairRounds!==undefined&&e.initialRepairRounds!==0||e.currentCheck!==undefined&&(!exactKeys(e.currentCheck,['path','sha256'])||typeof e.currentCheck.path!=='string'||resolve(e.currentCheck.path)!==e.currentCheck.path||!isAuthorityDigest(e.currentCheck.sha256))||e.materialView!==undefined&&e.materialView!=='selected_files'||e.workRequestId!==undefined&&!messageId(e.workRequestId)||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
       e.context=parseQueueContext(e.context);if(new Set(e.approvedIssues.map(issue=>issue.number)).size!==e.approvedIssues.length)throw new Error('implementation_duplicate_adopted_issue');
       for(const issue of e.approvedIssues)if(!exactKeys(issue,['number','bodySha256','adjudication','goal','acceptance'])||!Number.isSafeInteger(issue.number)||issue.number<1||!isAuthorityDigest(issue.bodySha256)||!issue.adjudication?.trim()||!issue.goal?.trim()||!Array.isArray(issue.acceptance)||!issue.acceptance.length)throw new Error('implementation_adopted_issue_required');
     }
@@ -67,7 +70,7 @@ export class IssueImplementationControls{
         if(!this.entries.some(entry=>entry.store===store)&&!sources.some(source=>source.store===store&&source.item===state.task))continue;
         const request=q.issueImplementations().original(id,requestId),definition=q.tasks().definition(state.task);
         if(definition.repository.toLowerCase()!==this.repository.toLowerCase()||request.task!==state.task||request.workspaceRequest.candidate.target!==definition.target)throw new Error('implementation_history_project_mismatch');
-        if(state.phase!=='returned'||!['completed','no_change','failed'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
+        if(state.result?.failureKind==='ended_readonly_timeout')await readHostReadonlyFailure(state);if(state.phase!=='returned'||!['completed','no_change','failed'].includes(state.result?.status)||!state.result.completeCapture&&state.result.failureKind!=='ended_readonly_timeout')throw new Error('implementation_history_incomplete');
         if(selected)throw new Error('implementation_history_ambiguous');
         selected={id,store,repository:definition.repository,target:definition.target};
       }finally{q.close();}
@@ -101,8 +104,8 @@ export class IssueImplementationControls{
   }
   private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
-    await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');if(entry.workRequestId&&body.requestId!==entry.workRequestId&&!followup)throw new Error('implementation_prepared_work_identity_required');const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
-    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined,originalPaths:string[]|undefined;
+    await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');if(entry.workRequestId&&body.requestId!==entry.workRequestId&&!followup)throw new Error('implementation_prepared_work_identity_required');if(entry.initialRepairRounds!==undefined&&!this.generated.has(entry.id))throw new Error('implementation_rounds_host_required');if(entry.currentCheck)assertWorkCurrent(entry.currentCheck);const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
+    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined,originalPaths:string[]|undefined,inheritedAI:ImplementationAI|undefined,inheritedEdit:ImplementationRequest['editProfile'];
     try{const previous=previousQueue.issueImplementations().requests(id).find(r=>r.id===body.requestId);if(previous){
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
       original=previousQueue.issueImplementations().original(id,body.requestId);
@@ -111,7 +114,7 @@ export class IssueImplementationControls{
       if(previous.phase!=='registered'||previous.stopped)return this.publicState(previous);
       if(original.continuation)entry={...entry,H0:original.workspaceRequest.candidate.H,objects:original.workspaceRequest.objects};
       const savedDefinition=previousQueue.tasks().definition(original.task);originalTitle=savedDefinition.title;originalPaths=savedDefinition.paths;
-    }}finally{previousQueue.close();}
+    }if(!original&&followup){const prior=previousQueue.issueImplementations().original(id,followup.continuation.originalTarget.requestId);inheritedAI=prior.implementationAI;inheritedEdit=prior.editProfile;}}finally{previousQueue.close();}
     const issue=await this.read(adopted.number);if(issue.number!==adopted.number||hash(issue.body)!==adopted.bodySha256)throw new Error('implementation_issue_source_changed');
     const root=join(entry.root,body.requestId),workspace=join(root,'workspace');
     let observedPaths=originalPaths??entry.materialPaths;
@@ -121,10 +124,11 @@ export class IssueImplementationControls{
     }
     const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:observedPaths})));
     const task=developmentTaskId(definition);
-    const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'];try{const authority=scopeQueue.authority(),adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
-    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{})};
+    const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'],executorAccount:number;try{const authority=scopeQueue.authority();executorAccount=authority.configuration().profile.executorId;const adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
+    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:followup?1:entry.initialRepairRounds??1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{})};
     const continuation=original?.continuation??followup?.continuation;
-    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
+    const checked=entry.currentCheck?assertWorkCurrent(entry.currentCheck):null,selectedAI=original?original.implementationAI:followup?inheritedAI:checked?checked.binding.implementationAI??undefined:captureImplementationAI(entry.repository);if(selectedAI){const snapshot=parseImplementationAI(selectedAI,entry.repository);if(snapshot.scope.account.id!==executorAccount)throw new Error('ai_settings_outside_project');}
+    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...((original?original.editProfile:followup?inheritedEdit:'literal-edits-v1')?{editProfile:original?original.editProfile:followup?inheritedEdit:'literal-edits-v1' as const}:{}),...(selectedAI?{implementationAI:selectedAI}:{}),...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
     if(original&&canonical(request)!==canonical(original))throw new Error('implementation_request_id_is_fixed');
     const executorBytes=await regular(entry.config.path);if((JSON.parse(executorBytes.toString()).executionKind??'native_capture')!==entry.executionKind)throw new Error('implementation_executor_kind_mismatch');
     if(hash(executorBytes)!==entry.config.sha256)throw new Error('implementation_executor_changed');
@@ -141,7 +145,7 @@ export class IssueImplementationControls{
       const prefix='implementation-'+hash(canonical([id,body.requestId])).slice(0,40),implementIntent=prefix+'-implement',testIntent=prefix+'-test';
       const action=(kind:'implement'|'test'):ActionRequest=>({schemaVersion:1,scopeId:current.context.scope.id,scopeVersion:current.context.scope.version,scopeBodySha256,repository:entry.repository,target:definition.target,action:kind,item:task,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},paths:kind==='implement'?entry.allowedPaths:entry.materialPaths,resourceRefs:entry.budgets.filter(b=>b.action===kind).map(b=>b.resourceRef),...(kind==='test'?{payloadSha256:entry.testPlanSha256}:{})});
       const actions={implement:action('implement'),test:action('test')};
-      work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.catalogHash(entry.id),path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request}));
+      work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.catalogHash(entry.id),path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request,...(entry.currentCheck?{currentCheck:entry.currentCheck}:{})}));
     }finally{q.close();}
   }
   private projectWorkOriginal(q:QueueStore,id:string,entry:Entry,issueNumber:number,adoption?:string){
@@ -183,8 +187,8 @@ export class IssueImplementationControls{
     const {entry,historical}=await this.readEntry(id,request.original?.requestId??request.origin.requestId),q=await QueueStore.open(entry.store);let s:Row,resourcesSettled=false;try{const checked=this.projectWorkState(q,entry,issueNumber,request);if(!checked)return null;s=checked;if(s.result)resourcesSettled=(s.plan?.resourceRequests??[]).every((resource:string)=>{try{const state=q.issueImplementations().terminalResource(id,s.id,resource);return !state||s.result.status==='cancelled_unstarted'&&['prepared_not_sent','refused'].includes(state.state)||!!q.resources().settledOutcome(resource);}catch{return false;}});}finally{q.close();}
     // Capture liveness alongside the resource snapshot. Reading the complete
     // report may yield while the controller settles resources and exits.
-    const state=this.publicState(s),report=s.result?.completeCapture?await readImplementationResult(s):null;
-    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture}:null,permissionsGranted:false,...(historical?{historical:true}:{})};
+    const state=this.publicState(s),report=s.result&&(s.result.completeCapture||s.result.hostEvidenceComplete)?await readImplementationResult(s):null;
+    return {...state,operation:s.operation,resourcesSettled,originPrepared:!!s.plan?.request.origin,originIncludedInCompleteCapture:!!report?.completeCapture&&!!s.plan?.request.origin,report:report?{status:report.status,H0:report.H0,H1:report.H1,report:report.report,completeCapture:report.completeCapture,...(report.hostEvidenceComplete?{hostEvidenceComplete:true,hostReport:report.hostReport,failureKind:report.failureKind}:{})}:null,permissionsGranted:false,...(historical?{historical:true}:{})};
   }
   async cancelProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){
     // Even without a saved chat link, inspect the queue after the cancellation
@@ -196,7 +200,7 @@ export class IssueImplementationControls{
     return {cancelled:true,originalRegistered:true,original:await this.cancel(id,s.id),newModelInputs:0};
   }
   async stopProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}if(!s)throw new Error('project_work_original_not_registered');return this.stop(id,s.id);}
-  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
+  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,hostEvidenceComplete:s.result?.hostEvidenceComplete===true,failureKind:s.result?.failureKind??null,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
   async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
@@ -214,7 +218,7 @@ export class IssueImplementationControls{
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
         const refresh=async()=>{
-          if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.catalogHash(entry.id))throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+          if(fixed.currentCheck)assertWorkCurrent(fixed.currentCheck);if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.catalogHash(entry.id))throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
           const authority=q.authority(),profile=authority.configuration().profile,refs=new Map<string,ReturnType<typeof authority.sourceRequests>[number]>();
           for(const authorization of [...Object.values(fixed.authorization),...(this.definitionConsentBaseline(q,entry,original)?[this.definitionConsentBaseline(q,entry,original)!]:[])] as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
           const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];
@@ -233,7 +237,7 @@ export class IssueImplementationControls{
         if(proof){await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});await releaseWorkspace(fixed.workspace,proof.lease,'verified_unstarted_metadata');}
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);return q.issueImplementations().state(id,requestId);}throw e;}
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
@@ -243,6 +247,73 @@ export class IssueImplementationControls{
   }
   private async persistValidationFailure(q:QueueStore,id:string,requestId:string,p:ValidationFailureProof){
     const path=join(p.record.operationRoot,'validation-failure.json'),bytes=canonical(p.record);try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path,32*1024*1024)).toString()!==bytes)throw e;}q.issueImplementations().recordValidationFailure(id,requestId,p);
+  }
+  private async releaseClosedFailure(state:Row){
+    const ref=state.result?.failureClosure;if(!ref||state.result.status!=='failed'||ref.failureSha256!==hash(canonical(state.result?.failureKind==='ended_readonly_timeout'?state.readonlyFailure?.record:state.validationFailure)))throw new Error('implementation_known_failure_close_refused');
+    await readImplementationResult(state);const closed=join(state.plan.operationRoot,'failure-close');await mkdir(closed,{recursive:true,mode:0o700});const bytes=canonical(state.result),path=join(closed,'result.json');
+    try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path,32*1024*1024)).toString()!==bytes)throw e;}
+    const outcome=state.result.failureKind==='ended_readonly_timeout'?'known_ended_readonly_failure_closed':'known_validation_failure_closed',lease=ref.lease,lock=join(state.plan.workspace,'.git/tongxu-writer.json'),history=join(lease.operation,'ownership-history');
+    if(await exists(lock)){
+      const actual=JSON.parse((await regular(lock)).toString());if(canonical(actual)!==canonical(lease))throw new Error('writer_lease_changed');
+      await releaseWorkspace(state.plan.workspace,actual,outcome,true);
+    }
+    const released=JSON.parse((await regular(join(history,lease.generation+'-released.json'))).toString()),original=JSON.parse((await regular(join(history,lease.generation+'-lock.json'))).toString());
+    if(await exists(lock)||canonical(original)!==canonical(lease)||canonical(released.lease)!==canonical(lease)||released.outcome!==outcome)throw new Error('implementation_failure_release_unknown');
+  }
+  private async knownFailureSource(q:QueueStore,s:Row){
+    q.issueImplementations().requireFailureClosureBudget(s.source,s.id);
+    if(s.stopped||s.validationCorrection||s.plan.resourceRequests.length||await exists(join(s.plan.operationRoot,'revoked.json')))throw new Error('implementation_known_failure_close_refused');
+    await this.catalog();await this.verify();if(hash((await this.read(s.issue)).body)!==s.plan.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+    const a=q.authority(),status=a.status(),auth=[...new Set<string>(Object.values(s.plan.authorization) as string[])];
+    if(status.revocations.some((r:Row)=>[...auth,s.plan.request.adoptedScope.adoption].includes(r.decision)))throw new Error('owner_decision_revoked');
+    if(status.controls.some((r:Row)=>r.state==='stopped'&&['implementation','investment'].includes(r.control)))throw new Error('implementation_stopped');
+    const refs=new Map<string,ReturnType<typeof a.sourceRequests>[number]>();for(const sha of auth)for(const ref of a.sourceRequests(sha))refs.set(ref.proposalSha256,ref);
+    const directory=join(this.entry(s.source).store,'implementation-authority',randomUUID());await mkdir(directory,{recursive:true,mode:0o700});const observations=[];
+    for(const ref of refs.values()){const o=await readOwnerSource(a.configuration().profile,ref.proposalSha256,ref.commentId,join(directory,ref.proposalSha256));a.apply(ref.proposalSha256,o);observations.push(o);}
+    a.adoptionBaseline(s.plan.request.adoptedScope.adoption,observations);
+  }
+  private async readonlyProof(q:QueueStore,id:string,requestId:string){
+    if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');
+    const check=q.issueImplementations().readonlyCheck(id,requestId),s=q.issueImplementations().state(id,requestId);
+    try{const proof=await readEndedReadonlyImplementationFailure(s,{...check,controllerReturned:true});q.issueImplementations().recordReadonlyFailure(id,requestId,proof);return proof;}
+    catch(error){const e=error as Error&{indexObservation?:Row};q.issueImplementations().readonlyCheckRejected(id,requestId,check.checkId,e.message,e.indexObservation??null);throw error;}
+  }
+  private async retainedReadonlyWorkspace(s:Row){
+    await readHostReadonlyFailure(s);const data=s.readonlyFailure.record,plan=JSON.parse((await regular(s.plan.path)).toString()),initial=JSON.parse((await regular(join(s.plan.operationRoot,'initial-tree.json'),20*1024*1024)).toString());
+    if(treeHash(initial)!==data.initialTreeSha256)throw new Error('implementation_readonly_original_changed');await observeReadonlyWorkspace(plan,initial,s.plan.operationRoot);
+  }
+  async failureRestartInfo(id:string,requestId:string){
+    if(!this.generated.has(id)||this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');
+    const q=await QueueStore.open(this.entry(id).store);try{const s=q.issueImplementations().state(id,requestId);if(s.plan?.request.workspaceRequest.authorization.maxRepairRounds!==1||s.validationCorrection||s.stopped)throw new Error('project_work_restart_limit');
+      await this.knownFailureSource(q,s);
+      if(s.result?.failureKind==='ended_readonly_timeout'){await this.retainedReadonlyWorkspace(s);await this.releaseClosedFailure(s);return {operation:s.operation,requestSha256:s.requestSha256,planSha256:s.plan.sha256,failureSha256:hash(canonical(s.readonlyFailure.record)),failureKind:'ended_readonly_timeout' as const};}
+      if(!s.result&&!s.validationFailure&&s.reason==='executor_wait_timeout'){const p=await this.readonlyProof(q,id,requestId);return {operation:s.operation,requestSha256:s.requestSha256,planSha256:s.plan.sha256,failureSha256:hash(canonical(p.record)),failureKind:'ended_readonly_timeout' as const};}
+      const p=await observeValidationFailure(s);if(s.result){if(!s.result.failureClosure)throw new Error('project_work_restart_limit');await checkValidationTree(p);await this.releaseClosedFailure(s);}else await checkValidationWorkspace(p,true);
+      return {operation:s.operation,requestSha256:s.requestSha256,planSha256:s.plan.sha256,failureSha256:hash(canonical(p.record))};
+    }finally{q.close();}
+  }
+  async closeKnownFailure(id:string,requestId:string,expected:Row,beforeClose:()=>void){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return await withQueueRepairLock(entry.store,q.issueImplementations().state(id,requestId).operation,async()=>{
+      let s=q.issueImplementations().state(id,requestId);await this.knownFailureSource(q,s);
+      if(expected.failureKind==='ended_readonly_timeout'){
+        if(s.result){await this.retainedReadonlyWorkspace(s);if(hash(canonical(s.readonlyFailure.record))!==expected.failureSha256)throw new Error('implementation_readonly_binding_changed');await this.releaseClosedFailure(s);return;}
+        const proof=await this.readonlyProof(q,id,requestId);requireEndedReadonlyProof(proof);if(s.operation!==expected.operation||s.requestSha256!==expected.requestSha256||s.plan.sha256!==expected.planSha256||hash(canonical(proof.record))!==expected.failureSha256)throw new Error('implementation_readonly_binding_changed');if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');beforeClose();s=q.issueImplementations().closeReadonlyFailure(id,requestId,proof);await this.releaseClosedFailure(s);return;
+      }
+      const p=await observeValidationFailure(s);
+      if(s.operation!==expected.operation||s.requestSha256!==expected.requestSha256||s.plan.sha256!==expected.planSha256||hash(canonical(p.record))!==expected.failureSha256)throw new Error('implementation_validation_original_changed');
+      if(s.result){await checkValidationTree(p);await this.releaseClosedFailure(s);return;}
+      await this.persistValidationFailure(q,id,requestId,p);await checkValidationWorkspace(p,true);beforeClose();s=q.issueImplementations().closeValidationFailure(id,requestId,p);await this.releaseClosedFailure(s);
+    });}finally{q.close();}
+  }
+  async settleClosedFailure(id:string,requestId:string){
+    if(!this.generated.has(id))throw new Error('work_validation_definition_not_product_work');if(this.active.has(id+':'+requestId))return {active:true};const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{return await withQueueRepairLock(entry.store,q.issueImplementations().state(id,requestId).operation,async()=>{let s=q.issueImplementations().state(id,requestId);if(!s.result?.failureClosure){if(s.reason!=='executor_wait_timeout')return {originalRetained:true,phase:s.phase};await this.knownFailureSource(q,s);const proof=await this.readonlyProof(q,id,requestId);s=q.issueImplementations().closeReadonlyFailure(id,requestId,proof);}else{await this.knownFailureSource(q,s);if(s.result.failureKind==='ended_readonly_timeout')await this.retainedReadonlyWorkspace(s);else await checkValidationTree(await observeValidationFailure(s));}await this.releaseClosedFailure(s);return {settled:true};});}finally{q.close();}
+  }
+  async failureRestartFiles(id:string,requestId:string,expected:Row){
+    const info=await this.failureRestartInfo(id,requestId);if(canonical(info)!==canonical({operation:expected.operation,requestSha256:expected.requestSha256,planSha256:expected.planSha256,failureSha256:expected.failureSha256,...(expected.failureKind?{failureKind:expected.failureKind}:{})}))throw new Error('implementation_validation_original_changed');
+    const q=await QueueStore.open(this.entry(id).store);try{const s=q.issueImplementations().state(id,requestId),record=s.result?.failureKind==='ended_readonly_timeout'?(await readHostReadonlyFailure(s),s.readonlyFailure.record):await readRecordedValidationFailure(s),lease=s.result?.failureClosure?.lease;if(!lease)throw new Error('implementation_failure_release_unknown');
+      return [...Object.keys(record.files),...s.plan.request.workspaceRequest.materialPaths.map((p:string)=>join(s.plan.workspace,p)),join(s.plan.workspace,'.git/index'),join(s.plan.operationRoot,'failure-close/result.json'),join(lease.operation,'ownership-history',lease.generation+'-released.json'),join(lease.operation,'ownership-history',lease.generation+'-lock.json')];
+    }finally{q.close();}
   }
   private definitionConsentBaseline(q:QueueStore,entry:Entry,s:Row){return (s.plan.request.continuation&&entry.workRequestId?q.issueImplementations().state(entry.id,entry.workRequestId):s).definitionConsent?.baseline as string|undefined;}
   private async readableDefinition(entry:Entry,state:Row,observations:OwnerObservation[],required:boolean){

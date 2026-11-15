@@ -1,6 +1,10 @@
-import {requireValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
+import {assertWorkCurrent} from './project-work-current.js';
+import {requireValidationFailure,assertValidationClosure,type ValidationFailureProof} from './implementation-validation.js';
 import {requireFirstSendProof,type FirstSendProof} from './implementation-first-send.js';
 import type {DatabaseSync} from 'node:sqlite';
+import {readFileSync,existsSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {requireEndedReadonlyProof,assertEndedReadonlyCurrent,type EndedReadonlyProof} from './implementation-readonly-failure.js';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {now} from './contract.js';
@@ -55,7 +59,7 @@ export class IssueImplementations {
     return this.state(source,request.id);
   });}
   bind(source:string,id:string,plan:Row){return this.transaction(()=>{
-    this.mode();const f=this.fixed(source,id);if(f.selected){if(f.selected.inputPlanSha256!==hash(canonical(plan)))throw new Error('implementation_prepared_plan_is_fixed');return this.state(source,id);}
+    this.mode();if(plan.currentCheck)assertWorkCurrent(plan.currentCheck);const f=this.fixed(source,id);if(f.selected){if(f.selected.inputPlanSha256!==hash(canonical(plan)))throw new Error('implementation_prepared_plan_is_fixed');return this.state(source,id);}
     if(f.terminal)throw new Error('implementation_request_ended');
     if(f.events.some(e=>e.kind==='issue_implementation_stopped'))throw new Error('implementation_stopped');
     const op=this.begin(f.request.task,'issue-implementation:'+id);
@@ -85,6 +89,7 @@ export class IssueImplementations {
   private checkValue(source:string,id:string,observations:OwnerObservation[],effect?:()=>void){
     this.mode();
     const f=this.fixed(source,id),s=f.selected;
+    if(s?.plan.currentCheck)assertWorkCurrent(s.plan.currentCheck);
     if(!s||f.terminal)throw new Error('implementation_request_not_active');
     if(f.events.some(e=>e.kind==='issue_implementation_stopped'))throw new Error('implementation_stopped');
     const owner=f.request.continuation?this.fixed(source,f.request.continuation.originalTarget.requestId):f,consent=owner.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data;
@@ -124,6 +129,53 @@ export class IssueImplementations {
   });}
   recordDefinitionConsent(source:string,id:string,baseline:string){return this.transaction(()=>{const f=this.fixed(source,id);if(f.terminal)throw new Error('implementation_request_ended');const old=f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data;if(old&&old.baseline!==baseline)throw new Error('work_validation_consent_is_fixed');if(!old)this.event('definition_consent',this.key(source,id),{baseline});return {baseline};});}
   requireValidationBudget(source:string,id:string){const f=this.fixed(source,id);if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');}
+  requireFailureClosureBudget(source:string,id:string){const f=this.fixed(source,id);if(![0,1].includes(f.request.workspaceRequest.authorization.maxRepairRounds)||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');}
+  readonlyCheck(source:string,id:string){return this.transaction(()=>{
+    const f=this.fixed(source,id);this.requireFailureClosureBudget(source,id);if(!f.selected||f.terminal||!f.dispatched||f.request.continuation||f.events.some(e=>['issue_implementation_stopped','issue_implementation_validation_failed','issue_implementation_validation_correction'].includes(e.kind)))throw new Error('implementation_readonly_initial_required');
+    if(f.events.some(e=>e.kind==='issue_implementation_readonly_check_rejected'&&e.data.permanent))throw new Error('implementation_readonly_prior_substantive_rejection');
+    const saved=f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data,retained=saved&&!f.events.some(e=>e.kind==='issue_implementation_readonly_check_rejected'&&e.data.checkId===saved.observation.checkId)?saved:undefined;
+    const op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(f.selected.operation) as Row,claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(f.selected.operation) as Row;
+    if(op?.status!=='running'||!claim||op.generation!==claim.generation)throw new Error('implementation_original_binding_changed');
+    const checkId=retained?.observation.checkId??randomUUID();if(!retained)this.event('readonly_check_started',this.key(source,id),{checkId,operation:f.selected.operation,generation:op.generation,priorRejections:f.events.filter(e=>e.kind==='issue_implementation_readonly_check_rejected').map(e=>e.id)});
+    return {checkId,generation:op.generation,retained};
+  });}
+  readonlyCheckRejected(source:string,id:string,checkId:string,reason:string,observation:Row|null){return this.transaction(()=>{
+    const f=this.fixed(source,id);if(f.terminal||!f.events.some(e=>e.kind==='issue_implementation_readonly_check_started'&&e.data.checkId===checkId))throw new Error('implementation_readonly_check_not_registered');
+    if(f.events.some(e=>e.kind==='issue_implementation_readonly_check_rejected'&&e.data.checkId===checkId))return;
+    const temporary=['repair_index_changed_during_observation','implementation_readonly_observation_changed','implementation_readonly_controller_active_or_unknown','implementation_readonly_child_active_or_unknown','implementation_validation_writer_active_or_unknown','git_write_active_or_unknown'];
+    this.event('readonly_check_rejected',this.key(source,id),{checkId,reason,permanent:!temporary.includes(reason),observation});
+  });}
+  recordReadonlyFailure(source:string,id:string,proof:EndedReadonlyProof){return this.transaction(()=>{
+    requireEndedReadonlyProof(proof);const f=this.fixed(source,id);if(f.terminal||f.registered.requestSha256!==proof.record.requestSha256||f.selected?.plan.sha256!==proof.record.planSha256||f.selected.operation!==proof.record.operation||!f.events.some(e=>e.kind==='issue_implementation_readonly_check_started'&&e.data.checkId===proof.observation.checkId)||f.events.some(e=>e.kind==='issue_implementation_readonly_check_rejected'&&e.data.checkId===proof.observation.checkId))throw new Error('implementation_readonly_binding_changed');
+    const value={record:proof.record,observation:proof.observation,proofSha256:proof.proofSha256},old=f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data;if(old?.observation.checkId===proof.observation.checkId){if(canonical(old)!==canonical(value))throw new Error('implementation_readonly_original_changed');return old;}this.event('readonly_failure_recorded',this.key(source,id),value);return value;
+  });}
+  private failureClosureControls(f:ReturnType<IssueImplementations['fixed']>){
+    const s=f.selected!,scope=this.tasks.current(f.request.task).context.scope.id,status=this.authority.status(),current=this.authority.forScope(scope,{item:f.request.task,target:f.request.workspaceRequest.candidate.target}),references=[f.request.adoptedScope.adoption,...Object.values(s.plan.authorization)];
+    if(current.currentAdoption!==f.request.adoptedScope.adoption||status.revocations.some(r=>references.includes(r.decision)))throw new Error('owner_decision_revoked');
+    if(current.controls.some(c=>['implementation','investment'].includes(c.control)&&(c.state==='stopped'||c.verifiedOwnerStop))||existsSync(s.plan.operationRoot+'/revoked.json'))throw new Error('implementation_stopped');
+  }
+  closeReadonlyFailure(source:string,id:string,proof:EndedReadonlyProof){return this.transaction(()=>{
+    requireEndedReadonlyProof(proof);const f=this.fixed(source,id);if(f.terminal)return this.state(source,id);this.requireFailureClosureBudget(source,id);
+    const recorded=f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data,s=f.selected;
+    if(!s||!f.dispatched||f.events.some(e=>['issue_implementation_stopped','issue_implementation_validation_failed','issue_implementation_validation_correction'].includes(e.kind))||recorded?.proofSha256!==proof.proofSha256||f.registered.requestSha256!==proof.record.requestSha256||s.plan.sha256!==proof.record.planSha256||s.operation!==proof.record.operation)throw new Error('implementation_readonly_binding_changed');
+    const current=this.tasks.current(f.request.task),op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(s.operation) as Row,claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(s.operation) as Row;
+    if(op?.status!=='running'||!claim||claim.generation!==op.generation||op.generation!==proof.observation.generation||current.packet!==f.registered.packet||current.fingerprint!==f.registered.fingerprint||this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind IN ('implementation','investment') AND stopped=1").get(current.context.scope.id))throw new Error('implementation_original_binding_changed');
+    this.failureClosureControls(f);assertEndedReadonlyCurrent(proof);
+    const result={status:'failed',failureKind:'ended_readonly_timeout',requestId:id,task:f.request.task,H0:f.request.workspaceRequest.candidate.H,H1:null,completeCapture:false,report:null,hostEvidenceComplete:true,proofSha256:proof.proofSha256,readonlyCheckId:proof.observation.checkId,sessionId:proof.record.sessionId,firstInputContinuation:this.state(source,id).firstInputContinuation??undefined,failureClosure:{failureSha256:hash(canonical(proof.record)),lease:proof.lease,originalFilesPreserved:true,newModelRequests:0}};
+    const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:s.operation,resultSha256});this.updateOperation(s.operation,{...this.operation(s.operation),phase:'returned',resultSha256,controllerReturned:true},true);this.event('problem',this.key(source,id),{reason:''});return this.state(source,id);
+  });}
+  closeValidationFailure(source:string,id:string,proof:ValidationFailureProof){return this.transaction(()=>{
+    const record=requireValidationFailure(proof),f=this.fixed(source,id),s=f.selected;
+    if(f.terminal)return this.state(source,id);
+    if(!s||!f.dispatched||f.events.some(e=>['issue_implementation_stopped','issue_implementation_validation_correction'].includes(e.kind))||record.requestSha256!==f.registered.requestSha256||record.planSha256!==s.plan.sha256||record.operationRoot!==s.plan.operationRoot||![0,1].includes(f.request.workspaceRequest.authorization.maxRepairRounds)||s.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_known_failure_close_refused');
+    const current=this.tasks.current(f.request.task),op=this.db.prepare('SELECT * FROM operations WHERE id=?').get(s.operation) as Row,claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(s.operation) as Row;
+    if(!op||op.status!=='running'||!claim||claim.generation!==op.generation||current.packet!==f.registered.packet||current.fingerprint!==f.registered.fingerprint||this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind IN ('implementation','investment') AND stopped=1").get(current.context.scope.id))throw new Error('implementation_original_binding_changed');
+    if(!proof.lease||proof.lease.operation!==record.operationRoot)throw new Error('implementation_validation_writer_active_or_unknown');
+    this.failureClosureControls(f);assertValidationClosure(proof);
+    const bytes=readFileSync(record.testsDirectory+'/result.json');if(hash(bytes)!==record.files[record.testsDirectory+'/result.json'])throw new Error('implementation_validation_original_changed');
+    const result={status:'failed',requestId:id,task:f.request.task,H0:f.request.workspaceRequest.candidate.H,H1:null,report:record.report,sessionId:record.sessionId,completeCapture:true,testsDirectory:record.testsDirectory,tests:JSON.parse(bytes.toString()),treeSha256:record.treeSha256,firstInputContinuation:this.state(source,id).firstInputContinuation??undefined,failureClosure:{failureSha256:hash(canonical(record)),lease:proof.lease,originalFilesPreserved:true,newModelRequests:0}};
+    const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:s.operation,resultSha256});this.updateOperation(s.operation,{...this.operation(s.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
+  });}
   reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.fixed(source,id),record=requireValidationFailure(proof);if(f.events.some(e=>e.kind==='issue_implementation_validation_correction')||!f.events.some(e=>e.kind==='issue_implementation_validation_failed'&&canonical(e.data)===canonical(record)))throw new Error('implementation_validation_correction_consumed');
     if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');
@@ -175,6 +227,6 @@ export class IssueImplementations {
     const result=JSON.parse(this.bytes(value.resultSha256).toString()),state=result.status==='completed'?'completed':['no_change','cancelled_unstarted'].includes(result.status)?'cancelled':'failed';
     return {state,executionKind:action.executionKind==='fixture'?'fixture':'external',source:'verified_issue_implementation_capture',proof:Buffer.from(canonical({operation,resultSha256:value.resultSha256,state,completeCapture:result.completeCapture,H1:result.H1}))};
   }
-  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.events.some(e=>e.kind==='issue_implementation_validation_failed')&&!f.events.some(e=>e.kind==='issue_implementation_validation_correction')?'validation_failed':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,definitionConsent:f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data??null,validationFailure:f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data??null,validationCorrection:f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
+  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.events.some(e=>e.kind==='issue_implementation_validation_failed')&&!f.events.some(e=>e.kind==='issue_implementation_validation_correction')?'validation_failed':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,definitionConsent:f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data??null,readonlyFailure:f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data??null,validationFailure:f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data??null,validationCorrection:f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
   requests(source:string){return (this.db.prepare("SELECT data FROM events WHERE kind='issue_implementation_registered' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data).value).filter(e=>e.source===source).map(e=>this.state(source,e.id));}
 }

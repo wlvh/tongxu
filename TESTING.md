@@ -94,6 +94,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 同一场景覆盖配置资源但尚未 start 即取消，热/新服务实例的新请求可至 H1，原项保持零资源登记/领取/模型输入；已领取取消沿原结果结算，未知及损坏资源原件仍阻下一项。新消费者的两次写入/H1 场景参数化测试打印未选定文件：原日志保留全文，工具回复与全部模型输入均不含原文；旧 project repair 的同类隐私场景继续回归。
 
+过期准备与已知健康失败恢复复用同一 first-use HTTP/Docker fixture：宿主原方案重核零准备输入、真实元数据方法计数、正常Owner来源、新版干净H0及request/Grant0、成功补充和失败终态；intent／terminal／release／version／check落盘后故障以新服务重入，核同身份且无额外版本／评论／输入。原件／索引／账本等拒绝、直接correction和普通repair0、failed0不能普通prepare重置、活动预览不变成批准均定向覆盖。`tests/w7/project-work.test.ts` 补元数据可用性／时效／原件与活动原进程门，页面动作沿原UI fixture；协议模型、真实Docker与仅官方元数据smoke分别留证，不代填真实模型验收。
+
 ## 5. Side Effects and Isolation
 
 构建写 `dist/`；安装写忽略的依赖目录。多数测试在 `mkdtemp` 创建临时 Git、SQLite、计划和模拟程序，用 `t.after` 清理，并可能启动本机监听/子进程；失败时仍须检查测试退出与残留。不要让测试使用正在运行的私人队列或真实成果库。
@@ -150,3 +152,7 @@ V3准备回归核固定ESM eval/cwd/no-args调用和预算输入绑定；旧完�
 
 
 V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；模型及Owner为协议样例，实际真实准备另记。
+
+过期与已结束只读超时恢复沿原 `project-repair` fixtures：旧准备宿主重核零模型／零thread，固定时限和真实元数据；已知健康失败或专用严格只读失败先结清准确原claim与lease历史，同work唯一干净H0后继request/Grant0。覆盖显式新check保留raw-index拒绝、GET不换签、语义flags／坏wire／noop replace永久拒绝、terminal/release/check崩溃冷续、后继0成功及再次失败、普通prepare/repair0拒绝和成功后原补充。模型与Owner为协议程序；Git、HTTP、SQLite和登记Docker实际执行。
+
+`w7/ai-settings` 和 first-use implementer 场景核独立Codex实施角色、中央OwnerIssue合法来源、本项目snapshot→request/plan/manifest→Native实际model-choice、旧无字段默认以及后改偏好不重绑。`w5/repair-edits` 与 first-use literal edits 核UTF-8/BOM、字面唯一匹配及重叠／边界／XOR拒绝、原原子写和最后fence、原p与完整before/after、合成大文件小wire的真实Docker H1／cold／修正／补充。新profile和旧默认精确分派；官方CLI schema接受smoke只建独立thread后close、0turn，不能替代真实产品模型验收。

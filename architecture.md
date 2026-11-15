@@ -146,6 +146,8 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 `workbench → project-work → project-work-preparation → BoundedCodexSession` 只读调查固定 Git 材料；`project-work-store` 保存设置／草案／版本及原请求引用。查看钥匙只请求宿主打开短期 `project-work-owner` 窗口，准确确认后由 `project-work-runtime` 发布并读回真实批准，再编译不可变单条目录交原 `issue-implementation-controls → issue-implementation`。后者及原 QueueStore 仍是派发／权限／资源／报告事实来源。完成回调把完整提交接回真实项目独立分支与成果目录，补充复用原责任，历史仍从原消费者读取。
 
+时效恢复沿 `project-work-current` 封存官方零线程／零输入元数据与当前环境、原准备和准确失败前驱。同步门核固定摘要／期限，原实现消费者核权限、来源和占用；不为旧授权增加覆盖器。已知健康失败由原 issued proof 结为原 `failed/H1=null`，先终态／自身claim，后准确lease释放历史，再由 ProjectWork 先核原版本再一次性保存（revision CAS），推进同工作唯一后继；新request／Grant的0轮仅限这次干净H0初始实施，补充仍沿原正常规则。`work-validation-definition` 从受校验 currentCheck 回读同工作原准备，禁止任意路径或跨工作材料。相关改动回归原 ProjectWork/Owner/implementation/Docker fixture、完整结果／补充读取、旧准备与普通repair拒0；活动预览不得调用新的start。
+
 `implementation-first-send` 只在原实施控制器的显式动作内核准一次仅元数据结束的旧请求，原基线与 `implementation-first-input` 重建的完整首条输入一起封存；普通读取只派生资格。原 store 追加关联事件，原锁、claim、批准与资源继续使用。`implementation-owner-feedback` 的报告与负责人证明共同解析被该事件绑定的捕获目录，旧无关联结果保持原目录。新请求沿 Native 的同步 dispatchGate 在写 turn/start 前持久化派发；公共结果解析器不变。
 
 共享变动为 selected_files 的完整 Git 稀疏工作树、Docker材料副本与测试树核验、原实施发送前的基线测试、生成目录的当前版本准入以及工作台启动器资源清单。必须回归原 repair/native/authority/resources、project-repair integration、w7 项目切换／秘书／启动器；新增单元／页面测试见 project-work*.test.ts。无第二套执行器或批准账本。能力和部署边界见[首次工作](docs/project_first_use.md)。
@@ -156,3 +158,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 
 准备输出V4由`project-work-contract`定义专用proposal对象schema；`repair-native`对live与cold按明确preparation profile及准确prompt/input/schema元组双向隔离，旧V1—V3保持各自字符串解析路径。`project-work`只从ScopedStore取得紧邻版本和固定工作目录，`project-work-preparation`核完整原capture与同source／Issue／goal，追加有界未接受报告数据并在发送前同步核原件。它不改原版本或提供执行／材料批准；新proposal仍走原所有验证和Owner门。相关测试沿原project-work／implementation-native-profile及first-use HTTP fixture。
+
+`project-work-current`只采集真实当前官方元数据／环境并封存不可变有限currentCheck，所有新批准与最后派发继续走原Authority／billing消费者。失败接续先以CAS固定唯一前后继，原终态、claim释放及准确lease-history完成后才推进原work版本，不覆盖旧Grant或授权。`implementation-readonly-failure`用运行时签发proof核完整唯一原wire／回执、零禁止效果、结束证明及完整H0/index/flags；独立host失败保留无模型报告含义，普通complete／健康验证失败不放宽。原check的raw变化拒绝与新显式观察分开保存，GET不签proof。
+
+`implementation-ai`复用既有AISettings的独立implementer角色，只有新计划冻结项目选择；Native和报告链核实际原模型，不重绑旧计划。`repair-edits`按独立新editProfile合成有界字面替换，仍由RepairTools原完整hash／Grant／handoff／租约／最后同步门写一次；`implementation-edits`从原beforeText核冷回放。新工具spec／首次输入、验证修正、补充和报告按原request/plan/manifest精确分派；旧缺字段走旧字节。受影响回归沿原repair/native/Owner/Implementation/ProjectWork/Docker，无第二套授权或配额平台。

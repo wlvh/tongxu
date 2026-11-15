@@ -16,6 +16,8 @@ import { validateProjectContract, projectTestPlan, projectMaterial, projectModel
 
 export type RepairConfig = {
   codexExecutable: string; claudeExecutable: string; nodeExecutable: string;
+  editProfile?:import('./repair-edits.js').EditProfile;
+  implementationAI?:import('./implementation-ai.js').ImplementationAI;
   disabledMcpServers: string[]; allowedInstructionSources: Array<{ path: string; sha256: string }>;
   prompts: { fact: string; impact: string; reviewer: string };
   billing: { mode: 'existing_subscription_only'; evidence: string; evidenceSha256: string; observedAt: string; usageCreditsEnabled: false };

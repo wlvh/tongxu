@@ -123,7 +123,7 @@ export function needsProjectReviewBindingSupplement(previousInput: string, candi
   if (!b || b.kind !== 'host-observed-candidate-test-binding' || b.schemaVersion !== 1 || !isDeepStrictEqual(b.candidate, candidate) || !commit.test(b.candidateTree) || b.candidateTree !== b.testedTree) throw new Error('previous_review_test_binding_invalid');
   return false;
 }
-export async function prepareProjectRepair(configPath: string, requestPath: string, root: string) {
+export async function prepareProjectRepair(configPath: string, requestPath: string, root: string, implementationOnlyZeroRounds = false) {
   const configBytes = await regular(configPath), config = JSON.parse(configBytes.toString()) as RepairConfig;
   const requestBytes = await regular(requestPath), r = JSON.parse(requestBytes.toString()) as ProjectRequest;
   if (r.executionRoot !== root || resolve(root) !== root) throw new Error('project_execution_root_changed');
@@ -136,7 +136,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   }
   if (r.schemaVersion !== 1 || r.kind !== 'tongxu-project-repair-request' || !r.candidate || typeof r.objects !== 'string' || resolve(r.objects) !== r.objects || await realpath(r.objects) !== r.objects || typeof r.demonstrationFixture !== 'boolean' || !Array.isArray(r.findings) || r.findings.length > 10 || r.findings.some(x => typeof x.id !== 'string' || !x.id || typeof x.description !== 'string' || !x.description.trim())) throw new Error('invalid_project_repair_request');
   const a = r.authorization;
-  if (!a || typeof a.source !== 'string' || !a.source.trim() || typeof a.allowRepair !== 'boolean' || typeof a.allowReconcileEnded !== 'boolean' || !Number.isInteger(a.maxRepairRounds) || a.maxRepairRounds < 1 || a.maxRepairRounds > 3) throw new Error('project_authorization_required');
+  if (!a || typeof a.source !== 'string' || !a.source.trim() || typeof a.allowRepair !== 'boolean' || typeof a.allowReconcileEnded !== 'boolean' || !Number.isInteger(a.maxRepairRounds) || a.maxRepairRounds < (implementationOnlyZeroRounds&&r.findings.length===0?0:1) || a.maxRepairRounds > 3) throw new Error('project_authorization_required');
   const testBytes = await regular(r.testPlan); if (hash(testBytes) !== r.testPlanSha256) throw new Error('project_test_plan_changed');
   const test = parsePlan(JSON.parse(testBytes.toString()));
   if (test.schemaVersion !== 2 || !test.executor) throw new Error('project_test_requires_registered_docker');

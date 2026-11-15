@@ -1,3 +1,6 @@
+import {implementationEditProfile,type EditProfile} from './repair-edits.js';
+import {implementationChoice,verifyImplementationModel,type ImplementationAI} from './implementation-ai.js';
+import {selectedProviderOptions} from './ai-settings.js';
 import {implementationFirstInput} from './implementation-first-input.js';
 import {checkFirstSendFiles,type FirstSendProof} from './implementation-first-send.js';
 import {requireValidationFailure,verifyValidationFiles,type ValidationFailureProof,readFailedValidationTests} from './implementation-validation.js';
@@ -16,7 +19,7 @@ import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
-export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
+export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;editProfile?:EditProfile;implementationAI?:ImplementationAI;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
 export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void;validationDefinition?:unknown};
 
 /** The existing fixed-project preparer is used with an empty finding list.
@@ -27,12 +30,17 @@ export async function prepareIssueImplementation(config:string,request:Implement
   const bytes=Buffer.from(canonical(request.workspaceRequest));
   if(await exists(requestPath)){if(hash(await regular(requestPath))!==hash(bytes))throw new Error('issue_implementation_original_changed');}
   else await writeFile(requestPath,bytes,{flag:'wx',mode:0o600});
-  const prepared=await prepareProjectRepair(config,requestPath,root);
+  if(![0,1,2,3].includes(request.workspaceRequest.authorization.maxRepairRounds))throw new Error('issue_implementation_rounds_invalid');
+  const editProfile=implementationEditProfile(request,{editProfile:request.editProfile});
+  let effectiveConfig=config;
+  if(request.implementationAI||editProfile){const value=JSON.parse((await regular(config)).toString()),choice=implementationChoice(request,{implementationAI:request.implementationAI});if(value.implementationAI&&canonical(value.implementationAI)!==canonical(request.implementationAI)||value.editProfile&&value.editProfile!==editProfile)throw new Error('implementation_original_model_changed');
+    const bytes=canonical({...value,...(choice?{codexExecutable:selectedProviderOptions(choice,'codex',value.codexExecutable).executable,implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{})});effectiveConfig=root+'-implementation-config.json';if(await exists(effectiveConfig)){if((await regular(effectiveConfig)).toString()!==bytes)throw new Error('implementation_original_model_changed');}else await writeFile(effectiveConfig,bytes,{flag:'wx',mode:0o600});}
+  const prepared=await prepareProjectRepair(effectiveConfig,requestPath,root,true);
   // A registered request may have failed queue admission after preparation.
   // Re-read its original files; never bind a modified plan merely because the
   // preparer found an existing directory. Config and request are fixed inputs.
   const r=request.workspaceRequest,plan=JSON.parse((await regular(prepared.plan)).toString()) as RepairPlan;
-  const expected={...JSON.parse((await regular(config)).toString()),schemaVersion:1,kind:'tongxu-controlled-repair',workspace:join(root,'workspace'),candidate:{kind:'local-git',repository:'local/project-repair',pr:null,H:r.candidate.H,B:r.candidate.H,target:'project-base'},grant:join(root,'grant.json'),findings:[],test:'registered-project-tests-v1',demonstrationFixture:r.demonstrationFixture,project:{sourceCandidate:r.candidate,materialPaths:r.materialPaths,protectedPaths:r.protectedPaths,contract:r.contract,testPlan:join(root,'test-plan.json'),testPlanSha256:r.testPlanSha256,dependencyHash:plan.project?.dependencyHash,generatedDirectories:r.generatedDirectories,...(r.materialView?{materialView:r.materialView}:{})}};
+  const expected={...JSON.parse((await regular(effectiveConfig)).toString()),schemaVersion:1,kind:'tongxu-controlled-repair',workspace:join(root,'workspace'),candidate:{kind:'local-git',repository:'local/project-repair',pr:null,H:r.candidate.H,B:r.candidate.H,target:'project-base'},grant:join(root,'grant.json'),findings:[],test:'registered-project-tests-v1',demonstrationFixture:r.demonstrationFixture,project:{sourceCandidate:r.candidate,materialPaths:r.materialPaths,protectedPaths:r.protectedPaths,contract:r.contract,testPlan:join(root,'test-plan.json'),testPlanSha256:r.testPlanSha256,dependencyHash:plan.project?.dependencyHash,generatedDirectories:r.generatedDirectories,...(r.materialView?{materialView:r.materialView}:{})}};
   if(canonical(plan)!==canonical(expected))throw new Error('implementation_original_plan_changed');
   await projectTestPlan(plan.project!);
   return {...prepared,request,kind:'tongxu-issue-implementation' as const};
@@ -44,16 +52,17 @@ export async function prepareIssueImplementation(config:string,request:Implement
 export async function runIssueImplementation(planPath:string,expectedPlanSha256:string,request:ImplementationRequest,operation:string,external:ImplementationGate,firstSend?:{proof:FirstSendProof;reference:Row}){
   const planBytes=await regular(planPath),plan=JSON.parse(planBytes.toString()) as RepairPlan;
   if(!Number.isSafeInteger(plan.timeoutMs)||plan.timeoutMs<1000||plan.timeoutMs>900000||!['fixture','native_capture',undefined].includes(plan.executionKind)||!plan.scopeSource||hash(planBytes)!==expectedPlanSha256||plan.findings.length||!plan.project||plan.test!=='registered-project-tests-v1'||plan.project.priorReview||plan.project.queueOperation)throw new Error('issue_implementation_plan_changed');
+  const selectedAI=implementationChoice(request,plan),editProfile=implementationEditProfile(request,plan);
   const grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
   validateProjectContract(plan.project,grant);await projectTestPlan(plan.project);
-  if(plan.workspace!==grant.workspace||grant.H!==plan.candidate.H||grant.H!==request.workspaceRequest.candidate.H||canonical(grant.allowedPaths)!==canonical(request.workspaceRequest.allowedPaths)||canonical(plan.project.materialPaths)!==canonical(request.workspaceRequest.materialPaths)||canonical(plan.project.protectedPaths)!==canonical(request.workspaceRequest.protectedPaths)||plan.project.contract!==request.workspaceRequest.contract||plan.project.testPlanSha256!==request.workspaceRequest.testPlanSha256)throw new Error('implementation_original_scope_changed');
+  if(plan.workspace!==grant.workspace||grant.H!==plan.candidate.H||grant.H!==request.workspaceRequest.candidate.H||grant.maxRepairRounds!==request.workspaceRequest.authorization.maxRepairRounds||canonical(grant.allowedPaths)!==canonical(request.workspaceRequest.allowedPaths)||canonical(plan.project.materialPaths)!==canonical(request.workspaceRequest.materialPaths)||canonical(plan.project.protectedPaths)!==canonical(request.workspaceRequest.protectedPaths)||plan.project.contract!==request.workspaceRequest.contract||plan.project.testPlanSha256!==request.workspaceRequest.testPlanSha256)throw new Error('implementation_original_scope_changed');
   const billing=plan.billing;
   if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||!Number.isFinite(Date.parse(billing.observedAt))||hash(await regular(billing.evidence))!==billing.evidenceSha256||Date.now()-Date.parse(billing.observedAt)>24*3600000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
   external.unsent();
   if(operation!==join(request.workspaceRequest.executionRoot,'operation'))throw new Error('implementation_original_operation_changed');
   const initial=await tree(plan.workspace,true);if(treeHash(initial)!==grant.treeSha256||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
-  const prompt=firstSend?firstSend.proof.manifest.prompt:await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt}));
-  const manifest={request,planSha256:expectedPlanSha256,prompt,inputManifestSha256};
+  const prompt=firstSend?firstSend.proof.manifest.prompt:await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{})}));
+  const manifest={request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{}),inputManifestSha256};
   const readPreparation=async()=>{
     await privateDirectory(operation,false);await privateDirectory(join(operation,'attempt-1'),false);
     if((await readdir(operation)).sort().join()!=='attempt-1,initial-tree.json,input-manifest.json'||(await readdir(join(operation,'attempt-1'))).length)throw new Error('implementation_original_operation_must_be_read');
@@ -79,10 +88,10 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   let session:BoundedCodexSession|undefined;
   const gate=new RepairTools(plan.workspace,operation,grant,lease,plan.nodeExecutable,structuredClone(initial),plan.candidate.H,
     async directory=>{const result=await testProject(plan.workspace,directory,plan.project!,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});if(!result.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(result);},
-    effect=>external.check(effect),()=>external.refresh(),plan.project.materialView?{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]}:undefined);
+    effect=>external.check(effect),()=>external.refresh(),plan.project.materialView?{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]}:undefined,editProfile);
   try{
     const nativeDirectory=firstSend?.reference.nativeDirectory??join(operation,'implementer');
-    session=await BoundedCodexSession.start({executable:plan.codexExecutable,directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
+    session=await BoundedCodexSession.start({...selectedProviderOptions(selectedAI,'codex',plan.codexExecutable),directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,editProfile:implementationEditProfile(request,plan),gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
     await gate.handoff(session.sessionId,'new_implementer_context');
     // This report belongs to its original H0. A test tool may also identify a
     // temporary tested commit; only the host can form the final H1 afterwards.
@@ -90,7 +99,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     const input=firstSend?firstSend.proof.input:implementationFirstInput(request,plan,initial,baseline,external.validationDefinition);
     const report=await session.turn(input,plan.candidate,outputSchema);
     const sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
-    const capture=await readRepairSession(nativeDirectory);
+    const capture=await readRepairSession(nativeDirectory);await verifyImplementationModel(request,plan,manifest,nativeDirectory);
     if(capture.binding.role!=='implementer'||capture.binding.inputManifestSha256!==inputManifestSha256||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_complete_capture_required');
     const current=await gate.check(),changed=scopeChanges(initial,current,grant.allowedPaths);
     if(report.decision!=='implemented'){
@@ -126,12 +135,12 @@ export async function runValidationCorrection(proof:ValidationFailureProof,reque
  const billing=plan.billing;if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||hash(await regular(billing.evidence))!==billing.evidenceSha256||!Number.isFinite(Date.parse(billing.observedAt))||Date.now()-Date.parse(billing.observedAt)>86400000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
  const lease=await acquireWorkspace(plan.workspace,operation,false,grant);let session:BoundedCodexSession|undefined;
  const refresh=async()=>{await external.refresh();await verifyValidationFiles(record);if(await exists(join(operation,'revoked.json')))throw new Error('repair_revoked');};
- const gate=new RepairTools(plan.workspace,directory,grant,lease,plan.nodeExecutable,structuredClone(proof.current),plan.candidate.H,async d=>{const t=await testProject(plan.workspace,d,plan.project!,{refresh,start:effect=>external.check(effect)});if(!t.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(t);},effect=>external.check(effect),refresh,{materialView:'selected_files',materialPaths:[...plan.project!.materialPaths,...plan.project!.protectedPaths]});
+ const gate=new RepairTools(plan.workspace,directory,grant,lease,plan.nodeExecutable,structuredClone(proof.current),plan.candidate.H,async d=>{const t=await testProject(plan.workspace,d,plan.project!,{refresh,start:effect=>external.check(effect)});if(!t.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(t);},effect=>external.check(effect),refresh,{materialView:'selected_files',materialPaths:[...plan.project!.materialPaths,...plan.project!.protectedPaths]},implementationEditProfile(request,plan,proof.manifest));
  try{
   await mkdir(join(directory,'commit'),{mode:0o700});
-  session=await BoundedCodexSession.start({executable:plan.codexExecutable,directory:reference.nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:proof.manifest.prompt.system,inputManifestSha256:proof.manifest.inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,gate,beforeTurn:refresh,beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
+  session=await BoundedCodexSession.start({...selectedProviderOptions(implementationChoice(request,plan,proof.manifest),'codex',plan.codexExecutable),directory:reference.nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:proof.manifest.prompt.system,inputManifestSha256:proof.manifest.inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,editProfile:implementationEditProfile(request,plan),gate,beforeTurn:refresh,beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
   await gate.handoff(session.sessionId,'new_implementer_context');const report=await session.turn(input,plan.candidate,implementationOutputSchema(plan.candidate.H)),sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
-  const capture=await readRepairSession(reference.nativeDirectory);if(capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_validation_complete_implemented_required');
+  const capture=await readRepairSession(reference.nativeDirectory);await verifyImplementationModel(request,plan,proof.manifest,reference.nativeDirectory);if(capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_validation_complete_implemented_required');
   const current=await gate.check(),changed=scopeChanges(proof.initial,current,grant.allowedPaths);
   const testsDirectory=join(directory,'post-repair'),tests=await testProject(plan.workspace,testsDirectory,plan.project!,{refresh,start:effect=>external.check(effect)});
   if(!tests.executionHealthy)throw new Error('project_test_environment_or_capture_failed');

@@ -1,8 +1,9 @@
+import {replacementText,parseEditProfile,type EditProfile} from './repair-edits.js';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID,createHash } from 'node:crypto';
 import { readFile, writeFile, readdir, lstat, realpath, mkdir, rename } from 'node:fs/promises';
-import { readFileSync, writeFileSync, renameSync, lstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, lstatSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
@@ -12,6 +13,7 @@ import {parse} from 'acorn';
 const exec = promisify(execFile);
 export const safeEnv = { PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1' };
 export const git = async (cwd: string, args: string[]) => (await exec('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', cwd, ...args], { env: safeEnv, maxBuffer: 2 * 1024 * 1024 })).stdout.trim();
+export const gitReadOnly = async (cwd:string,args:string[]) => (await exec('/usr/bin/git',['--literal-pathspecs','--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',cwd,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},maxBuffer:8*1024*1024,timeout:15000})).stdout.trim();
 export async function mutateGit(cwd: string, args: string[], directory: string, startGate?:(effect:()=>void)=>void) {
   await privateDirectory(directory, true);
   const argv = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', cwd, ...args];
@@ -141,12 +143,20 @@ export async function acquireWorkspace(workspace: string, operation: string, rec
   const lease: Lease = { operation, controllerPid: process.pid, generation: randomUUID(), status: 'held' };
   await writeFile(lock, JSON.stringify(lease), { flag: 'wx', mode: 0o600 }); return lease;
 }
-export async function releaseWorkspace(workspace: string, lease: Lease, outcome: string) {
+export async function releaseWorkspace(workspace: string, lease: Lease, outcome: string, preserveHistory=false) {
   const lock = join(workspace, '.git', 'tongxu-writer.json'), actual = JSON.parse((await regular(lock)).toString());
   if (JSON.stringify(actual) !== JSON.stringify(lease)) throw new Error('writer_lease_changed');
   await mkdir(join(lease.operation, 'ownership-history'), { recursive: true, mode: 0o700 });
-  save(join(lease.operation, 'ownership-history', lease.generation + '-released.json'), { lease, outcome, at: new Date().toISOString() });
-  await rename(lock, join(lease.operation, 'ownership-history', lease.generation + '-lock.json'));
+  const released=join(lease.operation,'ownership-history',lease.generation+'-released.json'),retained=join(lease.operation,'ownership-history',lease.generation+'-lock.json');
+  if(preserveHistory){
+    if(await exists(retained))throw new Error('writer_release_history_changed');
+    if(await exists(released)){const prior=JSON.parse((await regular(released)).toString());if(JSON.stringify(prior.lease)!==JSON.stringify(lease)||prior.outcome!==outcome||!Number.isFinite(Date.parse(prior.at)))throw new Error('writer_release_history_changed');}
+    else await writeFile(released,JSON.stringify({lease,outcome,at:new Date().toISOString()}),{flag:'wx',mode:0o600});
+    // A crash after release intent resumes this exact intent, without rewriting
+    // its date. Recheck the own lock immediately before its single rename.
+    if(readFileSync(lock,'utf8')!==JSON.stringify(lease)||lstatSync(lock).nlink!==1||!lstatSync(lock).isFile()||realpathSync(lock)!==lock)throw new Error('writer_lease_changed');
+    renameSync(lock,retained);
+  }else{save(released,{lease,outcome,at:new Date().toISOString()});await rename(lock,retained);}
 }
 
 export function validateClampExpression(source: string) {
@@ -225,7 +235,7 @@ export class RepairTools {
   private serial = 0;
   private handoffSerial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView) { this.expectedHead = initialHead; }
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView,readonly editProfile?:EditProfile) { parseEditProfile(editProfile);this.expectedHead = initialHead; }
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
     await this.refreshExternal?.();
@@ -264,18 +274,19 @@ export class RepairTools {
     if (p.tool === 'tongxu_read_file') {
       if (Object.keys(a).join() !== 'path' || !Object.hasOwn(current, a.path) || this.grant.profile && !this.grant.materialPaths?.includes(a.path)) throw new Error('read_path_outside_material'); output = current[a.path];
     } else if (p.tool === 'tongxu_replace_file') {
-      if (this.phase !== 'write' || !this.grant.allowRepair || Object.keys(a).sort().join() !== 'expectedSha256,path,text' || !this.grant.allowedPaths.includes(a.path) || typeof a.text !== 'string' || Buffer.byteLength(a.text) > 256 * 1024 || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
-      const target = join(this.workspace, a.path), after = Buffer.from(a.text), before = readFileSync(target), temporary = join(calls, p.callId + '.pending');
-      const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: a.text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
+      if (this.phase !== 'write' || !this.grant.allowRepair || !this.grant.allowedPaths.includes(a.path) || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
+      const target = join(this.workspace, a.path), before = readFileSync(target), text=replacementText(a,before,this.editProfile), after = Buffer.from(text), temporary = join(calls, p.callId + '.pending');
+      const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
       save(path, receipt); writeFileSync(temporary, after, { flag: 'wx', mode: lstatSync(target).mode & 0o777 });
       // No await between the last revocation/identity check and atomic replace.
-      if (readFileSync(join(this.workspace, '.git', 'tongxu-writer.json'), 'utf8') !== JSON.stringify(this.lease) || lstatSync(target).nlink !== 1 || hash(readFileSync(target)) !== receipt.beforeSha256) throw new Error('write_boundary_changed');
+      const finalTarget=lstatSync(target);
+      if (readFileSync(join(this.workspace, '.git', 'tongxu-writer.json'), 'utf8') !== JSON.stringify(this.lease) || !finalTarget.isFile() || finalTarget.isSymbolicLink() || finalTarget.nlink !== 1 || realpathSync(target)!==target || current[a.path]!.executable!==undefined&&(finalTarget.mode&0o111)!==current[a.path]!.executable || hash(readFileSync(target)) !== receipt.beforeSha256) throw new Error('write_boundary_changed');
       try { readFileSync(join(this.operation, 'revoked.json')); throw new Error('repair_revoked'); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
       // The queue extension serializes a stop control with this single atomic
       // replace in the original database transaction, not a check-then-await.
       const replace=()=>{beforeRegistration?.();renameSync(temporary,target);};
       if (this.externalGate) this.externalGate(replace); else replace();
-      this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text: a.text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
+      this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text:this.editProfile?new TextDecoder('utf8',{fatal:true}).decode(after):text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
       const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
       save(path, { ...receipt, status: 'applied', response, afterTreeSha256: treeHash(this.expected) }); return response;
     } else if (p.tool === 'tongxu_run_tests') {
@@ -321,4 +332,10 @@ export async function commitScopedCandidate(workspace:string,operation:string,at
 export async function assertUnselectedGitUnchanged(workspace:string,H0:string,H1:string,selected:readonly string[]){
   const rows=async(H:string)=>(await git(workspace,['ls-tree','-r',H])).split('\n').filter(Boolean).filter(row=>!selected.includes(row.slice(row.indexOf('\t')+1)));
   if(JSON.stringify(await rows(H0))!==JSON.stringify(await rows(H1)))throw new Error('implementation_unselected_git_changed');
+}
+
+/** The legacy array above remains byte-for-byte the default protocol. */
+export function projectRepairToolsFor(profile?:EditProfile){
+ parseEditProfile(profile);if(!profile)return projectRepairToolSpecs;
+ return projectRepairToolSpecs.map(tool=>tool.name!=='tongxu_replace_file'?tool:{...tool,description:tool.description+' Send either full text or 1–16 literal edits against the same original text. Each nonempty oldText must occur exactly once, including overlapping matches; edit ranges cannot overlap. Preserve BOM and UTF-8. Each old/new text is at most 16 KiB; combined 32 KiB; edits arguments 64 KiB; full-text arguments 2 MiB; result 256 KiB.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'},text:{type:'string'},edits:{type:'array',minItems:1,maxItems:16,items:{type:'object',properties:{oldText:{type:'string',minLength:1},newText:{type:'string'}},required:['oldText','newText'],additionalProperties:false}}},required:['path','expectedSha256'],oneOf:[{required:['text'],not:{required:['edits']}},{required:['edits'],not:{required:['text']}}],additionalProperties:false}});
 }
