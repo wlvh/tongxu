@@ -55,7 +55,7 @@ export class ProjectWork{
   async create(scope:ProjectChatScope,b:Row){
     if(!exactKeys(b,['requestId','conversationId','issueNumber','goal','newWork'])||!chatId(b.requestId)||!chatId(b.conversationId)||!Number.isSafeInteger(b.issueNumber)||b.issueNumber<1||typeof b.goal!=='string'||b.goal.length>2048||b.goal.includes('\0')||typeof b.newWork!=='boolean')throw new Error('project_work_draft_invalid');await this.verify(scope);
     try{const old=this.store.get(scope,b.requestId);if(old.issue.number!==b.issueNumber||old.conversationId!==b.conversationId||old.goal!==b.goal)throw new Error('project_work_id_is_fixed');return old;}catch(e){if((e as Error).message!=='project_work_outside_project')throw e;}
-    if(!b.newWork){const previous=this.store.list(scope).find(d=>d.issue.number===b.issueNumber&&!['delivered','cancelled'].includes(d.stage));if(previous)return previous;}
+    if(!b.newWork){const previous=this.store.list(scope).find(d=>d.issue.number===b.issueNumber);if(previous)return previous;}
     let issue:Issue={number:b.issueNumber,title:'Issue #'+b.issueNumber,body:'',url:`https://github.com/${scope.repository.fullName}/issues/${b.issueNumber}`},failure:string|null=null;
     try{issue=await this.readIssue(scope,b.issueNumber);}catch(e){failure=problem(e);}
     const at=now();return this.store.create(scope,{id:b.requestId,conversationId:b.conversationId,issue:{...issue,bodySha256:hash(issue.body)},goal:b.goal,createdAt:at,updatedAt:at,revision:0,version:0,requestId:randomUUID(),stage:failure?'needs_input':'draft',problem:failure,events:[{at,kind:'draft_saved',detail:'Saved without model input or implementation'}]},!b.newWork);

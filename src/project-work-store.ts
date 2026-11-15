@@ -38,7 +38,7 @@ export class ProjectWorkStore{
     this.db.exec('BEGIN IMMEDIATE');try{
       const old=this.db.prepare('SELECT project,body FROM drafts WHERE id=?').get(draft.id) as Row|undefined;
       if(old){const value=this.get(scope,draft.id);if(value.issue.number!==draft.issue.number||value.conversationId!==draft.conversationId)throw new Error('project_work_id_is_fixed');this.db.exec('COMMIT');return value;}
-      if(reuseCurrent){const previous=this.list(scope).find(d=>d.issue.number===draft.issue.number&&!['delivered','cancelled','no_change'].includes(d.stage));if(previous){this.db.exec('COMMIT');return previous;}}
+      if(reuseCurrent){const previous=this.list(scope).find(d=>d.issue.number===draft.issue.number);if(previous){this.db.exec('COMMIT');return previous;}}
       if(this.list(scope).length>=128)throw new Error('project_work_history_limit');
       this.db.prepare('INSERT INTO drafts VALUES(?,?,?,?,?)').run(draft.id,workProjectKey(scope),draft.issue.number,draft.revision,canonical(draft));this.db.exec('COMMIT');return draft;
     }catch(e){this.db.exec('ROLLBACK');throw e;}
