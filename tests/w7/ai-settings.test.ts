@@ -8,6 +8,7 @@ import {hash} from '../../src/snapshot.js';
 import {parseAIModels,requireModelChoice,codexModelList,type AIProvider} from '../../src/ai-catalog.js';
 import {AISettings,withAIPreferences,currentAIChoice,participantWithAI} from '../../src/ai-settings.js';
 import {capturedCodexModels,checkCodexSelected,codexTurnChoice,codexThreadChoice,recordedCodexTurnChoice,claudeChoiceArgs} from '../../src/ai-execution.js';
+import {captureImplementationAI,parseImplementationAI,implementationChoice} from '../../src/implementation-ai.js';
 
 const scope=(id=1)=>({account:{id:7},repository:{id,nodeId:'R_'+id,fullName:'fixture/project-'+id}});
 test('current tool catalogs determine model IDs and per-model efforts, without a release or model-name allowlist',async()=>{
@@ -42,4 +43,20 @@ test('new default requests leave model and effort to the program; resuming deriv
   assert.deepEqual(recordedCodexTurnChoice(thread,{effort:'high'}),{model:'original-model',effort:'high'});
   assert.deepEqual(recordedCodexTurnChoice(thread,{}),{model:'original-model',effort:'xhigh'});
   assert.deepEqual(codexTurnChoice(recordedCodexTurnChoice(thread,{effort:'high'})),{model:'original-model',effort:'high'});
+});
+
+test('implementer is a distinct Codex setting; frozen project selection does not impose an Owner Issue number',async t=>{
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-implementer-setting-')));t.after(()=>rm(root,{recursive:true,force:true}));
+ const codex=join(root,'codex'),claude=join(root,'claude');for(const file of [codex,claude])await writeFile(file,'#!/bin/sh\nexit 0\n',{mode:0o700});
+ const probe=async(tool:AIProgram,path:string,directory:string):Promise<AIProvider>=>({id:path===codex?'codex':path===claude?'claude':hash(path),tool,path,version:'fixture',available:[codex,claude].includes(path),reason:null,authentication:'subscription',models:['model-a','model-b'].map(id=>({id,resolvedId:null,name:id,description:'fixture',efforts:['max'],defaultEffort:'max',isDefault:false})),observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:true,ownedControl:true},evidence:directory});
+ const settings=await AISettings.open({root:join(root,'settings'),configured:[{tool:'codex',path:codex},{tool:'claude',path:claude}],disabledMcpServers:[]},probe);t.after(()=>settings.close());await settings.scan(scope());
+ await settings.change(scope(),{revision:0,role:'issue_owner',choice:{providerId:'codex',model:'model-b',effort:'max'}});withAIPreferences(settings.snapshot(scope()),()=>assert.equal(captureImplementationAI(scope().repository.fullName),undefined));
+ await assert.rejects(settings.change(scope(),{revision:1,role:'implementer',choice:{providerId:'claude',model:'model-a',effort:'max'}}),/implementer_codex/);
+ await settings.change(scope(),{revision:1,role:'implementer',choice:{providerId:'codex',model:'model-a',effort:'max'}});const frozen=withAIPreferences(settings.snapshot(scope()),()=>captureImplementationAI(scope().repository.fullName))!;
+ await settings.change(scope(),{revision:2,role:'implementer',choice:{providerId:'codex',model:'model-b',effort:'max'}});
+ const request={implementationAI:frozen,adoptedScope:{source:'https://github.com/fixture/project-1/issues/9#issuecomment-101'},issue:{number:74}},plan={implementationAI:frozen};withAIPreferences(settings.snapshot(scope()),()=>assert.equal(implementationChoice(request,plan,{implementationAI:frozen})!.model,'model-a'));
+ withAIPreferences(settings.snapshot(scope()),()=>assert.throws(()=>captureImplementationAI('fixture/another-project'),/outside_project/));
+ assert.throws(()=>parseImplementationAI({...frozen,roles:{implementer:{...frozen.roles.implementer!,tool:'claude'}}}),/implementer_codex/);
+ assert.throws(()=>implementationChoice(request,{implementationAI:settings.snapshot(scope())}),/original_model_changed/);
+ assert.equal(implementationChoice({},{}),undefined);
 });

@@ -1,3 +1,5 @@
+import {implementationEditProfile,replacementText} from './repair-edits.js';
+import {verifyImplementationModel} from './implementation-ai.js';
 import {readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
@@ -8,9 +10,10 @@ import {dockerTerminalEvidence,dockerEvidenceMatches} from './docker-sandbox.js'
 import {readRepairSession,implementationOutputSchema} from './repair-native.js';
 import {implementationCaptureDirectory} from './implementation-first-send.js';
 import {fingerprint} from './verification.js';
-import {execFile} from 'node:child_process';
+import {execFile,execFileSync} from 'node:child_process';
+import {readFileSync,lstatSync,readdirSync,existsSync,realpathSync} from 'node:fs';
 import {promisify} from 'node:util';
-import {safeEnv,projectRepairToolSpecs} from './repair-workspace.js';
+import {safeEnv,projectRepairToolsFor} from './repair-workspace.js';
 type Row=Record<string,any>;
 const exec=promisify(execFile),gitRead=async(w:string,a:string[])=>(await exec('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',w,...a],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:8*1024*1024})).stdout.trim();
 const json=async(p:string)=>JSON.parse((await regular(p,32*1024*1024)).toString());
@@ -35,6 +38,7 @@ async function registeredChildrenEnded(directory:string){
  for(const e of await readdir(directory,{withFileTypes:true})){if(!e.isDirectory()||['work','material-work','output','workspace'].includes(e.name)||e.name.startsWith('generated-'))continue;await registeredChildrenEnded(join(directory,e.name));}
 }
 const issued=new WeakMap<object,string>();
+const closureReady=new WeakMap<object,string>();
 export type ValidationFailureProof={record:Row;initial:Tree;current:Tree;plan:Row;manifest:Row;lease:Row};
 export function requireValidationFailure(p:ValidationFailureProof){if(issued.get(p)!==hash(canonical(p.record))||treeHash(p.current)!==p.record.treeSha256||treeHash(p.initial)!==p.record.initialTreeSha256)throw new Error('implementation_validation_proof_required');return p.record;}
 /** No current workspace/liveness requirement is needed to read a retained
@@ -44,9 +48,10 @@ export async function observeValidationFailure(s:Row):Promise<ValidationFailureP
  if(hash(planBytes)!==fixed.sha256||plan.project?.materialView!=='selected_files'||canonical(manifest.request)!==canonical(fixed.request)||manifest.planSha256!==fixed.sha256||hash(canonical(original))!==inputManifestSha256)throw new Error('implementation_validation_original_changed');
  const grant=await json(plan.grant);if(grant.H!==plan.candidate.H||treeHash(initial)!==grant.treeSha256)throw new Error('implementation_validation_original_changed');
  const native=await implementationCaptureDirectory({...s,result:s.firstInputContinuation?{firstInputContinuation:s.firstInputContinuation}:null}),capture=await readRepairSession(native),report=JSON.parse(capture.turns[0]?.final?.text??'null'),nativeProcess=await json(join(native,'process.json'));
+ await verifyImplementationModel(fixed.request,plan,manifest,native);
  if(capture.turns.length!==1||capture.binding.role!=='implementer'||capture.binding.run!==op||capture.binding.inputManifestSha256!==inputManifestSha256||report?.decision!=='implemented'||report.candidateH!==plan.candidate.H||processState(nativeProcess.pid)!=='ended')throw new Error('implementation_validation_capture_unknown');
  const inputs=await json(join(native,'inputs.json')),sent=(await regular(join(native,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x)),start=sent.filter(x=>x.method==='thread/start');
- if(inputs.length!==1||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate)||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||start.length!==1||start[0].params.baseInstructions!==manifest.prompt.system||canonical(start[0].params.dynamicTools)!==canonical(projectRepairToolSpecs))throw new Error('implementation_validation_capture_unknown');
+ if(inputs.length!==1||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate)||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||start.length!==1||start[0].params.baseInstructions!==manifest.prompt.system||canonical(start[0].params.dynamicTools)!==canonical(projectRepairToolsFor(implementationEditProfile(s.plan.request,plan,manifest))))throw new Error('implementation_validation_capture_unknown');
  if(await exists(join(native,'native-tool-transports.json'))){for(const t of await json(join(native,'native-tool-transports.json'))){if(t.appServerPid!==nativeProcess.pid||!Array.isArray(t.observedHelperPids))throw new Error('implementation_validation_child_active_or_unknown');for(const pid of t.observedHelperPids){if(!Number.isSafeInteger(pid)||pid<=0||(await json(join(native,'tool-host-'+pid,'process.json'))).pid!==pid||processState(pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}}}
  await registeredChildrenEnded(native);await registeredChildrenEnded(join(op,'attempt-1'));
  const tests=await readFailedValidationTests(join(op,'attempt-1/post-repair-1'),plan),changed=scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
@@ -55,7 +60,7 @@ export async function observeValidationFailure(s:Row):Promise<ValidationFailureP
  const pairs=await json(join(native,'reconciled-tools.json')),expected=structuredClone(initial) as Tree;
  if(calls.length!==pairs.length)throw new Error('implementation_validation_calls_unknown');
  for(const pair of pairs){const c:Row|undefined=calls.find((c:Row)=>c.request.callId===pair.request.params.callId);if(!c||c.request.tool!==pair.request.params.tool||canonical(c.request.arguments)!==canonical(pair.request.params.arguments)||canonical(c.response)!==canonical(pair.response.result))throw new Error('implementation_validation_calls_unknown');
-   if(c.request.tool==='tongxu_replace_file'){const p=c.request.arguments.path;if(!fixed.request.workspaceRequest.allowedPaths.includes(p)||c.status!=='applied'||expected[p]?.sha256!==c.beforeSha256||c.request.arguments.expectedSha256!==c.beforeSha256||hash(c.beforeText)!==c.beforeSha256||hash(c.afterText)!==c.afterSha256||c.request.arguments.text!==c.afterText||c.beforeExecutable!==expected[p]?.executable||c.afterExecutable!==expected[p]?.executable)throw new Error('implementation_validation_unregistered_change');expected[p]={...expected[p]!,text:c.afterText,sha256:c.afterSha256,bytes:Buffer.byteLength(c.afterText)};}
+   if(c.request.tool==='tongxu_replace_file'){const p=c.request.arguments.path;if(!fixed.request.workspaceRequest.allowedPaths.includes(p)||c.status!=='applied'||expected[p]?.sha256!==c.beforeSha256||c.request.arguments.expectedSha256!==c.beforeSha256||hash(c.beforeText)!==c.beforeSha256||hash(c.afterText)!==c.afterSha256||replacementText(c.request.arguments,Buffer.from(c.beforeText),implementationEditProfile(fixed.request,plan,manifest))!==c.afterText||c.beforeExecutable!==expected[p]?.executable||c.afterExecutable!==expected[p]?.executable)throw new Error('implementation_validation_unregistered_change');expected[p]={...expected[p]!,text:plan.editProfile?new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(c.afterText)):c.afterText,sha256:c.afterSha256,bytes:Buffer.byteLength(c.afterText)};}
    if(c.request.tool==='tongxu_run_tests'){const t=await readFailedValidationTests(join(op,'tests','tool-'+c.request.callId),plan,false);if(treeHash(t.tested)!==treeHash(expected)||canonical(JSON.parse(c.response.contentItems[0].text))!==canonical(projectModelTestResult(t.result)))throw new Error('implementation_validation_calls_unknown');}
    if(c.afterTreeSha256!==treeHash(expected))throw new Error('implementation_validation_unregistered_change');
  }
@@ -74,12 +79,28 @@ export async function readRecordedValidationFailure(s:Row){
  const record=s.validationFailure;if(!record||record.operationRoot!==s.plan.operationRoot||record.requestSha256!==s.requestSha256||record.planSha256!==s.plan.sha256)throw new Error('implementation_validation_original_changed');await verifyValidationFiles(record);
  const native=await implementationCaptureDirectory({...s,result:s.firstInputContinuation?{firstInputContinuation:s.firstInputContinuation}:null}),capture=await readRepairSession(native);if(native!==record.nativeDirectory||capture.turns.length!==1||capture.binding.sessionId!==record.sessionId||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(record.report))throw new Error('implementation_validation_capture_changed');return record;
 }
-export async function checkValidationWorkspace(p:ValidationFailureProof,ownController=false){
+export async function checkValidationTree(p:ValidationFailureProof){
  requireValidationFailure(p);await verifyValidationFiles(p.record);const {plan,record,lease}=p;
  if(await gitRead(plan.workspace,['rev-parse','HEAD'])!==plan.candidate.H||treeHash(await tree(plan.workspace,true))!==record.treeSha256)throw new Error('implementation_validation_tree_changed');
  await checkRepairIndex(plan.workspace,record.operationRoot,p.manifest.request.workspaceRequest.allowedPaths,p.current,{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]},true);
- if(!lease||lease.operation!==record.operationRoot||lease.status!=='held'||lease.controllerPid!==record.controllerPid||canonical(await json(join(plan.workspace,'.git/tongxu-writer.json')))!==canonical(lease)||processState(lease.controllerPid)!=='ended'&&!(ownController&&lease.controllerPid===process.pid))throw new Error('implementation_validation_writer_active_or_unknown');
 }
+export async function checkValidationWorkspace(p:ValidationFailureProof,ownController=false){
+ const indexSha256=hash(await regular(join(p.plan.workspace,'.git/index')));
+ await checkValidationTree(p);const {plan,record,lease}=p;
+ if(!lease||lease.operation!==record.operationRoot||lease.status!=='held'||lease.controllerPid!==record.controllerPid||canonical(await json(join(plan.workspace,'.git/tongxu-writer.json')))!==canonical(lease)||processState(lease.controllerPid)!=='ended'&&!(ownController&&lease.controllerPid===process.pid))throw new Error('implementation_validation_writer_active_or_unknown');
+ if(hash(readFileSync(join(plan.workspace,'.git/index')))!==indexSha256)throw new Error('implementation_validation_tree_changed');closureReady.set(p,indexSha256);
+}
+/** Final synchronous proof consumption before releasing the queue claim. */
+export function assertFixedWorkspaceSnapshot(workspace:string,H:string,current:Tree,index:string,lease:Row){
+ if(!index||existsSync(join(workspace,'.git/index.lock'))||hash(readFileSync(join(workspace,'.git/index')))!==index||canonical(JSON.parse(readFileSync(join(workspace,'.git/tongxu-writer.json'),'utf8')))!==canonical(lease))throw new Error('implementation_failure_close_proof_required');
+ const seen:string[]=[];const walk=(sub:string)=>{for(const name of readdirSync(join(workspace,sub)).sort()){if(!sub&&name==='.git')continue;const path=sub?sub+'/'+name:name,full=join(workspace,path),s=lstatSync(full);if(s.isSymbolicLink())throw new Error('implementation_validation_tree_changed');if(s.isDirectory())walk(path);else{const expected=current[path];if(!s.isFile()||s.nlink!==1||!expected||s.size!==expected.bytes||(s.mode&0o111)!==expected.executable||hash(readFileSync(full))!==expected.sha256)throw new Error('implementation_validation_tree_changed');seen.push(path);}}};walk('');
+ if(canonical(seen)!==canonical(Object.keys(current))||execFileSync('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,'rev-parse','HEAD'],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:65536,encoding:'utf8'}).trim()!==H)throw new Error('implementation_validation_tree_changed');
+}
+export function assertValidationClosure(p:ValidationFailureProof){
+ requireValidationFailure(p);assertFixedWorkspaceSnapshot(p.plan.workspace,p.plan.candidate.H,p.current,closureReady.get(p)??'',p.lease);
+ for(const [path,sha] of Object.entries(p.record.files) as Array<[string,string]>){const s=lstatSync(path);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>32*1024*1024||realpathSync(path)!==path||hash(readFileSync(path))!==sha)throw new Error('implementation_validation_original_changed');}
+}
+
 /** Correction result readers verify both immutable original failure evidence
  * and the unique registered successor capture. */
 export async function validationResultCapture(s:Row){
@@ -88,6 +109,6 @@ export async function validationResultCapture(s:Row){
  await verifyValidationFiles(s.validationFailure);if(await implementationCaptureDirectory({...s,result:s.firstInputContinuation?{firstInputContinuation:s.firstInputContinuation}:null})!==s.validationFailure.nativeDirectory)throw new Error('implementation_validation_capture_changed');const old=await readRepairSession(s.validationFailure.nativeDirectory);if(old.turns.length!==1||canonical(JSON.parse(old.turns[0]!.final!.text))!==canonical(s.validationFailure.report))throw new Error('implementation_validation_capture_changed');
  const wire=(await regular(join(ref.nativeDirectory,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x)),starts=wire.filter(x=>x.method==='thread/start');
  const inputs=await json(join(ref.nativeDirectory,'inputs.json')),binding=await json(join(ref.nativeDirectory,'binding.json')),manifest=await json(join(s.plan.operationRoot,'input-manifest.json')),plan=await json(s.plan.path);
- if(starts.length!==1||starts[0].params.baseInstructions!==manifest.prompt.system||canonical(starts[0].params.dynamicTools)!==canonical(projectRepairToolSpecs)||inputs.length!==1||hash(inputs[0].input)!==ref.inputSha256||binding.run!==s.plan.operationRoot||binding.role!=='implementer'||binding.inputManifestSha256!==manifest.inputManifestSha256||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate))throw new Error('implementation_validation_capture_changed');
+ if(starts.length!==1||starts[0].params.baseInstructions!==manifest.prompt.system||canonical(starts[0].params.dynamicTools)!==canonical(projectRepairToolsFor(implementationEditProfile(s.plan.request,plan,manifest)))||inputs.length!==1||hash(inputs[0].input)!==ref.inputSha256||binding.run!==s.plan.operationRoot||binding.role!=='implementer'||binding.inputManifestSha256!==manifest.inputManifestSha256||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate))throw new Error('implementation_validation_capture_changed');
  return ref.nativeDirectory;
 }

@@ -129,8 +129,8 @@ test('normal project AI settings feed actual native model/effort and stay fixed 
 });
 
 test('each AI setting exposes a usable destination and complete role policy without starting a model',async t=>{
-  const f=await fixture(t),state=await f.get('/api/ai-settings');assert.equal(state.status,200);assert.deepEqual(state.data.roles.map((r:any)=>r.id),['secretary','issue_owner','reviewer','verifier_fact','verifier_impact','receiver','acceptance']);
-  for(const role of state.data.roles){assert.ok(['secretary','tasks','retrospective','deliveries'].includes(role.view));assert.ok(role.entry.length>0);assert.ok(role.interaction.length>0);
+  const f=await fixture(t),state=await f.get('/api/ai-settings');assert.equal(state.status,200);assert.deepEqual(state.data.roles.map((r:any)=>r.id),['secretary','issue_owner','implementer','reviewer','verifier_fact','verifier_impact','receiver','acceptance']);
+  for(const role of state.data.roles){assert.ok(['secretary','tasks','project-work','retrospective','deliveries'].includes(role.view));assert.ok(role.entry.length>0);assert.ok(role.interaction.length>0);
     const prompt=await f.get('/api/ai-settings/prompts/'+role.id);assert.equal(prompt.status,200);assert.equal(prompt.data.assembly.role,role.id);assert.ok(prompt.data.assembly.system.includes('全文已由运行器放入系统提示'));assert.equal(prompt.data.modelInputs,0);}
   assert.equal((await f.get('/api/ai-settings/prompts/not_a_role')).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
 });

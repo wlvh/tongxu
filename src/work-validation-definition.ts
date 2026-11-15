@@ -1,3 +1,4 @@
+import {assertWorkCurrent} from './project-work-current.js';
 import {dirname,join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
@@ -10,8 +11,12 @@ export const readableValidationConstraint=(sha:string)=>'Implementer may read th
 export async function workValidationDefinition(entry:Row,request:Row){
  if(entry.materialView!=='selected_files'||!entry.workRequestId||!/^work-[a-f0-9-]{36}-v[1-9]\d*$/.test(entry.id)||!([request.id,request.continuation?.originalTarget?.requestId].includes(entry.workRequestId)))throw new Error('work_validation_definition_not_product_work');
  const root=dirname(entry.root);if(entry.root!==join(root,'executions')||entry.testPlan!==join(root,'tests.json'))throw new Error('work_validation_definition_source_changed');
- const input=JSON.parse((await regular(join(root,'preparation/input.json'),512*1024)).toString());
- const prepared=await readWorkProposal(join(root,'preparation'),{path:entry.objects,H:entry.H0,repository:entry.repository}),bytes=await regular(entry.testPlan),p=JSON.parse(bytes.toString()),script=prepared.proposal.validation.script;
+ const current=entry.currentCheck?assertWorkCurrent(entry.currentCheck):null,preparation=current?.binding.preparationDirectory??join(root,'preparation');
+ if(current){const match=/^work-([a-f0-9-]{36})-v([1-9]\d*)$/.exec(entry.id)!;if(current.binding.work!==match[1]||current.binding.version!==Number(match[2])||current.binding.requestId!==entry.workRequestId||current.binding.H!==entry.H0||current.binding.issueBodySha256!==request.issue.bodySha256||!current.files[join(preparation,'input.json')])throw new Error('work_validation_definition_source_changed');
+  if(preparation!==join(root,'preparation')&&(entry.initialRepairRounds!==0||!/^version-[1-9]\d*$/.test(dirname(preparation).slice(dirname(root).length+1))||dirname(dirname(preparation))!==dirname(root)||Number(dirname(preparation).split('version-').at(-1))>=Number(match[2])))throw new Error('work_validation_definition_source_changed');}
+ const input=JSON.parse((await regular(join(preparation,'input.json'),512*1024)).toString());
+ const prepared=await readWorkProposal(preparation,{path:entry.objects,H:entry.H0,repository:entry.repository}),bytes=await regular(entry.testPlan),p=JSON.parse(bytes.toString()),script=prepared.proposal.validation.script;
+ if(current&&(prepared.captureSha256!==current.binding.preparationCaptureSha256||prepared.inputSha256!==current.binding.preparationInputSha256||prepared.proposalDigest!==current.binding.proposalSha256))throw new Error('work_validation_definition_source_changed');
  if(prepared.validationProblem)throw new Error(prepared.validationProblem);
  if(input.issue?.bodySha256!==request.issue.bodySha256||canonical(entry.allowedPaths)!==canonical(prepared.proposal.allowedPaths)||canonical(entry.materialPaths)!==canonical(prepared.proposal.materialPaths)||canonical(entry.protectedPaths)!==canonical(prepared.proposal.protectedPaths)||!prepared.ready||hash(bytes)!==entry.testPlanSha256||request.workspaceRequest.testPlanSha256!==entry.testPlanSha256||p.tools?.length!==1||p.dependencyDirectory||canonical(p.tools[0])!==canonical({id:'work-acceptance',argv:[p.executor?.node,'--input-type=module','--eval',script],timeoutMs:30000}))throw new Error('work_validation_definition_source_changed');
  return {kind:'work-frozen-validation-definition' as const,source:entry.id,workRequestId:entry.workRequestId,adoption:request.adoptedScope.adoption,preparationSha256:prepared.captureSha256,testPlanSha256:entry.testPlanSha256,scriptSha256:hash(script),description:prepared.proposal.validation.description,script,readOnly:true as const};

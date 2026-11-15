@@ -16,6 +16,7 @@ import {assembleRolePrompt} from './role-prompts.js';
 export const aiRoles=[
   {id:'secretary',name:'工作秘书',need:'scopedTools',description:'读取项目原报告，或协调用户明确选定的已审定工作'},
   {id:'issue_owner',name:'任务负责人',need:'readonlyMessages',description:'原任务的分析、联系与综合；写入权限另按原任务执行'},
+  {id:'implementer',name:'实施者（写代码）',need:'scopedTools',description:'在本人批准范围内使用限定文件和测试工具；当前只支持 Codex'},
   {id:'reviewer',name:'独立审核者',need:'controlledReports',description:'独立阅读固定材料并返回审核报告'},
   {id:'verifier_fact',name:'事实核实与修复',need:'scopedTools',description:'使用原执行器的受限文件、测试及授权修复工具'},
   {id:'verifier_impact',name:'影响核实者',need:'impactReports',description:'分析已核实问题的影响和修正范围'},
@@ -26,6 +27,7 @@ export type AIRole=typeof aiRoles[number]['id'];
 const aiRoleUsage:Record<AIRole,{view:string;entry:string;interaction:string}>={
   secretary:{view:'secretary',entry:'右侧工作秘书：输入问题并发送',interaction:'读取所选项目的资料、Issues/PR、原接收及协作报告。普通聊天不启动开发；用户明确选定已审定工作时，只增加固定目标协调工具，实施者仍由原消费者核权限资源。旧任务秘书继续其已固定配置。'},
   issue_owner:{view:'tasks',entry:'任务与报告：选择原任务，再使用已登记的联系或补查入口',interaction:'程序发送该任务的完整材料和前序报告，角色返回完整消息；当前联系角色没有任意文件或命令工具。没有已登记任务时不能仅靠保存设置启动。'},
+  implementer:{view:'project-work',entry:'项目工作：准备准确范围并经本人确认后开始',interaction:'新实施请求固定本项目的 Codex 模型与推理强度，原请求、修正与补充保持原选择。不继承任务负责人设置，不改全局 CLI 配置；此选择不授予写入、费用或发布权限。'},
   reviewer:{view:'retrospective',entry:'判断与复盘：准备并运行已登记的整体复盘；独立再审也由原修复链触发',interaction:'新的独立上下文阅读固定源码和证据并返回判断。该只读审核不持有写入权限，也不把未执行的测试写成本轮实测。'},
   verifier_fact:{view:'tasks',entry:'任务与报告：在对应 RETURN 的核实与修复入口启动',interaction:'原执行器先开放限定文件读取和测试；写入责任及授权成立后才开放替换文件工具。新候选交独立审核，不自批。'},
   verifier_impact:{view:'tasks',entry:'任务与报告：正式 PR 批次验证或已接入的原局部核实链',interaction:'正式 PR 用固定候选和整批材料独立核影响，可选已检测 Kimi；初次不输入事实结论。完整原文交原事实会话综合；无写入或任意网络工具，局部链沿各自支持范围。'},
@@ -51,6 +53,7 @@ export function parseAIPreferences(value:unknown):AIPreferenceSnapshot{
   for(const [role,c] of Object.entries(v.roles)){
     if(!c||!exactKeys(c,['tool','executable','model','effort','resolvedModel','settingsRevision','role','project','catalogObservedAt'])||c.role!==role||c.settingsRevision!==v.revision||!aiPrograms.includes(c.tool)||!path(c.executable)||!(c.resolvedModel===null||typeof c.resolvedModel==='string')||!Number.isFinite(Date.parse(c.catalogObservedAt))||!exactKeys(c.project,['account','repository','nodeId'])||c.project.account!==v.scope.account.id||c.project.repository!==v.scope.repository.id||c.project.nodeId!==v.scope.repository.nodeId)throw new Error('ai_worker_preferences_invalid');
     validateModelChoice({model:c.model,effort:c.effort});
+    if(role==='implementer'&&c.tool!=='codex')throw new Error('ai_implementer_codex_required');
   }
   if(Object.hasOwn(v,'errors')&&(!v.errors||typeof v.errors!=='object'||Array.isArray(v.errors)||Object.keys(v.errors).some(id=>!aiRoles.some(r=>r.id===id))||Object.values(v.errors).some(e=>typeof e!=='string'||!e||e.length>2048||e.includes('\0'))))throw new Error('ai_worker_preferences_invalid');
   return structuredClone(v);
@@ -98,7 +101,7 @@ export class AISettings{
     }catch(e){this.db.exec('ROLLBACK');throw e;}return this.state(scope);
   }
   private resolveChoice(scope:AISettingsScope,role:AIRole,choice:AISettingChoice,revision:number):AIRuntimeChoice{
-    const provider=this.catalog().find(p=>p.id===choice.providerId);if(!provider?.available)throw new Error('ai_selected_provider_unavailable');const need=aiRoles.find(r=>r.id===role)!.need;if(!provider.capabilities[need])throw new Error('ai_role_tools_not_supported');const model=requireModelChoice(provider.models,{model:choice.model,effort:choice.effort});return {tool:provider.tool,executable:provider.path,model:choice.model,effort:choice.effort,resolvedModel:model.resolvedId,settingsRevision:revision,role,project:{account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId},catalogObservedAt:provider.observedAt};
+    const provider=this.catalog().find(p=>p.id===choice.providerId);if(!provider?.available)throw new Error('ai_selected_provider_unavailable');if(role==='implementer'&&provider.tool!=='codex')throw new Error('ai_implementer_codex_required');const need=aiRoles.find(r=>r.id===role)!.need;if(!provider.capabilities[need])throw new Error('ai_role_tools_not_supported');const model=requireModelChoice(provider.models,{model:choice.model,effort:choice.effort});return {tool:provider.tool,executable:provider.path,model:choice.model,effort:choice.effort,resolvedModel:model.resolvedId,settingsRevision:revision,role,project:{account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId},catalogObservedAt:provider.observedAt};
   }
   snapshot(scope:AISettingsScope):AIPreferenceSnapshot{const p=this.prefs(scope),roles:AIPreferenceSnapshot['roles']={},errors:AIPreferenceSnapshot['errors']={};for(const [role,choice] of Object.entries(p.choices))try{roles[role as AIRole]=this.resolveChoice(scope,role as AIRole,choice,p.revision);}catch(e){errors[role as AIRole]=e instanceof Error?e.message:'ai_selected_provider_unavailable';}return {revision:p.revision,scope:structuredClone(scope),roles,errors};}
   async close(){await this.scanning?.catch(()=>{});this.db.close();}

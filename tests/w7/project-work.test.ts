@@ -20,7 +20,21 @@ import {preparationInputBytes,previousPreparationContext} from '../../src/projec
 import {verifyRepositoryPath,receiveWorkResult} from '../../src/project-work-runtime.js';
 import {repositoryFiles,repositoryFile,checkWorkMaterial} from '../../src/project-work-preparation.js';
 import type {ProjectChatScope} from '../../src/project-chat.js';
+import {captureWorkBilling,sealWorkCurrent,assertWorkCurrent,assertCurrentAttemptEnded} from '../../src/project-work-current.js';
+import {fixture as repairFixture} from '../w5/repair-fixture.js';
 const scope={account:{id:1,login:'fixture'},repository:{id:2,nodeId:'REPO2',fullName:'fixture/project'}} as ProjectChatScope;
+test('current billing observations use only official metadata and immutable expiry; partial active attempts cannot be replaced',async t=>{
+ const f=await repairFixture(t),parent=join(f.root,'attempt');await mkdir(parent);const directory=join(parent,'billing'),observed=await captureWorkBilling(f.config,directory,()=>{}),sent=(await readFile(join(directory,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
+ assert.deepEqual(sent.map(x=>x.method),['initialize','initialized','account/read','config/read','account/rateLimits/read']);assert.equal((await readFile(f.trace,'utf8')).includes('model-input'),false);
+ const ref=await sealWorkCurrent(join(f.root,'current.json'),{metadataDirectory:directory},observed.observedAt,86400000,[directory]);assert.equal(assertWorkCurrent(ref).observedAt,observed.observedAt);
+ const clock=Date.now;try{Date.now=()=>Date.parse(observed.observedAt)+86400001;assert.throws(()=>assertWorkCurrent(ref),/expired/);assert.equal(assertWorkCurrent(ref,undefined,true).observedAt,observed.observedAt);}finally{Date.now=clock;}
+ const processPath=join(directory,'process.json'),processBytes=await readFile(processPath);await writeFile(processPath,canonical({pid:process.pid}));await assert.rejects(assertCurrentAttemptEnded(parent,{} as any),/incomplete/);await writeFile(processPath,processBytes);
+ await writeFile(ref.path,'{}');assert.throws(()=>assertWorkCurrent(ref),/changed/);
+});
+for(const fault of ['account','usage','configuration'])test('current metadata refuses unavailable '+fault+' without a thread or model input',async t=>{
+ const f=await repairFixture(t),original=await readFile(f.config.codexExecutable,'utf8'),bad=fault==='account'?original.replace("account:{type:'chatgpt'}","account:{type:'apiKey'}"):fault==='usage'?original.replace('ordinaryUsageAllowed:true','ordinaryUsageAllowed:false'):original.replace("model_provider:'openai'","model_provider:'other'");assert.notEqual(bad,original);await writeFile(f.config.codexExecutable,bad);
+ await assert.rejects(captureWorkBilling(f.config,join(f.root,'bad-metadata'),()=>{}),/ordinary_usage_unavailable|native_feature_boundary/);assert.equal((await readFile(f.trace,'utf8')).includes('model-input'),false);
+});
 test('read-only requests never receive Owner secrets; exact local confirmation is single use and declined/expired windows cannot act',async()=>{
   const opened:string[]=[],owner=new ProjectWorkOwner(()=> '127.0.0.1:1',async url=>{opened.push(url);}),payload={version:1,proposalSha256:'a'.repeat(64)};
   const response=await owner.request(scope,'work',payload,{goal:'exact'}),token=opened[0]!.split('#')[1]!;

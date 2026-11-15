@@ -1,3 +1,4 @@
+import {parseEditProfile,type EditProfile} from './repair-edits.js';
 import {projectChatToolsFor,projectChatInstructionsFor} from './project-chat-contract.js';
 import {preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,preparationSchemaFamily,isWorkPreparationSchema,parseWorkPreparationOutput} from './project-work-contract.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels,recordedCodexTurnChoice} from './ai-execution.js';
@@ -14,7 +15,7 @@ import { hash } from './snapshot.js';
 import { parseCodexResult, currentCodexProtocol, resultCliVersion, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
-import { repairToolSpecs, projectRepairToolSpecs, exists,regular,processState } from './repair-workspace.js';
+import { repairToolSpecs, projectRepairToolSpecs,projectRepairToolsFor, exists,regular,processState } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
 import {formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerificationReport} from './formal-review-contract.js';
@@ -25,6 +26,7 @@ export const boundedRoleDeveloperInstructions='Only the supplied role and fixed 
 
 export type NativeOptions = {
   aiModel?:AIModelChoice;
+  editProfile?:EditProfile;
   executable: string; directory: string; operation: string; candidate: Candidate;
   role: 'implementer' | 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
@@ -38,7 +40,7 @@ export type NativeOptions = {
   persistent?: boolean;
   resumeFrom?: string;
   allowedInstructionSources: Array<{ path: string; sha256: string }>;
-  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; secretaryContacts?:boolean; secretaryDeliveries?:boolean; secretaryDeliveryReports?:boolean; secretaryWorkbench?:boolean; secretaryScopeFollowupReports?:boolean; secretaryQueueActions?:boolean;secretaryReceptionReports?:boolean;secretaryTaskSources?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;control?:NativeControlPolicy;gate?: { check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
+  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; secretaryContacts?:boolean; secretaryDeliveries?:boolean; secretaryDeliveryReports?:boolean; secretaryWorkbench?:boolean; secretaryScopeFollowupReports?:boolean; secretaryQueueActions?:boolean;secretaryReceptionReports?:boolean;secretaryTaskSources?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;control?:NativeControlPolicy;gate?: { editProfile?:EditProfile; check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
@@ -135,6 +137,7 @@ export class BoundedCodexSession {
     if(o.projectSecretaryWork&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
     if(o.projectPreparation&&(o.role!=='verifier_fact'||!o.gate||o.projectRepair||o.projectSecretary||o.persistent||!o.beforeTurn||!o.arrangementSource))throw new Error('native_project_preparation_boundary_required');
     if(o.projectSecretary&&(o.role!=='secretary'||o.candidate.kind!=='project-conversation'||!o.gate)||o.candidate.kind==='project-conversation'&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
+    if(o.editProfile!==undefined){parseEditProfile(o.editProfile);if(o.role!=='implementer'||!o.projectRepair||o.gate?.editProfile!==o.editProfile)throw new Error('native_edit_profile_invalid');}
     if(o.role==='implementer'&&(!o.gate||!o.projectRepair||o.persistent||o.readonlyMessage||!o.arrangementSource))throw new Error('native_implementation_profile_required');
     const session = new BoundedCodexSession(o);try{await session.initialize();return session;}catch(e){await session.close();throw e;}
   }
@@ -186,7 +189,7 @@ export class BoundedCodexSession {
       entry.receipt=receipt;entry.phase='acknowledged';save(join(this.o.directory,prefix+'-ack.json'),receipt);return structuredClone(receipt);
     }catch(e){pending?.catch(()=>{});const reason=e instanceof Error?e.message:'native_control_unknown';entry.problem=reason;if(entry.phase!=='sent')entry.phase='held';save(join(this.o.directory,prefix+'-problem.json'),{requestSha256,reason,phase:entry.phase,automaticResend:false});throw e;}
   }
-  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolSpecs : repairToolSpecs; }
+  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile) : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);

@@ -1,3 +1,6 @@
+import {verifyImplementationEdits} from './implementation-edits.js';
+import {verifyImplementationModel} from './implementation-ai.js';
+import {readHostReadonlyFailure} from './implementation-readonly-failure.js';
 import {validationResultCapture,readFailedValidationTests} from './implementation-validation.js';
 import {assertUnselectedGitUnchanged} from './repair-workspace.js';
 import {lstatSync,readFileSync,readdirSync,realpathSync} from 'node:fs';
@@ -31,9 +34,11 @@ export function ownerContactReference(value:unknown):value is OwnerContactRefere
  * native capture. Its SQLite result remains authoritative; no new model runs. */
 export async function readImplementationResult(state:Row){
  if(!state.result)throw new Error('implementation_original_report_not_available');
+ if(state.result.failureKind==='ended_readonly_timeout')return readHostReadonlyFailure(state);
  if(state.result.completeCapture){
-  const root=state.plan.operationRoot,capture=await readRepairSession(await validationResultCapture(state));
+  const root=state.plan.operationRoot,native=await validationResultCapture(state),capture=await readRepairSession(native);
   const manifest=JSON.parse((await regular(join(root,'input-manifest.json'))).toString()),{inputManifestSha256,...original}=manifest;
+  const plan=JSON.parse((await regular(state.plan.path)).toString());await verifyImplementationModel(state.plan.request,plan,manifest,native);await verifyImplementationEdits(state,plan,manifest,native);
   if(hash(canonical(original))!==inputManifestSha256||capture.binding.inputManifestSha256!==inputManifestSha256||capture.binding.role!=='implementer'||capture.binding.sessionId!==state.result.sessionId||manifest.planSha256!==state.plan.sha256||canonical(manifest.request)!==canonical(state.plan.request)||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(state.result.report))throw new Error('implementation_original_capture_changed');
  }
  if(state.result.status==='completed'&&state.plan.request.workspaceRequest.materialView==='selected_files')await assertUnselectedGitUnchanged(state.plan.workspace,state.H0,state.result.H1,[...state.plan.request.workspaceRequest.materialPaths,...state.plan.request.workspaceRequest.protectedPaths]);
