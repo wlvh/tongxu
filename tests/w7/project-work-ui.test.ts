@@ -20,6 +20,18 @@ test('double create uses one request, and a late create reply cannot select a co
   p.run("let changedConversation=false;chooseProjectConversation=()=>{changedConversation=true;};gh.epoch++;gh.selected={id:2,nodeId:'R2',fullName:'fixture/repo2'};gh.epoch++;gh.selected={id:1,nodeId:'R1',fullName:'fixture/repo1'};");
   p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({...summary,conversationId:'33333333-3333-4333-8333-333333333333'})});await Promise.all([first,second]);assert.equal(p.run('changedConversation'),false);assert.equal(p.fetchCalls.length,1);assert.equal(p.run('projectWorkData().selected'),null);
 });
+test('failed create retains its identity, successful ordinary opens rotate only the transport ID, and new work is explicit',async()=>{
+  const p=await workPage();p.run("projectWorkData().issue='201';projectWorkData().goal='keep this';view='project-work';renderProjectWork();render=()=>{};");const button=find(p.nodes.get('content'),'保存或打开这项工作');assert.ok(button);
+  const failed=button.onclick(),first=JSON.parse(p.fetchCalls[0]!.options.body);p.fetchCalls[0]!.reject(new Error('project_work_repository_location_required'));await failed;
+  assert.equal(p.run('projectWorkData().createId'),first.requestId);assert.equal(p.run('projectWorkData().newWork'),false);
+  const retry=button.onclick(),replayed=JSON.parse(p.fetchCalls[1]!.options.body);assert.deepEqual(replayed,first);p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>summary});await flush();
+  p.fetchCalls[2]!.resolve({ok:true,status:200,json:async()=>list});await flush();p.fetchCalls[3]!.resolve({ok:true,status:200,json:async()=>detail});await retry;
+  assert.equal(p.run('projectWorkData().selected'),summary.id);assert.notEqual(p.run('projectWorkData().createId'),first.requestId);assert.equal(p.run('projectWorkData().newWork'),false);
+  const repeated=button.onclick(),ordinary=JSON.parse(p.fetchCalls[4]!.options.body);assert.equal(ordinary.newWork,false);assert.notEqual(ordinary.requestId,first.requestId);p.fetchCalls[4]!.reject(new Error('project_work_repository_location_required'));await repeated;
+  p.run('renderProjectWork()');const fresh=find(p.nodes.get('content'),'为这条 Issue 再新建一次工作');assert.ok(fresh);fresh.onclick();p.run('renderProjectWork()');const save=find(p.nodes.get('content'),'保存一次新的工作');assert.ok(save);
+  const creating=save.onclick(),explicit=JSON.parse(p.fetchCalls[5]!.options.body);assert.equal(explicit.newWork,true);assert.equal(explicit.goal,'');assert.notEqual(explicit.requestId,ordinary.requestId);p.fetchCalls[5]!.reject(new Error('project_work_repository_location_required'));await creating;
+  assert.equal(p.fetchCalls.every(c=>c.options.method!=='POST'||c.path==='/api/project-work/create'),true);
+});
 test('action failure remains after subsequent successful reads and missing location does not become an empty history',async()=>{
   const p=await workPage();p.run("render=()=>{};projectWorkData().selected="+JSON.stringify(summary.id));
   const action=p.run("projectWorkAction(()=>projectWorkPost('/'+projectWorkData().selected+'/prepare',{goal:'original'}))");p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'project_work_repository_location_required'})});await action;assert.match(p.run('projectWorkData().actionError'),/草案已经保留/);

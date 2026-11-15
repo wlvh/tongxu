@@ -7,11 +7,13 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,readdir,symlink} from 'node:fs/promi
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
+import {Worker} from 'node:worker_threads';
+import {once} from 'node:events';
 import {git,exists,checkRepairIndex,tree} from '../../src/repair-workspace.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
-import {ProjectWorkStore} from '../../src/project-work-store.js';
+import {ProjectWorkStore,type ProjectWorkDraft} from '../../src/project-work-store.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {ProjectWorkOwner} from '../../src/project-work-owner.js';
 import {parseWorkProposal} from '../../src/project-work-contract.js';
@@ -52,6 +54,44 @@ test('work settings and original draft survive cold reopen with exact project an
   assert.deepEqual(store.get(scope,id),draft);assert.equal(store.settings(scope)?.repositoryPath,f.source);
   const other={...scope,repository:{...scope.repository,id:3}};assert.throws(()=>store.get(other,id),/outside_project/);assert.throws(()=>store.create(scope,{...draft,issue:{...draft.issue,number:2}}),/id_is_fixed/);
   const saved=store.save(scope,{...draft,problem:null},0);assert.equal(saved.revision,1);assert.throws(()=>store.save(scope,draft,0),/revision_changed/);store.close();
+});
+function openingDraft(stage='draft'):ProjectWorkDraft{
+  const at=new Date().toISOString();return {id:randomUUID(),conversationId:randomUUID(),issue:{number:201,title:'Synthetic saved work',body:'fixed public fixture',url:'https://github.com/fixture/project/issues/201',bodySha256:hash('fixed public fixture')},goal:'preserve the saved goal',createdAt:at,updatedAt:at,revision:0,version:stage==='draft'?0:1,requestId:randomUUID(),stage,problem:null,events:[]};
+}
+const openingRequest=(d:ProjectWorkDraft)=>({requestId:randomUUID(),conversationId:d.conversationId,issueNumber:d.issue.number,goal:d.goal,newWork:false});
+async function openingFixture(t:any,readIssue?:(_scope:ProjectChatScope,n:number)=>Promise<unknown>){
+  const root=await mkdtemp(join(tmpdir(),'tongxu-work-opening-'));t.after(()=>rm(root,{recursive:true,force:true}));const store=await ProjectWorkStore.open(root);t.after(()=>store.close());let issueReads=0;
+  const work=Object.assign(Object.create(ProjectWork.prototype),{store,active:new Map(),accepting:true,config:{root},verify:async()=>{},readIssue:async(s:ProjectChatScope,n:number)=>{issueReads++;return readIssue?readIssue(s,n):{...openingDraft().issue,number:n};},controls:async()=>assert.fail('opening a saved work must not enter the implementation consumer')});
+  return {root,store,work,issueReads:()=>issueReads};
+}
+for(const stage of ['delivered','cancelled','no_change'])test('ordinary opening retains the newest '+stage+' work and its goal in both lookup layers',async t=>{
+  const f=await openingFixture(t),older=openingDraft(),original=openingDraft(stage);f.store.create(scope,older);f.store.create(scope,original);
+  for(let i=0;i<2;i++)assert.deepEqual(await f.work.create(scope,{...openingRequest(original),goal:'unprepared words must not overwrite the saved goal'}),original);
+  assert.deepEqual(f.store.create(scope,openingDraft(),true),original);assert.deepEqual(f.store.list(scope),[original,older]);assert.equal(f.issueReads(),0);assert.equal(f.work.active.size,0);assert.equal(await exists(join(f.root,'works')),false);
+});
+for(const stage of ['delivered','cancelled','no_change'])test('ordinary opening reuses a '+stage+' work created by another connection during Issue reading',async t=>{
+  let entered!:()=>void,release!:()=>void;const reading=new Promise<void>(r=>entered=r),wait=new Promise<void>(r=>release=r),original=openingDraft(stage);
+  const f=await openingFixture(t,async()=>{entered();await wait;return original.issue;}),other=await ProjectWorkStore.open(f.root);t.after(()=>other.close());
+  const pending=f.work.create(scope,openingRequest(original));await reading;other.create(scope,original);release();assert.deepEqual(await pending,original);assert.deepEqual(f.store.list(scope),[original]);assert.equal(f.issueReads(),1);assert.equal(f.work.active.size,0);
+});
+test('two real SQLite connections racing ordinary creation return one saved work',{timeout:15000},async t=>{
+  const f=await openingFixture(t),workers:Worker[]=[];t.after(()=>Promise.all(workers.map(w=>w.terminate())));
+  const code=`import {parentPort,workerData} from 'node:worker_threads';const {ProjectWorkStore}=await import(workerData.module);const store=await ProjectWorkStore.open(workerData.root);parentPort.postMessage('ready');parentPort.once('message',()=>{try{parentPort.postMessage({draft:store.create(workerData.scope,workerData.draft,true)});}catch(error){parentPort.postMessage({error:error.message});}finally{store.close();parentPort.close();}});`;
+  // Open both handles first; only the create transactions compete, not schema initialization.
+  for(let i=0;i<2;i++){const w=new Worker(new URL('data:text/javascript,'+encodeURIComponent(code)),{workerData:{module:new URL('../../src/project-work-store.js',import.meta.url).href,root:f.root,scope,draft:openingDraft()}});workers.push(w);assert.equal((await once(w,'message'))[0],'ready');}
+  const replies=workers.map(w=>once(w,'message'));for(const w of workers)w.postMessage('create');const [a,b]=await Promise.all(replies);assert.equal(a![0].error,undefined);assert.equal(b![0].error,undefined);assert.deepEqual(a![0].draft,b![0].draft);assert.deepEqual(f.store.list(scope),[a![0].draft]);
+});
+test('a created request survives a lost response and later explicit new work while keeping project and Issue boundaries',async t=>{
+  const f=await openingFixture(t),request=openingRequest(openingDraft());await f.work.create(scope,request); // The client loses this committed response.
+  const saved=f.store.get(scope,request.requestId),freshRequest={...request,requestId:randomUUID(),conversationId:randomUUID(),newWork:true},fresh=await f.work.create(scope,freshRequest);
+  assert.notEqual(fresh.id,saved.id);assert.deepEqual(await f.work.create(scope,request),saved);assert.deepEqual(await f.work.create(scope,freshRequest),fresh);assert.deepEqual(await f.work.create(scope,{...request,requestId:randomUUID()}),fresh);
+  await assert.rejects(f.work.create(scope,{...request,goal:'changed fixed request'}),/id_is_fixed/);await assert.rejects(f.work.create(scope,{...request,issueNumber:202}),/id_is_fixed/);
+  const other={...scope,repository:{...scope.repository,id:3,nodeId:'R3',fullName:'fixture/other'}};await assert.rejects(f.work.create(other,request),/outside_project/);assert.deepEqual(f.store.list(other),[]);
+  const otherWork=await f.work.create(other,{...request,requestId:randomUUID()}),otherIssue=await f.work.create(scope,{...request,requestId:randomUUID(),issueNumber:202});assert.notEqual(otherWork.id,saved.id);assert.notEqual(otherIssue.id,fresh.id);assert.equal(otherIssue.issue.number,202);assert.equal(f.store.list(scope).length,3);assert.equal(f.store.list(other).length,1);assert.equal(f.work.active.size,0);assert.equal(await exists(join(f.root,'works')),false);
+});
+test('ordinary opening retains a failed zero-round successor and cannot reset it through prepare',async t=>{
+  const f=await openingFixture(t),d=openingDraft('execution');d.version=2;d.restart={predecessor:{version:1,source:'original',requestId:randomUUID(),operation:randomUUID(),requestSha256:'a'.repeat(64),planSha256:'b'.repeat(64),failureSha256:'c'.repeat(64)},successor:{version:2,requestId:d.requestId}};f.store.create(scope,d);
+  assert.deepEqual(await f.work.create(scope,openingRequest(d)),d);await assert.rejects(f.work.prepare(scope,d.id,{goal:'do not replenish the correction budget'}),/restart_requires_current_check/);assert.deepEqual(f.store.get(scope,d.id),d);assert.equal(f.work.active.size,0);
 });
 test('fixed material reads preserve exact Git bytes and omit unrelated large/binary files',async t=>{
   const f=await repository(t),source={path:f.source,H:f.H,repository:'fixture/project'},files=await repositoryFiles(source);
