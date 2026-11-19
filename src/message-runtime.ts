@@ -1,5 +1,5 @@
 import {isAdditionalProgram} from './ai-programs.js';
-import {ExtraCliSession,parseAcpPrompt,checkAcpSessionEvents,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions} from './additional-cli.js';
+import {ExtraCliSession,parseAcpPrompt,checkAcpSessionEvents,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions,retainKimiDataConfig} from './additional-cli.js';
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
@@ -311,7 +311,9 @@ class ACPMessageDialog extends ReadonlyDialog{
 async function acpOriginals(o:RuntimeSpec){
   if(!isAdditionalProgram(o.participant.tool))throw Error('additional_cli_message_profile_required');const originals:Record<string,Buffer>={};
   for(const name of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','capture-failure.json','profile.json','initialize.json','session.json','selection.json','profile-observed.json','prompt-boundaries.ndjson',...Object.keys(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy))])if(await exists(join(o.directory,name)))originals[name]=await regular(join(o.directory,name),16*1024*1024);
-  if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');return originals;
+  if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');
+  if(originals['profile.json'])await retainKimiDataConfig(o.directory,JSON.parse(originals['profile.json'].toString()),originals);
+  return originals;
 }
 async function inspectUnstartedACPMessage(o:RuntimeSpec){
   const originals=await acpOriginals(o);if(originals['launch.json']){

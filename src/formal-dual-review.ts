@@ -1,7 +1,7 @@
 import {join} from 'node:path';
 import {lstatSync,readFileSync,realpathSync} from 'node:fs';
 import {selectedProviderOptions} from './ai-settings.js';
-import {ExtraCliSession,checkAcpSessionEvents,extraProfileFiles,parseAcpPrompt} from './additional-cli.js';
+import {ExtraCliSession,checkAcpSessionEvents,extraProfileFiles,parseAcpPrompt,retainKimiDataConfig} from './additional-cli.js';
 import {BoundedCodexSession,findingSchema,readRepairSession} from './repair-native.js';
 import {checkCapture} from './live-process.js';
 import {canonical} from './comparison.js';
@@ -116,6 +116,7 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
       originals[file]=original;
     }
     kimi.assertCanForward();
+    await retainKimiDataConfig(kimi.directory,kimi.profile,originals);
     verifyImpactBoundary(originals,input,sessionId,requestId,final);
     const native={company:'Moonshot',sessionId,requestId,model:selected.model,promptBoundaryVerified:true};
     host.record(stage,{finalText:final,report},stageProof('verifier_impact',stage.inputSha256,stage.systemSha256,native),originals);
@@ -132,6 +133,8 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     const directory=laneDirectory('impact');
     await checkCapture(directory);
     const parts=await capture(directory,[...captureFiles,'prompt-boundaries.ndjson','process.json']);
+    const data:Record<string,Buffer>={};
+    await retainKimiDataConfig(directory,JSON.parse((await regular(join(directory,'profile.json'))).toString()),data);
     const status=JSON.parse(parts['capture-status.json']!.toString()),process=JSON.parse(parts['process.json']!.toString()),
       exit=JSON.parse(parts['exit.json']!.toString());
     if(exit.code!==0||exit.signal!==null||status.status!=='complete'||status.failure!==null||process.status!=='spawn_attempted'||processState(process.pid)!=='ended'||
@@ -140,14 +143,14 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     checkAcpSessionEvents(frames(parts['stdout.ndjson']!),peerFinal.sessionId);
     const stages=host.q.formalReviews().state(host.operation).stages as ReturnType<FormalReviews['stage']>[];
     for(const stage of stages.filter(s=>s.stage.key.startsWith(key('impact-'))&&s.returned)){
-      for(const name of ['stdin.ndjson','stdout.ndjson','prompt-boundaries.ndjson']){
-        const saved=stage.returned!.proof.originals[name],bytes=parts[name]!;
+      for(const name of ['stdin.ndjson','stdout.ndjson','prompt-boundaries.ndjson',...Object.keys(data)]){
+        const saved=stage.returned!.proof.originals[name],bytes=parts[name]??data[name]!;
         if(!saved||saved.bytes>bytes.length||hash(bytes.subarray(0,saved.bytes))!==saved.sha256)
           throw new Error('formal_original_impact_capture_unbound');
       }
     }
     verifyImpactBoundary(parts,peerFinal.input,peerFinal.sessionId,peerFinal.requestId,peerFinal.final);
-    return {directory,parts};
+    return {directory,parts,data};
   };
   const closedLanes=async(extra:Record<string,unknown>)=>{
     if(!peerFinal)throw new Error('formal_dual_terminal_capture_missing');
@@ -223,12 +226,12 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     closingPeerForFix=true;
     await kimi?.close();
     delete host.dual.kimi;
-    const {directory,parts}=await closedPeer();
+    const {directory,parts,data}=await closedPeer();
     kimi?.assertCanForward();
     const checkFixPeer=()=>{
       try{lstatSync(join(directory,'capture-failure.json'));throw new Error('stage_capture_failed');}
       catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-      for(const [name,bytes] of Object.entries(parts)){
+      for(const [name,bytes] of Object.entries({...parts,...data})){
         const path=join(directory,name),stat=lstatSync(path);
         if(!stat.isFile()||stat.nlink!==1||stat.size!==bytes.length||realpathSync(path)!==path||!readFileSync(path).equals(bytes))
           throw new Error('formal_original_impact_capture_unbound');
