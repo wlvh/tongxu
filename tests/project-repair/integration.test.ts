@@ -652,6 +652,13 @@ async function implementationPage(t:TestContext,resources=true,resourceMode='nor
  if(projectFailure){
    const plan=JSON.parse(await readFile(project.request.testPlan,'utf8'));
    plan.tools.push({...plan.tools[0],id:'after-failure'});
+   plan.tools[0].argv=[docker.node,'--input-type=module','-e',String.raw`import {spawnSync} from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+writeFileSync(1,'project test progress '.repeat(900)+'\n');
+writeFileSync(2,'project test diagnostics '.repeat(900)+'\n'+'stderr original tail\n');
+const child=spawnSync(process.execPath,['--test','test/normalize.test.mjs'],{stdio:'inherit'});
+if(child.error)throw child.error;
+process.exitCode=child.status??2;`];
    const bytes=JSON.stringify(plan);await writeFile(project.request.testPlan,bytes);project.request.testPlanSha256=hash(bytes);
  }
  if(projectFiles){
@@ -748,11 +755,19 @@ for(const outcome of ['stop','failed'] as const)test('project file workbench rea
    assert.equal(result.value.tests.executionHealthy,true);
    assert.equal(result.value.tests.passed,false);
    assert.deepEqual(result.value.changed,[path,'src/index.mjs']);
-   assert.equal(result.value.tests.tools[0].exitCode,1);
-   assert.match(result.value.tests.tools[0].stdout,/empty labels need the fixed fallback/);
-   assert.match(result.value.tests.tools[0].stdout,/'Wrong'/);
+   const tool=result.value.tests.tools[0];
+   assert.equal(tool.exitCode,1);
+   assert.match(tool.stdout,/project test progress/);
+   assert.doesNotMatch(tool.stdout,/empty labels need the fixed fallback/);
+   assert.doesNotMatch(tool.stderr,/stderr original tail/);
+   assert.equal(tool.stdoutOriginal.previewTruncated,true);
+   assert.equal(tool.stderrOriginal.previewTruncated,true);
    assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
    assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+   const pairs=JSON.parse(await readFile(join(operation,'implementer/reconciled-tools.json'),'utf8'));
+   const toolReply=pairs.find((pair:any)=>pair.request.params.tool==='tongxu_run_tests').response.result;
+   const modelTool=JSON.parse(toolReply.contentItems[0].text).tools[0];
+   for(const field of ['stdout','stderr','stdoutOriginal','stderrOriginal'])assert.equal(modelTool[field],undefined);
  }
  const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
  assert.deepEqual(await f.get(reportPath),result);
@@ -764,12 +779,46 @@ for(const outcome of ['stop','failed'] as const)test('project file workbench rea
    const response=await fetch(url.origin+reportPath,{headers});
    assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
    if(outcome==='failed'){
-     await writeFile(join(operation,'attempt-1/post-repair-1/tool-0/stdout'),'incomplete original');
-     const unknown=await fetch(url.origin+reportPath,{headers}).then(r=>r.json()) as any;
+     const tool=result.value.tests.tools[0],toolPath=url.origin+reportPath+'/logs/'+tool.id;
+     const logs=join(operation,'attempt-1/post-repair-1/tool-0');
+     for(const stream of ['stdout','stderr'] as const){
+       const original=await readFile(join(logs,stream));
+       const download=await fetch(toolPath+'/'+stream,{headers});
+       assert.equal(download.status,200);assert.equal(download.headers.get('content-type'),'application/octet-stream');
+       const bytes=Buffer.from(await download.arrayBuffer());
+       assert.deepEqual(bytes,original);
+       assert.equal(bytes.length,tool[stream+'Original'].bytes);assert.equal(hash(bytes),tool[stream+'Original'].sha256);
+       if(stream==='stdout'){assert.match(bytes.toString(),/empty labels need the fixed fallback/);assert.match(bytes.toString(),/'Wrong'/);}
+       else assert.match(bytes.toString(),/stderr original tail/);
+     }
+     assert.equal((await fetch(toolPath+'/stdout')).status,401);
+     assert.equal((await fetch(url.origin+reportPath+'/logs/after-failure/stdout',{headers})).status,404);
+     const stdoutPath=join(logs,'stdout'),stdout=await readFile(stdoutPath);
+     await writeFile(stdoutPath,'incomplete original');
+     const fallback=await fetch(url.origin+reportPath,{headers});
+     assert.equal(fallback.status,200);
+     const unknown=await fallback.json() as any;
      assert.equal(unknown.status,'partial_or_unknown');
      assert.equal(unknown.tests,undefined);
      assert.equal(unknown.H1,null);
      assert.ok(unknown.diff.includes(path));
+     assert.equal((await fetch(toolPath+'/stdout',{headers})).status,503);
+     await writeFile(stdoutPath,stdout);
+     const initialPath=join(operation,'initial-tree.json'),initial=await readFile(initialPath);
+     try{
+       await rm(initialPath);
+       for(const damaged of [null,'{','{}']){
+         if(damaged!==null)await writeFile(initialPath,damaged);
+         const observed=await fetch(url.origin+reportPath,{headers});
+         assert.equal(observed.status,200);
+         const retained=await observed.json() as any;
+         assert.equal(retained.status,'partial_or_unknown');assert.equal(retained.H1,null);
+         assert.equal(retained.evidenceGap,'retained_additions_unverified');assert.equal(retained.retainedAdditions,undefined);
+         assert.equal(retained.tests,undefined);
+         assert.match(retained.diff,/^diff --git a\/src\/index\.mjs b\/src\/index\.mjs/m);
+         assert.doesNotMatch(retained.diff,/^diff --git .*default-label\.mjs/m);
+       }
+     }finally{await writeFile(initialPath,initial);}
    }
  }finally{await reopened.close();}
  assert.deepEqual(await readFile(sent),before);

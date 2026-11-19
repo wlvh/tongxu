@@ -20,10 +20,12 @@ import {safeEnv,projectRepairToolsFor} from './repair-workspace.js';
 type Row=Record<string,any>;
 const exec=promisify(execFile),gitRead=async(w:string,a:string[])=>(await exec('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',w,...a],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:8*1024*1024})).stdout.trim();
 const json=async(p:string)=>JSON.parse((await regular(p,32*1024*1024)).toString());
+export type ValidationLogSelection={tool:string;stream:'stdout'|'stderr'};
+type LogOriginal={bytes:number;sha256:string;previewTruncated:boolean};
 export async function verifyValidationFiles(record:Row){for(const [p,sha] of Object.entries(record.files))if(hash(await regular(p,32*1024*1024))!==sha)throw new Error('implementation_validation_original_changed');}
 /** A completed healthy failed test is distinct from a broken/unknown run.
  * This reads original Docker evidence only; it never launches/reconciles. */
-export async function readFailedValidationTests(directory:string,plan:Row,requireFailed=true){
+export async function readFailedValidationTests(directory:string,plan:Row,requireFailed=true,logSelection?:ValidationLogSelection){
  const result=await json(join(directory,'result.json')),input=await json(join(directory,'input.json')),intent=await json(join(directory,'test-intent.json')),progress=await json(join(directory,'test-progress.json')),fixed=await projectTestPlan(plan.project),tested=await tree(join(directory,plan.project.projectFiles?'work':'material-work'),true),frozen=treeHash(tested);
  const last=result.tools.at(-1);
  // The runner stops at the first failed command, so a rejected prefix can be complete evidence.
@@ -33,8 +35,13 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
  if((requireFailed&&result.passed!==false)||typeof result.passed!=='boolean'||result.exit?.code!==(result.passed?0:1)||result.executionHealthy!==true||result.failure!==null||result.candidateTreeSha256!==frozen||input.candidateTreeSha256!==frozen||intent.candidateTreeSha256!==frozen||intent.directory!==directory||intent.workspace!==plan.workspace||intent.kind!=='registered-project-tests-v1'||progress.phase!=='completed'||progress.toolsRequested!==result.tools.length||(!earlyFailure&&result.tools.length!==fixed.plan.tools.length)||[result,input,intent].some(x=>x.testPlanSha256!==plan.project.testPlanSha256)||canonical(input.sourceCandidate)!==canonical(plan.project.sourceCandidate)||result.sourceInput?.sourceHead!==plan.candidate.H||input.H!==result.H||input.T!==result.T||await gitRead(join(directory,'work'),['rev-parse','HEAD'])!==result.H||await gitRead(join(directory,'work'),['rev-parse','HEAD^{tree}'])!==result.T||await fingerprint(join(directory,'work'),Object.keys(tested))!==input.preFingerprint||input.dependencyHash!==plan.project.dependencyHash||canonical(input.protectedPaths)!==canonical(plan.project.protectedPaths))throw new Error('implementation_validation_test_unknown');
  const probeDir=join(directory,'runtime/probe'),probeBytes=await regular(join(probeDir,'execution.json')),probe=JSON.parse(probeBytes.toString());
  if(dockerTerminalEvidence(probeBytes,fixed.plan.executor!,probeDir)!=='ended'||processState(probe.clientPid)!=='ended'||probe.status!=='completed'||probe.exitCode!==0||probe.capture?.complete!==true||hash(await regular(join(probeDir,'stdout')))!==probe.capture.stdoutSha256||hash(await regular(join(probeDir,'stderr')))!==probe.capture.stderrSha256)throw new Error('implementation_validation_test_unknown');
+ const originals:Array<{stdoutOriginal:LogOriginal;stderrOriginal:LogOriginal}>=[];
+ let log:Buffer|undefined;
  for(const [i,t] of result.tools.entries()){
   const dir=join(directory,'tool-'+i),raw=await regular(join(dir,'execution.json')),r=JSON.parse(raw.toString()),out=await regular(join(dir,'stdout'),4*1024*1024),err=await regular(join(dir,'stderr'),4*1024*1024);
+  const stdout=out.toString(),stderr=err.toString();
+  const stdoutOriginal={bytes:out.length,sha256:hash(out),previewTruncated:stdout.length>16000};
+  const stderrOriginal={bytes:err.length,sha256:hash(err),previewTruncated:stderr.length>16000};
   const tool=fixed.plan.tools[i]!,ids=plan.project.projectFiles?tool.expectedSampleIds??[]:[];
   let sampleSet;
   if(ids.length){
@@ -44,12 +51,14 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
    try{if(material)value=JSON.parse(material.toString());}catch{/* Missing sample coverage matches the runner. */}
    sampleSet=samples(value,ids,t.exitCode===0);
   }
-  if(canonical(r.connection)!==canonical(probe.connection)||processState(r.clientPid)!=='ended'||r.after?.State?.OOMKilled===true||hash(raw)!==t.dockerRecordSha256||hash(out)!==t.stdoutSha256||hash(err)!==t.stderrSha256||t.stdout!==out.toString().slice(0,16000)||t.stderr!==err.toString().slice(0,16000)||!t.inputUnchanged||!t.dependenciesUnchanged||canonical(t.sampleSet)!==canonical(sampleSet)||canonical(t.registeredSampleIds)!==canonical(ids)||t.id!==tool.id||canonical(t.argv)!==canonical(tool.argv)||!dockerEvidenceMatches(raw,fixed.plan.executor!,{run:frozen,stage:i,tool:t.id,head:result.H,tree:result.T,planHash:plan.project.testPlanSha256},{...t,dockerExecutionDirectory:'tool-'+i,stdout:{sha256:hash(out),bytes:out.length},stderr:{sha256:hash(err),bytes:err.length}},tool.timeoutMs))throw new Error('implementation_validation_test_unknown');
+  if(canonical(r.connection)!==canonical(probe.connection)||processState(r.clientPid)!=='ended'||r.after?.State?.OOMKilled===true||hash(raw)!==t.dockerRecordSha256||stdoutOriginal.sha256!==t.stdoutSha256||stderrOriginal.sha256!==t.stderrSha256||t.stdout!==stdout.slice(0,16000)||t.stderr!==stderr.slice(0,16000)||!t.inputUnchanged||!t.dependenciesUnchanged||canonical(t.sampleSet)!==canonical(sampleSet)||canonical(t.registeredSampleIds)!==canonical(ids)||t.id!==tool.id||canonical(t.argv)!==canonical(tool.argv)||!dockerEvidenceMatches(raw,fixed.plan.executor!,{run:frozen,stage:i,tool:t.id,head:result.H,tree:result.T,planHash:plan.project.testPlanSha256},{...t,dockerExecutionDirectory:'tool-'+i,stdout:stdoutOriginal,stderr:stderrOriginal},tool.timeoutMs))throw new Error('implementation_validation_test_unknown');
+  originals.push({stdoutOriginal,stderrOriginal});
+  if(logSelection&&logSelection.tool===t.id)log=logSelection.stream==='stdout'?out:err;
  }
  if(result.passed!==(result.tools.length===fixed.plan.tools.length&&result.tools.every((t:any)=>t.exitCode===0&&t.status==='completed'&&(!t.sampleSet||t.sampleSet.complete&&t.sampleSet.samples.every((sample:any)=>sample.status==='ok'))))||result.sourceInput.frozenWorkingTreeSha256!==frozen||result.sourceInput.testedCommit!==result.H||result.sourceInput.testedTree!==result.T||result.sourceInput.sourceHeadTree!==await gitRead(plan.workspace,['rev-parse',plan.candidate.H+'^{tree}']))throw new Error('implementation_validation_test_unknown');
  const unexecutedTools=fixed.plan.tools.slice(result.tools.length).map(tool=>tool.id);
  for(let i=result.tools.length;i<fixed.plan.tools.length;i++)if(await exists(join(directory,'tool-'+i))||await exists(join(directory,'output',String(i))))throw new Error('implementation_validation_test_unknown');
- return {result,tested,controllerPid:intent.controllerPid,unexecutedTools};
+ return {result,tested,controllerPid:intent.controllerPid,unexecutedTools,originals,log};
 }
 async function registeredChildrenEnded(directory:string,operation:string,workspace:string,testPlanSha256:string){
  const launch=await exists(join(directory,'launch.json')),processFile=join(directory,'process.json');
@@ -71,11 +80,11 @@ async function registeredChildrenEnded(directory:string,operation:string,workspa
 const issued=new WeakMap<object,string>();
 const closureReady=new WeakMap<object,string>();
 export type ValidationFailureProof={record:Row;initial:Tree;current:Tree;plan:Row;manifest:Row;lease:Row};
-type ValidationReadback=ValidationFailureProof&{readback?:{diff:string;tests:Row}};
+type ValidationReadback=ValidationFailureProof&{readback?:{diff:string;tests:Row};log?:Buffer};
 export function requireValidationFailure(p:ValidationFailureProof){if(issued.get(p)!==hash(canonical(p.record))||treeHash(p.current)!==p.record.treeSha256||treeHash(p.initial)!==p.record.initialTreeSha256)throw new Error('implementation_validation_proof_required');return p.record;}
 /** No current workspace/liveness requirement is needed to read a retained
  * failure. Sending is admitted separately, under the original operation lock. */
-export async function observeValidationFailure(s:Row,projectFilesReadback=false):Promise<ValidationReadback>{
+export async function observeValidationFailure(s:Row,projectFilesReadback=false,logSelection?:ValidationLogSelection):Promise<ValidationReadback>{
  const fixed=s.plan,op=fixed.operationRoot,planBytes=await regular(fixed.path),plan=JSON.parse(planBytes.toString()),initial=await json(join(op,'initial-tree.json')),manifest=await json(join(op,'input-manifest.json')),{inputManifestSha256,...original}=manifest;
  const projectFiles=projectFilesReadback&&fixed.request.workspaceRequest.projectFiles===true&&plan.project?.projectFiles===true;
  if(hash(planBytes)!==fixed.sha256||(!projectFiles&&plan.project?.materialView!=='selected_files')||canonical(manifest.request)!==canonical(fixed.request)||manifest.planSha256!==fixed.sha256||hash(canonical(original))!==inputManifestSha256)throw new Error('implementation_validation_original_changed');
@@ -96,7 +105,7 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false)
  await registeredChildrenEnded(native,op,plan.workspace,plan.project.testPlanSha256);
  await registeredChildrenEnded(join(op,'attempt-1'),op,plan.workspace,plan.project.testPlanSha256);
  const testsDirectory=join(op,'attempt-1/post-repair-1');
- const tests=await readFailedValidationTests(testsDirectory,plan),changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
+ const tests=await readFailedValidationTests(testsDirectory,plan,true,logSelection),changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
  if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
  const calls:Row[]=[];for(const n of await readdir(join(op,'calls'))){if(!n.endsWith('.json'))throw new Error('implementation_validation_calls_unknown');const path=join(op,'calls',n),c=await json(path);if(!c.response||c.status==='write_registered')throw new Error('implementation_validation_calls_unknown');calls.push(c);}
  const pairs=await json(join(native,'reconciled-tools.json'));let expected=structuredClone(initial) as Tree;
@@ -118,9 +127,10 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false)
  if(s.validationFailure&&canonical(s.validationFailure)!==canonical(record))throw new Error('implementation_validation_original_changed');
  const proof={record,initial,current:tests.tested,plan,manifest,lease};
  // Display-only proof never enters the set accepted by correction or closure.
+ if(projectFiles&&logSelection)return {...proof,log:tests.log};
  if(projectFiles)return {...proof,readback:{
   diff:await gitRead(join(testsDirectory,'work'),['diff','--no-ext-diff','--no-textconv','--no-renames','--binary',plan.candidate.H,tests.result.H,'--']),
-  tests:{...projectModelTestResult(tests.result),tools:tests.result.tools.map((tool:Row)=>({id:tool.id,status:tool.status,exitCode:tool.exitCode,stdout:tool.stdout,stderr:tool.stderr})),unexecutedTools:tests.unexecutedTools}
+  tests:{...projectModelTestResult(tests.result),tools:tests.result.tools.map((tool:Row,index:number)=>({id:tool.id,status:tool.status,exitCode:tool.exitCode,stdout:tool.stdout,stderr:tool.stderr,...tests.originals[index]})),unexecutedTools:tests.unexecutedTools}
  }};
  issued.set(proof,hash(canonical(record)));return proof;
 }
