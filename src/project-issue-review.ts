@@ -11,9 +11,11 @@ import {writeFixed} from './project-work-runtime.js';
 import type {AIRuntimeChoice} from './ai-settings.js';
 import type {RepairConfig} from './repair.js';
 
-type ReviewMaterial={work:string;repository:string;issue:{number:number;body:string;bodySha256:string;url:string};goal:string;head:string};
+type ReviewMaterial={work:string;repository:string;issue:{number:number;body:string;bodySha256:string;url:string};goal:string;head:string;
+  integration?:{previousWorkHead:string;base:string;tree:string;target:string;diff:string;registeredTests:unknown;projectRules:Array<{path:string;text:string}>}};
 type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture';verdictProtocol?:1};
-const subject=(m:ReviewMaterial)=>({kind:'local-git' as const,repository:'local/project-issue-review',pr:null,H:m.head,B:m.head,target:'issue-review'});
+const subject=(m:ReviewMaterial)=>({kind:'local-git' as const,repository:m.integration?'local/project-integration-review':'local/project-issue-review',pr:null,
+  H:m.head,B:m.integration?.base??m.head,target:m.integration?.target??'issue-review'});
 const verdictProtocol={PASS:'Return PASS only with an empty coverageGaps and ownerQuestions array and zero priority 0 or 1 findings. Keep transferable nonblocking observations in priority 2 findings, if applicable.',
   REWORK_REQUIRED:'Use for any blocking defect or missing acceptance coverage.',OWNER_DECISION_REQUIRED:'Use for a decision that only the Owner can make. Include at least one concrete owner question.'};
 const envelope=(request:ReviewRequest,peer:unknown)=>{
@@ -101,7 +103,8 @@ export async function readProjectIssueReview(directory:string,material:ReviewMat
 
 export async function runProjectIssueReview(directory:string,material:ReviewMaterial,peer:AIRuntimeChoice,config:RepairConfig,verify:()=>Promise<void>,admit:()=>void,onSession:(session:BoundedCodexSession)=>void,onPeer:(stop:()=>Promise<void>)=>void){
   if(peer.tool!=='kimi')throw new Error('project_issue_review_second_company_required');
-  const source=await readCodingWorkflowSource(),correctness=source.prompt('issue_review_completion'),minimality=source.prompt('issue_review_minimality');
+  const source=await readCodingWorkflowSource(),correctness=source.prompt(material.integration?'pr_review_correctness':'issue_review_completion'),
+    minimality=source.prompt(material.integration?'pr_review_impact':'issue_review_minimality');
   const request:ReviewRequest={material,correctness,minimality,peer,executionKind:config.executionKind??'native_capture',verdictProtocol:1},candidate=subject(material);
   await verify();await privateDirectory(directory,true);await writeFixed(join(directory,'request.json'),canonical(request));
   let gpt:BoundedCodexSession|undefined,kimi:ExtraCliSession|undefined;
@@ -109,7 +112,8 @@ export async function runProjectIssueReview(directory:string,material:ReviewMate
     gpt=await BoundedCodexSession.start({
       executable:config.codexExecutable,directory:join(directory,'correctness'),operation:directory,candidate,role:'reviewer',
       system:correctness.system,inputManifestSha256:hash(canonical(request)),scopeSource:config.scopeSource,
-      arrangementSource:'Read-only formal review of the exact published Issue and its acceptance plan',
+      arrangementSource:material.integration?'Read-only dual review of the local tested combination':
+        'Read-only formal review of the exact published Issue and its acceptance plan',
       disabledMcpServers:config.disabledMcpServers,allowedInstructionSources:config.allowedInstructionSources,
       timeoutMs:config.timeoutMs,executionKind:request.executionKind,beforeTurn:verify,beforeSendSync:admit
     });

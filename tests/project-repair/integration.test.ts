@@ -1026,6 +1026,17 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(combinedInput.candidate.B,nextBase);
      assert.equal(combinedInput.technicalEvidence.combination.implementation,latestReport.H1);
      assert.deepEqual(combinedInput.technicalEvidence.tested.tools,combined.value.tests.tools);
+     const reviewCombination='/api/project-work/'+b+'/integration-review';
+     assert.equal((await post(reviewCombination,{H:latestReport.H1,B:nextBase})).status,503);
+     assert.equal((await post(reviewCombination,{H:combined.value.H,B:nextBase})).status,202);
+     const combinedReview=await until(()=>detail(b),value=>value.integrationReview?.state!=='running'&&!!value.integrationReview);
+     assert.equal(combinedReview.integrationReview.state,'returned',JSON.stringify(combinedReview.integrationReview));
+     assert.equal(combinedReview.integrationReview.approved,true);
+     assert.equal(combinedReview.integrationReview.correctness.exchanged.candidateH,combined.value.H);
+     assert.equal(combinedReview.integrationReview.minimality.exchanged.candidateH,combined.value.H);
+     const openInputs=await readFile(f.trace);
+     assert.equal((await post(reviewCombination,{H:combined.value.H,B:nextBase})).value.state,'returned');
+     assert.deepEqual(await readFile(f.trace),openInputs);
      const badBase=await advanceBase('src/index.mjs','export function normalizeLabel(){ return "changed by upstream"; }\n');
      assert.equal((await post(previewRoute,{H:latestReport.H1,B:badBase})).value.state,'clean');
      const failedCombination=await post(testRoute,{H:latestReport.H1,B:badBase});
@@ -1040,7 +1051,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual((await detail(b)).integrationPreview,conflict.value);
      assert.equal(await git(f.objects,['rev-parse','HEAD']),conflictingBase);
      assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),latestReport.H1);
-     assert.equal((await readFile(f.trace,'utf8')).split('model-input').length,beforePreview.toString().split('model-input').length+1);
+     assert.equal((await readFile(f.trace,'utf8')).split('model-input').length,beforePreview.toString().split('model-input').length+3);
      t.diagnostic(JSON.stringify({integrationTested:combined.value.H,base:nextBase,tree:combined.value.T,
        testTools:combined.value.tests.tools.map((tool:any)=>tool.id),integrationFailed:failedCombination.value.H,failedBase:badBase}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
@@ -2598,6 +2609,14 @@ await controls.drain();
    await writeFile(lock,canonical({...proof.lease,controllerPid:1}));
    assert.equal((await controls.firstInputContinuation('implementation',id)).eligible,false);
    await writeFile(lock,owned);
+   const program=`
+import {readFile} from 'node:fs/promises';
+import {acquireWorkspace} from ${JSON.stringify(new URL('../../src/repair-workspace.js',import.meta.url).href)};
+const plan=JSON.parse(await readFile(${JSON.stringify(before.plan.path)},'utf8'));
+await acquireWorkspace(plan.workspace,${JSON.stringify(operation)},false,JSON.parse(await readFile(plan.grant,'utf8')));
+`;
+   await exec(process.execPath,['--input-type=module','--eval',program],{timeout:30000});
+   assert.equal(await exists(join(operation,'first-input','native')),false);
  }
  await controls.drain();controls=await open();
  assert.deepEqual(await controls.firstInputContinuation('implementation',id),{eligible:true});
@@ -2606,6 +2625,7 @@ await controls.drain();
  const result=records.state('implementation',id);
  assert.equal(result.operation,before.operation);assert.equal(result.requestSha256,before.requestSha256);
  assert.equal(result.firstInputContinuation.proof.dispatchEvent,candidate.dispatchEvent);
+ assert.equal(result.firstInputContinuation.replacementDispatchGuard,'v1');
  assert.deepEqual(await readFile(wirePath),wire);
  assert.deepEqual(await readFile(join(native,'turn-1-intent.json')),originalIntent);
  const trace=await readFile(f.project.trace,'utf8');assert.equal(trace.split('model-input').length-1,1);

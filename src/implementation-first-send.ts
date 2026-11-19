@@ -24,11 +24,12 @@ import {implementationFirstInput} from './implementation-first-input.js';
 import {assertFixedWorkspaceSnapshot} from './implementation-validation.js';
 import type {RepairPlan} from './repair.js';
 type Row=Record<string,any>;
-export type FirstSendProof={record:Row;input:string;baseline:Row|null;manifest:Row;lease:Lease;released:boolean};
+export type FirstSendProof={record:Row;input:string;baseline:Row|null;manifest:Row;lease:Lease;currentLease:Lease|null;released:boolean};
 const issued=new WeakMap<object,string>();
 const intentSnapshots=new WeakMap<FirstSendProof,{plan:RepairPlan;initial:Tree;index:string;nativePid:number;ownController:boolean;allowed:string[];nativeNames:string[];cleanupFiles:Record<string,string>}>();
 const exec=promisify(execFile),readGit=async(workspace:string,args:string[])=>(await exec('/usr/bin/git',['--literal-pathspecs','--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:8*1024*1024})).stdout.trim();
-export function requireFirstSendProof(proof:FirstSendProof){if(issued.get(proof)!==hash(canonical(proof.record))||hash(proof.input)!==proof.record.firstInputSha256||hash(canonical(proof.baseline))!==proof.record.baselineCanonicalSha256||hash(canonical(proof.manifest))!==proof.record.manifestCanonicalSha256)throw new Error('implementation_first_send_proof_required');return proof.record;}
+const proofDigest=(proof:FirstSendProof)=>hash(canonical({record:proof.record,lease:proof.lease,currentLease:proof.currentLease,released:proof.released}));
+export function requireFirstSendProof(proof:FirstSendProof){if(issued.get(proof)!==proofDigest(proof)||hash(proof.input)!==proof.record.firstInputSha256||hash(canonical(proof.baseline))!==proof.record.baselineCanonicalSha256||hash(canonical(proof.manifest))!==proof.record.manifestCanonicalSha256)throw new Error('implementation_first_send_proof_required');return proof.record;}
 const json=async(path:string)=>JSON.parse((await regular(path,24*1024*1024)).toString());
 const frames=(b:Buffer)=>{if(!b.length||b.at(-1)!==10)throw new Error('implementation_metadata_partial_frame');return new TextDecoder('utf8',{fatal:true}).decode(b).trim().split('\n').map(l=>JSON.parse(l));};
 async function readFirstSendMaterial(fixed:Row){
@@ -69,6 +70,11 @@ export async function readFirstSendBaseline(fixed:Row){
 function controllerEnded(lease:Lease,ownController:boolean){
   return processState(lease.controllerPid)==='ended'||ownController&&lease.controllerPid===process.pid;
 }
+function fixedLease(lease:unknown,operation:string):lease is Lease{
+  const l=lease as Lease;
+  return exactKeys(l,['operation','controllerPid','generation','status'])&&l.operation===operation&&l.status==='held'&&
+    Number.isSafeInteger(l.controllerPid)&&l.controllerPid>0&&typeof l.generation==='string'&&/^[a-f0-9-]{36}$/.test(l.generation);
+}
 
 /** Verify metadata and the complete transported prefix, then bind the exact
  * original dispatch. A prepared request in the contract is not a wire frame. */
@@ -79,10 +85,10 @@ export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownContr
     ? {...await readFirstSendMaterial(fixed),baseline:null,directory:null,controllerPid:null,input:null}
     : await readFirstSendBaseline(fixed);
   const {plan,initial,manifest,grant}=data,lock=join(plan.workspace,'.git/tongxu-writer.json');
-  const released=!!checkpoint&&!await exists(lock);
-  const lease=(released?checkpoint!.proof?.lease:await json(lock)) as Lease,cleanupFiles:Record<string,string>={};
-  if(!exactKeys(lease,['operation','controllerPid','generation','status'])||lease.operation!==op||lease.status!=='held'||
-     typeof lease.generation!=='string'||!/^[a-f0-9-]{36}$/.test(lease.generation)||
+  const currentLease=await exists(lock)?await json(lock) as Lease:null;
+  const lease=checkpoint?checkpoint.proof?.lease:currentLease,cleanupFiles:Record<string,string>={};
+  const released=!!checkpoint&&canonical(currentLease)!==canonical(lease);
+  if(!fixedLease(lease,op)||
      data.controllerPid!==null&&lease.controllerPid!==data.controllerPid||
      !controllerEnded(lease,hasIntent&&ownController))throw new Error('implementation_original_controller_active_or_unknown');
   const handoffName='handoff-'+lease.generation+'-1.json',failure=await exists(join(op,'failure.json'));
@@ -94,15 +100,35 @@ export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownContr
     const releaseName=lease.generation+'-released.json',lockName=lease.generation+'-lock.json';
     const outcome=hasIntent?'verified_unstarted_dispatch':'verified_unstarted_metadata';
     const names=await exists(history)?(await readdir(history)).sort():[];
-    if(released&&canonical(names)!==canonical([lockName,releaseName].sort())||
-       !released&&names.length&&canonical(names)!==canonical([releaseName]))throw new Error('implementation_first_send_checkpoint_changed');
-    for(const name of names){
+    const earlier=names.filter(name=>name.startsWith(lease.generation+'-'));
+    if(released&&canonical(earlier)!==canonical([lockName,releaseName].sort())||
+       !released&&names.length&&canonical(names)!==canonical([releaseName])||
+       currentLease&&released&&(checkpoint.replacementDispatchGuard!=='v1'||!fixedLease(currentLease,op)||
+         !await exists(followup)||processState(currentLease.controllerPid)!=='ended'))throw new Error('implementation_first_send_checkpoint_changed');
+    const readHistory=async(name:string)=>{
       const bytes=await regular(join(history,name)),value=JSON.parse(bytes.toString());
+      cleanupFiles[join(history,name)]=hash(bytes);
+      return value;
+    };
+    for(const name of earlier){
+      const value=await readHistory(name);
       if(name===lockName?canonical(value)!==canonical(lease):
          canonical(value.lease)!==canonical(lease)||value.outcome!==outcome||!Number.isFinite(Date.parse(value.at)))
         throw new Error('implementation_first_send_checkpoint_changed');
-      cleanupFiles[join(history,name)]=hash(bytes);
     }
+    const successorNames=names.filter(name=>!earlier.includes(name));
+    for(const name of successorNames.filter(name=>name.endsWith('-released.json'))){
+      const value=await readHistory(name),next=value.lease;
+      if(checkpoint.replacementDispatchGuard!=='v1'||!fixedLease(next,op)||name!==next.generation+'-released.json'||
+         value.outcome!=='verified_unstarted_replacement'||!Number.isFinite(Date.parse(value.at)))
+        throw new Error('implementation_first_send_checkpoint_changed');
+      const afterName=next.generation+'-lock.json';
+      if(next.generation===currentLease?.generation&&!successorNames.includes(afterName)){
+        if(canonical(next)!==canonical(currentLease))throw new Error('implementation_first_send_checkpoint_changed');
+      }else if(!successorNames.includes(afterName)||canonical(await readHistory(afterName))!==canonical(next))
+        throw new Error('implementation_first_send_checkpoint_changed');
+    }
+    if(Object.keys(cleanupFiles).length!==names.length)throw new Error('implementation_first_send_checkpoint_changed');
   }
   const allowed=['attempt-1','implementer','initial-tree.json','input-manifest.json',...(failure?['failure.json']:[]),...(hasIntent?[handoffName]:[]),
     ...(checkpoint&&await exists(history)?['ownership-history']:[]),...(checkpoint&&await exists(followup)?['first-input']:[])].sort();
@@ -185,8 +211,8 @@ export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownContr
   if(input===null)throw new Error('implementation_first_send_input_possible');
   const record={schemaVersion:1,dispatchEvent,operationRoot:op,requestSha256:hash(canonical(fixed.request)),planSha256:fixed.sha256,inputManifestSha256:manifest.inputManifestSha256,baselineDirectory:data.directory,baselineResultSha256:data.directory?hash(await regular(join(data.directory,'result.json'))):null,baselineCanonicalSha256:hash(canonical(data.baseline)),manifestCanonicalSha256:hash(canonical(manifest)),firstInputSha256:hash(input),nativeDirectory:join(op,'first-input','native'),lease,files,...(hasIntent?{dispatchIntentSha256:files['operation/implementer/turn-1-intent.json']}: {})};
   if(checkpoint&&canonical(checkpoint.proof)!==canonical(record))throw new Error('implementation_first_send_checkpoint_changed');
-  const proof={record,input,baseline:data.baseline,manifest,lease,released};
-  issued.set(proof,hash(canonical(record)));
+  const proof={record,input,baseline:data.baseline,manifest,lease,currentLease,released};
+  issued.set(proof,proofDigest(proof));
   if(hasIntent||checkpoint)intentSnapshots.set(proof,{plan,initial,index,nativePid:processRecord.pid,ownController,allowed,nativeNames:nativeNames.sort(),cleanupFiles});
   await checkFirstSendFiles(proof,root);
   assertFirstSendCurrent(proof,root);
@@ -211,7 +237,9 @@ export function assertFirstSendCurrent(proof:FirstSendProof,root:string,expected
   if(allowed.includes('ownership-history')&&canonical(readdirSync(join(op,'ownership-history')).sort())!==
      canonical(Object.keys(cleanupFiles).map(path=>path.split('/').at(-1)).sort()))throw new Error('implementation_first_send_checkpoint_changed');
   for(const [path,sha] of Object.entries(cleanupFiles))if(hash(readFileSync(path))!==sha)throw new Error('implementation_first_send_checkpoint_changed');
-  assertFixedWorkspaceSnapshot(plan.workspace,plan.candidate.H,initial,index,proof.released?null:proof.lease);
+  if(proof.released&&proof.currentLease&&processState(proof.currentLease.controllerPid)!=='ended')
+    throw new Error('implementation_first_send_checkpoint_changed');
+  assertFixedWorkspaceSnapshot(plan.workspace,plan.candidate.H,initial,index,proof.currentLease);
   const gitRefs=execFileSync('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',
     '-C',plan.workspace,'rev-parse','--symbolic-full-name','HEAD'],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:4096,encoding:'utf8'}).trim();
   const base=execFileSync('/usr/bin/git',['--no-replace-objects','-C',plan.workspace,'rev-parse','refs/heads/project-base'],

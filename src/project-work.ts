@@ -239,11 +239,13 @@ export class ProjectWork{
     }
     const resultStatus=this.resultStatus(draft,result),preview=resultStatus.current?this.integrationInput(scope,draft):null;
     const integrationValidation=preview?await readWorkIntegrationValidation(this.integrationDirectory(draft,preview),preview):null;
+    const integrationReview=preview&&integrationValidation?.state==='tested'?
+      await this.integrationReviewState(draft,preview,integrationValidation):null;
     const explanationHead=integrationValidation?.state==='tested'?integrationValidation.H:draft.delivery?.H;
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
       resultStatus,
       ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview),
-        integrationValidation}:{}),
+        integrationValidation,integrationReview}:{}),
       ...(explanationHead?{explanationHead,explanation:this.explanations.has(draft.id+':'+explanationHead)
         ?{state:'running',H:explanationHead}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+explanationHead),draft.id,explanationHead)}:{}),
@@ -258,6 +260,62 @@ export class ProjectWork{
   }
   private integrationDirectory(d:ProjectWorkDraft,input:WorkIntegrationPreviewInput){
     return join(this.directory(d),'integration-preview-'+hash(canonical(input)).slice(0,32));
+  }
+  private async integrationReviewMaterial(d:ProjectWorkDraft,input:WorkIntegrationPreviewInput,
+    tested:NonNullable<Awaited<ReturnType<typeof readWorkIntegrationValidation>>>){
+    if(tested.state!=='tested')throw new Error('project_work_integration_review_evidence_required');
+    const directory=this.integrationDirectory(d,input),workspace=join(directory,'validation','worktree');
+    const diff=await gitReadOnly(workspace,['diff','--no-ext-diff','--no-textconv',input.B,tested.H,'--']);
+    const projectRules=[];
+    for(const path of ['AGENTS.md','SOP.md'])if(await exists(join(workspace,path)))
+      projectRules.push({path,text:(await regular(join(workspace,path),128*1024)).toString()});
+    const material={work:d.id,repository:input.repository,issue:{number:d.issue.number,body:d.issue.body,
+      bodySha256:d.issue.bodySha256,url:d.issue.url},goal:d.goal,head:tested.H,
+      integration:{previousWorkHead:input.H,base:input.B,tree:tested.T,target:input.target,diff,registeredTests:tested.tests,projectRules}};
+    if(Buffer.byteLength(canonical(material))>2*1024*1024)throw new Error('formal_complete_material_limit');
+    return material;
+  }
+  private async integrationReviewState(d:ProjectWorkDraft,input:WorkIntegrationPreviewInput,
+    tested:NonNullable<Awaited<ReturnType<typeof readWorkIntegrationValidation>>>){
+    const directory=join(this.integrationDirectory(d,input),'dual-review');
+    if(this.issueReviews.has(directory))return {state:'running',H:tested.state==='tested'?tested.H:null};
+    if(!await exists(directory))return null;
+    return readProjectIssueReview(directory,await this.integrationReviewMaterial(d,input,tested));
+  }
+  async reviewIntegration(scope:ProjectChatScope,id:string,b:unknown){
+    const d=this.store.get(scope,id),input=this.integrationInput(scope,d),body=b as Row;
+    if(!exactKeys(body,['H','B'])||!input||input.B!==body.B||d.stopRequested)throw new Error('project_work_integration_preview_changed');
+    const parent=this.integrationDirectory(d,input),directory=join(parent,'dual-review');
+    const tested=await readWorkIntegrationValidation(parent,input);
+    if(tested?.state!=='tested'||tested.H!==body.H)throw new Error('project_work_integration_review_evidence_required');
+    const current=await this.integrationReviewState(d,input,tested);
+    if(current)return current;
+    const peer=currentAIChoice('verifier_impact');
+    if(peer?.tool!=='kimi'||peer.project.repository!==scope.repository.id||peer.project.account!==scope.account.id||peer.project.nodeId!==scope.repository.nodeId)
+      throw new Error('project_issue_review_second_company_required');
+    const material=await this.integrationReviewMaterial(d,input,tested);
+    const job:Job={stop:false,promise:Promise.resolve(),ownerWork:id};
+    const admit=()=>{
+      const active=this.store.get(scope,id);
+      if(!this.accepting||job.stop||active.stopRequested||active.version!==d.version||active.delivery?.H!==input.H)
+        throw new Error('project_work_integration_preview_changed');
+    };
+    const check=async()=>{
+      admit();await this.verify(scope);
+      const issue=await this.readIssue(scope,d.issue.number);
+      if((issue.defaultHead??scope.repository.defaultHead)!==input.B||hash(issue.body)!==d.issue.bodySha256||
+         !this.resultStatus(d,await this.implementationState(scope,d)).current||
+         canonical(await readWorkIntegrationValidation(parent,input))!==canonical(tested))
+        throw new Error('project_work_integration_review_evidence_required');
+      admit();
+    };
+    await check();
+    if(this.issueReviews.has(directory))return {state:'running',H:tested.H};
+    this.issueReviews.set(directory,job);
+    job.promise=(async()=>runProjectIssueReview(directory,material,peer,await this.executor(),check,admit,
+      session=>{job.session=session;},stop=>{job.stopPeer=stop;}))().catch(()=>{/* Preserve the original request and native reports. */})
+      .finally(()=>this.issueReviews.delete(directory));
+    return {state:'running',H:tested.H};
   }
   async integrationPreview(scope:ProjectChatScope,id:string,b:unknown,validate=false){
     const d=this.store.get(scope,id),input=this.integrationInput(scope,d),body=b as Row;

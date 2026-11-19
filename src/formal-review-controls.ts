@@ -87,6 +87,10 @@ export class FormalReviewControls{
        (await this.currentView(selected)).terminal?.result.status!=='pass')continue;
     const report=q.status().items.find((item:Row)=>item.id===selected.item);
     if(!report?.summary.evidenceComplete||!report.summary.reportId)continue;
+    const tree=await git(selected.request.project.objects,['rev-parse',runtimeHead+'^{tree}']);
+    if(report.summary.tree!==tree||!selected.request.material.sourceEvidence?.candidateMaterial?.some((original:Row)=>
+       original.item===selected.item&&original.summary?.evidenceComplete===true&&
+       original.summary.reportId===report.summary.reportId&&original.summary.tree===tree))continue;
     const live=await this.read(entry,source),expected=selected.request.candidate;
     if(live.candidate.H!==expected.H||live.candidate.B!==expected.B||live.candidate.target!==expected.target||
        live.candidate.repository!==expected.repository||live.candidate.pr!==expected.pr||

@@ -150,7 +150,21 @@ function renderProjectWork(){
           section.append(el('p','组合提交 '+validation.H+' 通过本工作登记的测试。','small'));
           const review=d.detail.integrationFormalWork;
           if(review)section.append(formalReviewPanel(review.source,review));
-          else section.append(el('p','等候与此组合提交、基线和要求匹配的正式审查。','small'));
+          else{
+            const localReview=d.detail.integrationReview;
+            if(localReview?.state==='returned'){
+              section.append(el('p',localReview.approved?'两家公司已交换并通过该组合的变更审查。':'该组合的变更仍待返工或确认。','small'));
+              for(const [company,seat] of [['OpenAI',localReview.correctness],['Moonshot',localReview.minimality]]){
+                section.append(append(el('details',null,'panel'),el('summary',company+' · '+seat.exchanged.verdict),
+                  el('p',seat.initial.report,'chat-text'),el('p',seat.exchanged.report,'chat-text')));
+              }
+            }else if(localReview)section.append(el('p',localReview.state==='running'?'正在审查该组合的变更。':'该组合的原审查记录待核。','small'));
+            else if(!item.stopRequested){
+              const start=el('button','对组合变更发起双公司审查','outline');start.disabled=d.pending;
+              start.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-review',{H:validation.H,B:validation.B}));
+              section.append(start);
+            }
+          }
         }
         else if(validation?.state==='failed')section.append(el('p','组合提交 '+validation.H+' 的登记测试失败。','github-error'));
         else if(validation)section.append(el('p','本次组合验证的原始结果待核。','small'));

@@ -303,9 +303,19 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
       read:async(scope,target,compiled,text,receivedId)=>{
         const original=()=>openImplementation(scope).then(controls=>controls.readSupplement(target,compiled,text,receivedId));
-        const compiledState=compiled?await original():null;
+        let compiledProblem:Error|undefined;
+        const compiledState=compiled?await original().catch(error=>{
+          if(!(error instanceof Error)||error.message!=='implementation_validation_capture_changed')throw error;
+          compiledProblem=error;return null;
+        }):null;
         if(compiledState&&!compiledState.endedRepair&&!compiledState.resumable)return compiledState;
         const repair=await formalForSupplement(scope,target,receivedId,text,compiledState?.endedRepair?.operation);
+        if(compiledProblem){
+          if(!repair?.delivered)throw compiledProblem;
+          return {...repair,ready:false,resumable:false,successful:false,coveringCandidate:null,
+            originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
+            reason:compiledProblem.message};
+        }
         if(!repair||compiled&&!repair.delivered)return compiledState??original();
         if(repair.adopted)return repair;
         const pending=compiledState??await original().catch(()=>null);
@@ -436,7 +446,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           }else json(res,404,{error:'route_not_found'});
           return;
         }
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|reconcile-validation|recheck|restart-failure|explain|review-issue|integration-preview|integration-verify)$/.exec(url.pathname);
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|reconcile-validation|recheck|restart-failure|explain|review-issue|integration-preview|integration-verify|integration-review)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create','/api/project-work/draft-issue'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
@@ -461,6 +471,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           json(res,200,await controls.reconcileValidation(draft.source,request));
         }
         else if(action?.[2]==='integration-preview'||action?.[2]==='integration-verify')json(res,200,await work.integrationPreview(selection,action[1]!,body,action[2]==='integration-verify'));
+        else if(action?.[2]==='integration-review'){
+          if(p.formalReview){
+            const result=await work.detail(selection,action[1]!),context=await projectPlan(selection),ref=context.plan.formalReview;
+            if(ref&&result.integrationValidation?.state==='tested'){
+              const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+              const original=await formal.forWork(result.draft.issue,result.integrationValidation.H);
+              if(original?.candidate.B===result.integrationValidation.B)throw new Error('project_work_integration_use_original_review');
+            }
+          }
+          json(res,202,await withAI(()=>work.reviewIntegration(selection,action[1]!,body)));
+        }
         else if(action?.[2]==='explain')json(res,202,await work.explain(selection,action[1]!,body));
         else if(action?.[2]==='receive'){
           const exact=exactKeys(body,['H','requestId'])&&typeof body.H==='string'&&/^[a-f0-9]{40}$/.test(body.H)&&typeof body.requestId==='string';

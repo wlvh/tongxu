@@ -205,9 +205,11 @@ export class ExtraCliSession{
     const paths:string[]=[];if(existsSync(join(home,'sessions')))for(const entry of readdirSync(join(home,'sessions'),{withFileTypes:true})){if(entry.isDirectory()){const p=join(home,'sessions',entry.name,id,'agents/main/wire.jsonl');if(existsSync(p))paths.push(p);}}
     if(!paths.length&&allowPending)return false;
     if(paths.length!==1)throw Error('external_cli_readonly_profile_missing');const raw=readFileSync(paths[0]!);if(raw.length>16*1024*1024)throw Error('external_cli_profile_limit');
-    const rows=raw.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)),profile=rows.filter(r=>r.type==='profile.bind'&&r.agentId==='main').at(-1);
+    const rows=raw.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)),profiles=rows.filter(r=>r.type==='profile.bind'),profile=profiles.at(-1);
     if(!profile&&allowPending)return false;
-    if(!profile||profile.systemPrompt?.trim()!==this.system.trim()||!Array.isArray(profile.activeToolNames)||profile.activeToolNames.length||!Array.isArray(profile.subagents)||profile.subagents.length||!Array.isArray(profile.agentsMdPaths)||profile.agentsMdPaths.length)throw Error('external_cli_readonly_profile_missing');
+    if(!profile||profiles.some(p=>p.agentId!=='main'||p.systemPrompt?.trim()!==this.system.trim()||
+       !Array.isArray(p.activeToolNames)||p.activeToolNames.length||!Array.isArray(p.subagents)||p.subagents.length||
+       !Array.isArray(p.agentsMdPaths)||p.agentsMdPaths.length))throw Error('external_cli_readonly_profile_missing');
     save(join(this.directory,'profile-observed.json'),{source:paths[0],profileName:profile.profileName,systemPromptSha256:hash(profile.systemPrompt.trim()),activeToolNames:profile.activeToolNames,subagents:profile.subagents,agentsMdPaths:profile.agentsMdPaths,modelAlias:profile.modelAlias,thinkingEffort:profile.thinkingEffort});
     if(this.choice&&(profile.modelAlias!==this.choice.model||this.choice.effort!==null&&profile.thinkingEffort!==this.choice.effort))throw Error('ai_selected_model_not_applied');
     return true;
