@@ -11,7 +11,8 @@ import {discoverAIEntries,inspectAIProvider,requireModelChoice,validateModelChoi
 import {selectExternalExecutable} from './external-executable.js';
 import {externalExecutableFamily} from './external-executable.js';
 import type {MessageParticipant} from './message-contract.js';
-import {assembleRolePrompt} from './role-prompts.js';
+import {assembleRolePrompt, upstreamRevision} from './role-prompts.js';
+import {readCodingWorkflowSource} from './coding-workflow-source.js';
 
 export const aiRoles=[
   {id:'secretary',name:'工作秘书',need:'scopedTools',description:'读取项目原报告，或协调用户明确选定的已审定工作'},
@@ -92,6 +93,16 @@ export class AISettings{
   }
   state(scope:AISettingsScope){return {defaults:{secretary:this.defaultSecretary()},roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
   async prompt(role:string){if(!aiRoles.some(r=>r.id===role))throw new Error('ai_role_not_found');return {role,assembly:await assembleRolePrompt(role as AIRole),meaning:'当前公共边界、角色与固定上游提示全文。每次实际执行还会加入该任务的材料、工具和输出要求，并随原运行保存；此处不是某次历史运行的完整输入。',modelInputs:0};}
+  async workflow(use?: string) {
+    const {prompt, ...source} = await readCodingWorkflowSource();
+    return {
+      activeRevision: upstreamRevision,
+      candidate: source,
+      status: 'controls_pending',
+      ...(use ? {assembly: prompt(use)} : {}),
+      modelInputs: 0,
+    };
+  }
   async scan(scope:AISettingsScope){if(!this.scanning){this.scanning=(async()=>{const entries=await discoverAIEntries(this.config.configured),out:AIProvider[]=[];for(const entry of entries){const directory=join(this.config.root,'discovery',randomUUID());await mkdir(join(this.config.root,'discovery'),{recursive:true,mode:0o700});out.push(await this.probe(entry.tool,entry.path,directory,this.config.disabledMcpServers));}for(const tool of additionalPrograms)if(!entries.some(e=>e.tool===tool))out.push({id:'missing-'+tool,tool,path:'',installed:false,version:null,available:false,reason:'ai_program_not_installed',authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:''});this.db.prepare('INSERT INTO catalogs(observed,body) VALUES (?,?)').run(new Date().toISOString(),canonical(out));return out;})().finally(()=>{this.scanning=undefined;});}await this.scanning;return this.state(scope);}
   async change(scope:AISettingsScope,body:unknown){
     const b=body as any;if(!exactKeys(b,['revision','role','choice'])||!Number.isSafeInteger(b.revision)||b.revision<0||!aiRoles.some(r=>r.id===b.role)||!(b.choice===null||exactKeys(b.choice,['providerId','model','effort'])&&typeof b.choice.providerId==='string'))throw new Error('ai_settings_request_invalid');

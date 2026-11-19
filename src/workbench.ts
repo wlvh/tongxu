@@ -384,6 +384,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       }
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');
+        const workflow=/^\/api\/ai-settings\/workflow(?:\/([a-z_]+))?$/.exec(url.pathname);
+        if(req.method==='GET'&&workflow){json(res,200,await ai.workflow(workflow[1]));return;}
         const prompt=/^\/api\/ai-settings\/prompts\/([a-z_]+)$/.exec(url.pathname);if(req.method==='GET'&&prompt){json(res,200,await ai.prompt(prompt[1]!));return;}
         if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
         if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}

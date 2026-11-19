@@ -135,6 +135,26 @@ test('each AI setting exposes a usable destination and complete role policy with
   assert.equal((await f.get('/api/ai-settings/prompts/not_a_role')).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
 });
 
+test('the project workbench exposes the fixed candidate and ordered source without activating it', async t => {
+  const f = await fixture(t);
+  const result = await f.get('/api/ai-settings/workflow/pr_review_correctness');
+  assert.equal(result.status, 200);
+  const {activeRevision, candidate, assembly, status, modelInputs} = result.data;
+  assert.equal(activeRevision, '1772cd2c25bfc42b7a89cf38b35bf19d3dc22000');
+  assert.equal(candidate.identity.revision, '11cf57b34698e6f7b38ee73468e84103cde8f963');
+  assert.equal(candidate.identity.executionContract, 'coding-loop-v2');
+  assert.equal(candidate.sources.length, 15);
+  assert.equal(status, 'controls_pending');
+  assert.equal(modelInputs, 0);
+  assert.deepEqual(assembly.parts.map((p: {path: string}) => p.path), [
+    'zh/prompts/pr_review_system.md', 'zh/prompts/pr_review_correctness.md',
+  ]);
+  assert.equal(assembly.system, assembly.parts.map((p: {text: string}) => p.text).join('\n\n'));
+  assert.equal(assembly.sha256, hash(assembly.system));
+  assert.equal((await f.get('/api/ai-settings/workflow/unknown_use')).status, 503);
+  assert.equal((await f.logs()).filter(x => x.kind === 'input').length, 0);
+});
+
 test('the visible wait limit interrupts the exact owned turn, records timeout rather than user stop, and never repeats input',async t=>{
   const f=await fixture(t,'timeout'),q=question('明确超时样例');assert.equal((await f.get('/api/project-secretary')).data.timeoutMs,1000);
   await f.post('/api/project-secretary/ask',q);const result=await f.wait(q.conversationId,m=>m[0]?.status==='failed'&&!m[0]?.owned);

@@ -20,4 +20,8 @@
 
 固定参考 `wlvh/coding-workflow@1772cd2c25bfc42b7a89cf38b35bf19d3dc22000`：Issue固化读 `zh/prompts/issue_agent.md`；正式审查读完整 `zh/prompts/pr_review_system.md`；循环读 `zh/docs/development_workflow/README.md`。不静默追随main，不以本地摘要替代失败的上游读取；目标有效政策按其范围优先核验。
 
+### 编程工作流 v2 候选来源
+
+在项目工作台的「AI 与角色设置」选择「查看编程工作流来源」，可核对当前提示来源和 `11cf57b34698e6f7b38ee73468e84103cde8f963` 候选的源包摘要、角色文件顺序与工程负责人提示全文。候选使用上游索引、README、采用说明和角色提示原件。候选原件独立存放在 `workflow-candidates/`。缺件、越界路径、未知协议或源包摘要不符时，来源核对失败，现行工作台仍可启动。该入口只读，项目执行目前沿用上段所列来源。仓库开发政策及其适用范围见 [AGENTS.md](../AGENTS.md)。
+
 结果保留自然语言与原证据；机器关联role/run/candidate/S/r/判断ID，不能代替语义正确。秘书只报操作与跟进；作者是交付建议，审核是代码判断，接收是当前组合判断，用户接受是成果选择。表现实测不自动扩大委托。
