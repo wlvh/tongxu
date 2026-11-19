@@ -19,7 +19,7 @@ const uses = [
   'finding_verification_impact', 'integration_acceptance', 'delivery_explanation',
 ] as const;
 export type CodingWorkflowUse = typeof uses[number];
-const includedSource = fileURLToPath(new URL(`../../prompts/upstream/${revision}`, import.meta.url));
+const includedSource = fileURLToPath(new URL(`../../workflow-candidates/${revision}`, import.meta.url));
 
 function parseIndex(text: string) {
   let index;
@@ -51,9 +51,14 @@ function parseIndex(text: string) {
 
 async function readSource(root: string, path: string) {
   const raw = await regular(join(root, path), 128 * 1024).catch(() => {
-    throw new Error(`coding_workflow_source_unavailable:${path}`);
+    throw new Error('coding_workflow_source_unavailable');
   });
-  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
+  } catch {
+    throw new Error('coding_workflow_source_invalid');
+  }
   if (!text.trim() || text.includes('\0')) throw new Error('coding_workflow_source_invalid');
   return { path, sha256: hash(raw), bytes: raw.length, text };
 }

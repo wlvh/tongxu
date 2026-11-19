@@ -47,7 +47,21 @@ async function openCodingWorkflowSource(){
     const link=(name,revision,path)=>{const a=el('a',name+' '+revision.slice(0,7));a.href=upstream+revision+'/'+path;a.target='_blank';a.rel='noopener noreferrer';return a;};
     $('report-meta').replaceChildren(link('当前提示来源',activeRevision,candidate.entrypoint),document.createTextNode(' · '),link('候选来源',identity.revision,candidate.entrypoint),document.createTextNode(' · '),link('采用说明',identity.revision,candidate.adoption));
     $('report-body').textContent='候选来源校验通过。配套执行尚待接入。\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
-  }catch(e){if(nonce===reportNonce){$('report-meta').textContent='来源核对未完成';$('report-body').textContent=aiError(e);}}
+  }catch(e){
+    if(nonce!==reportNonce||!$('report-dialog').open)return;
+    const reasons={
+      coding_workflow_source_unavailable:'候选源文件缺失、不可读取或不是受支持的普通文件。',
+      coding_workflow_source_digest_mismatch:'候选源文件与固定提交的摘要不一致。',
+      coding_workflow_source_invalid:'候选源文件内容无效。',
+      coding_workflow_index_invalid:'候选源索引无法解析。',
+      coding_workflow_index_unsupported:'候选源索引的格式或执行契约不受支持。',
+      coding_workflow_uses_mismatch:'候选源索引缺少所需角色或包含未知角色。',
+      coding_workflow_use_invalid:'候选源索引中的角色配置无效。',
+      coding_workflow_source_path_invalid:'候选源索引包含无效文件路径。',
+    };
+    $('report-meta').textContent='来源核对未完成';
+    $('report-body').textContent=reasons[e.message]||aiError(e);
+  }
 }
 function renderAISettings(){
   renderGithub();const page=aiPage(),root=el('div',null,'ai-settings');root.append(intro('AI 与角色设置','为 '+gh.selected.fullName+' 的不同角色选择调用程序、模型与推理强度。调用程序是本机的 Codex CLI、Claude Code CLI、Kimi Code CLI、Gemini CLI、OpenCode 等入口，负责发送问题和收取回答。'));

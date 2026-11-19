@@ -12,7 +12,7 @@ test('coding workflow source rejects missing, edited, unsupported and escaping i
   const f = await setup(t);
   const source = await readCodingWorkflowSource();
   const root = join(f.root, 'workflow');
-  await cp(fileURLToPath(new URL(`../../../prompts/upstream/${source.identity.revision}/`, import.meta.url)), root, {recursive: true});
+  await cp(fileURLToPath(new URL(`../../../workflow-candidates/${source.identity.revision}/`, import.meta.url)), root, {recursive: true});
   const path = join(root, 'zh/prompts/engineering_owner.md');
   const original = await readFile(path);
   await writeFile(path, 'Replaced source text');
@@ -26,6 +26,10 @@ test('coding workflow source rejects missing, edited, unsupported and escaping i
 
   const indexPath = join(root, 'zh/prompts/coding_workflow.json');
   const indexSource = await readFile(indexPath, 'utf8');
+  await rm(indexPath);
+  await assert.rejects(readCodingWorkflowSource(root), {message: 'coding_workflow_source_unavailable'});
+  await writeFile(indexPath, indexSource + '\n');
+  await assert.rejects(readCodingWorkflowSource(root), {message: 'coding_workflow_source_digest_mismatch'});
   const index = JSON.parse(indexSource);
   await writeFile(indexPath, JSON.stringify({...index, executionContract: 'future-contract'}));
   await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_index_unsupported/);
