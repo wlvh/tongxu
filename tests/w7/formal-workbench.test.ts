@@ -8,9 +8,115 @@ import {hash} from '../../src/snapshot.js';
 import type {AIProvider} from '../../src/ai-catalog.js';
 import {canonical} from '../../src/comparison.js';
 import {git} from '../../src/repair-workspace.js';
+import {additionalFixture} from './additional-cli-fixture.js';
 async function page(t:test.TestContext){const f=await formalFixture(t),path=join(f.root,'formal-workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Explicit formal review fixture',goal:'Protocol fixture; no real remote or model',sources:f.sources.map(s=>({...s,title:'Explicit PR #1'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path,undefined,{formalSourceReader:async()=>f.live});let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};t.after(close);const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1)},get=(p:string)=>fetch(url.origin+p,{headers}),post=(p:string,body:unknown,origin=url.origin)=>fetch(url.origin+p,{method:'POST',headers:{...headers,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {...f,path,app,url,get,post,close};}
 test('normal workbench freezes the complete formal input, executes one direct PASS, reads full originals and cold-reopens with zero extra inputs',async t=>{const f=await page(t),route='/api/formal-review/'+f.entry.id;const html=await(await fetch(f.url.origin+'/')).text();assert.match(html,/src="\/formal-review.js"/);assert.equal((await fetch(f.url.origin+'/formal-review.js')).status,200);assert.equal((await(await f.get('/api/state')).json() as any).mode,'bounded_formal_review');assert.equal((await f.calls()).length,0);assert.equal((await f.post(route+'/prepare',{requestId:'wrong-origin'},'http://other.invalid')).status,403);assert.equal((await f.post(route+'/prepare',{requestId:'bad-path',path:'/not-permitted'})).status,503);const p=await(await f.post(route+'/prepare',{requestId:'normal-page'})).json() as any;assert.ok(p.operation,JSON.stringify(p));assert.equal((await f.calls()).length,0);assert.equal((await f.post(route+'/start',{operation:p.operation})).status,202);
  let s:any;for(let i=0;i<300;i++){s=await(await f.get('/api/formal-review')).json();if(!s.entries[0].requests[0].controllerActive)break;await new Promise(r=>setTimeout(r,20));}assert.equal(s.entries[0].requests[0].phase,'pass',JSON.stringify(s));const r=await(await f.get('/api/formal-review-report/'+f.entry.id+'/'+p.operation)).json() as any;assert.equal(r.fullStages[0].result.verdict,'PASS');assert.equal((await(await f.get('/api/state')).json() as any).tasks[0].operations.length,0);assert.equal(r.material.localRepairScopeDoesNotLimitReview,true);assert.deepEqual(r.material.changedPaths.sort(),['AGENTS.md','SOP.md','sample.js','test.mjs']);assert.equal((await f.calls()).length,1);await f.close();const cold=await startWorkbench(f.path,undefined,{formalSourceReader:async()=>{throw new Error('read_must_not_query_live_source');}});t.after(()=>cold.close());const u=new URL(cold.url),before=await f.calls(),restored=await(await fetch(u.origin+'/api/formal-review-report/'+f.entry.id+'/'+p.operation,{headers:{Authorization:'Bearer '+u.hash.slice(1)}})).json() as any;assert.deepEqual(restored.fullStages,r.fullStages);assert.deepEqual(await f.calls(),before);
+});
+
+for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
+ const f=await formalFixture(t,mode==='fix'?'confirmed':'pass'),peer=await additionalFixture(t,'kimi');
+ const codex=await readFile(f.n.config.codexExecutable,'utf8');
+ await writeFile(f.n.config.codexExecutable,codex.replace("context.candidate??=context.material.candidate;","context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';"));
+ const peerCode=await readFile(peer.binary,'utf8');
+ const source="if(responseKind==='message')output={messageId:envelope.messageId,consumed:envelope.replyReferences,report:'Explicit '+tool+' fixture complete material report '+turn};";
+ const replacement="if(responseKind==='message')output=envelope.batch?{candidateH:envelope.material.candidate.H,batchSha256:envelope.batch.sha256,report:'Independent fixture impact verification',assessments:envelope.batch.findings.map(f=>({id:f.id,decision:'confirmed',report:'Fixture confirms the finding',evidence:['test.mjs']}))}:{candidateH:envelope.material.candidate.H,reviewedInputSha256:envelope.material.sha256,verdict:'PASS',report:'Independent fixture full review',findings:[],coverageGaps:[],ownerQuestions:[]};";
+ assert.ok(peerCode.includes(source));await writeFile(peer.binary,peerCode.replace(source,replacement));
+ const catalog=JSON.parse(await readFile(f.catalog,'utf8'));catalog.entries[0].workflowContract='coding-loop-v2';await writeFile(f.catalog,canonical(catalog));
+ const path=join(f.root,'dual-review-workbench.json'),account={id:7,login:'fixture'},repo={
+   id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Dual review fixture',private:true,archived:false,
+   defaultBranchRef:{name:'fixture',target:{oid:f.live.candidate.B}},updated_at:new Date().toISOString()
+ };
+ await writeFile(path,canonical({
+   schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Dual-review protocol fixture',goal:'Verify independent sessions and complete exchange',githubProjects:true,
+   sources:f.sources.map(s=>({...s,title:'Explicit fixture PR'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))},
+   aiSettings:{root:join(f.root,'dual-settings'),configured:[{tool:'kimi',path:peer.binary}],disabledMcpServers:[]}
+ }));
+ const dependencies:NonNullable<Parameters<typeof startWorkbench>[2]>={
+  formalSourceReader:async()=>f.live,
+  githubReader:async()=>({query:async op=>({
+   status:200,headers:{},provenance:'gh-http-body',
+   body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repo],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:repo}})
+  })}),
+  aiProbe:async(tool,path,directory)=>({
+   id:hash(path),tool,path,version:'explicit protocol fixture',available:path===peer.binary,reason:null,authentication:'subscription',
+   models:[{id:'fixture/model-next',name:'Explicit fixture',description:'ACP tested',resolvedId:null,efforts:['future-depth'],defaultEffort:'future-depth',isDefault:true}],
+   observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:false,ownedControl:false,impactReports:tool==='kimi'},evidence:directory
+  })
+ };
+ const app=await startWorkbench(path,undefined,dependencies);t.after(()=>app.close());
+ const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'};
+ const http=async(route:string,body?:object)=>{
+   const r=await fetch(url.origin+route,{headers:{...headers,...(body?{Origin:url.origin,'Content-Type':'application/json'}:{})},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
+   return {status:r.status,data:await r.json() as any};
+ };
+ await http('/api/github/projects');
+ if(mode!=='missing-peer'){
+  assert.equal((await http('/api/ai-settings/scan',{})).status,200);
+  const selection=await http('/api/ai-settings/role',{revision:0,role:'verifier_impact',choice:{providerId:hash(peer.binary),model:'fixture/model-next',effort:'future-depth'}});
+  assert.equal(selection.status,200,JSON.stringify(selection.data));
+ }
+ const route='/api/formal-review/'+f.entry.id;
+ const prepared=await http(route+'/prepare',{requestId:'dual-review-test'});
+ assert.equal(prepared.status,200,JSON.stringify(prepared.data));
+ const operation=prepared.data.operation;
+ assert.equal((await http(route+'/start',{operation})).status,202);
+ const report=async()=>(await http('/api/formal-review-report/'+f.entry.id+'/'+operation)).data;
+ await waitFor(async()=>!(await report()).controllerActive);
+ const complete=await report();
+ if(mode==='missing-peer'){
+  assert.equal(complete.detail.reason,'formal_second_company_not_configured');
+  assert.equal(complete.result,null);assert.deepEqual(complete.stages,[]);
+  assert.equal((await f.calls()).length,0);return;
+ }
+ assert.equal(complete.phase,mode==='fix'?'awaiting_publication':'pass',JSON.stringify(complete.detail));
+ const stages=complete.fullStages;
+ const stage=(name:string)=>stages.find((s:any)=>s.key.endsWith('/'+name));
+ const first=stage('correctness-initial'),second=stage('impact-initial');
+ assert.equal(first.proof.inputSha256,second.proof.inputSha256);
+ assert.equal(first.proof.native.company,'OpenAI');assert.equal(second.proof.native.company,'Moonshot');
+ assert.equal(first.proof.native.sessionId,stage('correctness-exchange').proof.native.sessionId);
+ assert.equal(second.proof.native.sessionId,stage('impact-exchange').proof.native.sessionId);
+ assert.notEqual(first.proof.native.sessionId,second.proof.native.sessionId);
+ if(mode==='fix'){
+  assert.equal(stage('fix').proof.native.sessionId,first.proof.native.sessionId);
+  assert.equal(stage('fact-1').proof.native.sessionId,first.proof.native.sessionId);
+  assert.equal(stage('impact-1').proof.native.sessionId,second.proof.native.sessionId);
+  assert.equal(complete.result.fix.tested.passed,true);
+  assert.notEqual(complete.result.fix.H1,complete.candidate.H);
+ }
+ const calls=await f.calls(),peerCalls=await peer.calls();
+ await report();
+ assert.deepEqual(await f.calls(),calls);assert.deepEqual(await peer.calls(),peerCalls);
+ if(mode==='fix'){
+  const {sourceFixture}=await import('../events/source-fixture.js');
+  const {readEventSource}=await import('../../src/event-source.js');
+  const {sourceTick}=await import('../../src/event-tick.js');
+  const remote=await sourceFixture(t,'fixture/reception'),fix=complete.result.fix;
+  f.q.events().configure(Buffer.from(canonical(remote.profile)));
+  await remote.change({H:fix.H1,B:complete.candidate.B,target:complete.candidate.target,body:fix.proposedPRBody});
+  await git(f.entry.objects,['fetch','--no-tags',fix.workspace,fix.H1]);
+  await f.packet({H:fix.H1,B:complete.candidate.B,sourceAt:new Date().toISOString(),executionAt:new Date().toISOString()});
+  await sourceTick(f.store);f.live.candidate.H=fix.H1;
+  f.live.observation=await readEventSource(remote.profile,1,join(remote.root,'dual-review-publication'));
+  assert.equal((await http(route+'/check',{})).status,200);
+  const successor=async()=>{
+    const state=(await http('/api/formal-review')).data;
+    return state.entries[0].requests.find((r:any)=>r.previousOperation===operation);
+  };
+  await waitFor(async()=>{const next=await successor();return next?.phase==='pass'&&!next.controllerActive;});
+  const checked=await successor();
+  const followup=(await http('/api/formal-review-report/'+f.entry.id+'/'+checked.operation)).data;
+  assert.equal(followup.candidate.H,fix.H1);
+  assert.equal(followup.result.review.verdict,'PASS');
+  assert.equal(followup.result.peerReview.verdict,'PASS');
+  for(const [name,old] of [['correctness-initial',first],['impact-initial',second]] as const){
+    const fresh=followup.fullStages.find((s:any)=>s.key.endsWith('/'+name));
+    assert.notEqual(fresh.proof.native.sessionId,old.proof.native.sessionId);
+  }
+  t.diagnostic(JSON.stringify({reviewedH:complete.candidate.H,fixedH:fix.H1,originalReview:operation,newReview:checked.operation,
+    sameOpenAIFixSession:first.proof.native.sessionId,retainedOriginalKimiSession:second.proof.native.sessionId}));
+ }
 });
 test('formal browser request cannot choose an unregistered source, authority or operation',async t=>{const f=await page(t);assert.equal((await f.post('/api/formal-review/not-selected/prepare',{requestId:'forged'})).status,503);const p=await(await f.post('/api/formal-review/'+f.entry.id+'/prepare',{requestId:'owned-stop'})).json() as any;assert.equal((await f.post('/api/formal-review/'+f.entry.id+'/stop',{operation:p.operation,authorization:'fake'})).status,503);assert.equal((await f.post('/api/formal-review/'+f.entry.id+'/stop',{operation:p.operation})).status,200);assert.equal((await f.post('/api/formal-review/'+f.entry.id+'/start',{operation:p.operation})).status,202);assert.equal((await f.calls()).length,0);});
 test('normal configured source reader fetches the registered adopted Issue and PR originals through actual scoped GET processes',async t=>{const f=await formalFixture(t),{sourceFixture}=await import('../events/source-fixture.js'),{sourceTick}=await import('../../src/event-tick.js'),{canonical}=await import('../../src/comparison.js'),remote=await sourceFixture(t,'fixture/reception');await remote.change({H:f.live.candidate.H,B:f.live.candidate.B,target:f.live.candidate.target,related:{'repos/fixture/reception/issues/72':{number:72,body:f.live.issue.body,html_url:f.live.issue.url}}});f.q.events().configure(Buffer.from(canonical(remote.profile)));await sourceTick(f.store);const path=join(f.root,'actual-source-page.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Actual GET protocol fixture',goal:'No official models or remote',sources:f.sources.map(s=>({...s,title:'Explicit PR'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path);t.after(()=>app.close());const u=new URL(app.url),headers={Authorization:'Bearer '+u.hash.slice(1),Origin:u.origin,'Content-Type':'application/json'},response=await fetch(u.origin+'/api/formal-review/'+f.entry.id+'/prepare',{method:'POST',headers,body:JSON.stringify({requestId:'original-scoped-reader'})}),r=await response.json() as any;assert.equal(response.status,200,JSON.stringify(r));const saved=await(await fetch(u.origin+'/api/formal-review-report/'+f.entry.id+'/'+r.operation,{headers})).json() as any;assert.equal(saved.material.issue.body,f.live.issue.body);assert.equal(saved.material.sourceEvidence.source,'original_registered_source_get');assert.ok((await remote.get()).requests.some((r:any)=>r.path==='repos/fixture/reception/issues/72'));assert.equal((await f.calls()).length,0);});
