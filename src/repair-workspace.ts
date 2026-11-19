@@ -372,8 +372,7 @@ export class RepairTools {
       });
       const files={...current};
       delete files[a.path];
-      if(move)files[a.destination]=sourceFile;
-      this.expected=orderedProjectTree(files);
+      this.expected=orderedProjectTree(move?{...files,[a.destination]:sourceFile}:files);
       output={path:a.path,beforeSha256:sourceFile.sha256,...(move?{destination:a.destination}:{})};
       const response={success:true,contentItems:[{type:'inputText',text:JSON.stringify(output)}]};
       save(path,{...receipt,status:'applied',response,afterTreeSha256:treeHash(this.expected)});return response;
@@ -434,13 +433,17 @@ export async function assertUnselectedGitUnchanged(workspace:string,H0:string,H1
   if(JSON.stringify(await rows(H0))!==JSON.stringify(await rows(H1)))throw new Error('implementation_unselected_git_changed');
 }
 
-/** The legacy array above remains byte-for-byte the default protocol. */
-export function projectRepairToolsFor(profile?:EditProfile,projectFiles?:true){
+export const projectFileMovesVersion='project-file-moves-v1';
+
+/** With no moves version, preserve the original project-file declaration. */
+export function projectRepairToolsFor(profile?:EditProfile,projectFiles?:true,projectFileToolsVersion?:typeof projectFileMovesVersion){
  parseEditProfile(profile);
  const tools=profile?projectRepairToolSpecs.map(tool=>tool.name!=='tongxu_replace_file'?tool:{...tool,description:tool.description+' Send either full text or 1–16 literal edits against the same original text. Each nonempty oldText must occur exactly once, including overlapping matches; edit ranges cannot overlap. Preserve BOM and UTF-8. Each old/new text is at most 16 KiB; combined 32 KiB; edits arguments 64 KiB; full-text arguments 2 MiB; result 256 KiB.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'},text:{type:'string'},edits:{type:'array',minItems:1,maxItems:16,items:{type:'object',properties:{oldText:{type:'string',minLength:1},newText:{type:'string'}},required:['oldText','newText'],additionalProperties:false}}},required:['path','expectedSha256'],oneOf:[{required:['text'],not:{required:['edits']}},{required:['edits'],not:{required:['text']}}],additionalProperties:false}}):projectRepairToolSpecs;
  if(!projectFiles)return tools;
- return [...tools.map(tool=>tool.name==='tongxu_read_file'?{...tool,description:'Read a regular source file and its digest from the private project checkout.'}:tool.name==='tongxu_replace_file'?{...tool,description:'Update an existing writable project source file after checking its exact digest. Use text or bounded literal edits.'}:tool),
-  {type:'function',name:'tongxu_create_file',description:'Create a UTF-8 source file at a new path in the private project checkout. Never overwrites existing files.',inputSchema:{type:'object',properties:{path:{type:'string'},text:{type:'string'},mode:{type:'string',enum:['100644','100755']}},required:['path','text','mode'],additionalProperties:false}},
+ const base=[...tools.map(tool=>tool.name==='tongxu_read_file'?{...tool,description:'Read a regular source file and its digest from the private project checkout.'}:tool.name==='tongxu_replace_file'?{...tool,description:'Update an existing writable project source file after checking its exact digest. Use text or bounded literal edits.'}:tool),
+  {type:'function',name:'tongxu_create_file',description:'Create a UTF-8 source file at a new path in the private project checkout. Never overwrites existing files.',inputSchema:{type:'object',properties:{path:{type:'string'},text:{type:'string'},mode:{type:'string',enum:['100644','100755']}},required:['path','text','mode'],additionalProperties:false}}];
+ if(projectFileToolsVersion!==projectFileMovesVersion)return base;
+ return [...base,
   {type:'function',name:'tongxu_delete_file',description:'Delete a writable project source file after checking its exact digest.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'}},required:['path','expectedSha256'],additionalProperties:false}},
   {type:'function',name:'tongxu_rename_file',description:'Move a writable project source file to a new unoccupied path, retaining its bytes and mode.',inputSchema:{type:'object',properties:{path:{type:'string'},destination:{type:'string'},expectedSha256:{type:'string'}},required:['path','destination','expectedSha256'],additionalProperties:false}}];
 }

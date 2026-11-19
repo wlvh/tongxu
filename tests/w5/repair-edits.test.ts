@@ -1,12 +1,88 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,mkdtemp,realpath,rename,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {replacementText,implementationEditProfile} from '../../src/repair-edits.js';
-import {RepairTools,acquireWorkspace,releaseWorkspace,tree,treeHash,projectRepairToolSpecs,projectRepairToolsFor} from '../../src/repair-workspace.js';
+import {verifyImplementationModel} from '../../src/implementation-ai.js';
+import {verifyImplementationEdits,replayImplementationWrite,retainedProjectAdditions} from '../../src/implementation-edits.js';
+import {canonical} from '../../src/comparison.js';
+import {RepairTools,acquireWorkspace,releaseWorkspace,tree,treeHash,projectRepairToolSpecs,projectRepairToolsFor,projectFileMovesVersion} from '../../src/repair-workspace.js';
 import {fixture} from './repair-fixture.js';
 import {hash} from '../../src/snapshot.js';
 const profile='literal-edits-v1',args=(edits:unknown)=>({path:'source.txt',expectedSha256:'a'.repeat(64),edits});
+test('both implementation readers enforce the original project-file tool version and exact declarations',async t=>{
+ const root=await mkdtemp(join(await realpath(tmpdir()),'tongxu-project-tool-profile-'));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const prompt={system:'Fixed project owner prompt'},request={workspaceRequest:{projectFiles:true,protectedPaths:[]},editProfile:profile,workflowPrompt:prompt};
+ const state={plan:{request,operationRoot:root},result:{}},plan={editProfile:profile};
+ const legacy=projectRepairToolsFor(profile,true),current=projectRepairToolsFor(profile,true,projectFileMovesVersion);
+ // Canonical digest of the entire declaration at 3614c373, including schemas and descriptions.
+ assert.equal(hash(canonical(legacy)),'30d2e7a5e87a305d3ba3d464d97b193af6ae093e2db70b0c004f370146f85e3f');
+ await writeFile(join(root,'initial-tree.json'),'{}');
+ await writeFile(join(root,'reconciled-tools.json'),'[]');
+ await writeFile(join(root,'stdout.ndjson'),JSON.stringify({id:1,result:{}})+'\n');
+ for(const {version,tools,valid} of [
+  {version:undefined,tools:legacy,valid:true},
+  {version:projectFileMovesVersion,tools:current,valid:true},
+  {version:undefined,tools:current,valid:false},
+  {version:projectFileMovesVersion,tools:legacy,valid:false},
+  {version:projectFileMovesVersion,tools:current.slice(0,-1),valid:false},
+  {version:projectFileMovesVersion,tools:current.map(tool=>({...tool,description:'Changed description'})),valid:false},
+  {version:'unknown',tools:current,valid:false}
+ ]){
+  const manifest={prompt,editProfile:profile,...(version?{projectFileToolsVersion:version}:{})};
+  const wire=JSON.stringify({id:1,method:'thread/start',params:{baseInstructions:prompt.system,dynamicTools:tools}})+'\n';
+  await writeFile(join(root,'stdin.ndjson'),wire);
+  if(valid){
+   await verifyImplementationModel(request,plan,manifest,root);
+   await verifyImplementationEdits(state,plan,manifest,root);
+  }else{
+   await assert.rejects(verifyImplementationModel(request,plan,manifest,root),/implementation_edit_profile_changed/);
+   await assert.rejects(verifyImplementationEdits(state,plan,manifest,root),/implementation_(project_file_capture|edit_profile)_changed/);
+  }
+  assert.equal(await readFile(join(root,'stdin.ndjson'),'utf8'),wire);
+ }
+});
+
+test('project-file replay preserves legal root keys and rejects invalid remove or move receipts',()=>{
+ const file={sha256:hash('source'),bytes:6,text:'source',executable:0o111};
+ const initial={source:file,occupied:file,protected:file},scope={protectedPaths:['protected']};
+ const move={tool:'tongxu_rename_file',arguments:{path:'source',destination:'__proto__',expectedSha256:file.sha256}};
+ const remove={tool:'tongxu_delete_file',arguments:{path:'source',expectedSha256:file.sha256}};
+ const receipt={beforeFile:file,status:'applied'};
+ const moved=replayImplementationWrite({...initial},move,receipt,[],profile,scope);
+ assert.equal(Object.hasOwn(moved,'__proto__'),true);
+ assert.equal(Object.hasOwn(moved,'source'),false);
+ assert.deepEqual(moved['__proto__'],file);
+ for(const [request,record] of [
+  [remove,{...receipt,beforeFile:{...file,executable:0}}],
+  [{...remove,arguments:{...remove.arguments,path:'protected'}},receipt],
+  [{...move,arguments:{...move.arguments,path:'../source'}},receipt],
+  ...['../outside','protected','occupied'].map(destination=>[{...move,arguments:{...move.arguments,destination}},receipt])
+ ]){
+  assert.throws(()=>replayImplementationWrite({...initial},request,record,[],profile,scope),/implementation_edit_receipt_changed/);
+ }
+});
+test('retained project move reports its unstaged target only while the applied receipt matches',async t=>{
+ const f=await fixture(t),index=join(f.workspace,'.git/index'),originalIndex=await readFile(index);
+ const source='clamp.mjs',destination='__proto__',initial=await tree(f.workspace,true),file=initial[source]!;
+ const calls=join(f.operation,'calls');
+ await mkdir(calls,{recursive:true,mode:0o700});
+ await writeFile(join(f.operation,'initial-tree.json'),JSON.stringify(initial));
+ const request={tool:'tongxu_rename_file',callId:'fixture-move',arguments:{path:source,destination,expectedSha256:file.sha256}},receipt={request,status:'applied',beforeFile:file};
+ const receiptPath=join(calls,request.callId+'.json'),original=JSON.stringify(receipt);
+ await rename(join(f.workspace,source),join(f.workspace,destination));
+ await writeFile(receiptPath,original);
+ const read=()=>retainedProjectAdditions(f.workspace,f.operation,{protectedPaths:[]});
+ const retained=await read();
+ assert.deepEqual(retained.additions,[destination]);
+ assert.match(retained.diff,/\+\+\+ b\/__proto__/);
+ assert.deepEqual(await readFile(index),originalIndex);
+ assert.equal(await readFile(receiptPath,'utf8'),original);
+ await writeFile(receiptPath,JSON.stringify({...receipt,beforeFile:{...file,sha256:'f'.repeat(64)}}));
+ assert.deepEqual(await read(),{additions:[],diff:''});
+});
 test('literal edits address the same original text, preserve bytes and interpret dollar strings literally',()=>{
  const before='\uFEFFα\r\nA😀B\r\nend',p=args([{oldText:'A',newText:'$&$1$`'},{oldText:'B',newText:''},{oldText:'end',newText:'尾'}]);
  assert.equal(replacementText(p,Buffer.from(before),profile),'\uFEFFα\r\n$&$1$`😀\r\n尾');

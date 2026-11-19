@@ -1,5 +1,5 @@
 import {implementationEditProfile,type EditProfile} from './repair-edits.js';
-import {implementationChoice,verifyImplementationModel,type ImplementationAI} from './implementation-ai.js';
+import {implementationChoice,implementationProjectFileToolsVersion,verifyImplementationModel,type ImplementationAI} from './implementation-ai.js';
 import {selectedProviderOptions} from './ai-settings.js';
 import {implementationFirstInput} from './implementation-first-input.js';
 import {checkFirstSendFiles,type FirstSendProof} from './implementation-first-send.js';
@@ -15,7 +15,7 @@ import {assembleRolePrompt} from './role-prompts.js';
 import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 import {BoundedCodexSession,implementationOutputSchema,readRepairSession} from './repair-native.js';
 import {prepareProjectRepair,validateProjectContract,projectTestPlan,projectMaterial,projectModelTestResult,testProject,bindProjectTestToCandidate,type ProjectRequest} from './project-repair.js';
-import {regular,exists,git,tree,treeHash,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,assertUnselectedGitUnchanged,type Grant} from './repair-workspace.js';
+import {regular,exists,git,tree,treeHash,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,assertUnselectedGitUnchanged,projectFileMovesVersion,type Grant} from './repair-workspace.js';
 import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
@@ -64,20 +64,28 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   external.unsent();
   if(operation!==join(request.workspaceRequest.executionRoot,'operation'))throw new Error('implementation_original_operation_changed');
   const initial=await tree(plan.workspace,true);if(treeHash(initial)!==grant.treeSha256||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
-  const prompt=firstSend?firstSend.proof.manifest.prompt:request.workflowPrompt??await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{})}));
-  const manifest={request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{}),inputManifestSha256};
+  const alreadyPrepared=await exists(operation),manifestPath=join(operation,'input-manifest.json');
+  let projectFileToolsVersion:typeof projectFileMovesVersion|undefined;
+  if(plan.project.projectFiles){
+    projectFileToolsVersion=alreadyPrepared
+      ?implementationProjectFileToolsVersion(request,JSON.parse((await regular(manifestPath)).toString()))
+      :projectFileMovesVersion;
+  }
+  const prompt=firstSend?firstSend.proof.manifest.prompt:request.workflowPrompt??await assembleRolePrompt('implementer');
+  const original={request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{}),...(projectFileToolsVersion?{projectFileToolsVersion}:{})};
+  const inputManifestSha256=hash(canonical(original)),manifest={...original,inputManifestSha256};
   const readPreparation=async()=>{
     await privateDirectory(operation,false);await privateDirectory(join(operation,'attempt-1'),false);
     if((await readdir(operation)).sort().join()!=='attempt-1,initial-tree.json,input-manifest.json'||(await readdir(join(operation,'attempt-1'))).length)throw new Error('implementation_original_operation_must_be_read');
-    if(canonical(JSON.parse((await regular(join(operation,'input-manifest.json'))).toString()))!==canonical(manifest)||canonical(JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString()))!==canonical(initial))throw new Error('implementation_original_input_changed');
+    if(canonical(JSON.parse((await regular(manifestPath)).toString()))!==canonical(manifest)||canonical(JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString()))!==canonical(initial))throw new Error('implementation_original_input_changed');
     if(treeHash(await tree(plan.workspace,true))!==treeHash(initial)||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
   };
   if(firstSend)await checkFirstSendFiles(firstSend.proof,request.workspaceRequest.executionRoot);
-  else if(await exists(operation))await readPreparation();
+  else if(alreadyPrepared)await readPreparation();
   else{
     await privateDirectory(operation,true);await mkdir(join(operation,'attempt-1'),{mode:0o700});
     await writeFile(join(operation,'initial-tree.json'),JSON.stringify(initial),{flag:'wx',mode:0o600});
-    await writeFile(join(operation,'input-manifest.json'),JSON.stringify(manifest),{flag:'wx',mode:0o600});
+    await writeFile(manifestPath,JSON.stringify(manifest),{flag:'wx',mode:0o600});
   }
   const originalPreparation=()=>firstSend?checkFirstSendFiles(firstSend.proof,request.workspaceRequest.executionRoot):readPreparation();
   await external.refresh();external.unsent();await originalPreparation();
@@ -95,7 +103,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     effect=>external.check(effect),()=>external.refresh(),plan.project.materialView?{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]}:undefined,editProfile);
   try{
     const nativeDirectory=firstSend?.reference.nativeDirectory??join(operation,'implementer');
-    session=await BoundedCodexSession.start({...selectedProviderOptions(selectedAI,'codex',plan.codexExecutable),directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,projectFiles:plan.project.projectFiles,editProfile:implementationEditProfile(request,plan),gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
+    session=await BoundedCodexSession.start({...selectedProviderOptions(selectedAI,'codex',plan.codexExecutable),directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,projectFiles:plan.project.projectFiles,projectFileToolsVersion,editProfile,gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
     await gate.handoff(session.sessionId,'new_implementer_context');
     // This report belongs to its original H0. A test tool may also identify a
     // temporary tested commit; only the host can form the final H1 afterwards.

@@ -37,6 +37,31 @@ async function page(implementation=false){
 }
 const data=(id:number,kind:string,number:number)=>({repository:{id,fullName:'fixture/repo'+id,description:'Fixture repository',private:true,archived:false,url:'https://github.com/fixture/repo'+id},kind,items:[{number,title:'repo'+id,labels:[],state:'open',updatedAt:'2026-10-30T00:00:00Z',author:'fixture',url:'https://github.com/fixture/repo'+id+'/issues/'+number}],page:1,hasNext:false,connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'}});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+for(const kind of ['issues','pulls'])test('GitHub '+kind+' detail updates integration notice across older lists and project switches',async()=>{
+  const p=await page(true),H0='a'.repeat(40),advanced='b'.repeat(40),repository={...data(1,kind,74).repository,defaultHead:H0};
+  const option={id:'approved-project',H0,projectFiles:true,protectedPaths:[],issues:[{number:74,goal:'Fixture',bodySha256:createHash('sha256').update('adopted').digest('hex')}]};
+  p.run(`entryInfo.issueImplementation=true;view='github';render=()=>{};chooseGithubProject(${JSON.stringify(repository)});Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}]});`);
+  const text=(node:any):string=>[node.textContent,...node.children.map(text)].join(' ');
+  const panel=()=>text(p.run("implementationPanel()"));
+  p.calls[0]!.resolve({...data(1,'issues',74),repository});await flush();
+  assert.doesNotMatch(panel(),/仍需核对/);
+  const detail=p.run(`openGithubItem('${kind}',{number:74,title:'Existing work'})`);
+  const item={...data(1,kind,74).items[0],body:'adopted'};
+  p.calls[2]!.resolve({repository:{...repository,defaultHead:advanced},item});await detail;
+  p.calls[1]!.resolve({...data(1,'pulls',94),repository});await flush();
+  assert.equal(p.state().pulls.items[0].number,94);
+  assert.equal(p.state().selected.defaultHead,advanced);
+  assert.match(panel(),/从 a{12} 开始/);
+  assert.match(panel(),/GitHub 默认分支 b{12} · 仍需核对/);
+  assert.equal(p.run('implementationData().options[0].H0'),H0);
+  assert.equal(p.fetchCalls.length,0);
+  const late=p.run(`openGithubItem('${kind}',{number:74,title:'Pending detail'})`);
+  p.run("chooseGithubProject({id:2,defaultHead:'other'})");
+  p.calls[3]!.resolve({repository:{...repository,defaultHead:'c'.repeat(40)},item});await late;
+  assert.equal(p.state().selected.defaultHead,'other');
+  assert.equal(p.nodes.get('report-dialog')!.open,false);
+  assert.equal(p.fetchCalls.length,0);
+});
 for(const exactBody of [true,false])test(`GitHub Issue detail uses the project grant only for the exact adopted Issue body (${exactBody?'exact':'changed'})`,async()=>{
   const p=await page(true),body='## 已审定需求\n支持默认标签。',repository=data(1,'issues',74).repository;
   const option={id:'approved-project',projectFiles:true,issues:[{number:74,bodySha256:createHash('sha256').update(body).digest('hex')}]};
