@@ -28,7 +28,7 @@ export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effe
  * Execution below is a new implementer consumer, never the repair/fact loop. */
 export async function prepareIssueImplementation(config:string,request:ImplementationRequest,root:string){
   if(request.schemaVersion!==1||request.kind!=='tongxu-issue-implementation'||!request.id||!/^[a-f0-9]{64}$/.test(request.task)||!Number.isSafeInteger(request.issue?.number)||request.issue.number<1||typeof request.issue.body!=='string'||hash(request.issue.body)!==request.issue.bodySha256||!request.issue.adjudication?.trim()||!request.adoptedScope||hash(canonical(request.adoptedScope.body))!==request.adoptedScope.bodySha256||!request.adoptedScope.source||request.workspaceRequest.findings.length||request.workspaceRequest.executionRoot!==root||request.origin!==undefined&&!projectWorkOrigin(request.origin,request.id))throw new Error('issue_implementation_request_invalid');
-  if(Boolean(request.workflowPrompt)!==Boolean(request.workspaceRequest.projectFiles))throw new Error('implementation_workflow_prompt_missing');
+  if(request.workspaceRequest.projectFiles&&!request.workflowPrompt)throw new Error('implementation_workflow_prompt_missing');
   const requestPath=join(root+'-request.json');
   const bytes=Buffer.from(canonical(request.workspaceRequest));
   if(await exists(requestPath)){if(hash(await regular(requestPath))!==hash(bytes))throw new Error('issue_implementation_original_changed');}

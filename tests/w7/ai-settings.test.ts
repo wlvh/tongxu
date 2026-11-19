@@ -42,6 +42,32 @@ test('overlapping workflow checks and cold retries keep the first observed main'
   }finally{await reopened.close();}
 });
 
+test('a verified workflow adoption sets the scoped default atomically and survives reopening',async t=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-workflow-adoption-'))),config={root,configured:[],disabledMcpServers:[]};
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const settings=await AISettings.open(config),requestId=randomUUID(),selected=scope();
+  const before=settings.workflowRevision(selected),input={checkRequestId:requestId,revision:firstCodingWorkflowRevision};
+  const current=async()=>{},missing=async()=>null;
+  try{
+    await assert.rejects(settings.activateWorkflow(selected,input,current,missing),/checked_candidate_required/);
+    await settings.checkWorkflow(selected,{requestId,mode:'first-adoption'},current,async()=>({main:'1234'.repeat(10),firstMerged:true}));
+    await assert.rejects(settings.activateWorkflow(selected,input,current,missing),/activation_evidence_required/);
+    assert.equal(settings.workflowRevision(selected),before);
+    const evidence={runtimeHead:'b'.repeat(40),operation:randomUUID(),materialSha256:'a'.repeat(64),testReport:'fixture accepted report reference'};
+    const adopted=await settings.activateWorkflow(selected,input,current,async revision=>{assert.equal(revision,input.revision);return evidence;});
+    assert.deepEqual(adopted.evidence,evidence);
+    assert.equal(settings.workflowRevision(selected),firstCodingWorkflowRevision);
+    assert.equal(settings.workflowRevision(scope(2)),before);
+  }finally{await settings.close();}
+  const cold=await AISettings.open(config);
+  try{
+    const repeated=await cold.activateWorkflow(selected,input,current,async()=>{throw new Error('duplicate observed new proof');});
+    assert.equal(repeated.revision,firstCodingWorkflowRevision);
+    assert.equal((await cold.workflow(undefined,selected)).status,'active');
+    assert.equal((await cold.workflow(undefined,scope(2))).status,'controls_pending');
+  }finally{await cold.close();}
+});
+
 test('normal workflow check pins the first adoption even after upstream main moves and keeps an explicit later check fixed',async t=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-workflow-check-')));
   const path=join(root,'workbench.json'),repo={
@@ -78,6 +104,9 @@ test('normal workflow check pins the first adoption even after upstream main mov
   assert.deepEqual([chosen.data.selectedRevision,chosen.data.observedMain,chosen.data.activated,chosen.data.modelInputs],
     [firstCodingWorkflowRevision,main,false,0]);
   assert.equal(chosen.data.reason,'coding_workflow_controls_pending');
+  const inactive=await http('/api/ai-settings/workflow/activate',{checkRequestId:first.requestId,revision:firstCodingWorkflowRevision});
+  assert.equal(inactive.status,503);
+  assert.equal(inactive.data.error,'coding_workflow_activation_evidence_required');
   main='b'.repeat(40);
   assert.deepEqual(await http(route,first),chosen);
   assert.equal(observations,1);

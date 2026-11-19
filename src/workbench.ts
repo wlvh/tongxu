@@ -254,7 +254,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     if(!p.projectWork||!github)throw new Error('project_work_not_configured');
     return projectWork??=ProjectWork.open(p.projectWork,async(scope,number)=>{
       const result=await github.read(new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id)) as Row;return {...result.item,defaultHead:result.repository.defaultHead};
-    },verifyProject,openImplementation).catch(error=>{projectWork=undefined;throw error;});
+    },verifyProject,openImplementation,scope=>ai?.workflowRevision(scope)).catch(error=>{projectWork=undefined;throw error;});
   };
   let projectChat:Promise<ProjectChat>|undefined;
   const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,target:SupplementTarget,receivedId?:string,text?:string)=>{
@@ -396,14 +396,20 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});
           else if(detail){
             const result=await work.detail(selection,detail[1]!),delivery=result.draft.delivery;
+            const combination=result.integrationValidation;
             const formalWork=async()=>{
               const context=await projectPlan(selection),ref=context.plan.formalReview;
               if(!ref||context.selectedSourcesUnknown)return null;
               const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
-              return formal.forWork(result.draft.issue,delivery!.H);
+              const [work,combined]=await Promise.all([
+                formal.forWork(result.draft.issue,delivery!.H),
+                combination?.state==='tested'?formal.forWork(result.draft.issue,combination.H):null
+              ]);
+              return {work,combined:combined?.candidate.B===combination?.B?combined:null};
             };
-            const review=p.formalReview&&result.resultStatus.current?await formalWork().catch(()=>null):null;
-            json(res,200,{...result,formalWork:review?{...review,projectWorkId:result.draft.id}:null});
+            const reviews=p.formalReview&&result.resultStatus.current?await formalWork().catch(()=>null):null;
+            json(res,200,{...result,formalWork:reviews?.work?{...reviews.work,projectWorkId:result.draft.id}:null,
+              integrationFormalWork:reviews?.combined?{...reviews.combined,projectWorkId:result.draft.id}:null});
           }else json(res,404,{error:'route_not_found'});
           return;
         }
@@ -475,11 +481,22 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(req.method==='GET'&&workflow){json(res,200,await ai.workflow(workflow[1],selection));return;}
         const prompt=/^\/api\/ai-settings\/prompts\/([a-z_]+)$/.exec(url.pathname);if(req.method==='GET'&&prompt){json(res,200,await ai.prompt(prompt[1]!));return;}
         if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
-        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role','/api/ai-settings/workflow/check'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role','/api/ai-settings/workflow/check','/api/ai-settings/workflow/activate'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>8192){json(res,413,{error:'ai_settings_request_invalid'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
         if(url.pathname.endsWith('/workflow/check')){json(res,200,await ai.checkWorkflow(selection,body,()=>verifyProject(selection),dependencies?.workflowUpstream));return;}
+        if(url.pathname.endsWith('/workflow/activate')){
+          const activation=await ai.activateWorkflow(selection,body,()=>verifyProject(selection),async revision=>{
+            if(!runtimeIdentity||!p.projectWork||!p.projectSecretary||!p.formalReview)return null;
+            const context=await projectPlan(selection);
+            if(context.selectedSourcesUnknown)return null;
+            const ref=context.plan.formalReview;if(!ref)return null;
+            const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed,dependencies?.formalSourceReader,()=>verifyProject(selection));
+            return formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead);
+          });
+          json(res,200,activation);return;
+        }
         if(url.pathname.endsWith('/scan')){if(!exactKeys(body,[]))throw new Error('ai_settings_request_invalid');const result=await ai.scan(selection);await verifyProject(selection);json(res,200,result);}else json(res,200,await ai.change(selection,body));return;
       }
       if(url.pathname.startsWith('/api/project-secretary')){
@@ -538,7 +555,9 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(Object.hasOwn(body,'projectWorkId')){
             if(!selection||!expected||typeof workId!=='string'||!p.projectWork)throw new Error('formal_request_invalid');
             const work=await(await openProjectWork()).detail(selection,workId);
-            const binding=work.resultStatus.current&&work.draft.delivery?.H===expected.H?await formal.forWork(work.draft.issue,expected.H):null;
+            const combination=work.integrationValidation;
+            const matchesCombined=combination?.state==='tested'&&combination.H===expected.H&&combination.B===expected.B;
+            const binding=work.resultStatus.current&&(work.draft.delivery?.H===expected.H||matchesCombined)?await formal.forWork(work.draft.issue,expected.H):null;
             if(!binding||binding.entry!==action[1]||canonical(binding.candidate)!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
             if(p.projectSecretary){
               const targets=await(await openImplementation(selection)).supplementTargets();

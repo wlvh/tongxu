@@ -521,7 +521,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  let publishedIssueBody:string|undefined;
  const repository={id:1,nodeId:'R_FIRST',full_name:'fixture/reception',description:'explicit first-use protocol fixture',private:false,archived:false,defaultBranchRef:{name:'main',target:{oid:H}},updated_at:new Date().toISOString()},account={id:101,login:'fixture'};
  const github:GitHubReaderFactory=async()=>({query:async(op,args)=>{const issue={id:1000+(args.number??201),number:args.number??201,title:'Real task shape '+(args.number??201),body:args.number===204&&publishedIssueBody?publishedIssueBody:'Preserve trim/default; add optional fallback.',state:'OPEN',updated_at:new Date().toISOString(),author:{login:'fixture'},labels:{nodes:[]},comments:{totalCount:0}};return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repository],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:{...repository,...(op==='issue'?{item:issue}:op==='issues'||op==='pulls'?{items:{nodes:op==='issues'?[issue]:[],pageInfo:{hasNextPage:false,endCursor:null}}}:{})}}})};}});
- const planPath=join(f.root,'first-use-plan.json');await writeFile(planPath,canonical({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'First use',goal:'Protocol end to end, not real user acceptance',sources:[],githubProjects:true,...(fault==='implementation-ai'||issuePeer?{aiSettings:{root:join(f.root,'ai-settings'),configured:issuePeer?[{tool:'kimi',path:issuePeer.binary}]:[{tool:'codex',path:f.config.codexExecutable}],disabledMcpServers:[]}}:{}),projectWork:{path:configPath,sha256:hash(await readFile(configPath))},projectSecretary:{root:join(f.root,'conversations'),codexExecutable:f.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}));
+ const planPath=join(f.root,'first-use-plan.json');await writeFile(planPath,canonical({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'First use',goal:'Protocol end to end, not real user acceptance',sources:[],githubProjects:true,...(fault==='implementation-ai'||fault==='workflow-default'||issuePeer?{aiSettings:{root:join(f.root,'ai-settings'),configured:issuePeer?[{tool:'kimi',path:issuePeer.binary}]:[{tool:'codex',path:f.config.codexExecutable}],disabledMcpServers:[]}}:{}),projectWork:{path:configPath,sha256:hash(await readFile(configPath))},projectSecretary:{root:join(f.root,'conversations'),codexExecutable:f.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}));
  const ownerURLs:string[]=[];const dependencies={githubReader:github,...(fault==='implementation-ai'?{aiProbe:async(tool:any,path:string,directory:string)=>({id:path===f.config.codexExecutable?'fixture-program':hash(path).slice(0,20),tool,path,version:'Explicit fixture',available:path===f.config.codexExecutable,reason:null,authentication:'subscription' as const,models:['fixture-astra','fixture-second','fixture-owner'].map(id=>({id,resolvedId:null,name:id,description:'Explicit model fixture',efforts:['max'],defaultEffort:'max',isDefault:id==='fixture-astra'})),observedAt:new Date().toISOString(),capabilities:{readonlyMessages:true,scopedTools:tool==='codex',ownedControl:true},evidence:directory})}:{}),...(issuePeer?{aiProbe:async(tool:any,path:string,directory:string)=>({
    id:hash(path),tool,path,version:'Explicit fixture',available:path===issuePeer.binary,reason:null,authentication:'subscription' as const,
    models:[{id:'fixture/model-next',resolvedId:null,name:'Kimi fixture',description:'Explicit protocol sample',efforts:['future-depth'],defaultEffort:'future-depth',isDefault:true}],
@@ -536,6 +536,29 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  await post('/api/project-work/'+first.requestId+'/prepare',{goal:first.goal});await wait(first.requestId,'needs_input');assert.equal((await get('/api/project-work/'+first.requestId)).value.draft.problem,'project_work_repository_location_required');assert.equal((await get('/api/project-work/'+first.requestId)).value.draft.goal,first.goal);assert.equal((await readFile(f.trace,'utf8')).includes('model-input'),false);
  await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');assert.equal((await get('/api/project-work/'+first.requestId)).value.draft.goal,first.goal);
  assert.equal((await post('/api/project-work/settings',{repositoryPath:f.objects})).status,200);
+ if(fault==='workflow-default'){
+   const {AISettings}=await import('../../src/ai-settings.js');
+   const {firstCodingWorkflowRevision}=await import('../../src/coding-workflow-source.js');
+   let active=false;
+   t.mock.method(AISettings.prototype,'workflowRevision',()=>active?firstCodingWorkflowRevision:'legacy');
+   const old=first.requestId,detail=async(id:string)=>(await get('/api/project-work/'+id)).value.draft;
+   assert.equal((await post('/api/project-work/'+old+'/prepare',{goal:first.goal})).status,202);
+   await wait(old,'prepared');
+   const before=await detail(old),oldBytes=await readFile(join(before.preparation.directory,'input.json'));
+   assert.equal(JSON.parse(oldBytes.toString()).preparationVersion,4);
+   assert.equal(before.preparation.workflowActive,undefined);
+   active=true;
+   const next={...first,requestId:randomUUID(),conversationId:randomUUID(),issueNumber:202};
+   assert.equal((await post('/api/project-work/create',next)).status,200);
+   assert.equal((await post('/api/project-work/'+next.requestId+'/prepare',{goal:next.goal})).status,202);
+   await wait(next.requestId,'prepared');
+   const fresh=await detail(next.requestId),payload=JSON.parse(await readFile(join(fresh.preparation.directory,'input.json'),'utf8'));
+   assert.equal(payload.preparationVersion,5);
+   assert.equal(fresh.preparation.workflowActive,true);
+   assert.equal(fresh.preparation.workflowPrompt.revision,firstCodingWorkflowRevision);
+   assert.deepEqual(await readFile(join((await detail(old)).preparation.directory,'input.json')),oldBytes);
+   return;
+ }
  if(fault==='project-development-failure'){
    const id=first.requestId,detail=async()=>(await get('/api/project-work/'+id)).value;
    const until=async<T>(read:()=>Promise<T>,done:(value:T)=>boolean)=>{
@@ -1225,6 +1248,7 @@ test('first use normal HTTP receives the pending original result before its comp
 test('first use normal HTTP prepares two unconfigured works, preserves a missing-location draft, returns real branches and cold reads without duplicate inputs',t=>firstUseProjectWork(t));
 test('ordinary project work cold-corrects an actual failure in the same checkout without discarding its edits',t=>firstUseProjectWork(t,'project-development-failure'));
 test('ordinary project work reuses one Owner grant across independent A and B, stops only A, and implements a reviewed supplement after reopening',t=>firstUseProjectWork(t,'project-development'));
+test('normal preparation freezes a switched workflow for new work and retains previously prepared inputs',t=>firstUseProjectWork(t,'workflow-default'));
 for(const fault of ['stop-adopt-comments','stop-adopt-user','stop-delegate-comments','drain','lost-adopt','lost-delegate','unknown-adopt'])test('first use normal HTTP original authorization fault: '+fault,t=>firstUseProjectWork(t,fault));
 
 for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTINEL'])test(`new implementation consumer uses no finding, writes twice, tests the actual tree and commits H1 without touching its fixed source${secret?' and keeps unselected test output private':''}`,async t=>{

@@ -40,6 +40,8 @@ const workflowCheckReasons={
   coding_workflow_upstream_unavailable:'本次无法读取上游 main，请保留原请求并重试。',
   coding_workflow_source_unavailable:'本机源文件缺失或无法读取。',
   coding_workflow_source_digest_mismatch:'本机源文件与固定提交的摘要不一致。',
+  coding_workflow_checked_candidate_required:'请先核对本轮要采用的准确提交。',
+  coding_workflow_activation_evidence_required:'当前安装还缺准确候选的验证记录或独立双审，启用待完成。',
 };
 async function checkCodingWorkflow(mode,nonce,button,other){
   const page=aiPage(),epoch=gh.epoch;
@@ -54,6 +56,17 @@ async function checkCodingWorkflow(mode,nonce,button,other){
   }catch(error){if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)$('report-meta').append(el('p',workflowCheckReasons[error.message]||aiError(error),'github-error'));}
   finally{button.disabled=false;other.disabled=false;}
 }
+async function activateCodingWorkflow(check,nonce,button){
+  const epoch=gh.epoch;button.disabled=true;
+  try{
+    const response=await workspaceFetch('/api/ai-settings/workflow/activate',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({checkRequestId:check.requestId,revision:check.selectedRevision}),cache:'no-store'});
+    const result=await response.json();
+    if(!response.ok)throw Error(result.error);
+    if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)await openCodingWorkflowSource();
+  }catch(error){if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)$('report-meta').append(el('p',workflowCheckReasons[error.message]||aiError(error),'github-error'));}
+  finally{button.disabled=false;}
+}
 async function openCodingWorkflowSource(){
   const nonce=++reportNonce;
   $('report-title').textContent='编程工作流来源';
@@ -61,7 +74,7 @@ async function openCodingWorkflowSource(){
   $('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;
   showWorkbenchReport();
   try{
-    const {activeRevision,candidate,assembly,check}=await api('/api/ai-settings/workflow/engineering_owner');
+    const {activeRevision,candidate,assembly,check,adopted}=await api('/api/ai-settings/workflow/engineering_owner');
     if(nonce!==reportNonce||!$('report-dialog').open)return;
     const {identity,manifest}=candidate;
     const upstream='https://github.com/'+identity.repository+'/blob/';
@@ -72,8 +85,14 @@ async function openCodingWorkflowSource(){
     first.onclick=()=>checkCodingWorkflow('first-adoption',nonce,first,latest);
     latest.onclick=()=>checkCodingWorkflow('upstream-main',nonce,latest,first);
     $('report-meta').append(first,latest);
+    if(!adopted&&check?.selectedRevision===identity.revision&&check.packageSha256===identity.packageSha256){
+      const activate=el('button','启用这个固定版本','outline');
+      activate.type='button';activate.onclick=()=>activateCodingWorkflow(check,nonce,activate);
+      $('report-meta').append(activate);
+    }
     const checked=check?'已选定 '+check.selectedRevision+'\n本次观察到的上游 main '+check.observedMain+'\n'+(workflowCheckReasons[check.reason]||check.reason)+'\n\n':'';
-    $('report-body').textContent=checked+'候选来源校验通过。配套执行尚待接入。\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
+    const adoption=adopted?'已从安装提交 '+adopted.evidence.runtimeHead+' 启用，新建工作采用此版本。':'候选来源已核对，正式启用待完成。';
+    $('report-body').textContent=checked+adoption+'\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
   }catch(e){
     if(nonce!==reportNonce||!$('report-dialog').open)return;
     const reasons={

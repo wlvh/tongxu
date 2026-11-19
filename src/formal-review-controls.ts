@@ -12,7 +12,7 @@ import {messageId} from './message-contract.js';
 import {readEventSource,eventMaterialHash,type EventSourceObservation} from './event-source.js';
 import {PublicationHttp} from './publication-http.js';
 import {assemblePromptSet} from './role-prompts.js';
-import {captureRoleAI,withAIPreferences,type AIPreferenceSnapshot} from './ai-settings.js';
+import {captureRoleAI,withAIPreferences,type AIPreferenceSnapshot,type WorkflowActivationEvidence} from './ai-settings.js';
 import {formalReviewMaterial} from './formal-review-material.js';
 import {readCodingWorkflowSource} from './coding-workflow-source.js';
 import {runDualFormalReviewRound} from './formal-dual-review.js';
@@ -64,13 +64,40 @@ export class FormalReviewControls{
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
  private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,executionRound:s.executionRound,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),ownsOriginalSessions:this.hosts.get(s.operation)?.ownsDual()===true,automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,...(s.request.workflowReview?{workflowRevision:s.request.workflowReview.correctness.revision}:{}),stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned,...(s.returned?.proof?.native?.company?{company:s.returned.proof.native.company,sessionId:s.returned.proof.native.sessionId}:{})})),newModelInputs:0};}
  private async currentView(s:Row){
-  if(s.terminal?.result.status==='pass'&&s.request.supplementVerification){
-   try{await verifiedRepairSupplementTests(s.request.supplementVerification,s.request.candidate.H);}
+  if(s.terminal?.result.status==='pass'&&s.request.material?.sourceEvidence?.adoptedProjectSupplements?.length){
+   try{
+    if(!s.request.supplementVerification)throw new Error('formal_fixed_supplement_test_capture_changed');
+    await verifiedRepairSupplementTests(s.request.supplementVerification,s.request.candidate.H);
+   }
    catch{return {...s,terminal:{result:{...s.terminal.result,status:'needs_evidence',recordedStatus:'pass',reason:'formal_fixed_supplement_test_capture_changed'}}};}
   }
   return s;
  }
  async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,...(entry.workflowContract?{workflowContract:entry.workflowContract}:{}),requests:await Promise.all(q.formalReviews().forEntry(entry.id).map(async s=>this.public(await this.currentView(s))))};}finally{q.close();}}));}
+ async workflowReleaseProof(revision:string,runtimeHead:string):Promise<WorkflowActivationEvidence|null>{
+  await this.catalog();
+  for(const {entry,source} of this.entries){
+   const q=await QueueStore.open(source.store);
+   try{
+    const records=q.formalReviews(),all=records.forEntry(entry.id);
+    const selected=all.findLast(s=>s.request.candidate.H===runtimeHead);
+    if(!selected||selected.stopped||selected.request.executionKind!=='native_capture'||selected.request.project.demonstrationFixture||
+       selected.request.workflowReview?.correctness.revision!==revision||!selected.resourcesSettled||
+       (await this.currentView(selected)).terminal?.result.status!=='pass')continue;
+    const report=q.status().items.find((item:Row)=>item.id===selected.item);
+    if(!report?.summary.evidenceComplete||!report.summary.reportId)continue;
+    const live=await this.read(entry,source),expected=selected.request.candidate;
+    if(live.candidate.H!==expected.H||live.candidate.B!==expected.B||live.candidate.target!==expected.target||
+       live.candidate.repository!==expected.repository||live.candidate.pr!==expected.pr||
+       (live.evidence as Row)?.materialSha256!==selected.request.material.sourceEvidence?.materialSha256||
+       hash(live.issue.body)!==entry.issue.bodySha256)continue;
+    const current=records.currentSource(selected.item);
+    if(!current.current||current.prerequisites.length)continue;
+    return {runtimeHead,operation:selected.operation,materialSha256:selected.request.material.sha256,testReport:report.summary.reportId};
+   }finally{q.close();}
+  }
+  return null;
+ }
  async forWork(issue:{number:number;bodySha256:string},H:string){
   const matched:Array<{entry:string;source:string;candidate:FormalSource['candidate']}>=[];
   for(const {entry,source} of this.entries){

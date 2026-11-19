@@ -142,7 +142,12 @@ function renderProjectWork(){
       section.append(el('h3','与当前默认分支整合'),el('p','原工作起点 '+integration.H0+' · 当前 '+integration.target+' '+integration.B,'small'));
       if(preview?.state==='clean'){
         section.append(el('p','Git 已在隔离目录生成组合文件树 '+preview.tree,'small'));
-        if(validation?.state==='tested')section.append(el('p','组合提交 '+validation.H+' 通过本工作登记的测试，仍待两家公司审查。','small'));
+        if(validation?.state==='tested'){
+          section.append(el('p','组合提交 '+validation.H+' 通过本工作登记的测试。','small'));
+          const review=d.detail.integrationFormalWork;
+          if(review)section.append(formalReviewPanel(review.source,review));
+          else section.append(el('p','等候与此组合提交、基线和要求匹配的正式审查。','small'));
+        }
         else if(validation?.state==='failed')section.append(el('p','组合提交 '+validation.H+' 的登记测试失败。','github-error'));
         else if(validation)section.append(el('p','本次组合验证的原始结果待核。','small'));
         else if(current?.projectDevelopment&&!item.stopRequested){
