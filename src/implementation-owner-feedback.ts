@@ -1,7 +1,7 @@
 import {verifyImplementationEdits} from './implementation-edits.js';
 import {verifyImplementationModel} from './implementation-ai.js';
 import {readHostReadonlyFailure} from './implementation-readonly-failure.js';
-import {validationResultCapture,readFailedValidationTests} from './implementation-validation.js';
+import {validationResultCapture,readFailedValidationTests,readLatestProjectToolValidation} from './implementation-validation.js';
 import {assertUnselectedGitUnchanged} from './repair-workspace.js';
 import {lstatSync,readFileSync,readdirSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
@@ -34,20 +34,28 @@ export function ownerContactReference(value:unknown):value is OwnerContactRefere
  * native capture. Its SQLite result remains authoritative; no new model runs. */
 export async function readImplementationResult(state:Row){
  if(!state.result)throw new Error('implementation_original_report_not_available');
+ const validationCallId=state.result.projectValidationCallId;
+ if(validationCallId!==undefined&&(!state.result.completeCapture||state.result.status!=='completed'||
+    state.plan.request.workspaceRequest.projectFiles!==true||typeof validationCallId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(validationCallId)))
+  throw new Error('implementation_validation_capture_changed');
  if(state.result.failureKind==='ended_readonly_timeout')return readHostReadonlyFailure(state);
  if(state.result.completeCapture){
   const root=state.plan.operationRoot,native=await validationResultCapture(state),capture=await readRepairSession(native);
   const manifest=JSON.parse((await regular(join(root,'input-manifest.json'))).toString()),{inputManifestSha256,...original}=manifest;
   const plan=JSON.parse((await regular(state.plan.path)).toString());await verifyImplementationModel(state.plan.request,plan,manifest,native);await verifyImplementationEdits(state,plan,manifest,native);
   if(hash(canonical(original))!==inputManifestSha256||capture.binding.inputManifestSha256!==inputManifestSha256||capture.binding.role!=='implementer'||capture.binding.sessionId!==state.result.sessionId||manifest.planSha256!==state.plan.sha256||canonical(manifest.request)!==canonical(state.plan.request)||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(state.result.report))throw new Error('implementation_original_capture_changed');
+  if(state.result.status==='completed'&&manifest.request.workspaceRequest.projectFiles){
+   try{
+    const validation=validationCallId===undefined
+     ? await readFailedValidationTests(join(root,'attempt-1','post-repair-1'),plan,false)
+     : await readLatestProjectToolValidation(root,native,plan);
+    if(validationCallId!==undefined&&(!('callId' in validation)||validation.callId!==validationCallId)||
+       !validation.result.passed||canonical(validation.result)!==canonical(state.result.tests)||
+       hash(canonical(validation.result))!==state.result.testCandidateBinding?.testResultCanonicalSha256)throw new Error('implementation_validation_capture_changed');
+   }catch{throw new Error('implementation_validation_capture_changed');}
+  }
  }
  if(state.result.status==='completed'&&state.plan.request.workspaceRequest.materialView==='selected_files')await assertUnselectedGitUnchanged(state.plan.workspace,state.H0,state.result.H1,[...state.plan.request.workspaceRequest.materialPaths,...state.plan.request.workspaceRequest.protectedPaths]);
- if(state.result.projectValidationCallId!==undefined){
-  const id=state.result.projectValidationCallId;
-  if(!state.plan.request.workspaceRequest.projectFiles||state.result.status!=='completed'||typeof id!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(id))throw new Error('implementation_validation_capture_changed');
-  const original=JSON.parse((await regular(join(state.plan.operationRoot,'tests','tool-'+id,'result.json'),32*1024*1024)).toString());
-  if(canonical(original)!==canonical(state.result.tests)||hash(canonical(original))!==state.result.testCandidateBinding?.testResultCanonicalSha256)throw new Error('implementation_validation_capture_changed');
- }
  if(state.result.status==='failed'){const p=JSON.parse((await regular(state.plan.path)).toString()),t=await readFailedValidationTests(state.result.testsDirectory,p);if(canonical(t.result)!==canonical(state.result.tests)||state.result.H1!==null)throw new Error('implementation_validation_capture_changed');}
  return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,...state.result,...(state.validationFailure?{originalValidationFailure:{report:state.validationFailure.report,tests:state.validationFailure.tests,sessionId:state.validationFailure.sessionId}}:{})};
 }

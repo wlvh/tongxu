@@ -170,8 +170,19 @@ export class AuthorityRecords {
   private observe(value:OwnerObservation){
     const {profile,profileSha256}=this.profile();requireOwnerObservation(value,profile,profileSha256,Date.now());
     const object='authority-comment:'+value.commentId,previous=this.events(object,'authority_source_observed').at(-1)?.data;
-    if(previous&&(Date.parse(value.updatedAt)<Date.parse(previous.updatedAt)||Date.parse(value.readAt)<Date.parse(previous.readAt)||value.updatedAt===previous.updatedAt&&value.sourceBodySha256!==previous.sourceBodySha256))throw new Error('owner_source_order_conflict');
-    const {commentRaw,graphRaw,...data}=value;
+    const {commentRaw,graphRaw,readAt,...facts}=value;
+    if(previous){
+      const {readAt:previousReadAt,originalCommentSha256:_comment,originalEditorSha256:_editor,...previousFacts}=previous;
+      if(Date.parse(value.updatedAt)<Date.parse(previous.updatedAt)||
+        value.updatedAt===previous.updatedAt&&value.sourceBodySha256!==previous.sourceBodySha256)
+        throw new Error('owner_source_order_conflict');
+      if(Date.parse(readAt)<Date.parse(previousReadAt)){
+        // Concurrent work can finish reading the same unchanged approval in a different order.
+        if(canonical(facts)!==canonical(previousFacts))throw new Error('owner_source_order_conflict');
+        return previous;
+      }
+    }
+    const data={...facts,readAt};
     const entry={...data,originalCommentSha256:this.blob(commentRaw),originalEditorSha256:this.blob(graphRaw)};
     if(!previous||canonical(entry)!==canonical(previous))this.event('authority_source_observed',object,entry);return entry;
   }

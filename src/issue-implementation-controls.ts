@@ -120,8 +120,9 @@ export class IssueImplementationControls{
     const issue=await this.read(adopted.number);if(issue.number!==adopted.number||hash(issue.body)!==adopted.bodySha256)throw new Error('implementation_issue_source_changed');
     const root=join(entry.root,body.requestId),workspace=join(root,'workspace');
     let observedPaths=originalPaths??entry.materialPaths;
-    if(!originalPaths&&entry.materialView==='selected_files'){
-      const candidates=await Promise.all(entry.allowedPaths.map(async path=>({path,bytes:Number((await fixedGit({path:entry.objects,H:entry.H0,repository:entry.repository},['cat-file','-s',entry.H0+':'+path])).toString().trim()),protected:false})));
+    if(!originalPaths&&(entry.materialView==='selected_files'||entry.projectFiles&&entry.workRequestId)){
+      const seeds=entry.projectFiles?entry.materialPaths:entry.allowedPaths;
+      const candidates=await Promise.all(seeds.map(async path=>({path,bytes:Number((await fixedGit({path:entry.objects,H:entry.H0,repository:entry.repository},['cat-file','-s',entry.H0+':'+path])).toString().trim()),protected:false})));
       candidates.sort((a,b)=>a.bytes-b.bytes||a.path.localeCompare(b.path));if(!candidates.length||!Number.isSafeInteger(candidates[0]!.bytes)||candidates[0]!.bytes>64*1024)throw new Error('implementation_observation_material_missing');observedPaths=[candidates[0]!.path];
     }
     const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:observedPaths})));
@@ -381,7 +382,7 @@ export class IssueImplementationControls{
     if(!state.plan)throw new Error('implementation_original_report_not_available');
     const {workspaceRequest}=state.plan.request;
     const diff=await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...workspaceRequest.allowedPaths]);
-    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,state.H0,{protectedPaths:workspaceRequest.protectedPaths}).catch(()=>null):null;
+    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,state.H0,{protectedPaths:workspaceRequest.protectedPaths},state.plan.request.editProfile).catch(()=>null):null;
     return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:[diff,added?.diff].filter(Boolean).join('\n'),...(added?{retainedAdditions:added.additions}:projectFiles?{evidenceGap:'retained_additions_unverified'}:{}),observationOnly:true,originalExecutionRetained:true};
   }finally{q.close();}}
   async failureLog(id:string,requestId:string,selection:ValidationLogSelection){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
@@ -435,13 +436,18 @@ export class IssueImplementationControls{
     try{const records=q.issueImplementations(),root=records.state(entry.id,target.requestId),rootRequest=records.original(entry.id,target.requestId);if(root.task!==target.task||root.operation!==target.operation||rootRequest.continuation)throw new Error('project_supplement_original_target_changed');
       const family=records.requests(entry.id).filter(s=>(s.id===root.id||records.original(entry.id,s.id).continuation?.logicalOwner===root.task)&&s.result?.status!=='cancelled_unstarted'),last=family.at(-1)??root,latest=last.result?.status==='no_change'?[...family].reverse().find(s=>s.result?.status==='completed')??last:last,request=records.original(entry.id,latest.id);
       if(latest.stopped||latest.result?.status!=='completed'||!latest.result?.H1||!latest.result.completeCapture)return {entry,root,rootRequest,latest,request,ready:false,reason:latest.reason??(latest.stopped?'implementation_stopped':latest.result?'project_supplement_requires_successful_commit':'project_supplement_original_pending_or_unknown')};
+      if(entry.projectFiles)return {entry,root,rootRequest,latest,request,ready:false,reason:'project_file_scope_continuation_not_supported'};
       await this.report(entry.id,latest.id);for(const resource of latest.plan.resourceRequests as string[])if(!q.resources().settledOutcome(resource))return {entry,root,rootRequest,latest,request,ready:false,reason:'implementation_original_resources_unresolved'};
       const workspace=latest.plan.workspace;if(await exists(join(workspace,'.git','tongxu-writer.json'))||await git(workspace,['rev-parse','HEAD'])!==latest.result.H1||treeHash(await tree(workspace,true))!==latest.result.treeSha256||await git(workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('project_supplement_committed_result_changed');
       return {entry,root,rootRequest,latest,request,ready:true,reason:null};
     }finally{q.close();}
   }
   async readSupplement(target:SupplementTarget,compiled:string|null,text:string):Promise<Row>{
-    if(!compiled){const original=await this.supplementSource(target);return {ready:original.ready,reason:original.reason,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null};}
+    if(!compiled){
+      const original=await this.supplementSource(target);
+      return {ready:original.ready,reason:original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null,
+        ...(original.entry.projectFiles?{delivered:false,adopted:false,coveringCandidate:null}:{})};
+    }
     const {entry,historical}=await this.readEntry(target.source,target.requestId);
     const request=await this.boundSupplement(target,compiled,text,entry);
     const q=await QueueStore.open(entry.store);

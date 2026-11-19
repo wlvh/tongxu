@@ -2,12 +2,12 @@ import {captureImplementationAI} from './implementation-ai.js';
 import {selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
-import {readableValidationConstraint} from './work-validation-definition.js';
+import {projectValidationConstraint,readableValidationConstraint} from './work-validation-definition.js';
 import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {assertWorkEnvironmentEnded} from './project-work-environment.js';
-import {ProjectWorkStore,type ProjectWorkDraft} from './project-work-store.js';
+import {ProjectWorkStore,type ProjectWorkDraft,type ProjectDevelopment} from './project-work-store.js';
 import {prepareWorkProposal,readWorkProposal,checkWorkMaterial,fixedGit,readWorkPreparationDiagnostic,type FixedRepository} from './project-work-preparation.js';
 import {applyWorkOwnerProposal,receiveWorkResult,verifyRepositoryPath,ensureWorkCommit,workAuthorityProfile,writeFixed} from './project-work-runtime.js';
 import {exactKeys,isAuthorityDigest,type AuthorityProfile,type ScopeBody} from './authority-contract.js';
@@ -41,6 +41,11 @@ export class ProjectWork{
     return new ProjectWork(c,await ProjectWorkStore.open(c.root),readIssue,verify,controls);
   }
   private directory(d:ProjectWorkDraft){return join(this.config.root,'works',d.id,'version-'+d.version);}
+  private activeDevelopment(scope:ProjectChatScope){
+    const grant=this.store.development(scope);
+    return grant?.approval&&Date.parse(grant.expiresAt)>Date.now()?grant:null;
+  }
+  private developmentScope(grant:ProjectDevelopment){return 'development-'+grant.work+'-v'+grant.version;}
   private async executor(preparation=false){const b=await regular(this.config.executor.path);if(hash(b)!==this.config.executor.sha256)throw new Error('project_work_executor_changed');const config=JSON.parse(b.toString()) as RepairConfig;return preparation&&this.config.preparationTimeoutMs!==undefined?{...config,timeoutMs:this.config.preparationTimeoutMs}:config;}
   async emptyCatalog(){const path=join(this.config.root,'empty-implementation-catalog.json'),bytes=canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[]});await writeFixed(path,bytes);return {path,sha256:hash(bytes)};}
   catalogs(scope:ProjectChatScope){return this.store.list(scope).flatMap(d=>[...(d as Row).prior??[],d].flatMap(v=>v.catalog?[v.catalog]:[])) as Array<{path:string;sha256:string}>;}
@@ -74,7 +79,8 @@ export class ProjectWork{
   async state(scope:ProjectChatScope){
     const works=[];for(const d of this.store.list(scope))works.push(await this.recover(scope,d));
     const entries=works.some(d=>d.catalog)?await(await this.controls(scope)).state():[];
-    return {available:true,settings:this.store.settings(scope),works:works.map(d=>({id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),execution:entries.find(e=>e.id===d.source)?.requests.find((r:Row)=>r.id===d.requestId)??null})),supported:'Existing text files; registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
+    const development=this.activeDevelopment(scope);
+    return {available:true,settings:this.store.settings(scope),development:development&&{issue:development.issue,expiresAt:development.expiresAt},works:works.map(d=>({id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),execution:entries.find(e=>e.id===d.source)?.requests.find((r:Row)=>r.id===d.requestId)??null})),supported:'Registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
   }
   async detail(scope:ProjectChatScope,id:string){
     const draft=await this.recover(scope,this.store.get(scope,id));const result=draft.catalog?await this.implementationState(scope,draft):null;
@@ -113,7 +119,7 @@ export class ProjectWork{
       // Only the immediately preceding version obtained through this scoped
       // store may contribute data. Never search older works or caller paths.
       const previous=!d.catalog&&d.preparation?.directory===join(this.directory(d),'preparation')?{directory:d.preparation.directory,source:{path:d.preparation.repositoryPath,H:d.preparation.H,repository:scope.repository.fullName},issue:{number:d.issue.number,bodySha256:d.issue.bodySha256},goal:d.goal}:undefined;
-      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
+      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
       const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
@@ -168,22 +174,22 @@ export class ProjectWork{
   async correctValidation(scope:ProjectChatScope,id:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');return(await this.controls(scope)).correctValidation(d.source,d.requestId);}
   async approveValidationMaterial(scope:ProjectChatScope,id:string,payload:{version:number;proposalSha256:string}){
     const d=this.store.get(scope,id);if(d.version!==payload.version||d.stopRequested||!d.source)throw new Error('project_work_preparation_changed');const controls=await this.controls(scope),preview=await controls.definitionConsentPreview(d.source,d.requestId);if(!preview.alreadyAuthorized){if(preview.proposalSha256!==payload.proposalSha256)throw new Error('work_validation_material_consent_changed');
-      const {store,profile}=await this.initializeQueue(d,scope),q=await QueueStore.open(store);let proposal,requestId;try{const prepared=q.authority().proposal(payload.proposalSha256);proposal=prepared.proposal;requestId=prepared.requestId;}finally{q.close();}if(proposal.kind!=='accept_baseline')throw new Error('work_validation_material_consent_changed');
+      const {store,profile}=await this.initializeQueue(this.directory(d),d.issue.number,scope,1),q=await QueueStore.open(store);let proposal,requestId;try{const prepared=q.authority().proposal(payload.proposalSha256);proposal=prepared.proposal;requestId=prepared.requestId;}finally{q.close();}if(proposal.kind!=='accept_baseline')throw new Error('work_validation_material_consent_changed');
       const beforePost=()=>{const current=this.store.get(scope,id);if(!this.accepting||current.stopRequested||current.version!==d.version||current.requestId!==d.requestId)throw new Error('project_work_stopped');};
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
     }return this.correctValidation(scope,id);
   }
   async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stop(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
-  private async initializeQueue(d:ProjectWorkDraft,scope:ProjectChatScope){
-    const store=join(this.directory(d),'queue'),profile=workAuthorityProfile(this.config.owner,scope,d.issue.number);if(profile.executorId!==scope.account.id)throw new Error('project_work_owner_identity_not_configured');
-    const q=await exists(join(store,'queue.sqlite'))?await QueueStore.open(store):await QueueStore.create(store,scope.repository.fullName,1);
+  private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
+    const store=join(directory,'queue'),profile=workAuthorityProfile(this.config.owner,scope,issue);if(profile.executorId!==scope.account.id)throw new Error('project_work_owner_identity_not_configured');
+    const q=await exists(join(store,'queue.sqlite'))?await QueueStore.open(store):await QueueStore.create(store,scope.repository.fullName,seats);
     try{q.enableReceiver();q.enableSupplements();q.reviewRecords().enable();q.enableCompositions();q.enableReceiverCorrections();q.enableTasks();q.authority().configure(Buffer.from(canonical(profile)));}finally{q.close();}
     return {store,profile};
   }
   async confirmation(scope:ProjectChatScope,id:string,b:Row){
-    if(!exactKeys(b,['version','proposalSha256'])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');
-    const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
+    if(!exactKeys(b,['version','proposalSha256',...(b.projectDevelopment===true?['projectDevelopment']:[])])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');
+    const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(b.projectDevelopment===true&&d.restart)throw new Error('project_development_restart_requires_original_scope');if(d.stage==='authorizing'&&!!d.projectDevelopment!==(b.projectDevelopment===true))throw new Error('project_work_authorization_mode_changed');if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
     if(this.active.has(id))return {active:true,alreadyAuthorized:undefined,currentCheckSha256:undefined};if(d.catalog)return {active:undefined,alreadyAuthorized:true,currentCheckSha256:d.currentCheck?.sha256};
     await this.verify(scope);if(!d.currentCheck)captureImplementationAI(scope.repository.fullName);const verified=await readWorkProposal(d.preparation.directory,sourceFor(scope,d)),issue=await this.readIssue(scope,d.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;
     if(verified.validationProblem)throw new Error(verified.validationProblem);
@@ -191,10 +197,10 @@ export class ProjectWork{
     if(!verified.ready||hash(issue.body)!==d.issue.bodySha256||head!==d.preparation.H)throw new Error('project_work_source_changed_prepare_again');
     const profile=workAuthorityProfile(this.config.owner,scope,d.issue.number);if(profile.executorId!==scope.account.id)throw new Error('project_work_owner_identity_not_configured');
     const current=d.currentCheck?assertWorkCurrent(d.currentCheck,this.currentBinding(d)):null,expiresAt=current?Date.parse(current.expiresAt):Date.parse(d.preparation.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000);if(!Number.isFinite(expiresAt)||expiresAt<=Date.now())throw new Error('project_work_preparation_expired_recheck');
-    return {active:undefined,alreadyAuthorized:undefined,currentCheckSha256:d.currentCheck?.sha256,...(current?{implementationModel:current.binding.implementationAI?['Codex',current.binding.implementationAI.roles.implementer.model,current.binding.implementationAI.roles.implementer.effort??'程序默认强度'].join(' / ')+'（本次核对已固定）':'Codex CLI 默认模型与强度（实际发送时回报）'}:{}),...(d.restart?{restartNotice:'原失败已结清，原改动和报告保留；从原代码起点（H0）在同一工作新版本重做一次，不迁移旧改动，不再增加修正。'}:{}),expiresAt:new Date(expiresAt).toISOString(),project:scope.repository.fullName,issue:'#'+d.issue.number+' '+d.issue.title,goal:verified.proposal.goal,originalGoal:d.goal,acceptance:verified.proposal.acceptance,allowedPaths:verified.proposal.allowedPaths,validation:verified.proposal.validation.description,readableDefinition:{script:verified.proposal.validation.script,sha256:hash(verified.proposal.validation.script),notice:'同意后，这份准确验收定义会只读提供给原工作实施者；定义和测试计划不可修改。'},identity:profile.sharedAccountApproval?'同一 GitHub 账号；未证明实际操作人与执行者分离':'已有指定本人来源'};
+    return {active:undefined,alreadyAuthorized:b.projectDevelopment===true&&!!this.activeDevelopment(scope),projectDevelopment:b.projectDevelopment===true,currentCheckSha256:d.currentCheck?.sha256,...(current?{implementationModel:current.binding.implementationAI?['Codex',current.binding.implementationAI.roles.implementer.model,current.binding.implementationAI.roles.implementer.effort??'程序默认强度'].join(' / ')+'（本次核对已固定）':'Codex CLI 默认模型与强度（实际发送时回报）'}:{}),...(d.restart?{restartNotice:'原失败已结清，原改动和报告保留；从原代码起点（H0）在同一工作新版本重做一次，不迁移旧改动，不再增加修正。'}:{}),expiresAt:new Date(expiresAt).toISOString(),project:scope.repository.fullName,issue:'#'+d.issue.number+' '+d.issue.title,goal:verified.proposal.goal,originalGoal:d.goal,acceptance:verified.proposal.acceptance,allowedPaths:verified.proposal.allowedPaths,validation:verified.proposal.validation.description,readableDefinition:{script:verified.proposal.validation.script,sha256:hash(verified.proposal.validation.script),notice:'同意后，这份准确验收定义会只读提供给原工作实施者；定义和测试计划不可修改。'},identity:profile.sharedAccountApproval?'同一 GitHub 账号；未证明实际操作人与执行者分离':'已有指定本人来源'};
   }
-  async start(scope:ProjectChatScope,id:string,b:Row){
-    if(!exactKeys(b,['version','proposalSha256',...(b.currentCheckSha256!==undefined?['currentCheckSha256']:[])])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(d.currentCheck&&(b.currentCheckSha256!==d.currentCheck.sha256))throw new Error('project_work_current_check_changed');
+  async start(scope:ProjectChatScope,id:string,b:Row,ownerConfirmed=false){
+    if(!exactKeys(b,['version','proposalSha256',...(b.currentCheckSha256!==undefined?['currentCheckSha256']:[]),...(b.projectDevelopment===true?['projectDevelopment']:[])])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(b.projectDevelopment===true&&d.restart)throw new Error('project_development_restart_requires_original_scope');if(d.stage==='authorizing'&&!!d.projectDevelopment!==(b.projectDevelopment===true))throw new Error('project_work_authorization_mode_changed');if(d.currentCheck&&(b.currentCheckSha256!==d.currentCheck.sha256))throw new Error('project_work_current_check_changed');
     if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
     return this.job(scope,id,async job=>{
       let draft=this.store.get(scope,id);if(draft.currentCheck)await this.unchanged(scope,draft);await this.verify(scope);
@@ -204,10 +210,21 @@ export class ProjectWork{
     if(verified.validationEnvironment&&verified.validationEnvironment.configurationSha256!==hash(canonical(this.config.verification)))throw new Error('project_work_environment_changed_prepare_again');
       const issue=await this.readIssue(scope,draft.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;if(hash(issue.body)!==draft.issue.bodySha256||head!==draft.preparation!.H)throw new Error('project_work_source_changed_prepare_again');
       await verifyRepositoryPath(scope,draft.preparation!.repositoryPath);await checkWorkMaterial(sourceFor(scope,draft),verified.proposal);
-      draft=this.save(scope,{...draft,stage:'authorizing',problem:null},'confirmation_requested','Explicit scope/implementation/test confirmation; exact Owner source still required');
-      const {store,profile}=await this.initializeQueue(draft,scope),proposal=verified.proposal,source='work-'+draft.id+'-v'+draft.version,target='tongxu/work-'+draft.id+'-v'+draft.version;
-      const scopeId=source,body:ScopeBody={goals:[...new Set([proposal.goal,...(draft.goal?[draft.goal]:[])])],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['All unselected files and original user checkout','Original Issue, captures, results and same logical owner for supplements'],acceptance:proposal.acceptance,constraints:['Issue body '+draft.issue.bodySha256,'Initial full Git commit '+draft.preparation!.H,'Work '+draft.id,'Registered test '+hash(proposal.validation.script),readableValidationConstraint(hash(proposal.validation.script))]};
-      const ownerDirectory=join(this.directory(draft),'owner');
+      draft=this.save(scope,{...draft,stage:'authorizing',problem:null,...(b.projectDevelopment===true?{projectDevelopment:true as const}:{})},'confirmation_requested','Explicit scope/implementation/test confirmation; exact Owner source still required');
+      const proposal=verified.proposal,source='work-'+draft.id+'-v'+draft.version,target='tongxu/work-'+draft.id+'-v'+draft.version;
+      const expiresAt=draft.currentCheck?assertWorkCurrent(draft.currentCheck,this.currentBinding(draft)).expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(this.config.owner.maxGrantDurationMs,86400000)).toISOString();
+      let grant=b.projectDevelopment===true?this.activeDevelopment(scope):null;
+      if(b.projectDevelopment===true&&!grant){
+        if(!ownerConfirmed)throw new Error('project_development_owner_confirmation_required');
+        grant=this.store.reserveDevelopment(scope,{work:id,version:draft.version,issue:draft.issue.number,expiresAt});
+      }
+      if(grant&&Date.parse(grant.expiresAt)<=Date.now())throw new Error('owner_authorization_expired');
+      const scopeId=grant?this.developmentScope(grant):source,scopeVersion=grant?'project-development-v1':'work-v'+draft.version;
+      const authorizationDirectory=grant?join(this.config.root,'works',grant.work,'version-'+grant.version,'development'):this.directory(draft);
+      await mkdir(authorizationDirectory,{recursive:true,mode:0o700});
+      const {store,profile}=await this.initializeQueue(authorizationDirectory,grant?.issue??draft.issue.number,scope,grant?2:1);
+      const body:ScopeBody=grant?{goals:['Implement explicitly started, verified Issue work in '+scope.repository.fullName],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['Original user checkout, protected paths, and the records of each independent work'],acceptance:['Each work retains its own Issue, fixed start, and registered test outcomes'],constraints:['Use project files only, in the separate controlled checkout of the selected work',projectValidationConstraint]}:{goals:[...new Set([proposal.goal,...(draft.goal?[draft.goal]:[])])],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['All unselected files and original user checkout','Original Issue, captures, results and same logical owner for supplements'],acceptance:proposal.acceptance,constraints:['Issue body '+draft.issue.bodySha256,'Initial full Git commit '+draft.preparation!.H,'Work '+draft.id,'Registered test '+hash(proposal.validation.script),readableValidationConstraint(hash(proposal.validation.script))]};
+      const ownerDirectory=join(authorizationDirectory,'owner');
       // This synchronous gate runs inside the sender after its last await.
       // A prior explicit approval does not cancel a later persisted stop.
       const beforePost=()=>{
@@ -215,9 +232,10 @@ export class ProjectWork{
         if(job.stop||!this.accepting||current.stopRequested)throw new Error('project_work_stopped');if(draft.currentCheck)this.currentGate(scope,draft);
         if(current.version!==draft.version||current.requestId!==draft.requestId||canonical(current.issue)!==canonical(draft.issue)||canonical(current.preparation)!==canonical(draft.preparation))throw new Error('project_work_preparation_changed');
       };
-      const adoption=await applyWorkOwnerProposal(store,profile,{kind:'adopt_scope',scopeId,scopeVersion:'work-v'+draft.version,body,previousAdoption:null},source+'-adopt',ownerDirectory,beforePost);
+      const adoption=grant?.approval?.adoption??await applyWorkOwnerProposal(store,profile,{kind:'adopt_scope',scopeId,scopeVersion,body,previousAdoption:null},scopeId+'-adopt',ownerDirectory,beforePost);
       if(job.stop)throw new Error('project_work_preparation_stopped');
-      const delegation=await applyWorkOwnerProposal(store,profile,{kind:'delegate',adoption,roles:['implementer'],targets:[target],actions:['implement','test'],paths:proposal.materialPaths,resourceRefs:[],expiresAt:draft.currentCheck?assertWorkCurrent(draft.currentCheck,this.currentBinding(draft)).expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000)).toISOString()},source+'-delegate',ownerDirectory,beforePost);
+      const delegation=grant?.approval?.delegation??await applyWorkOwnerProposal(store,profile,{kind:'delegate',adoption,roles:['implementer'],targets:grant?[]:[target],actions:['implement','test'],paths:grant?[]:proposal.materialPaths,...(grant?{projectFiles:true as const}:{}),resourceRefs:[],expiresAt:grant?.expiresAt??expiresAt},scopeId+'-delegate',ownerDirectory,beforePost);
+      if(grant&&!grant.approval)this.store.confirmDevelopment(scope,grant,{adoption,delegation});
       if(job.stop||this.store.get(scope,id).stopRequested)throw new Error('project_work_stopped');
       const config=await this.executor(),billingEvidence=join(draft.preparation!.directory,'native','completed.json');
       config.scopeSource=draft.issue.url+' adopted scope '+adoption;
@@ -225,7 +243,7 @@ export class ProjectWork{
       const configPath=join(this.directory(draft),'executor.json');await writeFixed(configPath,canonical(config));
       const plan={schemaVersion:2,executor:this.config.verification,tools:[{id:'work-acceptance',argv:[this.config.verification.node,'--input-type=module','--eval',proposal.validation.script],timeoutMs:30000}]};
       const testPlan=join(this.directory(draft),'tests.json');await writeFixed(testPlan,canonical(plan));
-      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:'work-v'+draft.version,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256,goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,materialView:'selected_files',workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
+      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:scopeVersion,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:grant?[]:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256,goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,...(grant?{projectFiles:true as const}:{materialView:'selected_files' as const}),workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
       const bytes=canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}),path=join(this.directory(draft),'implementation.json');await writeFixed(path,bytes);
       draft=this.store.get(scope,id);draft=this.save(scope,{...draft,source,catalog:{path,sha256:hash(bytes)},stage:'execution',problem:null},'implementation_linked','Immutable original consumer input; execution state remains in original queue');
       const controls=await this.controls(scope);await controls.prepare(source,{requestId:draft.requestId,issueNumber:draft.issue.number});if(job.stop)throw new Error('project_work_preparation_stopped');await controls.begin(source,draft.requestId);
@@ -233,8 +251,16 @@ export class ProjectWork{
   }
   private async implementationState(scope:ProjectChatScope,d:ProjectWorkDraft){
     const controls=await this.controls(scope),entry=(await controls.state()).find(e=>e.id===d.source),requests=entry?.requests??[];
-    const reports=[];for(const r of requests)if(r.completeCapture||r.hostEvidenceComplete)reports.push({requestId:r.id,...await controls.report(d.source!,r.id)});
-    return {requests,reports};
+    const reports=[],reportGaps=[];
+    for(const r of requests){
+      if(!r.completeCapture&&!r.hostEvidenceComplete)continue;
+      try{reports.push({requestId:r.id,...await controls.report(d.source!,r.id)});}
+      catch(error){
+        if(problem(error)!=='implementation_validation_capture_changed')throw error;
+        reportGaps.push({requestId:r.id,H1:r.H1,reason:problem(error)});
+      }
+    }
+    return {requests,reports,...(reportGaps.length?{reportGaps}:{})};
   }
   async receive(scope:ProjectChatScope,id:string){
     this.store.get(scope,id);const prior=this.receiving.get(id);if(prior)return prior;

@@ -311,6 +311,7 @@ export class RepairTools {
       if (JSON.stringify(prior.request) !== JSON.stringify(p) || !prior.response || prior.afterTreeSha256 !== treeHash(current)) throw new Error('duplicate_tool_call_not_reconciled'); return prior.response;
     }
     if (++this.serial > 30) throw new Error('tool_call_budget_exceeded');
+    const writeSequence=this.grant.projectFiles?{writeSequence:this.serial}:{};
     const a = p.arguments;
     if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('invalid_tool_arguments');
     let output: unknown;
@@ -319,7 +320,7 @@ export class RepairTools {
     } else if (p.tool === 'tongxu_replace_file') {
       if (this.phase !== 'write' || !this.grant.allowRepair || !Object.hasOwn(current,a.path) || !(this.grant.projectFiles?projectPathWritable(this.grant.projectFiles,a.path):this.grant.allowedPaths.includes(a.path)) || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
       const target = join(this.workspace, a.path), before = readFileSync(target), text=replacementText(a,before,this.editProfile), after = Buffer.from(text), temporary = join(calls, p.callId + '.pending');
-      const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
+      const receipt = { request: p, ...writeSequence, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
       save(path, receipt); writeFileSync(temporary, after, { flag: 'wx', mode: lstatSync(target).mode & 0o777 });
       // No await between the last revocation/identity check and atomic replace.
       const finalTarget=lstatSync(target);
@@ -339,7 +340,7 @@ export class RepairTools {
          Object.hasOwn(current,a.path))throw new Error('project_file_create_denied');
       const executable=a.mode==='100755'?0o100:0,bytes=Buffer.from(a.text);
       const file={sha256:hash(bytes),bytes:bytes.length,text:new TextDecoder('utf8',{fatal:true}).decode(bytes),executable};
-      const receipt={request:p,newFile:file,status:'write_registered'};
+      const receipt={request:p,...writeSequence,newFile:file,status:'write_registered'};
       const temporary=join(calls,p.callId+'.pending');
       save(path,receipt);
       writeFileSync(temporary,bytes,{flag:'wx',mode:0o600|executable});
@@ -358,7 +359,7 @@ export class RepairTools {
          !Object.hasOwn(current,a.path)||!sourceFile||a.expectedSha256!==sourceFile.sha256||
          Object.keys(a).sort().join()!==(move?'destination,expectedSha256,path':'expectedSha256,path')||
          move&&(!projectPathWritable(this.grant.projectFiles,a.destination)||Object.hasOwn(current,a.destination)))throw new Error('project_file_change_denied');
-      const source=join(this.workspace,a.path),receipt={request:p,beforeFile:sourceFile,status:'write_registered'};
+      const source=join(this.workspace,a.path),receipt={request:p,...writeSequence,beforeFile:sourceFile,status:'write_registered'};
       save(path,receipt);
       this.commitStart(()=>{
         beforeRegistration?.();

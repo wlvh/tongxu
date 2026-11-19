@@ -4,7 +4,7 @@ import {promisify} from 'node:util';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
-import {regular,exists,treeHash,safeEnv,projectPathWritable,orderedProjectTree,type Tree,type ProjectFiles} from './repair-workspace.js';
+import {regular,treeHash,safeEnv,projectPathWritable,orderedProjectTree,type Tree,type ProjectFiles} from './repair-workspace.js';
 import {replacementText,implementationEditProfile,type EditProfile} from './repair-edits.js';
 import {implementationTools} from './implementation-ai.js';
 const exec=promisify(execFile);
@@ -65,7 +65,7 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
 }
 
 /** Observe registered new paths, including retained move targets, without touching the index. */
-export async function retainedProjectAdditions(workspace:string,operation:string,H0:string,scope:ProjectFiles){
+export async function retainedProjectAdditions(workspace:string,operation:string,H0:string,scope:ProjectFiles,profile?:EditProfile){
  const calls=join(operation,'calls'),names=await readdir(calls).catch(error=>{
   if(error.code==='ENOENT')return [];
   throw error;
@@ -74,28 +74,43 @@ export async function retainedProjectAdditions(workspace:string,operation:string
  const initial:Tree=JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString());
  const managed=JSON.parse((await regular(join(workspace,'.git','tongxu-managed.json'))).toString());
  if(managed.kind!=='owned-project-workspace'||managed.initialH!==H0||managed.initialTreeSha256!==treeHash(initial))throw new Error('implementation_initial_tree_changed');
+ const writes=new Set(['tongxu_create_file','tongxu_replace_file','tongxu_delete_file','tongxu_rename_file']);
  const receipts=[];
  for(const name of names.filter(name=>/^[A-Za-z0-9_-]{1,128}\.json$/.test(name))){
-  try{
-   const receipt=JSON.parse((await regular(join(calls,name))).toString());
-   if(receipt.request?.callId===name.slice(0,-5)&&receipt.request.arguments)receipts.push(receipt);
-  }catch{/* An unreadable receipt cannot establish a retained effect. */}
+  const receipt=JSON.parse((await regular(join(calls,name))).toString());
+  if(receipt.request?.callId!==name.slice(0,-5)||!receipt.request.arguments)throw new Error('implementation_edit_receipt_changed');
+  if(writes.has(receipt.request.tool)&&receipt.status==='applied')receipts.push(receipt);
+ }
+ const replay=(tree:Tree,receipt:any)=>{
+  const after=replayImplementationWrite({...tree},receipt.request,receipt,[],profile,scope);
+  if(treeHash(after)!==receipt.afterTreeSha256)throw new Error('implementation_edit_receipt_changed');
+  return after;
+ };
+ let expected:Tree=initial;
+ if(receipts.some(r=>r.writeSequence!==undefined)){
+  receipts.sort((a,b)=>a.writeSequence-b.writeSequence);
+  let previous=0;
+  for(const receipt of receipts){
+   if(!Number.isSafeInteger(receipt.writeSequence)||receipt.writeSequence<=previous)throw new Error('implementation_edit_receipt_changed');
+   expected=replay(expected,receipt);previous=receipt.writeSequence;
+  }
+ }else{
+  // Historical receipts lacked a sequence. Proceed only when the next
+  // effect has a unique match against the current tree and the saved digest.
+  while(receipts.length){
+   const matches=receipts.flatMap((receipt,index)=>{try{return [{index,after:replay(expected,receipt)}];}catch{return [];}});
+   if(matches.length!==1)throw new Error('implementation_edit_receipt_changed');
+   expected=matches[0]!.after;receipts.splice(matches[0]!.index,1);
+  }
  }
  const additions:string[]=[],diffs:string[]=[];
- for(const receipt of receipts){
-  const {request}=receipt,{path:source,destination}=request.arguments,move=request.tool==='tongxu_rename_file';
-  const path=move?destination:source;
-  if((!move&&request.tool!=='tongxu_create_file')||receipt.status!=='applied'||!projectPathWritable(scope,path)||Object.hasOwn(initial,path)||additions.includes(path))continue;
+ for(const [path,entry] of Object.entries(expected)){
+  if(Object.hasOwn(initial,path))continue;
   try{
-   const sourceAbsent=async()=>!move||!await exists(join(workspace,source));
-   const created=replayImplementationWrite({...initial},request,receipt,[],undefined,scope)[path]!;
-   if(!await sourceAbsent())continue;
-   const recorded=new Set([created.sha256,...receipts.filter(r=>r.status==='applied'&&r.request.tool==='tongxu_replace_file'&&r.request.arguments.path===path&&r.afterExecutable===created.executable).map(r=>r.afterSha256)]);
    const full=join(workspace,path);
    const digest=async()=>hash(await regular(full,256*1024));
    const mode=async()=>(await lstat(full)).mode&0o111;
-   const before=await digest();
-   if(!recorded.has(before)||await mode()!==created.executable)continue;
+   if(await digest()!==entry.sha256||await mode()!==entry.executable)continue;
    // An addition already present in the index is covered by the main diff.
    if((await exec('/usr/bin/git',['--literal-pathspecs','-C',workspace,'ls-files','--',path],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0'}})).stdout)continue;
    const diff=await exec('/usr/bin/git',['-C',workspace,'diff','--no-index','--no-ext-diff','--no-textconv','--binary','--','/dev/null',path],
@@ -103,7 +118,7 @@ export async function retainedProjectAdditions(workspace:string,operation:string
      if(error.code===1&&typeof error.stdout==='string')return {stdout:error.stdout as string};
      throw error;
     });
-   if(diff.stdout&&await digest()===before&&await mode()===created.executable&&await sourceAbsent()){additions.push(path);diffs.push(diff.stdout);}
+   if(diff.stdout&&await digest()===entry.sha256&&await mode()===entry.executable){additions.push(path);diffs.push(diff.stdout);}
   }catch(error:any){
    if(!['ENOENT','ENOTDIR'].includes(error.code)&&!['noncanonical_repair_path','invalid_repair_file','repair_file_changed_during_read','implementation_edit_receipt_changed'].includes(error.message))throw error;
   }

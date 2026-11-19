@@ -31,8 +31,12 @@ function implementationEntryBusy(data,option){
   return data.pending||data.entries.some(entry=>entry.id===option.id&&entry.requests.some(request=>request.phase!=='returned'));
 }
 async function implementationAction(entry,action,body){
+  const epoch=gh.epoch;
   const response=await workspaceFetch('/api/implementation/'+encodeURIComponent(entry)+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),result=await response.json();
-  if(!response.ok)throw new Error(result.error||'implementation_unavailable');return result;
+  if(!response.ok)throw new Error(result.error||'implementation_unavailable');
+  const observation=result.repositoryObservation;
+  if(epoch===gh.epoch&&observation&&observeSelectedGithubRepository(observation.repository,observation.sequence)&&view==='github')render();
+  return result;
 }
 async function startIssueWork(option,issue,expectedProject=implementationKey()){
   if(expectedProject!==implementationKey())return;
@@ -88,7 +92,7 @@ async function openImplementationReport(entry,request,expectedProject=implementa
     }
     if(result.tests?.unexecutedTools?.length)$('report-body').textContent+='\n\n注册测试遇到失败后未执行：'+result.tests.unexecutedTools.join('、');
     $('report-raw').textContent=JSON.stringify(result,null,2);document.querySelector('#report-original summary').textContent='核对本次原结果、测试与提交绑定';$('report-original').hidden=false;
-  }catch(error){if(nonce===reportNonce)$('report-body').textContent=readableReason(error.message);}
+  }catch(error){if(nonce===reportNonce)$('report-body').textContent=error.message==='implementation_validation_capture_changed'?'已保存候选的验证原件待核，当前无法确认原测试通过。':readableReason(error.message);}
 }
 function implementationPanel(){
   const project=implementationKey(),data=implementationData(),panel=append(el('section',null,'panel'),el('h2','已审定 Issue 的受控实现'));

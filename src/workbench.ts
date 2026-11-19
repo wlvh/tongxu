@@ -305,7 +305,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
         if(!exactKeys(JSON.parse(Buffer.concat(chunks).toString()),[]))throw new Error('project_work_confirmation_invalid');
         if(url.pathname.endsWith('/decline'))json(res,200,workOwner.decline(capability[1]!));
-        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();if(payload.purpose==='validation')return work.approveValidationMaterial(scope,id,payload);return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload)):work.start(scope,id,payload);}));return;
+        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();if(payload.purpose==='validation')return work.approveValidationMaterial(scope,id,payload);return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload,true)):work.start(scope,id,payload,true);}));return;
       }
       if(url.pathname==='/api/entry'||url.pathname.startsWith('/api/github/')){
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
@@ -330,8 +330,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname==='/api/project-secretary/stop'&&req.method==='POST'){
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'project_chat_stop_invalid'});return;}chunks.push(Buffer.from(chunk));}
-        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');
-        const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId));return;
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId',...(body?.withdrawQueued===true?['withdrawQueued']:[])]))throw new Error('project_chat_stop_invalid');
+        const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId,body.withdrawQueued===true));return;
       }
       const formalStop=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/stop$/.exec(url.pathname);
       if(formalStop&&req.method==='POST'){
@@ -383,9 +383,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'implementation_request_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
-        if(action[2]==='prepare'){json(res,200,await controls.prepare(action[1]!,body));return;}
+        const observe=()=>github!.repositoryObservation(selection.account.id,selection.repository.id);
+        if(action[2]==='prepare'){
+          const result=await controls.prepare(action[1]!,body);
+          json(res,200,{...result,repositoryObservation:observe()});return;
+        }
         if(!exactKeys(body,['requestId']))throw new Error('implementation_request_invalid');
-        json(res,['start','continue-first-input'].includes(action[2]!)?202:200,action[2]==='continue-first-input'?await controls.continueFirstInput(action[1]!,body.requestId):action[2]==='start'?await controls.begin(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
+        if(action[2]==='start'){
+          const result=await controls.begin(action[1]!,body.requestId);
+          json(res,202,{...result,repositoryObservation:observe()});return;
+        }
+        json(res,action[2]==='continue-first-input'?202:200,action[2]==='continue-first-input'?await controls.continueFirstInput(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
       }
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');

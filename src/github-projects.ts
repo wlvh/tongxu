@@ -160,6 +160,8 @@ export class GitHubProjects{
   private projectCursors=new Map<number,Set<string>>();
   private itemCursors=new Map<string,Map<number,Set<string>>>();
   private epoch=0;
+  private repositoryReadSequence=0;
+  private repositorySequences=new Map<number,number>();
   private closed=false;
   private controllers=new Set<AbortController>();
   private reads=new Set<Promise<unknown>>();
@@ -168,6 +170,10 @@ export class GitHubProjects{
     const repo=this.repositories.get(repositoryId);
     if(this.closed||!positive(accountId)||!positive(repositoryId)||this.identity?.id!==accountId||!repo)fail('github_project_not_selected');
     return {account:{...this.identity!},repository:{...repo!},generation:this.epoch};
+  }
+  repositoryObservation(accountId:number,repositoryId:number){
+    const {repository}=this.selection(accountId,repositoryId);
+    return {repository,sequence:this.repositorySequences.get(repositoryId)!};
   }
   async confirmSelection(accountId:number,repositoryId:number){
     this.selection(accountId,repositoryId);
@@ -178,7 +184,7 @@ export class GitHubProjects{
     const current=this.selection(selection.account.id,selection.repository.id);
     if(current.generation!==selection.generation||current.repository.nodeId!==selection.repository.nodeId||current.repository.fullName!==selection.repository.fullName)fail('github_project_selection_changed');
   }
-  private changed(){this.identity=null;this.repositories.clear();this.projectCursors=new Map();this.itemCursors.clear();this.epoch++;}
+  private changed(){this.identity=null;this.repositories.clear();this.repositorySequences.clear();this.projectCursors=new Map();this.itemCursors.clear();this.epoch++;}
   async read(url:URL):Promise<unknown>{
     if(this.closed)fail('github_reader_closed');
     const controller=new AbortController(),epoch=this.epoch;this.controllers.add(controller);
@@ -227,7 +233,8 @@ export class GitHubProjects{
     if(connection){const info=connection.pageInfo;if(typeof info?.hasNextPage!=='boolean'||!(info.endCursor===null||bounded(info.endCursor,2048))||info.hasNextPage&&!info.endCursor)fail();result.hasNext=info.hasNextPage;result.nextCursor=info.hasNextPage?info.endCursor:null;}
     if(signal.aborted)fail('github_read_cancelled');
     if(this.identity?.id!==observed.id){this.changed();this.identity=observed;}
-    for(const repo of newRepositories)this.repositories.set(repo.id,repo);
+    const sequence=++this.repositoryReadSequence;
+    for(const repo of newRepositories){this.repositories.set(repo.id,repo);this.repositorySequences.set(repo.id,sequence);}
     if(connection){
       const destination=list?this.projectCursors:this.itemCursors.get(group)??new Map<number,Set<string>>();
       // Each view sends its own returned position. Another first-page read
@@ -239,7 +246,7 @@ export class GitHubProjects{
       }
       if(!list)this.itemCursors.set(group,destination);
     }
-    return {connection:{status:'connected',account:observed,checkedAt:now()},...result,source:'github_live_read',readOnly:true,modelInputs:0};
+    return {connection:{status:'connected',account:observed,checkedAt:now(),sequence},...result,source:'github_live_read',readOnly:true,modelInputs:0};
   }
   async close(){this.closed=true;for(const c of this.controllers)c.abort();await Promise.allSettled([...this.reads]);}
 }

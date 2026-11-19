@@ -263,8 +263,8 @@ export class ProjectChat{
     const waitLimitMs=this.config.timeoutMs;let turnStartedAt:number|null=null;
     const timeBudget=()=>{const elapsedMs=turnStartedAt===null?null:Math.max(0,Math.floor(performance.now()-turnStartedAt));return {limitMs:waitLimitMs,elapsedMs,remainingMs:elapsedMs===null?null:Math.max(0,waitLimitMs-elapsedMs)};};
     try{
-      await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit},timeBudget:timeBudget()},initialId=hash(canonical(initial));
-      const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];save(join(directory,'observations.json'),observations);
+      const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit},timeBudget:timeBudget()},initialId=hash(canonical(initial));
+      const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];
       const preceding=this.preceding(row.conversation,id);
       const history=this.modelHistory(preceding);
       await this.verifyHistory(preceding);
@@ -274,7 +274,7 @@ export class ProjectChat{
       if(Buffer.byteLength(canonical(input))>512*1024)throw new Error('project_chat_context_limit');
       const aiSelection=currentAIChoice('secretary');if(aiSelection&&(aiSelection.tool!=='codex'||aiSelection.project.account!==scope.account.id||aiSelection.project.repository!==scope.repository.id||aiSelection.project.nodeId!==scope.repository.nodeId))throw new Error('ai_role_tools_not_supported');
       const runtimeConfig=aiSelection?{...this.config,codexExecutable:aiSelection.executable}:this.config;
-      save(join(directory,'request.json'),{requestId:id,conversationId:row.conversation,candidate,input,system:prompt.system,config:runtimeConfig,...(aiSelection?{aiSelection}:{}),historyTransfer:'complete_saved_history_new_native_context'});
+
       let bytes=0,calls=0;const check=async()=>{if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');await this.verify(scope);if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');};
       const gate={check,call:async(p:{tool:string;arguments:Row;callId:string},before?:()=>void)=>{
         await check();before?.();if(++calls>projectChatToolLimit||!projectChatToolsFor(!!work).some(t=>t.name===p.tool))throw new Error('project_chat_tool_limit');
@@ -283,6 +283,9 @@ export class ProjectChat{
         return {success:true,contentItems:[{type:'inputText',text:JSON.stringify({observationId,...observation})}]};
       }};
       await check();
+      await privateDirectory(directory,true);
+      save(join(directory,'observations.json'),observations);
+      save(join(directory,'request.json'),{requestId:id,conversationId:row.conversation,candidate,input,system:prompt.system,config:runtimeConfig,...(aiSelection?{aiSelection}:{}),historyTransfer:'complete_saved_history_new_native_context'});
       // Account/read and ordinary rate-limit observations are captured by the
       // native executor immediately before input. No stale evidence is dated anew.
       const allowedStop=(request:{action:string;id:string})=>request.action==='interrupt'&&(active.stop&&request.id==='stop-'+id||active.timedOut&&request.id==='timeout-'+id);
@@ -299,6 +302,10 @@ export class ProjectChat{
       await this.closeNative(active).catch(()=>{});try{await this.complete(id);return;}catch{}
       const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
       const unstarted=rowPhase==='registered'&&!await exists(native);let ended=unstarted;
+      if(unstarted&&!active.stop&&this.accepting&&reason(e)==='github_connection_unavailable'&&!await exists(directory)){
+        this.db.prepare("UPDATE messages SET phase='queued',pid=NULL,owner=NULL,problem=? WHERE id=? AND phase='registered'").run(reason(e),id);
+        return;
+      }
       if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
       const phase=!ended?'unknown':active.stop?'interrupted':'failed';
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(phase,reason(e),now(),id);
@@ -331,12 +338,17 @@ export class ProjectChat{
     const state=active.session?.controlState();if(state?.currentTurnActive)await active.session!.control({id:(cause==='timeout'?'timeout-':'stop-')+id,action:'interrupt',threadId:state.threadId!,sessionId:state.sessionId!,turnId:state.turnId!,input:null}).catch(()=>{});
     await this.closeNative(active);
   }
-  async stopSelected(accountId:number,repositoryId:number,id:string){
+  async stopSelected(accountId:number,repositoryId:number,id:string,withdrawQueued=false){
     if(!chatId(id)||!Number.isSafeInteger(accountId)||!Number.isSafeInteger(repositoryId))throw new Error('project_chat_id_invalid');
     const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository,conversations.node_id FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
     if(!row||row.account!==accountId||row.repository!==repositoryId)throw new Error('project_chat_outside_project');
+    if(withdrawQueued&&row.phase!=='queued'){
+      if(row.problem==='project_chat_queued_cancelled')return {requestId:id,stopRequested:true,stopRecordSaved:true,newModelInputs:0};
+      throw new Error('project_chat_withdrawal_state_changed');
+    }
     if(row.phase==='queued'){
       const cancelled=this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem='project_chat_queued_cancelled' WHERE id=? AND phase='queued'").run(now(),id).changes===1;
+      if(withdrawQueued&&!cancelled)throw new Error('project_chat_withdrawal_state_changed');
       this.waiting.delete(id);
       if(cancelled)this.processWaiting({account:{id:accountId},repository:{id:repositoryId,nodeId:row.node_id}});
       return {requestId:id,stopRequested:cancelled,stopRecordSaved:cancelled,newModelInputs:0};

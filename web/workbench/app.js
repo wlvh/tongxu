@@ -4,7 +4,7 @@ const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0,controlRefresh=null;
 let entryInfo=null,githubDetailEpoch=null,entryLoading=false;
-let githubRepositoryRead=0,githubRepositoryApplied=0;
+let githubRepositorySequence=0;
 const gh={account:null,projects:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,checkedAt:null,filter:'',selected:null,epoch:0,listRequest:0,issues:null,pulls:null};
 const pendingControls=new Set();
 const pendingScopeControls=new Set();
@@ -645,18 +645,18 @@ function clearProjectView(){
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
 }
 function chooseGithubProject(repo,restoreConversationId=null){
-  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};chatData().restoreConversationId=restoreConversationId;rememberWorkbenchPosition(restoreConversationId);view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
+  clearProjectView();gh.epoch++;gh.selected=repo;githubRepositorySequence=0;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};chatData().restoreConversationId=restoreConversationId;rememberWorkbenchPosition(restoreConversationId);view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
 }
-function observeSelectedGithubRepository(repository,read){
-  if(repository.id!==gh.selected?.id||read<=githubRepositoryApplied)return false;
-  githubRepositoryApplied=read;gh.selected=repository;return true;
+function observeSelectedGithubRepository(repository,sequence){
+  if(repository.id!==gh.selected?.id||!Number.isSafeInteger(sequence)||sequence<=githubRepositorySequence)return false;
+  githubRepositorySequence=sequence;gh.selected=repository;return true;
 }
 async function loadGithubItems(kind,more=false){
   const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
-  const request=++pane.request,repositoryRead=++githubRepositoryRead,page=more?pane.page+1:1;pane.loading=true;pane.error=null;if(view==='github'&&gh.selected?.id===repo.id)render();
+  const request=++pane.request,page=more?pane.page+1:1;pane.loading=true;pane.error=null;if(view==='github'&&gh.selected?.id===repo.id)render();
   try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'?account='+account.id+'&state='+pane.state+'&page='+page+(more?'&cursor='+encodeURIComponent(pane.nextCursor):''));
     if(epoch!==gh.epoch||gh.account?.id!==account.id||request!==pane.request||gh.selected?.id!==repo.id)return;
-    observeSelectedGithubRepository(data.repository,repositoryRead);pane.items=more?[...new Map([...pane.items,...data.items].map(item=>[item.number,item])).values()]:data.items;pane.page=page;pane.hasNext=data.hasNext;pane.nextCursor=data.nextCursor??null;pane.checkedAt=data.connection.checkedAt;
+    observeSelectedGithubRepository(data.repository,data.connection?.sequence);pane.items=more?[...new Map([...pane.items,...data.items].map(item=>[item.number,item])).values()]:data.items;pane.page=page;pane.hasNext=data.hasNext;pane.nextCursor=data.nextCursor??null;pane.checkedAt=data.connection.checkedAt;
   }catch(error){if(epoch!==gh.epoch||request!==pane.request)return;if(handleGithubError(error))render();else pane.error=error;}
   finally{pane.loading=false;if(epoch===gh.epoch&&request===pane.request&&view==='github'&&gh.selected?.id===repo.id)render();}
 }
@@ -700,10 +700,10 @@ function selectedGithubView(){
   if(entryInfo?.projectWork)page.append(projectWorkLauncher());page.append(implementationPanel());page.append(append(el('div',null,'github-columns'),githubItemsPanel('issues'),githubItemsPanel('pulls')));return page;
 }
 async function openGithubItem(kind,item){
-  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce,repositoryRead=++githubRepositoryRead;gh.selectedIssue=null;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
+  const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;gh.selectedIssue=null;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
   const current=()=>nonce===reportNonce&&epoch===gh.epoch&&gh.account?.id===account.id&&gh.selected?.id===repo.id&&$('report-dialog').open;
   try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(!current())return;
-    if(observeSelectedGithubRepository(data.repository,repositoryRead)&&view==='github')render();
+    if(observeSelectedGithubRepository(data.repository,data.connection?.sequence)&&view==='github')render();
     $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
     if(kind!=='issues')return;
     const direct=entryInfo?.issueImplementation?await projectFileIssueChoice(data.item):null;

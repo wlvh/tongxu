@@ -244,8 +244,8 @@ export async function testProject(workspace: string, directory: string, p: Proje
       throw new Error('project_test_candidate_blob_or_mode_mismatch:'+path);
   }
   // A matching blob can still be transformed by Git on checkout.
-  if(sourcePaths.length){
-    const checkout=join(directory,'candidate-checkout');
+  const checkout=join(directory,'candidate-checkout');
+  if(sourcePaths.length||p.projectFiles){
     await mkdir(checkout,{mode:0o700});
     for(let start=0;start<sourcePaths.length;start+=32)
       await setupGit(['checkout-index','--force','--ignore-skip-worktree-bits','--prefix='+checkout+'/', '--',...sourcePaths.slice(start,start+32)]);
@@ -254,6 +254,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
       if(hash(await regular(file,256*1024))!==current[path]!.sha256 ||
         Boolean((await lstat(file)).mode&0o100)!==Boolean((current[path]!.executable??0)&0o100))
         throw new Error('project_test_candidate_checkout_mismatch:'+path);
+      if(p.projectFiles)await chmod(file,0o600|(current[path]!.executable??0));
     }
   }
   const generated = [];
@@ -269,9 +270,12 @@ export async function testProject(workspace: string, directory: string, p: Proje
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
   // Keep Git metadata in the host fingerprint, outside the candidate mount.
   // Tests see byte-identical selected files and cannot recover omitted blobs.
-  const executionWork=p.materialView?join(directory,'material-work'):work;
+  const executionWork=p.projectFiles?checkout:p.materialView?join(directory,'material-work'):work;
+  const separateMount=executionWork!==work;
   if(p.materialView){
     await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,await regular(join(work,path),256*1024),{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
+  }
+  if(separateMount){
     for(const path of p.generatedDirectories)await mkdir(join(executionWork,path),{recursive:true,mode:0o700});if(fixed.dependencies)await mkdir(join(executionWork,'node_modules'),{mode:0o700});
     if(treeHash(await tree(executionWork,true))!==inputHash)throw new Error('project_test_material_copy_changed');
   }
@@ -281,7 +285,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   for (const [index, tool] of fixed.plan.tools.entries()) {
     let observed: unknown[] = [];
     const currentInput = await fingerprint(work, Object.keys(current), entries => { observed = entries; }), currentDependencies = await dependencyDigest(fixed.dependencies);
-    if (currentInput !== pre || currentDependencies !== p.dependencyHash || p.materialView&&treeHash(await tree(executionWork,true))!==inputHash) {
+    if (currentInput !== pre || currentDependencies !== p.dependencyHash || separateMount&&treeHash(await tree(executionWork,true))!==inputHash) {
       const expected = new Map<string, unknown>(JSON.parse((await regular(join(directory, 'input-state.json'), 16 * 1024 * 1024)).toString()));
       const actual = new Map<string, unknown>(observed as Array<[string, unknown]>);
       const changed = [...new Set([...expected.keys(), ...actual.keys()])].filter(path => JSON.stringify(expected.get(path)) !== JSON.stringify(actual.get(path)));
@@ -296,7 +300,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
     const artifacts = await generatedEvidence(generated);
     save(join(directory, 'generated-state-' + index + '.json'), artifacts);
     const generatedArtifacts = { valid: artifacts.valid, count: artifacts.files.length, sha256: artifacts.sha256 };
-    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid&&(!p.materialView||treeHash(await tree(executionWork,true))===inputHash), dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
+    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid&&(!separateMount||treeHash(await tree(executionWork,true))===inputHash), dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
     executionHealthy &&= inputUnchanged && dependenciesUnchanged && ['completed', 'failed'].includes(r.status);
     const resultFiles = await readdir(resultDirectory);
     if (resultFiles.some(name => name !== 'result.json')) executionHealthy = false;
@@ -313,7 +317,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   if (treeHash(await tree(workspace, true)) !== inputHash) throw new Error('repair_workspace_changed_during_tests');
   const passed = executionHealthy && tools.length === fixed.plan.tools.length && tools.every(t => t.status === 'completed' && t.exitCode === 0 && (!t.sampleSet || t.sampleSet.complete && t.sampleSet.samples.every(s => s.status === 'ok')));
   const result = { kind: 'registered-project-tests-v1', passed, executionHealthy, candidateTreeSha256: inputHash, H, T,
-    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding',...(p.materialView?{executionView:'selected_material_files',gitMetadataMounted:false,unselectedRuntimeBehavior:'not_executed'}:{}) },
+    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding',...(p.projectFiles?{executionView:'project_candidate_checkout',gitMetadataMounted:false}:p.materialView?{executionView:'selected_material_files',gitMetadataMounted:false,unselectedRuntimeBehavior:'not_executed'}:{}) },
     tools, failure: executionHealthy ? null : 'test_execution_or_input_unverified', exit: { code: passed ? 0 : 1, signal: null }, businessCorrectness: 'requires_independent_review', testPlanSha256: p.testPlanSha256 };
   save(join(directory, 'result.json'), result); save(join(directory, 'test-progress.json'), { phase: 'completed', toolsRequested: tools.length }); return result;
 }

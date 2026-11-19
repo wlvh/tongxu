@@ -33,6 +33,8 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
   last?.status==='failed'&&Number.isInteger(last.exitCode)&&last.exitCode!==0&&
   result.tools.slice(0,-1).every((t:any)=>t.status==='completed'&&t.exitCode===0);
  if((requireFailed&&result.passed!==false)||typeof result.passed!=='boolean'||result.exit?.code!==(result.passed?0:1)||result.executionHealthy!==true||result.failure!==null||result.candidateTreeSha256!==frozen||input.candidateTreeSha256!==frozen||intent.candidateTreeSha256!==frozen||intent.directory!==directory||intent.workspace!==plan.workspace||intent.kind!=='registered-project-tests-v1'||progress.phase!=='completed'||progress.toolsRequested!==result.tools.length||(!earlyFailure&&result.tools.length!==fixed.plan.tools.length)||[result,input,intent].some(x=>x.testPlanSha256!==plan.project.testPlanSha256)||canonical(input.sourceCandidate)!==canonical(plan.project.sourceCandidate)||result.sourceInput?.sourceHead!==plan.candidate.H||input.H!==result.H||input.T!==result.T||await gitRead(join(directory,'work'),['rev-parse','HEAD'])!==result.H||await gitRead(join(directory,'work'),['rev-parse','HEAD^{tree}'])!==result.T||await fingerprint(join(directory,'work'),Object.keys(tested))!==input.preFingerprint||input.dependencyHash!==plan.project.dependencyHash||canonical(input.protectedPaths)!==canonical(plan.project.protectedPaths))throw new Error('implementation_validation_test_unknown');
+ const checkout=result.sourceInput.executionView==='project_candidate_checkout'?join(directory,'candidate-checkout'):null;
+ if(checkout&&(!plan.project.projectFiles||result.sourceInput.gitMetadataMounted!==false||await exists(join(checkout,'.git'))||treeHash(await tree(checkout,true))!==frozen))throw new Error('implementation_validation_test_unknown');
  const probeDir=join(directory,'runtime/probe'),probeBytes=await regular(join(probeDir,'execution.json')),probe=JSON.parse(probeBytes.toString());
  if(dockerTerminalEvidence(probeBytes,fixed.plan.executor!,probeDir)!=='ended'||processState(probe.clientPid)!=='ended'||probe.status!=='completed'||probe.exitCode!==0||probe.capture?.complete!==true||hash(await regular(join(probeDir,'stdout')))!==probe.capture.stdoutSha256||hash(await regular(join(probeDir,'stderr')))!==probe.capture.stderrSha256)throw new Error('implementation_validation_test_unknown');
  const originals:Array<{stdoutOriginal:LogOriginal;stderrOriginal:LogOriginal}>=[];
@@ -51,7 +53,7 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
    try{if(material)value=JSON.parse(material.toString());}catch{/* Missing sample coverage matches the runner. */}
    sampleSet=samples(value,ids,t.exitCode===0);
   }
-  if(canonical(r.connection)!==canonical(probe.connection)||processState(r.clientPid)!=='ended'||r.after?.State?.OOMKilled===true||hash(raw)!==t.dockerRecordSha256||stdoutOriginal.sha256!==t.stdoutSha256||stderrOriginal.sha256!==t.stderrSha256||t.stdout!==stdout.slice(0,16000)||t.stderr!==stderr.slice(0,16000)||!t.inputUnchanged||!t.dependenciesUnchanged||canonical(t.sampleSet)!==canonical(sampleSet)||canonical(t.registeredSampleIds)!==canonical(ids)||t.id!==tool.id||canonical(t.argv)!==canonical(tool.argv)||!dockerEvidenceMatches(raw,fixed.plan.executor!,{run:frozen,stage:i,tool:t.id,head:result.H,tree:result.T,planHash:plan.project.testPlanSha256},{...t,dockerExecutionDirectory:'tool-'+i,stdout:stdoutOriginal,stderr:stderrOriginal},tool.timeoutMs))throw new Error('implementation_validation_test_unknown');
+  if(checkout&&r.paths?.work!==checkout||canonical(r.connection)!==canonical(probe.connection)||processState(r.clientPid)!=='ended'||r.after?.State?.OOMKilled===true||hash(raw)!==t.dockerRecordSha256||stdoutOriginal.sha256!==t.stdoutSha256||stderrOriginal.sha256!==t.stderrSha256||t.stdout!==stdout.slice(0,16000)||t.stderr!==stderr.slice(0,16000)||!t.inputUnchanged||!t.dependenciesUnchanged||canonical(t.sampleSet)!==canonical(sampleSet)||canonical(t.registeredSampleIds)!==canonical(ids)||t.id!==tool.id||canonical(t.argv)!==canonical(tool.argv)||!dockerEvidenceMatches(raw,fixed.plan.executor!,{run:frozen,stage:i,tool:t.id,head:result.H,tree:result.T,planHash:plan.project.testPlanSha256},{...t,dockerExecutionDirectory:'tool-'+i,stdout:stdoutOriginal,stderr:stderrOriginal},tool.timeoutMs))throw new Error('implementation_validation_test_unknown');
   originals.push({stdoutOriginal,stderrOriginal});
   if(logSelection&&logSelection.tool===t.id)log=logSelection.stream==='stdout'?out:err;
  }
@@ -65,10 +67,21 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
  * execution is current, even if an earlier execution of the same tree passed. */
 export async function readLatestProjectToolValidation(operation:string,native:string,plan:Row,logSelection?:ValidationLogSelection){
  const pairs:Row[]=await json(join(native,'reconciled-tools.json'));
- const pair=pairs.findLast(item=>item.request.params.tool==='tongxu_run_tests');
+ const executions=new Map<string,Row>();
+ for(const item of pairs){
+  const request=item.request.params;
+  if(request.tool!=='tongxu_run_tests')continue;
+  if(typeof request.callId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(request.callId))throw new Error('implementation_validation_calls_unknown');
+  const prior=executions.get(request.callId);
+  if(prior){
+   if(canonical(prior.request.params)!==canonical(request)||canonical(prior.response.result)!==canonical(item.response.result))throw new Error('implementation_validation_calls_unknown');
+   continue;
+  }
+  executions.set(request.callId,item);
+ }
+ const pair=[...executions.values()].at(-1);
  if(!pair)throw new Error('implementation_actual_change_and_tests_required');
  const callId=pair.request.params.callId;
- if(typeof callId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(callId))throw new Error('implementation_validation_calls_unknown');
  const receipt=await json(join(operation,'calls',callId+'.json'));
  const observed=JSON.parse(receipt.response.contentItems[0].text);
  const directory=join(operation,'tests','tool-'+callId);

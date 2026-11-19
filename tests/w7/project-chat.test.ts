@@ -56,9 +56,9 @@ if(m.method==='turn/interrupt'){
 }
 emit({id:m.id,result});});
 `;
-  await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0;
+  await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0,projectChecksBeforeOffline=Infinity;
   const repo=(id:number)=>({id,nodeId:'R_'+id,full_name:'fixture/project-'+id,description:'Explicit project fixture',private:true,archived:false,defaultBranchRef:id===2?null:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:'2026-10-30T00:00:00Z'});
-  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(offline){offlineChecks++;throw new Error('github_connection_unavailable');}
+  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(offline||op==='project'&&projectChecksBeforeOffline--===0){offline=true;offlineChecks++;throw new Error('github_connection_unavailable');}
     const selected=repo(v.id==='R_2'?2:1),pull=op==='pull_comments',commentId=pull?3:v.before?1:2;
     const comments={number:v.number,comments:{totalCount:pull?1:2,edges:[{cursor:'comment-'+commentId,node:{databaseId:commentId,author:pull?null:{login:'fixture'},createdAt:'2026-10-30T00:00:00Z',updatedAt:'2026-10-31T00:00:00Z',url:'https://github.com/'+selected.full_name+'/'+(pull?'pull':'issues')+'/'+v.number+'#issuecomment-'+commentId,body:pull?'PR ordinary conversation':'Issue comment '+commentId}}],pageInfo:{hasPreviousPage:!pull&&!v.before,startCursor:'comment-'+commentId}}};
     return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{id:account,login:'fixture',projects:{nodes:[repo(1),repo(2)],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account:{id:account,login:'fixture'},repository:{...selected,...(op==='issue_comments'||op==='pull_comments'?{item:comments}:{})}}})};}});
@@ -74,7 +74,7 @@ emit({id:m.id,result});});
     }
     assert.fail('the fixture did not receive the expected model input');
   };
-  return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineChecks:()=>offlineChecks,setAccount:(v:number)=>{account=v;}};
+  return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineChecks:()=>offlineChecks,offlineAfterProjectChecks:(checks:number)=>{projectChecksBeforeOffline=checks;},setAccount:(v:number)=>{account=v;}};
 }
 const question=(text='当前项目有哪些待办？',parent:string|null=null,conversationId=randomUUID())=>({requestId:randomUUID(),conversationId,parent,question:text});
 test('normal project secretary reads both ordinary comment kinds, pages and verified history without opening old queues',async t=>{
@@ -117,8 +117,29 @@ for(const mode of ['quota','partial','forbidden'])test(mode+' never becomes a fu
 });
 test('stop uses the owned turn, remains available without GitHub, and preserves incomplete history',async t=>{
   const f=await fixture(t,'hold'),q=question();await f.post('/api/project-secretary/ask',q);for(let i=0;i<120;i++){if((await f.logs()).some(x=>x.kind==='input'))break;await new Promise(r=>setTimeout(r,25));}
-  f.setOffline(true);const stopped=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stopped.status,200);f.setOffline(false);
+  f.setOffline(true);
+  const withdrawal=await f.post('/api/project-secretary/stop',{requestId:q.requestId,withdrawQueued:true});
+  assert.deepEqual([withdrawal.status,withdrawal.data.error],[503,'project_chat_withdrawal_state_changed']);
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,0);
+  const stopped=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stopped.status,200);f.setOffline(false);
   const state=await f.wait(q.conversationId,m=>m[0]?.status==='interrupted');assert.equal(state.messages[0].answer,null);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
+});
+test('a GitHub outage after claiming a queued question preserves its ID for explicit continuation',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const next=question('继续核对这个项目',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  f.offlineAfterProjectChecks(1);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  const pending=await f.wait(first.conversationId,m=>m[1]?.status==='queued'&&m[1]?.problem==='github_connection_unavailable');
+  assert.equal(pending.messages[1].id,next.requestId);
+  assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+  await assert.rejects(readFile(join(f.root,'chats',next.requestId,'request.json')), {code:'ENOENT'});
+  f.setOffline(false);
+  assert.equal((await f.post('/api/project-secretary/continue-question',{requestId:next.requestId})).status,202);
+  await f.wait(first.conversationId,m=>m[1]?.status==='completed');
+  assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
 });
 test('busy intake persists the exact words, then sends original pending questions once and in order',async t=>{
   const f=await fixture(t,'hold-first-slow-close'), first=question('查看已有开发进度');
