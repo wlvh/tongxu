@@ -29,7 +29,7 @@ import {ProjectWorkStore} from '../../src/project-work-store.js';
 import {DatabaseSync,backup} from 'node:sqlite';
 import nodeTest, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile, readFile, chmod, readdir, rm, cp,symlink } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, chmod, readdir, rm, cp, symlink, rename } from 'node:fs/promises';
 import { join, resolve, basename, dirname } from 'node:path';
 import { fixture } from '../w5/repair-fixture.js';
 import { type ProjectRequest,prepareProjectRepair, testProject, projectModelTestResult, reconcileProjectTests, bindProjectTestToCandidate, needsProjectReviewBindingSupplement } from '../../src/project-repair.js';
@@ -468,10 +468,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  }
  if(fault==='project-development'){
   await writeFile(join(f.objects,'src/AGENTS.md'),'Preserve the exact download boundary. This rule applies to this folder.\n');
-  await git(f.objects,['add','--','src/AGENTS.md']);
+  await writeFile(join(f.objects,'AGENTS.md'),'Explicit project fixture. Keep original reports and registered tests.\n');
+  await writeFile(join(f.objects,'SOP.md'),'Verify behavior through the actual source.\n');
+  await writeFile(join(f.objects,'sample.js'),'export const value=1;\n');
+  await writeFile(join(f.objects,'test.mjs'),"import test from 'node:test';import assert from 'node:assert/strict';import {value} from './sample.js';test('formal repair contract',()=>assert.equal(value,4));\n");
+  await writeFile(join(f.objects,'src/caller.mjs'),"import {normalizeLabel} from './normalize.mjs';\nexport const caller = label => normalizeLabel(label);\n");
+  await git(f.objects,['add','--','src/AGENTS.md','AGENTS.md','SOP.md','sample.js','test.mjs','src/caller.mjs']);
   await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','add scoped original rules']);
-  proposal.materialPaths.push('src/AGENTS.md');
-  proposal.protectedPaths.push('src/AGENTS.md');
+  proposal.materialPaths.push('AGENTS.md','src/AGENTS.md');
+  proposal.protectedPaths.push('AGENTS.md','src/AGENTS.md');
  }
  const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
@@ -488,8 +493,12 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(![2,3,4,5].includes(context.preparationVersion)||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development'){
    const nativeSuppl={...proposal,goal:'Retain downloads for strictly less than 24 hours',acceptance:['No download at the exact boundary'],validation:{description:'Retention boundary',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);"}};
+   const preciseMarker={...proposal,goal:'Expose whether a download is corrected',acceptance:['The corrected marker is true'],validation:{
+     description:'Corrected download marker',script:"import assert from 'node:assert/strict';import{correctedDownload}from'./src/normalize.mjs';assert.equal(correctedDownload,true);"}};
    const stage="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also add a retention deadline for the download.')";
-   code=code.replace("if(stage==='tongxu_repository_file'){const rejected=",stage+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(nativeSuppl)+'});return;}'+"if(stage==='tongxu_repository_file'){const rejected=");
+   const late="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also mark corrected downloads.')";
+   code=code.replace("if(stage==='tongxu_repository_file'){const rejected=",stage+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(nativeSuppl)+'});return;}'+
+     late+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(preciseMarker)+'});return;}'+"if(stage==='tongxu_repository_file'){const rejected=");
  }
  if(fault==='validation-failed')code=code.replace("decision:repairing?'implemented':","decision:context.originalReport?'no_change':repairing?'implemented':");
  if(fault==='validation-interrupt')code=code.replace("if(stage==='tongxu_replace_file'){","if(stage==='tongxu_replace_file'){if(context.originalReport)process.exit(7);");
@@ -502,7 +511,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&!context.originalReport)args.text='export function normalizeLabel(value){return value.trim() || \"Wrong\";}\\n';stage=name;const serial=");
  }
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.technicalEvidence&&context.work){finish({candidateH:context.candidate.H,report:'Explicit fixture Tech Lead explanation: tested download retention, with review and publication still unobserved.'});return;}if(mode==='host-unavailable'&&turn===1)");
- if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.material?.issue&&context.reviewedInputSha256){finish({candidateH:context.material.head,reviewedInputSha256:context.reviewedInputSha256,verdict:'PASS',report:'Explicit fixture Issue review of the published acceptance plan.',findings:[],coverageGaps:[],ownerQuestions:[]});return;}if(m.params.outputSchema.properties.title){finish({candidateH:context.head,title:'Add download expiry',report:'Track the specified availability deadline for completed downloads.'});return;}if(context.draft&&context.issue){finish({candidateH:context.draft.head,report:'From Downloads, open a result before the deadline, at the deadline and afterward. Check that expired results are refused.'});return;}if(mode==='host-unavailable'&&turn===1)");
+ if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.material?.issue&&context.reviewedInputSha256){const lookup=context.material.integration&&context.peer===null;finish({candidateH:context.material.head,reviewedInputSha256:context.reviewedInputSha256,verdict:lookup?'REWORK_REQUIRED':'PASS',report:'Explicit fixture review of the exact acceptance material.',findings:[],coverageGaps:lookup?['source:src/caller.mjs']:[],ownerQuestions:[]});return;}if(m.params.outputSchema.properties.title){finish({candidateH:context.head,title:'Add download expiry',report:'Track the specified availability deadline for completed downloads.'});return;}if(context.draft&&context.issue){finish({candidateH:context.draft.head,report:'From Downloads, open a result before the deadline, at the deadline and afterward. Check that expired results are refused.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement)throw Error('fixture_original_supplement_required');const amend=context.request.continuation.supplement.text,second=amend==='Also mark corrected downloads.';if(!second&&amend!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt'+(second||context.request.issue.number!==202||context.originalReport?'<':'<=')+'86400000;}\\n';if(second)args.text+='export const correctedDownload=true;\\n';}stage=name;const serial=");
  if(fault==='project-development')code=code.replace("if(stage==='tongxu_read_file'){", "const initialB=context.request?.issue?.number===202&&context.request.continuation?.supplement.text==='Also add a retention deadline for the download.'&&!context.originalReport;if(initialB&&stage==='tongxu_read_file'){tool('tongxu_run_tests',{});return;}if(initialB&&stage==='tongxu_run_tests'){finish({candidateH:context.candidate.H,decision:'no_change',report:'The unchanged candidate failed the new download requirement.'});return;}if(stage==='tongxu_read_file'){");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
@@ -1041,12 +1050,20 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(combinedReview.integrationReview.approved,true);
      assert.equal(combinedReview.integrationReview.correctness.exchanged.candidateH,combined.value.H);
      assert.equal(combinedReview.integrationReview.minimality.exchanged.candidateH,combined.value.H);
-     const reviewInput=JSON.parse(await readFile(join(config.root,'works',b,'version-1','integration-preview-'+hash(canonical(combinedReview.integrationSource)).slice(0,32),'dual-review','request.json'),'utf8')).material;
+     const reviewDirectory=join(config.root,'works',b,'version-1','integration-preview-'+hash(canonical(combinedReview.integrationSource)).slice(0,32),'dual-review');
+     const reviewInput=JSON.parse(await readFile(join(reviewDirectory,'request.json'),'utf8')).material;
      assert.match(reviewInput.integration.baseChanges,/Unrelated upstream change/);
      assert.equal(reviewInput.integration.originalBase,H);
      assert.equal(reviewInput.integration.base,nextBase);
      assert.match(reviewInput.integration.projectRules.find((rule:any)=>rule.path==='src/AGENTS.md').text,/Preserve the exact download boundary/);
      assert.ok(reviewInput.integration.affectedFiles.some((file:any)=>file.path==='src/normalize.mjs'));
+     assert.equal(reviewInput.integration.affectedFiles.some((file:any)=>file.path==='src/caller.mjs'),false);
+     assert.deepEqual(combinedReview.integrationReview.correctness.initial.coverageGaps,['source:src/caller.mjs']);
+     const sourceRecord=join(reviewDirectory,'integration-sources.json'),readMore=JSON.parse(await readFile(sourceRecord,'utf8'));
+     assert.deepEqual(readMore.map((file:any)=>[file.path,file.H]),[['src/caller.mjs',combined.value.H]]);
+     await rename(sourceRecord,sourceRecord+'.missing');
+     try{assert.equal((await detail(b)).integrationReview.state,'pending_or_unknown');}
+     finally{await rename(sourceRecord+'.missing',sourceRecord);}
      const openInputs=await readFile(f.trace);
      assert.equal((await post(reviewCombination,{H:combined.value.H,B:nextBase})).value.state,'returned');
      assert.deepEqual(await readFile(f.trace),openInputs);
@@ -1067,60 +1084,80 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal((await readFile(f.trace,'utf8')).split('model-input').length,beforePreview.toString().split('model-input').length+3);
      t.diagnostic(JSON.stringify({integrationTested:combined.value.H,base:nextBase,tree:combined.value.T,
        testTools:combined.value.tests.tools.map((tool:any)=>tool.id),integrationFailed:failedCombination.value.H,failedBase:badBase}));
-     // Exercise the ordinary consumer itself with the authenticated-handoff
-     // boundary supplied here. The formal HTTP tests cover producing this proof.
      const cCatalog=receiptC.draft.catalog,entryC=JSON.parse(await readFile(cCatalog.path,'utf8')).entries[0],cQueue=await QueueStore.open(entryC.store);
      let currentC;
-     try{currentC=cQueue.issueImplementations().requests(entryC.id).find(s=>s.result?.H1===receiptC.draft.delivery.H);}
+     try{currentC=cQueue.issueImplementations().requests(entryC.id).find(row=>row.result?.H1===receiptC.draft.delivery.H);}
      finally{cQueue.close();}
      assert.ok(currentC?.plan);
-     const beforeC=receiptC.draft.delivery.H,formalWorkspace=join(f.root,'published-repair-predecessor'),formalValidation=join(f.root,'formal-predecessor-tests.json');
-     await git(f.objects,['clone','--quiet','--no-hardlinks',currentC.plan.workspace,formalWorkspace]);
-     await writeFile(join(formalWorkspace,'formal-repair.mjs'),'export const preservedRepair = true;\n');
-     await git(formalWorkspace,['add','--','formal-repair.mjs']);
-     await git(formalWorkspace,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','verified formal predecessor marker']);
-     const formalH=await git(formalWorkspace,['rev-parse','HEAD']);
-     assert.equal(await git(formalWorkspace,['rev-parse','HEAD^']),beforeC);
-     await writeFile(formalValidation,canonical({schemaVersion:2,executor:docker,tools:[{
-       id:'formal-predecessor-marker',argv:[docker.node,'--input-type=module','--eval',
-         "import assert from 'node:assert/strict';import {preservedRepair} from './formal-repair.mjs';assert.equal(preservedRepair,true);"],
-       timeoutMs:30000
-     }]}));
-     const proof={operation:randomUUID(),round:1,H:formalH,sessionId:'explicit-formal-proof-fixture',report:{decision:'repaired'},
-       published:{previousH:beforeC,workspace:formalWorkspace,reviewOperation:randomUUID(),
-         reviewMaterialSha256:'a'.repeat(64),requirementsSha256:'b'.repeat(64),publicationSha256:'c'.repeat(64),fixSha256:'d'.repeat(64),
-         testPlans:[{path:formalValidation,sha256:hash(await readFile(formalValidation))}],protectedPaths:['formal-repair.mjs'],
-         image:docker.image,contract:'Keep the proven repair marker.',revisions:[]}};
-     const lateId='supplement-'+randomUUID(),lateText='Also mark corrected downloads.';
+     const beforeC=receiptC.draft.delivery.H;
      const lateTarget={source:targetC.source,requestId:targetC.requestId,task:targetC.task,operation:targetC.operation};
-     const approvedLate={inputSha256:hash(lateId),reviewRun:hash(lateText),requirement:'Expose whether a download is corrected.',
-       acceptance:['The corrected download marker is true.'],
-       validation:{description:'Corrected download marker',script:"import assert from 'node:assert/strict';import {correctedDownload} from './src/normalize.mjs';assert.equal(correctedDownload,true);"},replies:[]};
-     const empty=join(f.root,'isolated-continuation-catalog.json');
-     await writeFile(empty,canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[]}));
-     const controls=await IssueImplementationControls.load(empty,hash(await readFile(empty)),entryC.repository,async n=>{
-       const result=(await detail(c)).draft.issue;assert.equal(result.number,n);return result;
-     },async()=>{});
-     await controls.includeGenerated([cCatalog]);
-     controls.setEndedRepair(async(selected,id,received,operation)=>canonical(selected)===canonical(lateTarget)&&
-       'supplement-'+id===lateId&&received===lateText&&operation===proof.operation?proof:undefined);
-     controls.setSupplementReview(async(input,kind)=>kind==='fixture'&&input.H1===formalH&&input.formalBase===hash(canonical(proof.published))&&
-       input.requestId===lateId&&input.text===lateText?approvedLate:null);
-     try{
-       assert.equal(await controls.workSupplement(lateTarget,lateId,lateText,()=>{},proof),lateId);
-       const returned=await until(async()=>{const entry=(await controls.state()).find(row=>row.id===entryC.id);return entry?.requests.find(row=>row.id===lateId);},
-         row=>!!row&&!row.controllerActive&&!!(row.status||row.reason));
-       assert.equal(returned?.status,'completed',JSON.stringify(returned));
-       const after=await controls.report(entryC.id,lateId),completion=await controls.readSupplement(lateTarget,lateId,lateText);
-       assert.equal(after.H0,formalH);
-       assert.ok(after.tests.passed);
-       assert.equal(after.tests.tools.some((tool:any)=>tool.id==='formal-predecessor-marker'),true);
-       assert.equal(completion.adopted,true);
-       assert.equal(completion.coveringCandidate,after.H1);
-       assert.notEqual(after.H1,formalH);
-       t.diagnostic(JSON.stringify({ordinaryHandoff:lateId,original:beforeC,formalRepair:formalH,adopted:approvedLate.inputSha256,
-         recipient:completion.recipient,candidate:after.H1,actualTests:after.tests.tools.map((tool:any)=>tool.id)}));
-     }finally{await controls.drain();}
+     const lateText='Also mark corrected downloads.';
+     const {formalFixture}=await import('../w5/formal-round-fixture.js');
+     const {sourceFixture}=await import('../events/source-fixture.js');
+     const {sourceTick}=await import('../../src/event-tick.js');
+     const {readEventSource}=await import('../../src/event-source.js');
+     const formal=await formalFixture(t,'confirmed',false,false,{workspace:currentC.plan.workspace,H:beforeC,B:H,issue:receiptC.draft.issue});
+     const formalProgram=await readFile(formal.n.config.codexExecutable,'utf8');
+     await writeFile(formal.n.config.codexExecutable,formalProgram.replace('context.candidate??=context.material.candidate;',
+       "context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';"));
+     const oldPeer=await readFile(issuePeer!.binary,'utf8');
+     const dualSubject="if(responseKind==='message')output={candidateH:envelope.material.head,reviewedInputSha256:envelope.reviewedInputSha256,verdict:'PASS',report:'Explicit fixture independent minimum Issue review.',findings:[],coverageGaps:[],ownerQuestions:[]};";
+     const dualPeer="if(responseKind==='message')output=envelope.batch?{candidateH:envelope.material.candidate.H,batchSha256:envelope.batch.sha256,report:'Explicit independent impact evidence',assessments:envelope.batch.findings.map(f=>({id:f.id,decision:'confirmed',report:'Fixture retained the registered evidence',evidence:['test.mjs']}))}:{candidateH:envelope.material.head??envelope.material.candidate.H,reviewedInputSha256:envelope.reviewedInputSha256??envelope.material.sha256,verdict:'PASS',report:'Explicit independent review fixture',findings:[],coverageGaps:[],ownerQuestions:[]};";
+     assert.ok(oldPeer.includes(dualSubject));
+     await writeFile(issuePeer!.binary,oldPeer.replace(dualSubject,dualPeer));
+     const formalConfig=JSON.parse(await readFile(formal.catalog,'utf8'));
+     formalConfig.entries[0].workflowContract='coding-loop-v2';
+     await writeFile(formal.catalog,canonical(formalConfig));
+     const combinedPlan=JSON.parse(await readFile(planPath,'utf8'));
+     combinedPlan.sources=formal.sources.map(source=>({...source,title:'Ordinary work at its actual PR candidate'}));
+     combinedPlan.formalReview={path:formal.catalog,sha256:hash(await readFile(formal.catalog))};
+     await app.close();
+     await writeFile(planPath,canonical(combinedPlan));
+     app=await startWorkbench(planPath,undefined,{...dependencies,formalSourceReader:async()=>formal.live});
+     url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
+     await get('/api/github/projects');
+     const currentCWork=await detail(c);
+     assert.equal(currentCWork.resultStatus.current,true);
+     assert.equal(currentCWork.draft.delivery.H,beforeC);
+     const formalRoute='/api/formal-review/'+formal.entry.id;
+     const started=await post(formalRoute+'/prepare',{requestId:'ordinary-project-joined-review',projectWorkId:c,expectedCandidate:formal.live.candidate});
+     assert.equal(started.status,200,JSON.stringify(started.value));
+     const repairOperation=started.value.operation;
+     assert.equal((await post(formalRoute+'/start',{operation:repairOperation})).status,202);
+     const formalReport=()=>get('/api/formal-review-report/'+formal.entry.id+'/'+repairOperation);
+     const fixed=await until(formalReport,r=>!r.value.controllerActive&&r.value.phase==='awaiting_publication');
+     const repair=fixed.value.result.fix;
+     assert.equal(repair.H0,beforeC);assert.notEqual(repair.H1,beforeC);assert.equal(repair.tested.passed,true);
+     const remote=await sourceFixture(t,'fixture/reception');
+     formal.q.events().configure(Buffer.from(canonical(remote.profile)));
+     await remote.change({H:repair.H1,B:H,target:formal.live.candidate.target,body:repair.proposedPRBody});
+     await git(formal.entry.objects,['fetch','--no-tags',repair.workspace,repair.H1]);
+     await formal.packet({H:repair.H1,B:H,sourceAt:new Date().toISOString(),executionAt:new Date().toISOString()});
+     await sourceTick(formal.store);
+     formal.live.candidate.H=repair.H1;
+     formal.live.observation=await readEventSource(remote.profile,formal.live.candidate.pr,join(remote.root,'ordinary-joined-publication'));
+     assert.equal((await post(formalRoute+'/check',{})).status,200);
+     await until(()=>get('/api/formal-review'),r=>r.value.entries[0]?.requests.some((review:any)=>review.previousOperation===repairOperation&&review.phase==='pass'));
+     const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),target:lateTarget,text:lateText};
+     assert.equal((await post('/api/project-secretary/supplement',joined)).status,202);
+     const joinedRow=async()=>{
+       const conversation=(await get('/api/project-secretary/conversations/'+joined.conversationId)).value;
+       return conversation.supplements.find((row:any)=>row.id===joined.requestId);
+     };
+     const needsReview=await joinedRow();
+     assert.equal(needsReview.original.continuationBase,repair.H1);
+     assert.equal(needsReview.original.delivered,false);
+     assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,202);
+     const readyJoined=await until(joinedRow,row=>row?.original?.ready===true);
+     assert.equal(readyJoined.original.adopted,false);
+     assert.equal((await post('/api/project-secretary/continue-supplements',{target:lateTarget})).status,202);
+     const finishedJoined=await until(joinedRow,row=>!!row?.original?.coveringCandidate);
+     const cFinal=await until(()=>detail(c),value=>value.resultStatus.current&&value.draft.delivery.H===finishedJoined.original.coveringCandidate);
+     const joinedReport=cFinal.execution.reports.find((row:any)=>row.H1===cFinal.draft.delivery.H);
+     assert.equal(joinedReport.H0,repair.H1);
+     assert.equal(joinedReport.tests.tools.some((tool:any)=>tool.id==='fixture-node-tests'),true);
+     t.diagnostic(JSON.stringify({formalRepair:repair.H1,repairSession:repair.sessionId,request:joined.requestId,
+       recipient:finishedJoined.original.recipient,adopted:finishedJoined.original.requirementSha256,covered:cFinal.draft.delivery.H}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;

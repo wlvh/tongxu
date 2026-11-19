@@ -326,7 +326,7 @@ export class ProjectWork{
     if(this.issueReviews.has(directory))return {state:'running',H:tested.H};
     this.issueReviews.set(directory,job);
     job.promise=(async()=>runProjectIssueReview(directory,material,peer,await this.executor(),check,admit,
-      session=>{job.session=session;},stop=>{job.stopPeer=stop;}))().catch(()=>{/* Preserve the original request and native reports. */})
+      session=>{job.session=session;},stop=>{job.stopPeer=stop;},join(parent,'validation','worktree')))().catch(()=>{/* Preserve the original request and native reports. */})
       .finally(()=>this.issueReviews.delete(directory));
     return {state:'running',H:tested.H};
   }

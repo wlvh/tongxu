@@ -23,9 +23,19 @@ type RuntimeBuildProof={kind:'tsc-reproduction-v1';sourceHead:string;runtimeFile
 export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:RuntimeFile[];buildProof?:RuntimeBuildProof};
 export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;reproducedRuntimeFilesSha256?:string;verifiedAt:string};
 const runtimeFilesHash=(files:RuntimeFile[])=>hash(canonical(files.slice().sort((a,b)=>a.path.localeCompare(b.path))));
+async function listedFiles(root:string,relative:string,suffix:string):Promise<string[]>{
+  const files:string[]=[];
+  for(const entry of await readdir(join(root,relative),{withFileTypes:true})){
+    const path=relative+'/'+entry.name;
+    if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');
+    if(entry.isDirectory())files.push(...await listedFiles(root,path,suffix));
+    else if(entry.isFile()&&path.endsWith(suffix))files.push(path);
+  }
+  return files.sort();
+}
 async function runtimeFiles(root:string){
-  const result:string[]=[];async function visit(relative:string,suffix:string){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative+'/'+entry.name;if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');if(entry.isDirectory())await visit(name,suffix);else if(entry.isFile()&&name.endsWith(suffix))result.push(name);}}
-  await visit('dist/src','.js');await visit('prompts','.md');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/project-work.js','web/workbench/project-owner.js','web/workbench/ai-settings.js','web/workbench/implementation.js','web/workbench/reception.js','web/workbench/formal-review.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
+  const [modules,prompts]=await Promise.all([listedFiles(root,'dist/src','.js'),listedFiles(root,'prompts','.md')]);
+  return [...modules,...prompts,'package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/project-work.js','web/workbench/project-owner.js','web/workbench/ai-settings.js','web/workbench/implementation.js','web/workbench/reception.js','web/workbench/formal-review.js','web/workbench/app.css','web/workbench/favicon.svg'].sort();
 }
 /** One explicit local composition, not an updater or a parallel store. */
 export async function inspectWorkbenchRuntime(raw:Buffer){
@@ -69,7 +79,10 @@ async function reproduceWorkbenchBuild(p:WorkbenchRuntime):Promise<RuntimeBuildP
     if(hash(await regular(join(snapshot,'tsconfig.json'),128*1024))!==tsconfigSha256)throw new Error('workbench_runtime_source_changed');
     await symlink(await realpath(join(p.sourceDirectory,'node_modules')),join(snapshot,'node_modules'),'dir');
     await exec(process.execPath,[compiler,'--project',join(snapshot,'tsconfig.json'),'--outDir',output],{cwd:snapshot,timeout:120000,maxBuffer:2*1024*1024});
-    for(const file of p.files.filter(file=>file.path.startsWith('dist/src/'))){
+    const modules=p.files.filter(file=>file.path.startsWith('dist/src/'));
+    if(canonical((await listedFiles(output,'src','.js')).map(path=>'dist/'+path))!==canonical(modules.map(file=>file.path).sort()))
+      throw new Error('workbench_runtime_build_not_reproducible');
+    for(const file of modules){
       const compiled=await regular(join(output,file.path.slice('dist/'.length)),4*1024*1024).catch(()=>null);
       if(!compiled||hash(compiled)!==file.sha256)
         throw new Error('workbench_runtime_build_not_reproducible');

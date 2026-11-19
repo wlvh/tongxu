@@ -8,25 +8,45 @@ import {checkAcpSessionEvents,ExtraCliSession,extraProfileFiles,parseAcpPrompt,r
 import {checkCapture} from './live-process.js';
 import {formalReviewSchema,validateFormalReview} from './formal-review-contract.js';
 import {writeFixed} from './project-work-runtime.js';
+import {safeRelativePath} from './authority-contract.js';
+import {readFormalSource} from './formal-review-material.js';
 import type {AIRuntimeChoice} from './ai-settings.js';
 import type {RepairConfig} from './repair.js';
 
 type ReviewMaterial={work:string;repository:string;issue:{number:number;body:string;bodySha256:string;url:string};goal:string;head:string;
   integration?:{previousWorkHead:string;originalBase:string;base:string;tree:string;target:string;diff:string;baseChanges:string;
-    registeredTests:unknown;projectRules:Array<{path:string;text:string}>;affectedFiles:Array<{path:string;text:string}>}};
-type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture';verdictProtocol?:1};
+    registeredTests:unknown;projectRules:Array<{path:string;text:string}>;affectedFiles:Array<{path:string;text:string}>};
+  additionalSources?:Awaited<ReturnType<typeof readFormalSource>>[]};
+type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture';verdictProtocol?:1;integrationObjects?:string};
 const subject=(m:ReviewMaterial)=>({kind:'local-git' as const,repository:m.integration?'local/project-integration-review':'local/project-issue-review',pr:null,
   H:m.head,B:m.integration?.base??m.head,target:m.integration?.target??'issue-review'});
 const verdictProtocol={PASS:'Return PASS only with an empty coverageGaps and ownerQuestions array and zero priority 0 or 1 findings. Keep transferable nonblocking observations in priority 2 findings, if applicable.',
   REWORK_REQUIRED:'Use for any blocking defect or missing acceptance coverage.',OWNER_DECISION_REQUIRED:'Use for a decision that only the Owner can make. Include at least one concrete owner question.'};
-const envelope=(request:ReviewRequest,peer:unknown)=>{
-  const {material}=request;
+const envelope=(request:ReviewRequest,peer:unknown,material=request.material)=>{
   return canonical({material,reviewedInputSha256:hash(canonical(material)),peer,responseShape:formalReviewSchema,
-    ...(request.verdictProtocol===1?{verdictProtocol}:{})});
+    ...(request.verdictProtocol===1?{verdictProtocol}:{}),
+    ...(request.integrationObjects?{sourceLookup:peer===null?
+      'During this initial review, request missing exact-candidate source with coverageGaps entries source:<repository-relative file path>. Use REWORK_REQUIRED while material is missing. The host may supply requested Git blobs to both original reviewers for their exchange.':
+      'Inspect any additionalSources at the same candidate. Reassess the prior coverage gaps against the actual text. Keep any remaining gap open.'}:{})});
 };
 const read=async(directory:string,name:string)=>regular(join(directory,name),16*1024*1024);
 const rows=(raw:Buffer)=>raw.toString().trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
 const parse=(text:string,material:ReviewMaterial)=>validateFormalReview(JSON.parse(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(text)?.[1]??text),material.head,hash(canonical(material)));
+function requestedPaths(...reviews:Array<{coverageGaps:string[]}>){
+  const paths=[...new Set(reviews.flatMap(review=>review.coverageGaps.filter(gap=>gap.startsWith('source:')).map(gap=>gap.slice(7))))].sort();
+  if(paths.length>16||!paths.every(safeRelativePath))throw new Error('project_integration_review_source_request_invalid');
+  return paths;
+}
+async function exchangeSources(directory:string,request:ReviewRequest,paths:string[],persist:boolean){
+  if(!request.integrationObjects||!paths.length)return request.material;
+  const additionalSources=await Promise.all(paths.map(path=>readFormalSource(request.integrationObjects!,request.material.head,path)));
+  const material={...request.material,additionalSources};
+  if(Buffer.byteLength(canonical(material))>2*1024*1024)throw new Error('formal_complete_material_limit');
+  const path=join(directory,'integration-sources.json'),expected=canonical(additionalSources);
+  if(persist)await writeFixed(path,expected);
+  else if((await regular(path,2*1024*1024)).toString()!==expected)throw new Error('project_integration_review_sources_changed');
+  return material;
+}
 
 async function peerCapture(directory:string,request:ReviewRequest){
   await checkCapture(directory);
@@ -64,7 +84,7 @@ async function peerCapture(directory:string,request:ReviewRequest){
       boundary.stdoutEvents<=previous||boundary.stdoutEvents>end||
       received.slice(previous+1,boundary.stdoutEvents).some(item=>item.params?.update?.sessionUpdate==='agent_message_chunk'))throw new Error('project_issue_review_peer_boundary_changed');
     previous=end;
-    return {input:prompt.params.prompt[0].text,report:parse(parseAcpPrompt(received.slice(boundary.stdoutEvents,end+1),sessionId,matches[0].result,request.peer),request.material)};
+    return {input:prompt.params.prompt[0].text,final:parseAcpPrompt(received.slice(boundary.stdoutEvents,end+1),sessionId,matches[0].result,request.peer)};
   });
   if(received.slice(previous+1).some(item=>item.params?.update?.sessionUpdate==='agent_message_chunk'))throw new Error('project_issue_review_peer_boundary_changed');
   return {sessionId,turns};
@@ -84,10 +104,11 @@ export async function readProjectIssueReview(directory:string,material:ReviewMat
     if(gpt.binding.run!==directory||gpt.binding.inputManifestSha256!==hash(canonical(request))||gpt.binding.role!=='reviewer'||gpt.binding.sourceKind!==request.executionKind||
       canonical(gpt.binding.candidate)!==canonical(subject(material))||gpt.turns.length!==2||inputs.length!==2||
       inputs.some((input:any)=>canonical(input.schema)!==canonical(formalReviewSchema))||gpt.binding.sessionId===kimi.sessionId)throw new Error('project_issue_review_binding_changed');
-    const originalCorrectness=parse(gpt.turns[0]!.final!.text,material),originalMinimality=kimi.turns[0]!.report;
+    const originalCorrectness=parse(gpt.turns[0]!.final!.text,material),originalMinimality=parse(kimi.turns[0]!.final,material);
+    const reviewed=request.integrationObjects?await exchangeSources(directory,request,requestedPaths(originalCorrectness,originalMinimality),false):material;
     if(inputs[0].input!==envelope(request,null)||kimi.turns[0]!.input!==inputs[0].input||
-      inputs[1].input!==envelope(request,originalMinimality)||kimi.turns[1]!.input!==envelope(request,originalCorrectness))throw new Error('project_issue_review_exchange_changed');
-    const correctness=parse(gpt.turns[1]!.final!.text,material),minimality=kimi.turns[1]!.report;
+      inputs[1].input!==envelope(request,originalMinimality,reviewed)||kimi.turns[1]!.input!==envelope(request,originalCorrectness,reviewed))throw new Error('project_issue_review_exchange_changed');
+    const correctness=parse(gpt.turns[1]!.final!.text,reviewed),minimality=parse(kimi.turns[1]!.final,reviewed);
     return {state:'returned' as const,issueBodySha256:material.issue.bodySha256,workflowRevision:request.correctness.revision,
       approved:correctness.verdict==='PASS'&&minimality.verdict==='PASS',executionKind:request.executionKind,
       correctness:{sessionId:gpt.binding.sessionId,initial:originalCorrectness,exchanged:correctness},
@@ -102,11 +123,12 @@ export async function readProjectIssueReview(directory:string,material:ReviewMat
   }
 }
 
-export async function runProjectIssueReview(directory:string,material:ReviewMaterial,peer:AIRuntimeChoice,config:RepairConfig,verify:()=>Promise<void>,admit:()=>void,onSession:(session:BoundedCodexSession)=>void,onPeer:(stop:()=>Promise<void>)=>void){
+export async function runProjectIssueReview(directory:string,material:ReviewMaterial,peer:AIRuntimeChoice,config:RepairConfig,verify:()=>Promise<void>,admit:()=>void,onSession:(session:BoundedCodexSession)=>void,onPeer:(stop:()=>Promise<void>)=>void,integrationObjects?:string){
   if(peer.tool!=='kimi')throw new Error('project_issue_review_second_company_required');
   const source=await readCodingWorkflowSource(),correctness=source.prompt(material.integration?'pr_review_correctness':'issue_review_completion'),
     minimality=source.prompt(material.integration?'pr_review_impact':'issue_review_minimality');
-  const request:ReviewRequest={material,correctness,minimality,peer,executionKind:config.executionKind??'native_capture',verdictProtocol:1},candidate=subject(material);
+  const request:ReviewRequest={material,correctness,minimality,peer,executionKind:config.executionKind??'native_capture',verdictProtocol:1,
+    ...(integrationObjects?{integrationObjects}:{})},candidate=subject(material);
   await verify();await privateDirectory(directory,true);await writeFixed(join(directory,'request.json'),canonical(request));
   let gpt:BoundedCodexSession|undefined,kimi:ExtraCliSession|undefined;
   try{
@@ -126,8 +148,9 @@ export async function runProjectIssueReview(directory:string,material:ReviewMate
     const initial=envelope(request,null);
     const a=check(await gpt.turn(initial,candidate,formalReviewSchema));
     const b=parse((await kimi.prompt(initial,config.timeoutMs,admit,verify)).final,material);
-    check(await gpt.turn(envelope(request,b),candidate,formalReviewSchema));
-    parse((await kimi.prompt(envelope(request,a),config.timeoutMs,admit,verify)).final,material);
+    const reviewed=integrationObjects?await exchangeSources(directory,request,requestedPaths(a,b),true):material;
+    validateFormalReview(await gpt.turn(envelope(request,b,reviewed),candidate,formalReviewSchema),reviewed.head,hash(canonical(reviewed)));
+    parse((await kimi.prompt(envelope(request,a,reviewed),config.timeoutMs,admit,verify)).final,reviewed);
   }catch(error){
     const reason=error instanceof Error&&/^[a-z0-9_:,-]{1,160}$/.test(error.message)?error.message:'project_issue_review_capture_unknown';
     await writeFixed(join(directory,'review-diagnostic.json'),canonical({requestSha256:hash(canonical(request)),reason}));

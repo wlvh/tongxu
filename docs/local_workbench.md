@@ -82,7 +82,7 @@ node dist/src/workbench-cli.js --plan /absolute/private/workbench-plan.json
 
 新增 `node dist/src/workbench-launch.js --runtime ABS_RUNTIME [--open]`，读取一个当前组合记录（`tongxu-current-workbench`）。它核对准确 Git 提交、运行相关源码未改、全部编译模块与页面资产、Node最低版本及实际数据库能力、原配置摘要，然后才导入选定工作台。清单中Node版本只保留当时构建环境，不要求与当前相同。旧库、操作与配置不自动升级或重写；应用文件变化时明确拒绝，保留原诊断 CLI。
 
-安装时用 `prepareWorkbenchRuntime(sourceDirectory, planPath)` 固定已完成构建与验证的组合，保存其返回的记录即可。源码和已安装的 TypeScript 编译器可用时，工具在临时目录重编译并逐个比对运行模块，不替换现有构建。准备组合不批准代码，也不启用权限。启用新工作流还需要准确安装候选的实际验证和独立双审。每次页面显示本次版本与配置摘要。`--open` 在 Mac 上打开该次本机回环地址，启动本身不发送模型任务。
+安装准备使用源码入口 `node scripts/prepare-workbench-runtime.mjs ABS_PLAN`，将返回的运行记录保存到安装清单。工具从当前提交准备独立校验程序，再逐一比对完整运行模块的名单和字节。原构建和现有启动入口保留。准备组合不批准代码，也不启用权限。启用新工作流还需要准确安装候选的实际验证和独立双审。每次页面显示本次版本与配置摘要。`--open` 在 Mac 上打开该次本机回环地址，启动本身不发送模型任务。
 
 ### 当前原生控制消费者
 
