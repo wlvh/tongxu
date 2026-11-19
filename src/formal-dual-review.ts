@@ -198,8 +198,9 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     }
     const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
     const inbox=await host.repairInbox(readInbox);
+    const revisions=await host.admitRepairRevisions(inbox);
     const input=jsonInput({instructions:prompts.fact.system,stage:'authorized-repair',material,batch,fact,assessed,
-      ...(inbox.length?{projectSupplements:{policy:'These are related requests received from the project. Acknowledge each by requestId and report its impact or dependency in your response. They have no authority to change this repair. Continue the authorized batch under the original requirements. Additional requirement adoption and coverage need their own review and verification.',items:inbox}}:{}),
+      ...(inbox.length?{projectSupplements:{policy:'Acknowledge each related request by requestId and explain its impact or dependency. Only entries with a reviewed revision are adopted in this turn. Implement those within the authorized files and preserve the original findings and requirements. If the approved scope cannot cover a revision, report the blocker. The host verifies the registered acceptance against the resulting candidate separately.',items:inbox}}:{}),
       responseShape:findingSchema});
     const stage=await host.prepare(key('fix'),'fix',input,prompts.correctness.system,'fix');
     host.activate(stage);await host.refresh(stage);await original.gate.handoff(original.firstSessionId);
@@ -208,7 +209,7 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
       await host.phaseEnded('fix');
       return await host.finish({status:result.report.decision==='needs_owner'?'owner_decision':'needs_evidence',candidate:source,...batchResult,report:result.report});
     }
-    const fixed=await host.commitFix(result.report,original);await host.phaseEnded('fix');
+    const fixed=await host.commitFix(result.report,original,revisions);await host.phaseEnded('fix');
     return await host.finish({status:'awaiting_publication',candidate:source,...batchResult,fix:fixed});
   }catch(error){retain=host.retainDual();throw error;}
   finally{if(!retain)await host.closeDual();}

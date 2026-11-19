@@ -183,10 +183,16 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
     const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources,readPreferences):null;
     const scope=contactContext?.scope;
-    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round)=>{
+    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round,H,executionKind)=>{
       if(work.account!==scope.account.id||work.repository!==scope.repository.id||work.nodeId!==scope.repository.nodeId)
         throw new Error('formal_original_project_work_changed');
-      return (await openProjectChat()).repairInbox(scope,work.target,operation,round);
+      const receipts=(await openProjectChat()).repairInbox(scope,work.target,operation,round);
+      const projectWork=await openProjectWork();
+      return Promise.all(receipts.map(async receipt=>{
+        const approved=await projectWork.supplementReview({repository:scope.repository.fullName,target:work.target,H1:H,
+          requestId:'supplement-'+receipt.requestId,text:receipt.text},executionKind);
+        return {...receipt,...(approved?{revision:approved}:{})};
+      }));
     }:undefined;
     const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences,readInbox):null;
     return {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions};
@@ -224,7 +230,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   };
   const verifyProject=async(scope:ReturnType<GitHubProjects['selection']>)=>{if(closing)throw new Error('workbench_closing');await github!.confirmSelection(scope.account.id,scope.repository.id);github!.assertSelection(scope);};
   const implementations=new Map<string,Promise<IssueImplementationControls>>();
-  const openImplementation=async(scope:NonNullable<Awaited<ReturnType<GitHubProjects['confirmSelection']>>>)=>{
+  const openImplementation=async(scope:NonNullable<Awaited<ReturnType<GitHubProjects['confirmSelection']>>>):Promise<IssueImplementationControls>=>{
     if((!p.issueImplementation&&!p.projectWork)||!github)throw new Error('implementation_not_configured');
     const key=scope.account.id+':'+scope.repository.id;let selected=implementations.get(key);
     if(!selected){const ref=p.issueImplementation??await(await openProjectWork()).emptyCatalog();selected=IssueImplementationControls.load(ref.path,ref.sha256,scope.repository.fullName,async number=>{
@@ -244,7 +250,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
-  const openProjectWork=()=>{
+  const openProjectWork=():Promise<ProjectWork>=>{
     if(!p.projectWork||!github)throw new Error('project_work_not_configured');
     return projectWork??=ProjectWork.open(p.projectWork,async(scope,number)=>{
       const result=await github.read(new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id)) as Row;return {...result.item,defaultHead:result.repository.defaultHead};
@@ -286,9 +292,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject,p.issueImplementation||p.projectWork?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
-      read:async(scope,target,compiled,text,receivedId)=>
-        (!compiled&&await formalForSupplement(scope,target,receivedId,text))||
-        (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId),
+      read:async(scope,target,compiled,text,receivedId)=>{
+        const repair=!compiled?await formalForSupplement(scope,target,receivedId,text):null;
+        const original=()=>openImplementation(scope).then(controls=>controls.readSupplement(target,compiled,text,receivedId));
+        if(!repair)return original();
+        if(repair.adopted||!repair.owned)return repair;
+        const pending=await original().catch(()=>null);
+        return {...repair,canRequestReview:pending?.H1===repair.H1&&pending?.canRequestReview,planning:pending?.H1===repair.H1?pending?.planning:undefined};
+      },
       work:async(scope,target,id,text,before)=>{
         if((await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
         return (await openImplementation(scope)).workSupplement(target,id,text,before);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {writeFile,readFile} from 'node:fs/promises';
+import {writeFile,readFile,rename} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {formalFixture} from '../w5/formal-round-fixture.js';
@@ -86,6 +86,19 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
      return {draft:{id,source:a.source,requestId:a.requestId,issue:f.entry.issue,delivery:{H:f.live.candidate.H}},resultStatus:{current:true}};
    });
    t.mock.method(IssueImplementationControls.prototype,'supplementTargets',async()=>[{...a,title:'A'},{...b,title:'B'}]);
+   const binary=await readFile(f.n.config.codexExecutable,'utf8');
+   const edit="export const value=4;\\n'";
+   assert.ok(binary.includes(edit));
+   await writeFile(f.n.config.codexExecutable,binary.replace(edit,edit+
+     "+(context.projectSupplements?.items.some(item=>item.revision)?'\\nexport const generatedInBackground=true;':'')"));
+   t.mock.method(ProjectWork.prototype,'supplementReview',async(input:{target:{source:string};text:string;H1:string})=>
+     input.target.source===a.source&&input.H1===f.live.candidate.H&&input.text===text?{
+       inputSha256:hash('fixture approved exact revised requirement'),reviewRun:hash('fixture approved independent review pair'),
+       requirement:'Generate the report in the background before download.',
+       acceptance:['The download path exposes the background generation flag'],
+       validation:{description:'New requirement must be implemented',script:"import assert from 'node:assert/strict';import{generatedInBackground}from './sample.js';assert.equal(generatedInBackground,true);"},
+       replies:[]
+     }:null);
  }
  await writeFile(path,canonical({
    schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Dual-review protocol fixture',goal:'Verify independent sessions and complete exchange',githubProjects:true,
@@ -181,12 +194,12 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
   assert.equal(arrived.original.recipient.role,'formal-repair');
   assert.equal(arrived.original.dispatchRecorded,true);
   assert.equal(arrived.original.delivered,true);
-  assert.equal(arrived.original.adopted,false);
-  assert.equal(arrived.original.coveringCandidate,null);
+  assert.equal(arrived.original.adopted,true);
+  assert.equal(arrived.original.coveringCandidate,complete.result.fix.H1);
   assert.equal(saved.find((item:any)=>item.target.source===b.source).original?.recipient,undefined);
   assert.equal((await http(projectChat+'/cancel-supplement',{requestId:arrived.id})).data.error,'formal_repair_supplement_already_reserved');
   const q=f.q.formalReviews(),key='round-1/fix';
-  assert.equal(q.originalStageInputIncludes(operation,key,input=>input.projectSupplements.items[0].text===text&&input.projectSupplements.items[0].originalRequestId===groupId&&input.projectSupplements.items.length===1),true);
+  assert.equal(q.originalStageInputIncludes(operation,key,input=>input.projectSupplements.items[0].text===text&&input.projectSupplements.items[0].originalRequestId===groupId&&input.projectSupplements.items[0].revision.acceptance.length===1&&input.projectSupplements.items.length===1),true);
   assert.equal(q.originalStageInputIncludes(operation,'round-1/correctness-initial',input=>Object.hasOwn(input,'projectSupplements')),false);
   t.diagnostic(JSON.stringify({requirement:groupId,work:a.source,recipient:arrived.original.recipient.sessionId,
     baseline:complete.candidate.H,repairCandidate:complete.result.fix.H1,adopted:arrived.original.adopted,coveringCandidate:arrived.original.coveringCandidate}));
@@ -216,6 +229,17 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
   assert.equal(followup.candidate.H,fix.H1);
   assert.equal(followup.result.review.verdict,'PASS');
   assert.equal(followup.result.peerReview.verdict,'PASS');
+  assert.equal(followup.material.sourceEvidence.adoptedProjectSupplements[0].originalRequestId,groupId);
+  assert.equal(followup.material.sourceEvidence.supplementTests.candidate,fix.H1);
+  const raw=join(fix.reviewFixRecord.supplementVerification.directory,'tool-0','stderr');
+  await rename(raw,raw+'.fixture');
+  try{
+   const damaged=(await inbox()).find((item:any)=>item.target.source===a.source).original;
+   assert.equal(damaged.delivered,true);
+   assert.equal(damaged.adopted,true);
+   assert.equal(damaged.coveringCandidate,null);
+   assert.equal(damaged.reason,'formal_repair_supplement_evidence_missing');
+  }finally{await rename(raw+'.fixture',raw);}
   for(const [name,old] of [['correctness-initial',first],['impact-initial',second]] as const){
     const fresh=followup.fullStages.find((s:any)=>s.key.endsWith('/'+name));
     assert.notEqual(fresh.proof.native.sessionId,old.proof.native.sessionId);

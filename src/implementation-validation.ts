@@ -26,7 +26,7 @@ export async function verifyValidationFiles(record:Row){for(const [p,sha] of Obj
 /** A completed healthy failed test is distinct from a broken/unknown run.
  * This reads original Docker evidence only; it never launches/reconciles. */
 export async function readFailedValidationTests(directory:string,plan:Row,requireFailed=true,logSelection?:ValidationLogSelection){
- const result=await json(join(directory,'result.json')),input=await json(join(directory,'input.json')),intent=await json(join(directory,'test-intent.json')),progress=await json(join(directory,'test-progress.json')),fixed=await projectTestPlan(plan.project),tested=await tree(join(directory,plan.project.projectFiles?'work':'material-work'),true),frozen=treeHash(tested);
+ const result=await json(join(directory,'result.json')),input=await json(join(directory,'input.json')),intent=await json(join(directory,'test-intent.json')),progress=await json(join(directory,'test-progress.json')),fixed=await projectTestPlan(plan.project),tested=await tree(join(directory,!plan.project.projectFiles&&plan.project.materialView?'material-work':'work'),true),frozen=treeHash(tested);
  const last=result.tools.at(-1);
  // The runner stops at the first failed command, so a rejected prefix can be complete evidence.
  const earlyFailure=plan.project.projectFiles&&result.passed===false&&result.tools.length<fixed.plan.tools.length&&
