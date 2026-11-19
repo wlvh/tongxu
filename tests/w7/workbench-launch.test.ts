@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access,realpath} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access,realpath,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync,spawnSync,spawn} from 'node:child_process';
@@ -19,6 +19,52 @@ const copyCandidates=(source:string)=>cp(
   join(source,candidateDirectory),
   {recursive:true},
 );
+test('a legacy proof that omitted an emitted module can launch without acquiring reproduced-build identity',async t=>{
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-legacy-build-proof-')));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const source=join(root,'composition'),repo=new URL('../../../',import.meta.url);
+ for(const dir of ['src','scripts','tests'])await mkdir(join(source,dir),{recursive:true});
+ for(const file of ['src/node-runtime.ts','src/workbench-launch.ts','scripts/prepare-workbench-runtime.mjs','tsconfig.json'])
+   await cp(fileURLToPath(new URL(file,repo)),join(source,file));
+ await cp(fileURLToPath(new URL('web/workbench/',repo)),join(source,'web/workbench'),{recursive:true});
+ await cp(fileURLToPath(new URL('prompts/',repo)),join(source,'prompts'),{recursive:true});
+ await symlink(await realpath(fileURLToPath(new URL('node_modules/',repo))),join(source,'node_modules'),'dir');
+ await writeFile(join(source,'.gitignore'),'dist/\nnode_modules/\n');
+ await writeFile(join(source,'package.json'),' {"type":"module"}\n');
+ await writeFile(join(source,'tests/placeholder.ts'),'export {};\n');
+ await writeFile(join(source,'src/workbench-cli.ts'),'export const unusedByLauncher=true;\n');
+ await writeFile(join(source,'src/workbench.ts'),'export async function startWorkbench(){return {mode:"fixture",url:"http://127.0.0.1:0/",close:async()=>{}}}\n');
+ const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args],{encoding:'utf8'}).trim();
+ git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','fixed build proof fixture');
+ execFileSync(process.execPath,[join(source,'node_modules/typescript/lib/tsc.js'),'--project',join(source,'tsconfig.json')]);
+ const plan=join(root,'plan.json'),manifestPath=join(root,'runtime.json');await writeFile(plan,'{}');
+ const prepare=()=>spawnSync(process.execPath,[join(source,'scripts/prepare-workbench-runtime.mjs'),plan],{encoding:'utf8',timeout:30000});
+ const prepared=prepare();assert.equal(prepared.status,0,prepared.stderr);
+ const complete=JSON.parse(prepared.stdout),verified=await inspectWorkbenchRuntime(Buffer.from(prepared.stdout));
+ assert.equal(verified.identity.sourceHead,git('rev-parse','HEAD'));
+ assert.equal(verified.identity.buildProofKind,'tsc-complete-modules-v2');
+ assert.match(verified.identity.emittedModulesSha256!,/^[0-9a-f]{64}$/);
+ assert.equal(verified.identity.reproducedRuntimeFilesSha256,verified.identity.runtimeFilesSha256);
+ const changedProof={...complete,buildProof:{...complete.buildProof,emittedModulesSha256:'0'.repeat(64)}};
+ await assert.rejects(inspectWorkbenchRuntime(Buffer.from(JSON.stringify(changedProof))),/workbench_runtime_build_proof_changed/);
+ const omitted='dist/src/workbench-cli.js';assert.ok(complete.files.some((file:{path:string})=>file.path===omitted));
+ await rm(join(source,omitted));
+ await assert.rejects(inspectWorkbenchRuntime(Buffer.from(prepared.stdout)),/workbench_runtime_file_set_changed/);
+ const incomplete=prepare();assert.equal(incomplete.status,1,incomplete.stderr);assert.match(incomplete.stderr,/workbench_runtime_build_not_reproducible/);
+ const {buildProof,...manifest}=complete;
+ manifest.files=manifest.files.filter((file:{path:string})=>file.path!==omitted);
+ const {identity}=await inspectWorkbenchRuntime(Buffer.from(JSON.stringify(manifest)));
+ await writeFile(manifestPath,JSON.stringify({...manifest,buildProof:{kind:'tsc-reproduction-v1',sourceHead:identity.sourceHead,
+   compilerSha256:buildProof.compilerSha256,tsconfigSha256:buildProof.tsconfigSha256,runtimeFilesSha256:identity.runtimeFilesSha256}}));
+ const launched=spawnSync(process.execPath,[join(source,'dist/src/workbench-launch.js'),'--runtime',manifestPath],{encoding:'utf8',timeout:10000});
+ assert.equal(launched.status,0,launched.stderr);
+ const receipt=JSON.parse(launched.stdout).runtime;
+ assert.equal(receipt.sourceHead,verified.identity.sourceHead);
+ assert.equal(receipt.runtimeFilesSha256,identity.runtimeFilesSha256);
+ assert.equal(receipt.buildProofKind,'tsc-reproduction-v1');
+ assert.equal(receipt.reproducedRuntimeFilesSha256,undefined);
+ assert.equal(receipt.emittedModulesSha256,undefined);
+});
 test('one fixed runtime detects stale source, build, configuration and file additions before importing any selected program',async t=>{
  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-launch-manifest-')));t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(source);for(const d of ['dist/src','src','web/workbench'])await mkdir(join(source,d),{recursive:true});
  await cp(fileURLToPath(new URL('../../src/node-runtime.js',import.meta.url)),join(source,'dist/src/node-runtime.js'));

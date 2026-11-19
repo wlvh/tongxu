@@ -19,10 +19,13 @@ async function regular(path:string,limit:number){
 }
 const exec=promisify(execFile);
 type RuntimeFile={path:string;sha256:string};
-type RuntimeBuildProof={kind:'tsc-reproduction-v1';sourceHead:string;runtimeFilesSha256:string;compilerSha256:string;tsconfigSha256:string};
+const completeBuildProofKind='tsc-complete-modules-v2';
+type RuntimeBuildBinding={sourceHead:string;runtimeFilesSha256:string;compilerSha256:string;tsconfigSha256:string};
+type RuntimeBuildProof=RuntimeBuildBinding&({kind:'tsc-reproduction-v1'}|{kind:typeof completeBuildProofKind;emittedModulesSha256:string});
 export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:RuntimeFile[];buildProof?:RuntimeBuildProof};
-export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;reproducedRuntimeFilesSha256?:string;verifiedAt:string};
+export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;buildProofKind?:RuntimeBuildProof['kind'];emittedModulesSha256?:string;reproducedRuntimeFilesSha256?:string;verifiedAt:string};
 const runtimeFilesHash=(files:RuntimeFile[])=>hash(canonical(files.slice().sort((a,b)=>a.path.localeCompare(b.path))));
+const runtimeModules=(files:RuntimeFile[])=>files.filter(file=>file.path.startsWith('dist/src/'));
 async function listedFiles(root:string,relative:string,suffix:string):Promise<string[]>{
   const files:string[]=[];
   for(const entry of await readdir(join(root,relative),{withFileTypes:true})){
@@ -45,9 +48,11 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   const files=await runtimeFiles(p.sourceDirectory);if(canonical(p.files.map(f=>f.path).sort())!==canonical(files))throw new Error('workbench_runtime_file_set_changed');
   for(const f of p.files)if(hash(await regular(join(p.sourceDirectory,f.path),4*1024*1024))!==f.sha256)throw new Error('workbench_runtime_build_changed');
   const runtimeFilesSha256=runtimeFilesHash(p.files),proof=p.buildProof;
-  if(proof&&(!exactKeys(proof,['kind','sourceHead','runtimeFilesSha256','compilerSha256','tsconfigSha256'])||
-     proof.kind!=='tsc-reproduction-v1'||proof.sourceHead!==p.sourceHead||proof.runtimeFilesSha256!==runtimeFilesSha256||
-     !isAuthorityDigest(proof.compilerSha256)||proof.tsconfigSha256!==hash(await regular(join(p.sourceDirectory,'tsconfig.json'),128*1024))))
+  const complete=proof?.kind===completeBuildProofKind?proof:undefined;
+  if(proof&&(!exactKeys(proof,['kind','sourceHead','runtimeFilesSha256','compilerSha256','tsconfigSha256',...(complete?['emittedModulesSha256']:[])])||
+     (!complete&&proof.kind!=='tsc-reproduction-v1')||proof.sourceHead!==p.sourceHead||proof.runtimeFilesSha256!==runtimeFilesSha256||
+     !isAuthorityDigest(proof.compilerSha256)||proof.tsconfigSha256!==hash(await regular(join(p.sourceDirectory,'tsconfig.json'),128*1024))||
+     (complete&&complete.emittedModulesSha256!==runtimeFilesHash(runtimeModules(p.files)))))
     throw new Error('workbench_runtime_build_proof_changed');
   const plan=await regular(p.plan.path,256*1024);if(hash(plan)!==p.plan.sha256)throw new Error('workbench_runtime_plan_changed');
   const options={timeout:5000,maxBuffer:1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}};
@@ -59,7 +64,8 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   if(!expected||hash(await regular(fileURLToPath(helper),256*1024))!==expected.sha256)throw new Error('workbench_node_helper_changed');
   const node=await (await import(helper.href)).requireNodeRuntime();
   const identity:WorkbenchRuntimeIdentity={sourceHead:p.sourceHead,...node,buildNodeVersion:p.nodeVersion,planSha256:p.plan.sha256,runtimeFilesSha256,
-    ...(proof?{reproducedRuntimeFilesSha256:proof.runtimeFilesSha256}:{}),verifiedAt:new Date().toISOString()};return {manifest:p,identity};
+    ...(proof?{buildProofKind:proof.kind}:{}),...(complete?{reproducedRuntimeFilesSha256:complete.runtimeFilesSha256,
+      emittedModulesSha256:complete.emittedModulesSha256}:{}),verifiedAt:new Date().toISOString()};return {manifest:p,identity};
 }
 async function reproduceWorkbenchBuild(p:WorkbenchRuntime):Promise<RuntimeBuildProof|undefined>{
   const tsconfig=join(p.sourceDirectory,'tsconfig.json');
@@ -79,7 +85,7 @@ async function reproduceWorkbenchBuild(p:WorkbenchRuntime):Promise<RuntimeBuildP
     if(hash(await regular(join(snapshot,'tsconfig.json'),128*1024))!==tsconfigSha256)throw new Error('workbench_runtime_source_changed');
     await symlink(await realpath(join(p.sourceDirectory,'node_modules')),join(snapshot,'node_modules'),'dir');
     await exec(process.execPath,[compiler,'--project',join(snapshot,'tsconfig.json'),'--outDir',output],{cwd:snapshot,timeout:120000,maxBuffer:2*1024*1024});
-    const modules=p.files.filter(file=>file.path.startsWith('dist/src/'));
+    const modules=runtimeModules(p.files);
     if(canonical((await listedFiles(output,'src','.js')).map(path=>'dist/'+path))!==canonical(modules.map(file=>file.path).sort()))
       throw new Error('workbench_runtime_build_not_reproducible');
     for(const file of modules){
@@ -87,7 +93,8 @@ async function reproduceWorkbenchBuild(p:WorkbenchRuntime):Promise<RuntimeBuildP
       if(!compiled||hash(compiled)!==file.sha256)
         throw new Error('workbench_runtime_build_not_reproducible');
     }
-    return {kind:'tsc-reproduction-v1',sourceHead:p.sourceHead,runtimeFilesSha256:runtimeFilesHash(p.files),compilerSha256,tsconfigSha256};
+    return {kind:completeBuildProofKind,sourceHead:p.sourceHead,runtimeFilesSha256:runtimeFilesHash(p.files),
+      emittedModulesSha256:runtimeFilesHash(modules),compilerSha256,tsconfigSha256};
   }finally{await rm(directory,{recursive:true,force:true});}
 }
 /** Freeze an existing build. The optional compiler check writes only to a

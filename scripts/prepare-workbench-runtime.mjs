@@ -28,7 +28,7 @@ try{
     {cwd:snapshot,timeout:120000,maxBuffer:2*1024*1024});
   const {prepareWorkbenchRuntime}=await import(pathToFileURL(join(dist,'src','workbench-launch.js')).href);
   const runtime=await prepareWorkbenchRuntime(sourceDirectory,plan);
-  if(runtime.sourceHead!==head||!runtime.buildProof)throw new Error('workbench_runtime_build_proof_changed');
+  if(runtime.sourceHead!==head||runtime.buildProof?.kind!=='tsc-complete-modules-v2')throw new Error('workbench_runtime_build_proof_changed');
   process.stdout.write(JSON.stringify(runtime,null,2)+'\n');
 }catch(error){
   process.stderr.write(JSON.stringify({error:error instanceof Error?error.message:'workbench_install_preparation_failed'})+'\n');

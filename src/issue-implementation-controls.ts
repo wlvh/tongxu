@@ -10,7 +10,7 @@ import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,ch
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
-import {mkdir,readdir,writeFile} from 'node:fs/promises';
+import {mkdir,readdir,stat,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
@@ -29,6 +29,7 @@ import {prepareIssueImplementation,runIssueImplementation,runValidationCorrectio
 import type {ProjectContract,ProjectRequest} from './project-repair.js';
 import type {DockerStartGate} from './docker-sandbox.js';
 import {repairPredecessorMatches,type EndedRepairSupplement,type PublishedRepairPredecessor,type SupplementTarget,type ProjectWorkRequest,type ProjectWorkLink} from './project-chat.js';
+import type {PublishedHandoffLocation} from './formal-review-controls.js';
 import {assertFirstSendCurrent,readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
@@ -76,7 +77,7 @@ export class IssueImplementationControls{
   private retired=new Set<string>();
   private supplementReview?: (input:SupplementReviewInput,executionKind:string)=>Promise<ReviewedSupplement|null>;
   private supplementReviewStatus?: (input:SupplementReviewInput)=>Promise<Row|null>;
-  private endedRepair?: (target:SupplementTarget,id:string,text:string,operation:string)=>Promise<EndedRepairSupplement|undefined>;
+  private endedRepair?: (target:SupplementTarget,id:string,text:string,operation:string,onPublished?:(location:PublishedHandoffLocation)=>void)=>Promise<EndedRepairSupplement|undefined>;
   setSupplementReview(read:NonNullable<IssueImplementationControls['supplementReview']>,inspect?:IssueImplementationControls['supplementReviewStatus']){
     this.supplementReview=read;this.supplementReviewStatus=inspect;
   }
@@ -279,11 +280,13 @@ export class IssueImplementationControls{
   }
   private async execute(id:string,requestId:string,firstSend=false){
     const entry=this.entry(id),q=await QueueStore.open(entry.store);let observations:OwnerObservation[]=[];
+    let handoff:Awaited<ReturnType<IssueImplementationControls['openPublishedHandoff']>>;
     try{
       const original=q.issueImplementations().state(id,requestId);if(original.result||(original.phase==='active_or_unknown'||original.validationFailure)&&!firstSend)return original;
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
         const continuation=fixed.request.continuation;
+        handoff=await this.openPublishedHandoff(q,fixed.request);
         if(continuation?.amendment){
           const review=await this.reviewAmendment(entry,continuation.originalTarget,supplementBase(continuation),continuation.supplement.id,continuation.supplement.text,continuation.endedRepair);
           if(canonical(review)!==canonical(continuation.amendment))throw new Error('project_supplement_review_binding_changed');
@@ -315,13 +318,13 @@ export class IssueImplementationControls{
         }
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().firstInputDispatch(id,requestId,firstInput!,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:firstInput!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&(!fixed.request.workspaceRequest.projectFiles||this.generated.has(id))){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,dispatchGate:handoff?.dispatch,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().firstInputDispatch(id,requestId,firstInput!,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:firstInput!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&(!fixed.request.workspaceRequest.projectFiles||this.generated.has(id))){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
         return state;
       });
-    }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{q.close();}
+    }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{handoff?.close();q.close();}
   }
   private async persistValidationFailure(q:QueueStore,id:string,requestId:string,p:ValidationFailureProof){
     const path=join(p.record.operationRoot,'validation-failure.json'),bytes=canonical(p.record);try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path,32*1024*1024)).toString()!==bytes)throw e;}q.issueImplementations().recordValidationFailure(id,requestId,p);
@@ -493,11 +496,14 @@ export class IssueImplementationControls{
     if(!this.accepting||!messageId(requestId))throw new Error('implementation_request_invalid');await this.catalog();this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');const key=id+':'+requestId;if(this.active.has(key))return {id:requestId,controllerActive:true,duplicate:true};
     const work=this.executeValidation(id,requestId).then(async s=>{if(s.result?.status==='completed'&&this.finished){const q=await QueueStore.open(this.entry(id).store);try{const r=q.issueImplementations().original(id,requestId);await this.finished(r.continuation?.originalTarget??{source:id,requestId,task:r.task,operation:s.operation});}finally{q.close();}}return s;});this.active.set(key,work);work.catch(()=>{}).finally(()=>this.active.delete(key));return {id:requestId,controllerActive:true,registrationIsNotExecution:true};
   }
-  private async executeValidation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+  private async executeValidation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    let handoff:Awaited<ReturnType<IssueImplementationControls['openPublishedHandoff']>>;
+    try{
     const original=q.issueImplementations().state(id,requestId);return await withQueueRepairLock(entry.store,original.operation,async()=>{
       const current=q.issueImplementations().state(id,requestId);if(current.result)return current;if(current.validationCorrection)throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);
       const p=await observeValidationFailure(current);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);let observations:OwnerObservation[]=[];
       const request=current.plan.request as ImplementationRequest,continuation=request.continuation;
+      handoff=await this.openPublishedHandoff(q,request);
       if(continuation?.amendment&&canonical(await this.reviewAmendment(entry,continuation.originalTarget,supplementBase(continuation),continuation.supplement.id,continuation.supplement.text,continuation.endedRepair))!==canonical(continuation.amendment))throw new Error('project_supplement_review_binding_changed');
       const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
         if(continuation)await this.checkSupplementPredecessor(entry,request);
@@ -510,7 +516,7 @@ export class IssueImplementationControls{
       const nativeDirectory=join(directory,retry?'native-retry-'+randomUUID():'native');
       const ref={failureSha256:hash(canonical(p.record)),inputSha256:hash(input),definition:definition!,nativeDirectory};
       q.issueImplementations().problem(id,requestId,'');
-      const result=await runValidationCorrection(p,request,ref,input,current.firstInputContinuation,{refresh,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{
+      const result=await runValidationCorrection(p,request,ref,input,current.firstInputContinuation,{refresh,dispatchGate:handoff?.dispatch,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{
         q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,nativeDirectory,observations);
       }},async()=>{
         await checkValidationWorkspace(p,true);await refresh();
@@ -518,7 +524,7 @@ export class IssueImplementationControls{
       });
       const state=q.issueImplementations().complete(id,requestId,result);if(result.status==='completed')q.tasks().observe(q.tasks().definition(current.task),await observeTaskWorkspace(q.tasks().definition(current.task)));return state;
     });
-  }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{q.close();}}
+  }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{handoff?.close();q.close();}}
   async cancel(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const request=q.issueImplementations().original(id,requestId);if(request.continuation)await this.checkSupplementPredecessor(entry,request,false);
     q.issueImplementations().cancel(id,requestId);const state=q.issueImplementations().state(id,requestId);
@@ -625,10 +631,39 @@ export class IssueImplementationControls{
       }
     }finally{q.close();}
   }
-  private async checkEndedRepair(target:SupplementTarget,id:string,text:string,H:string,ended:EndedRepairSupplement){
+  private async checkEndedRepair(target:SupplementTarget,id:string,text:string,H:string,ended:EndedRepairSupplement,onPublished?:(location:PublishedHandoffLocation)=>void){
     if(ended.H!==H)throw new Error('formal_repair_supplement_current_base_required');
-    const original=await this.endedRepair?.(target,id.slice('supplement-'.length),text,ended.operation);
+    const original=await this.endedRepair?.(target,id.slice('supplement-'.length),text,ended.operation,onPublished);
     if(!original||canonical(original)!==canonical(ended))throw new Error('formal_repair_supplement_writer_unresolved');
+  }
+  private async openPublishedHandoff(ordinary:QueueStore,request:ImplementationRequest){
+    const continuation=request.continuation,ended=continuation?.endedRepair;
+    if(!continuation||!ended?.published)return;
+    const {originalTarget,supplement}=continuation;
+    let location:PublishedHandoffLocation|undefined;
+    await this.checkEndedRepair(originalTarget,supplement.id,supplement.text,supplementBase(continuation),ended,found=>{location=found;});
+    if(!location)throw new Error('formal_repair_supplement_writer_unresolved');
+    const {entry,store}=location;
+    let sameQueue=store===ordinary.directory;
+    if(!sameQueue){
+      const [formalDirectory,ordinaryDirectory]=await Promise.all([stat(store,{bigint:true}),stat(ordinary.directory,{bigint:true})]);
+      sameQueue=formalDirectory.dev===ordinaryDirectory.dev&&formalDirectory.ino===ordinaryDirectory.ino;
+    }
+    const formal=sameQueue?ordinary:await QueueStore.open(store);
+    const fence=<T>(effect:()=>T)=>formal.formalReviews().publishedHandoffEffect(entry,originalTarget,ended,effect);
+    return {
+      dispatch:<T>(record:()=>void,send:()=>T):T=>{
+        if(formal===ordinary){
+          // Commit the durable ordinary intent before the native write. Recheck
+          // inside a fresh transaction so the shared queue never nests writes.
+          fence(()=>{});
+          record();
+          return fence(send);
+        }
+        return fence(()=>{record();return send();});
+      },
+      close:()=>{if(formal!==ordinary)formal.close();}
+    };
   }
   private async boundSupplement(target:SupplementTarget,id:string,text:string,entry:ReadEntry=this.entry(target.source)){
     const q=await QueueStore.open(entry.store);let request:ImplementationRequest;

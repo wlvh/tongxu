@@ -1,7 +1,7 @@
 import {ReceptionControls} from './reception-controls.js';
 import {FormalReviewControls,type FormalSourceReader,type FormalWorkbenchProject} from './formal-review-controls.js';
 import {IssueImplementationControls} from './issue-implementation-controls.js';
-import {ProjectChat,repairPredecessorMatches,type SupplementTarget} from './project-chat.js';
+import {ProjectChat,repairPredecessorMatches} from './project-chat.js';
 import {ProjectWork} from './project-work.js';
 import {ProjectWorkOwner,workOwnerPage} from './project-work-owner.js';
 import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig,type AIPreferenceSnapshot} from './ai-settings.js';
@@ -257,7 +257,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       ]);
       for(const result of results)if(result.status==='rejected')throw result.reason;
     });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
-    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));controls.setEndedRepair(async(target,id,text,operation)=>(await formalForSupplement(scope,target,id,text,operation))?.endedRepair);await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
+    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));controls.setEndedRepair(async(target,id,text,operation,onPublished)=>(await formalForSupplement(scope,target,id,text,operation,onPublished))?.endedRepair);await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
   const openProjectWork=():Promise<ProjectWork>=>{
@@ -267,14 +267,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     },verifyProject,openImplementation,scope=>ai?.workflowRevision(scope)).catch(error=>{projectWork=undefined;throw error;});
   };
   let projectChat:Promise<ProjectChat>|undefined;
-  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,target:SupplementTarget,receivedId?:string,text?:string,operation?:string)=>{
+  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,...args:Parameters<FormalReviewControls['workRepairInbox']>)=>{
     if(!p.formalReview||!p.projectWork)return null;
     const loaded=await locals.get('project:'+scope.repository.id)?.value;
-    if(loaded?.formal)return loaded.formal.workRepairInbox(target,receivedId,text,operation);
+    if(loaded?.formal)return loaded.formal.workRepairInbox(...args);
     const context=await projectPlan(scope);
     const ref=context.plan.formalReview;if(!ref)return null;
     const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
-    return formal.workRepairInbox(target,receivedId,text,operation);
+    return formal.workRepairInbox(...args);
   };
   const openProjectChat=():Promise<ProjectChat>=>{
     if(!p.projectSecretary||!github)throw new Error('project_chat_not_configured');
@@ -567,13 +567,15 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(url.pathname.endsWith('/workflow/check')){json(res,200,await ai.checkWorkflow(selection,body,()=>verifyProject(selection),dependencies?.workflowUpstream));return;}
         if(url.pathname.endsWith('/workflow/activate')){
           const activation=await ai.activateWorkflow(selection,body,()=>verifyProject(selection),async revision=>{
-            if(!runtimeIdentity||runtimeIdentity.reproducedRuntimeFilesSha256!==runtimeIdentity.runtimeFilesSha256||
+            if(runtimeIdentity?.buildProofKind!=='tsc-complete-modules-v2'||!runtimeIdentity.emittedModulesSha256||
+               runtimeIdentity.reproducedRuntimeFilesSha256!==runtimeIdentity.runtimeFilesSha256||
                !p.projectWork||!p.projectSecretary||!p.formalReview)return null;
             const context=await projectPlan(selection);
             if(context.selectedSourcesUnknown)return null;
             const ref=context.plan.formalReview;if(!ref)return null;
             const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed,dependencies?.formalSourceReader,()=>verifyProject(selection));
-            return formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead,runtimeIdentity.runtimeFilesSha256);
+            const evidence=await formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead,runtimeIdentity.runtimeFilesSha256);
+            return evidence?{...evidence,buildProofKind:runtimeIdentity.buildProofKind,emittedModulesSha256:runtimeIdentity.emittedModulesSha256}:null;
           });
           json(res,200,activation);return;
         }

@@ -12,7 +12,20 @@ import type {OwnerObservation} from './authority-source.js';
 import type {ResourceRecords,ResourceOutcome} from './resource-store.js';
 import {resourceRequestHash,type ResourceRequest} from './resource-contract.js';
 import {sameFormalCandidate,validateFormalCandidate,validateFormalReview,type FormalCandidate} from './formal-review-contract.js';
+import type {EndedRepairSupplement,SupplementTarget} from './project-chat.js';
 type Row=Record<string,any>;
+export function conflictingFormalRepair(requests:Row[],operation:string,target:SupplementTarget,continuing:boolean,active:(id:string)=>boolean){
+  return requests.some(other=>{
+    if(other.operation===operation)return false;
+    const fixDispatched=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched);
+    const unknown=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched&&!row.returned);
+    const guarded=continuing&&other.request.projectWork&&canonical(other.request.projectWork.target)===canonical(target);
+    return unknown||fixDispatched&&(!other.terminal||active(other.operation))||
+      (!other.stopped&&other.terminal?.result.status==='awaiting_publication'&&
+        !requests.some(next=>next.request.previousOperation===other.operation))||
+      ((!guarded||fixDispatched)&&!other.stopped&&(!other.terminal||active(other.operation)));
+  });
+}
 export type FormalStage={key:string;role:'reviewer'|'verifier_fact'|'verifier_impact'|'test'|'fix';candidate:FormalCandidate;inputSha256:string;systemSha256:string;materialSha256:string;actorRole:'background'|'receiver'|'implementer';directory:string;authorityIntent:string;budgetIntent:string;action:ActionRequest;authorization:string;resources:ResourceRequest[]};
 export const formalOperationGuard=`CREATE TRIGGER formal_review_operation_guard BEFORE UPDATE ON operations
 WHEN json_type(OLD.result,'$.formalReview')='object' AND ((OLD.status='running' AND json_extract(OLD.result,'$.formalReview.controllerReturned') IS NOT 1 AND (NEW.status!=OLD.status OR NEW.result!=OLD.result)) OR json_extract(NEW.result,'$.formalReview.recordSha256') IS NOT json_extract(OLD.result,'$.formalReview.recordSha256'))
@@ -72,6 +85,36 @@ export class FormalReviews{
   forEntry(entry:string){const rows=this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' ORDER BY id").all() as Row[];if(rows.length>512)throw new Error('formal_history_bound');return rows.map(e=>this.state(e.object)).filter(s=>s.request.entry===entry);}
   requests(item:string){return (this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' AND json_extract(data,'$.value.item')=? ORDER BY id").all(item) as Row[]).map(e=>this.state(e.object));}
   currentSource(item:string){return this.source(item);}
+  requireCurrentHandoffReview(reviewed:Row){
+    const {repository,pr,H,B,target}=reviewed.request.candidate,current=this.source(reviewed.item);
+    if(reviewed.stopped||!reviewed.resourcesSettled||reviewed.terminal?.result.status!=='pass'||
+       !current.current||current.prerequisites.length||current.candidate.H!==H||current.candidate.B!==B||
+       current.candidate.targetRef!==target||current.candidate.repository!==repository||current.candidate.pr!==pr)
+      throw new Error('formal_repair_supplement_current_base_required');
+    const authority=this.authority.forScope(current.context.scope.id,{item:reviewed.item,target});
+    if(authority.currentAdoption!==reviewed.request.material.adoptedScope.adoption||
+       authority.controls.some(control=>['implementation','investment'].includes(control.control)&&control.state==='stopped'))
+      throw new Error('formal_repair_supplement_current_base_required');
+  }
+  publishedHandoffEffect<T>(entry:string,target:SupplementTarget,ended:EndedRepairSupplement,effect:()=>T):T{
+    return this.transaction(()=>{
+      const proof=ended.published,requests=this.forEntry(entry);
+      const repair=requests.find(state=>state.operation===ended.operation);
+      const reviewed=requests.findLast(state=>state.request.previousOperation===ended.operation);
+      if(!proof||!repair||!reviewed||repair.stopped||repair.executionRound!==ended.round||
+         repair.terminal?.result.status!=='awaiting_publication'||repair.request.candidate.H!==proof.previousH||
+         repair.terminal.result.fix.H1!==ended.H||repair.terminal.result.fix.recordSha256!==proof.fixSha256||
+         !repair.request.projectWork||canonical(repair.request.projectWork.target)!==canonical(target)||
+         canonical(reviewed.request.projectWork)!==canonical(repair.request.projectWork)||
+         reviewed.operation!==proof.reviewOperation||reviewed.request.candidate.H!==ended.H||
+         reviewed.request.candidate.requirementsSha256!==proof.requirementsSha256||reviewed.request.material.sha256!==proof.reviewMaterialSha256||
+         conflictingFormalRepair(requests,repair.operation,target,true,()=>false)||
+         this.sourceForReviewRecords(repair.operation).published?.captureSha256!==proof.publicationSha256)
+        throw new Error('formal_repair_supplement_current_base_required');
+      this.requireCurrentHandoffReview(reviewed);
+      return effect();
+    });
+  }
   private closedReviewEvidence(result:Row,stages:Row[]){
     try{
       const closure=result.originalClosure;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {writeFile,readFile,rename,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 import {formalFixture} from '../w5/formal-round-fixture.js';
 import {startWorkbench} from '../../src/workbench.js';
 import {hash} from '../../src/snapshot.js';
@@ -18,10 +19,95 @@ import type {AIPreferenceSnapshot} from '../../src/ai-settings.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {BoundedCodexSession} from '../../src/repair-native.js';
+import {QueueStore} from '../../src/queue-store.js';
+import {freezeRepairInbox} from '../../src/formal-repair-inbox.js';
+import type {ImplementationRequest} from '../../src/issue-implementation.js';
 import type {EndedRepairSupplement} from '../../src/project-chat.js';
 import type {DockerConfig} from '../../src/docker-sandbox.js';
 import {dockerProtocolFixture} from '../w2/docker-protocol-fixture.js';
 const unusedDockerFixture={kind:'docker',client:'/fixture/docker-not-launched',endpoint:'unix:///fixture/docker.sock',image:'fixture/node',node:'/usr/bin/node'};
+test('published H2 handoff rechecks adoption after the live read and holds the formal queue through dispatch',async t=>{
+ const f=await formalFixture(t),candidate=f.live.candidate;
+ const H1=await git(f.entry.objects,['rev-parse',candidate.H+'^']),H0=candidate.B;
+ assert.notEqual(H0,H1);
+ assert.equal(await git(f.entry.objects,['merge-base',H0,H1]),H0);
+ const target={source:'work-A',requestId:randomUUID(),task:'ordinary-A',operation:randomUUID()};
+ const work={id:randomUUID(),account:7,repository:1,nodeId:'R_1',target};
+ const requestId=randomUUID(),text='Keep this request in its original formal recipient';
+ const items=await freezeRepairInbox(f.root,1,work,[{requestId,originalRequestId:requestId,text,receivedAt:new Date().toISOString()}]);
+ const originalReport={report:'Original recipient returned without adopting the supplement'};
+ const oldScope=f.owner.a.inspectRecordedDecision(f.owner.scope.sha).proposal;
+ assert.equal(oldScope.kind,'adopt_scope');
+ const material={issue:f.live.issue,adoptedScope:{adoption:f.owner.scope.sha},sha256:hash('H2 reviewed material'),sourceEvidence:{materialSha256:hash('H2 observed source')}};
+ const publicRecord='H2 repair publication';
+ const observation={result:{complete:true},records:[{kind:'pr',body:Buffer.from(JSON.stringify({body:publicRecord}))}]};
+ const live={...f.live,evidence:material.sourceEvidence,observation} as typeof f.live;
+ const fix=(operation:string,round:number,H:string,nextH:string,previousOperation:string|null)=>({
+   operation,executionRound:round,stopped:false,request:{candidate:{...candidate,H},directory:round===1?f.root:f.entry.root,projectWork:work,previousOperation},
+   stages:[{stage:{key:'round-'+round+'/fix',role:'fix'},dispatched:true,returned:{proof:{native:{company:'OpenAI',sessionId:'fixture-session-'+round}},result:originalReport}}],
+   terminal:{result:{status:'awaiting_publication',fix:{H1:nextH,publicRecord,recordSha256:hash(operation)}}}
+ });
+ const first=fix('first-repair',1,H0,H1,null),second=fix('second-repair',2,H1,candidate.H,first.operation);
+ const requirementsSha256=hash('H2 requirements'),reviewed={operation:'reviewed-H2',item:f.item,stopped:false,resourcesSettled:true,stages:[],
+   request:{candidate:{...candidate,requirementsSha256},previousOperation:second.operation,projectWork:work,material},terminal:{result:{status:'pass'}}};
+ const history=[first,second,reviewed],publicationSha=(operation:string)=>hash(operation+' publication');
+ // The original publication and returned reports are fixed fixture inputs.
+ // The handoff, local Owner projection, and both queue transactions are real.
+ t.mock.method(FormalReviews.prototype,'forEntry',()=>history.slice());
+ t.mock.method(FormalReviews.prototype,'state',(id:string)=>history.find(s=>s.operation===id));
+ t.mock.method(FormalReviews.prototype,'sourceForReviewRecords',(id:string)=>({published:{captureSha256:publicationSha(id)}}));
+ t.mock.method(FormalReviews.prototype,'originalStageInputIncludes',(id:string,key:string,match:(input:unknown)=>boolean)=>
+   id===first.operation&&key==='round-1/fix'&&match({projectSupplements:{items}}));
+ t.mock.method(FormalReviewControls.prototype as any,'publishedRepairStep',async(_q:QueueStore,repair:typeof first,next:typeof reviewed)=>({
+   operation:repair.operation,round:repair.executionRound,H:next.request.candidate.H,sessionId:'fixture-session-'+repair.executionRound,report:originalReport,
+   published:{previousH:repair.request.candidate.H,workspace:f.entry.objects,reviewOperation:next.operation,reviewMaterialSha256:material.sha256,requirementsSha256,
+     publicationSha256:publicationSha(repair.operation),fixSha256:repair.terminal.result.fix.recordSha256,testPlans:[],protectedPaths:[],image:'fixture-image',contract:'fixture contract',revisions:[]}
+ } satisfies EndedRepairSupplement));
+ let beforeRead=async()=>{};
+ const controls=await FormalReviewControls.load(f.catalog,hash(await readFile(f.catalog)),f.sources,undefined,async()=>{await beforeRead();return live;});
+ const read=()=>controls.workRepairInbox(target,requestId,text);
+ const original=await read(),handoff=original?.endedRepair;
+ assert.equal(handoff?.H,candidate.H);
+ assert.equal((await controls.workRepairInbox(target,randomUUID(),text))?.endedRepair?.H,candidate.H);
+ assert.deepEqual(handoff?.published?.ancestors?.map(step=>[step.previousH,step.H]),[[H0,H1]]);
+ assert.ok(original&&'recipient' in original);assert.equal(original.recipient?.sessionId,'fixture-session-1');
+ const catalog=join(f.root,'ordinary-catalog.json'),contents=canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[]});
+ await writeFile(catalog,contents);
+ const ordinary=await IssueImplementationControls.load(catalog,hash(contents),candidate.repository,async()=>({...f.live.issue,title:'Fixture Issue'}),async()=>{});
+ ordinary.setEndedRepair(async(...args)=>(await controls.workRepairInbox(...args))?.endedRepair);
+ const split=await QueueStore.create(join(f.root,'separate-ordinary-queue'),candidate.repository),probe=new DatabaseSync(join(f.store,'queue.sqlite'));
+ t.after(()=>{probe.close();split.close();});
+ const request={continuation:{originalTarget:target,supplement:{id:'supplement-'+requestId,text},endedRepair:handoff}} as ImplementationRequest;
+ const shared=await ordinary['openPublishedHandoff'](f.q,request),separate=await ordinary['openPublishedHandoff'](split,request);
+ assert.ok(shared&&separate);t.after(()=>{shared.close();separate.close();});
+ let recorded=0,sent=0;
+ const send=()=>{assert.throws(()=>probe.exec('BEGIN IMMEDIATE'),/database is locked/);return ++sent;};
+ assert.equal(shared.dispatch(()=>{f.q.enableReceiver();recorded++;},send),1);
+ assert.equal(separate.dispatch(()=>{split.enableReceiver();recorded++;},send),2);
+ try{
+   assert.throws(()=>shared.dispatch(()=>{f.q.enableReceiver();recorded++;reviewed.stopped=true;},send),/formal_repair_supplement_current_base_required/);
+   assert.deepEqual([recorded,sent],[3,2]);
+ }finally{reviewed.stopped=false;}
+ let entered!:()=>void,resume!:()=>void;
+ const reached=new Promise<void>(resolve=>{entered=resolve;}),hold=new Promise<void>(resolve=>{resume=resolve;});
+ beforeRead=async()=>{entered();await hold;};
+ const pending=read(),unchanged=canonical(live);
+ try{
+   await Promise.race([reached,pending.then(result=>assert.fail('handoff did not reach the final awaited source read: '+JSON.stringify(result)))]);
+   await f.owner.adopt({...oldScope,scopeVersion:oldScope.scopeVersion+'-next',previousAdoption:f.owner.scope.sha});
+   assert.equal(canonical(live),unchanged);
+ }finally{beforeRead=async()=>{};resume();}
+ const blocked=await pending;
+ assert.equal(blocked?.reason,'formal_repair_supplement_lineage_pending');
+ assert.equal(blocked?.endedRepair,undefined);
+ assert.ok(blocked&&'recipient' in blocked);assert.deepEqual(blocked.recipient,original.recipient);
+ assert.equal(blocked.adopted,false);
+ assert.equal((await read())?.endedRepair,undefined);
+ assert.equal((await controls.workRepairInbox(target,randomUUID(),text))?.endedRepair,undefined);
+ for(const fence of [shared,separate])assert.throws(()=>fence.dispatch(()=>{recorded++;},send),/formal_repair_supplement_current_base_required/);
+ assert.deepEqual([recorded,sent],[3,2]);
+ assert.equal((await f.calls()).length,0);
+});
 async function page(t:test.TestContext){const f=await formalFixture(t),path=join(f.root,'formal-workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Explicit formal review fixture',goal:'Protocol fixture; no real remote or model',sources:f.sources.map(s=>({...s,title:'Explicit PR #1'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path,undefined,{formalSourceReader:async()=>f.live});let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};t.after(close);const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1)},get=(p:string)=>fetch(url.origin+p,{headers}),post=(p:string,body:unknown,origin=url.origin)=>fetch(url.origin+p,{method:'POST',headers:{...headers,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {...f,path,app,url,get,post,close};}
 test('a project work candidate can open its exact registered PR review and refuses a different base or requirement',async t=>{
  const f=await page(t),{H}=f.live.candidate,route='/api/formal-review/'+f.entry.id+'/prepare';
