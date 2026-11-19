@@ -6,7 +6,7 @@ import {readEndedReadonlyImplementationFailure,requireEndedReadonlyProof,readHos
 import {captureImplementationAI,parseImplementationAI,type ImplementationAI} from './implementation-ai.js';
 import {assertWorkCurrent,type CurrentCheckRef} from './project-work-current.js';
 import {fixedGit} from './project-work-preparation.js';
-import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,readRecordedValidationFailure,validationResultCapture,type ValidationFailureProof,type ValidationLogSelection} from './implementation-validation.js';
+import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,checkCorrectionBootstraps,readRecordedValidationFailure,validationResultCapture,type ValidationFailureProof,type ValidationLogSelection} from './implementation-validation.js';
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
@@ -360,16 +360,19 @@ export class IssueImplementationControls{
     }finally{q.close();}
   }
   private definitionConsentBaseline(q:QueueStore,entry:Entry,s:Row){return (s.plan.request.continuation&&entry.workRequestId?q.issueImplementations().state(entry.id,entry.workRequestId):s).definitionConsent?.baseline as string|undefined;}
-  private async readableDefinition(entry:Entry,state:Row,observations:OwnerObservation[],required:boolean){
+  private async validationDefinition(entry:Entry,state:Row){
+    if(!this.generated.has(entry.id)||!entry.workRequestId)throw new Error('work_validation_definition_not_product_work');
     const amendment=state.plan.request.continuation?.amendment;
-    if(amendment){
-      const q=await QueueStore.open(entry.store);
-      try{
-        const original=q.issueImplementations().original(entry.id,entry.workRequestId!);
-        return {...await workValidationDefinition(entry,original),supplement:{...amendment.validation,requirementSha256:amendment.inputSha256,readOnly:true}};
-      }finally{q.close();}
-    }
-    if(entry.workRequestId&&!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(!entry.workRequestId){if(required)throw new Error('work_validation_definition_not_product_work');return undefined;}const d=await workValidationDefinition(entry,state.plan.request);
+    if(!amendment)return workValidationDefinition(entry,state.plan.request);
+    const q=await QueueStore.open(entry.store);
+    try{
+      const original=q.issueImplementations().original(entry.id,entry.workRequestId);
+      return {...await workValidationDefinition(entry,original),supplement:{...amendment.validation,requirementSha256:amendment.inputSha256,readOnly:true}};
+    }finally{q.close();}
+  }
+  private async readableDefinition(entry:Entry,state:Row,observations:OwnerObservation[],required:boolean){
+    if(!entry.workRequestId){if(required)throw new Error('work_validation_definition_not_product_work');return undefined;}
+    const d=await this.validationDefinition(entry,state);
     if(definitionScopeAllows(state.plan.request,d))return d;
     const q=await QueueStore.open(entry.store);try{
       const root=state.plan.request.continuation?q.issueImplementations().state(entry.id,entry.workRequestId!):state,ref=root.definitionConsent;if(!ref){if(required)throw new Error('work_validation_material_consent_required');return undefined;}
@@ -377,14 +380,25 @@ export class IssueImplementationControls{
       q.authority().adoptionBaseline(d.adoption,observations);q.authority().acceptedBaseline(ref.baseline,contents.material.map(({name,sha256})=>({name,sha256})),observations);return {...d,materialConsent:ref.baseline};
     }finally{q.close();}
   }
+  async validationRequest(id:string,rootId:string,expected?:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),root=records.state(id,rootId);
+      const latest=entry.projectFiles
+        ?records.requests(id).findLast(r=>r.logicalOwner===root.task&&r.result?.status!=='cancelled_unstarted')
+        :root;
+      if(!latest||expected!==undefined&&expected!==latest.id)throw new Error('implementation_validation_request_changed');
+      return latest.id as string;
+    }finally{q.close();}
+  }
   async validationState(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const s=q.issueImplementations().state(id,requestId);if(s.result||s.validationCorrection)return null;const p=await observeValidationFailure(s);let reason:string|null=null;
-    try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');await workValidationDefinition(entry,s.plan.request);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
-    return {eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
+    try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.validationDefinition(entry,s);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
+    return {requestId,eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
   }catch{return null;}finally{q.close();}}
   async definitionConsentPreview(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);
-    const d=await workValidationDefinition(entry,s.plan.request);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
+    const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.persistValidationFailure(q,id,requestId,p);
+    const d=await this.validationDefinition(entry,s);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
     const proposal=q.authority().baselineProposal(d.adoption,definitionConsentContents(d)),prepared=q.authority().prepare('work-validation-material-'+hash(canonical(proposal)),Buffer.from(canonical(proposal)));
     return {proposalSha256:prepared.proposalSha256,definition:d,adoption:d.adoption};
   }finally{q.close();}}
@@ -400,13 +414,25 @@ export class IssueImplementationControls{
     const original=q.issueImplementations().state(id,requestId);return await withQueueRepairLock(entry.store,original.operation,async()=>{
       const current=q.issueImplementations().state(id,requestId);if(current.result)return current;if(current.validationCorrection)throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);
       const p=await observeValidationFailure(current);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);let observations:OwnerObservation[]=[];
-      const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==current.plan.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+      const request=current.plan.request as ImplementationRequest,continuation=request.continuation;
+      if(continuation?.amendment&&canonical(await this.reviewAmendment(entry,continuation.originalTarget,continuation.predecessor.H1,continuation.supplement.id,continuation.supplement.text))!==canonical(continuation.amendment))throw new Error('project_supplement_review_binding_changed');
+      const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+        if(continuation)await this.checkSupplementPredecessor(entry,request);
         const a=q.authority(),profile=a.configuration().profile,refs=new Map<string,ReturnType<typeof a.sourceRequests>[number]>(),s=q.issueImplementations().state(id,requestId);for(const auth of [...Object.values(current.plan.authorization),...(s.definitionConsent?[s.definitionConsent.baseline]:[])] as string[])for(const r of a.sourceRequests(auth))refs.set(r.proposalSha256,r);
         const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];for(const r of refs.values())observations.push(await readOwnerSource(profile,r.proposalSha256,r.commentId,join(root,r.proposalSha256)));q.issueImplementations().check(id,requestId,observations);
       };
       await refresh();const definition=await this.readableDefinition(entry,q.issueImplementations().state(id,requestId),observations,true),input=validationCorrectionInput(p,current.plan.request,definition);await checkValidationWorkspace(p,true);await refresh();
-      const ref=q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,observations);await mkdir(join(current.plan.operationRoot,'validation-correction'),{mode:0o700});await releaseWorkspace(current.plan.workspace,p.lease as any,'verified_known_validation_failure');
-      const result=await runValidationCorrection(p,current.plan.request,ref,input,current.firstInputContinuation,{refresh,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{q.issueImplementations().check(id,requestId,observations);}});
+      const retry=await checkCorrectionBootstraps(p.record.operationRoot),directory=join(p.record.operationRoot,'validation-correction');
+      await mkdir(directory,{mode:0o700,recursive:true});
+      const nativeDirectory=join(directory,retry?'native-retry-'+randomUUID():'native');
+      const ref={failureSha256:hash(canonical(p.record)),inputSha256:hash(input),definition:definition!,nativeDirectory};
+      q.issueImplementations().problem(id,requestId,'');
+      const result=await runValidationCorrection(p,request,ref,input,current.firstInputContinuation,{refresh,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{
+        q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,nativeDirectory,observations);
+      }},async()=>{
+        await checkValidationWorkspace(p,true);await refresh();
+        await releaseWorkspace(current.plan.workspace,p.lease as any,'verified_known_validation_failure');
+      });
       const state=q.issueImplementations().complete(id,requestId,result);if(result.status==='completed')q.tasks().observe(q.tasks().definition(current.task),await observeTaskWorkspace(q.tasks().definition(current.task)));return state;
     });
   }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{q.close();}}
@@ -551,12 +577,13 @@ export class IssueImplementationControls{
         const sent=(await regular(join(native,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(line=>JSON.parse(line)).filter(message=>message.method==='turn/start');
         const input=sent.length===1?JSON.parse(sent[0].params.input[0].text):null;
         const {workflowPrompt:_,...expected}=request;
-        if(!input||capture.binding.run!==state.plan.operationRoot||canonical(input.request)!==canonical(expected))throw new Error('project_supplement_original_delivery_changed');
+        if(!input||capture.binding.run!==state.plan.operationRoot||canonical(input.request)!==canonical(report?.validationCorrection?request:expected))throw new Error('project_supplement_original_delivery_changed');
         recipient={role:'implementer',work:target.source,sessionId:capture.binding.sessionId};
       }catch(error){if(report)throw error;}
       const coveringCandidate=amendment&&report?.status==='completed'&&report?.tests?.passed===true&&report.tests.tools?.some((tool:Row)=>tool.id===supplementTestId(amendment)&&tool.exitCode===0)?report.H1:null;
       const resumable=!!amendment&&!historical&&!state.stopped&&!this.active.has(target.source+':'+compiled)&&['registered','prepared'].includes(state.phase);
-      return {ready:false,resumable,successful:!historical&&original.ready&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)),...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted:true,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate}:{}),status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
+      const successful=!historical&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)&&!!report);
+      return {ready:false,resumable,successful,...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted:true,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate}:{}),status:state.phase,reason:state.reason||(successful?null:original.reason),operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
     }finally{q.close();}
   }
   async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){

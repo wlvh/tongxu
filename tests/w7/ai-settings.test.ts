@@ -14,6 +14,34 @@ import {firstCodingWorkflowRevision} from '../../src/coding-workflow-source.js';
 import {randomUUID} from 'node:crypto';
 
 const scope=(id=1)=>({account:{id:7},repository:{id,nodeId:'R_'+id,fullName:'fixture/project-'+id}});
+test('overlapping workflow checks and cold retries keep the first observed main',async t=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-workflow-race-')));
+  const config={root,configured:[],disabledMcpServers:[]};
+  const initial=await AISettings.open(config);
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const body={requestId:randomUUID(),mode:'upstream-main'};
+  let enter!:()=>void,release!:()=>void,observations=0;
+  const verifying=new Promise<void>(done=>{enter=done;}),finish=new Promise<void>(done=>{release=done;});
+  const first=initial.checkWorkflow(scope(),body,async()=>{enter();await finish;throw new Error('fixture_source_unavailable');},async()=>{
+    observations++;return {main:'a'.repeat(40),firstMerged:true};
+  });
+  await verifying;
+  const retry=initial.checkWorkflow(scope(),body,async()=>{},async()=>{observations++;return {main:'b'.repeat(40),firstMerged:true};});
+  release();
+  for(const result of await Promise.allSettled([first,retry])){
+    assert.equal(result.status,'rejected');
+    if(result.status==='rejected')assert.match(result.reason.message,/fixture_source_unavailable/);
+  }
+  assert.equal(observations,1);
+  await initial.close();
+  const reopened=await AISettings.open(config);
+  try{
+    const result=await reopened.checkWorkflow(scope(),body,async()=>{},async()=>{observations++;return {main:'c'.repeat(40),firstMerged:true};}) as {selectedRevision:string};
+    assert.equal(result.selectedRevision,'a'.repeat(40));
+    assert.equal(observations,1);
+  }finally{await reopened.close();}
+});
+
 test('normal workflow check pins the first adoption even after upstream main moves and keeps an explicit later check fixed',async t=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-workflow-check-')));
   const path=join(root,'workbench.json'),repo={

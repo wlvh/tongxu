@@ -136,8 +136,13 @@ export class ExtraCliSession{
     for(const [p,sha]of Object.entries(this.profile.files)){const b=readFileSync(join(this.directory,p));if(b.length>1024*1024||hash(b)!==sha)throw Error('external_cli_profile_changed');}
     this.verifyProfileSync();this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');const index=this.rpc.events.length;
     const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,()=>{this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');beforeSendSync?.();},dispatchGate);
-    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();this.assertCanForward();
-    const requestId=this.rpc.events.find(m=>!m.method&&m.result===result)?.id;if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');return {final:parsed,requestId};
+    this.assertCanForward();
+    const terminal=this.rpc.events.findIndex((m,i)=>i>=index&&!m.method&&m.result===result);
+    const requestId=this.rpc.events[terminal]?.id;
+    if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');
+    const final=parseAcpPrompt(this.rpc.events.slice(index,terminal+1),this.session.sessionId,result,this.choice);
+    await this.verifyProfile();this.assertCanForward();
+    return {final,requestId};
   }
   private async verifyProfile(bootstrap=false){
     const deadline=Date.now()+2000;

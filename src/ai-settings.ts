@@ -83,8 +83,9 @@ const scopeKey=(s:AISettingsScope)=>{if(!Number.isSafeInteger(s.account.id)||s.a
  * supply tools, filesystem permissions, credentials, billing or merge rights. */
 export class AISettings{
   private scanning:Promise<AIProvider[]>|undefined;
+  private workflowRequests=new Map<string,{mode:string;result:Promise<unknown>}>();
   private constructor(private config:AISettingsConfig,private db:DatabaseSync,private probe:typeof inspectAIProvider,private secretaryExecutable?:string){}
-  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_checks(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request))');return new AISettings(config,db,probe,secretaryExecutable);}
+  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_checks(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request)); CREATE TABLE IF NOT EXISTS workflow_observations(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request))');return new AISettings(config,db,probe,secretaryExecutable);}
   private catalog(){const row=this.db.prepare('SELECT body FROM catalogs ORDER BY id DESC LIMIT 1').get() as {body:string}|undefined;return row?JSON.parse(row.body) as AIProvider[]:[];}
   private prefs(scope:AISettingsScope){const row=this.db.prepare('SELECT revision,body FROM preferences WHERE scope=?').get(scopeKey(scope)) as {revision:number;body:string}|undefined;return row?{revision:row.revision,choices:JSON.parse(row.body) as Partial<Record<AIRole,AISettingChoice>>}:{revision:0,choices:{}};}
   defaultSecretary(){
@@ -104,14 +105,37 @@ export class AISettings{
   async checkWorkflow(scope:AISettingsScope,input:unknown,verify:()=>Promise<void>,observe=readCodingWorkflowUpstream){
     const b=input as {requestId:string;mode:string};
     if(!exactKeys(b,['requestId','mode'])||!chatId(b.requestId)||!['first-adoption','upstream-main'].includes(b.mode))throw new Error('coding_workflow_request_invalid');
+    const key=canonical([scopeKey(scope),b.requestId]),active=this.workflowRequests.get(key);
+    if(active){
+      if(active.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return active.result;
+    }
+    const result=this.finishWorkflowCheck(scope,b,verify,observe).finally(()=>this.workflowRequests.delete(key));
+    this.workflowRequests.set(key,{mode:b.mode,result});
+    return result;
+  }
+  private async finishWorkflowCheck(scope:AISettingsScope,b:{requestId:string;mode:string},verify:()=>Promise<void>,observe:typeof readCodingWorkflowUpstream){
     const current=()=>{
       const saved=this.workflowCheck(scope,b.requestId);
       if(saved&&saved.mode!==b.mode)throw new Error('coding_workflow_request_changed');
       return saved;
     };
     const original=current();if(original)return original;
-    const observed=await observe();
-    if(!/^[a-f0-9]{40}$/.test(observed.main)||typeof observed.firstMerged!=='boolean')throw new Error('coding_workflow_upstream_invalid');
+    const scopeId=scopeKey(scope);
+    const observation=()=>{
+      const row=this.db.prepare('SELECT body FROM workflow_observations WHERE scope=? AND request=?').get(scopeId,b.requestId);
+      if(!row)return null;
+      const value=JSON.parse(row.body as string) as {mode:string;main:string;firstMerged:boolean;observedAt:string};
+      if(value.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return value;
+    };
+    let observed=observation();
+    if(!observed){
+      const upstream=await observe();
+      if(!/^[a-f0-9]{40}$/.test(upstream.main)||typeof upstream.firstMerged!=='boolean')throw new Error('coding_workflow_upstream_invalid');
+      this.db.prepare('INSERT OR IGNORE INTO workflow_observations VALUES (?,?,?)').run(scopeId,b.requestId,canonical({...upstream,mode:b.mode,observedAt:new Date().toISOString()}));
+      observed=observation()!;
+    }
     const selected=b.mode==='first-adoption'?firstCodingWorkflowRevision:observed.main;
     let packageSha256:string|null=null,reason:string;
     if(b.mode==='first-adoption'&&!observed.firstMerged)reason='coding_workflow_first_revision_not_merged';
@@ -122,7 +146,7 @@ export class AISettings{
     }catch(error){reason=error instanceof Error?error.message:'coding_workflow_source_unavailable';}
     await verify();
     const record={requestId:b.requestId,mode:b.mode,selectedRevision:selected,observedMain:observed.main,
-      observedAt:new Date().toISOString(),packageSha256,reason,activeRevision:upstreamRevision,activated:false,modelInputs:0};
+      observedAt:observed.observedAt,packageSha256,reason,activeRevision:upstreamRevision,activated:false,modelInputs:0};
     this.db.prepare('INSERT OR IGNORE INTO workflow_checks(scope,request,body) VALUES (?,?,?)').run(scopeKey(scope),b.requestId,canonical(record));
     return current();
   }
@@ -149,5 +173,5 @@ export class AISettings{
     const provider=this.catalog().find(p=>p.id===choice.providerId);if(!provider?.available)throw new Error('ai_selected_provider_unavailable');if(role==='implementer'&&provider.tool!=='codex')throw new Error('ai_implementer_codex_required');const need=aiRoles.find(r=>r.id===role)!.need;if(!provider.capabilities[need])throw new Error('ai_role_tools_not_supported');const model=requireModelChoice(provider.models,{model:choice.model,effort:choice.effort});return {tool:provider.tool,executable:provider.path,model:choice.model,effort:choice.effort,resolvedModel:model.resolvedId,settingsRevision:revision,role,project:{account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId},catalogObservedAt:provider.observedAt};
   }
   snapshot(scope:AISettingsScope):AIPreferenceSnapshot{const p=this.prefs(scope),roles:AIPreferenceSnapshot['roles']={},errors:AIPreferenceSnapshot['errors']={};for(const [role,choice] of Object.entries(p.choices))try{roles[role as AIRole]=this.resolveChoice(scope,role as AIRole,choice,p.revision);}catch(e){errors[role as AIRole]=e instanceof Error?e.message:'ai_selected_provider_unavailable';}return {revision:p.revision,scope:structuredClone(scope),roles,errors};}
-  async close(){await this.scanning?.catch(()=>{});this.db.close();}
+  async close(){await this.scanning?.catch(()=>{});await Promise.allSettled([...this.workflowRequests.values()].map(r=>r.result));this.db.close();}
 }

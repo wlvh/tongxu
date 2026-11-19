@@ -10,6 +10,8 @@ export type BatchAssessment={id:string;decision:'confirmed'|'refuted'|'needs_evi
 export type FormalVerification={candidateH:string;batchSha256:string;report:string;assessments:BatchAssessment[]};
 const text=(v:unknown,max=128000):v is string=>typeof v==='string'&&!!v.trim()&&v.length<=max&&!v.includes('\0');
 const strings=(v:unknown,max:number):v is string[]=>Array.isArray(v)&&v.length<=max&&v.every(s=>text(s,16000));
+const reviewFindingLimit=20;
+const findingIdLimit=128;
 const object=(properties:Record<string,unknown>)=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str={type:'string'},texts={type:'array',items:str};
 export const formalReviewSchema=object({candidateH:str,reviewedInputSha256:str,verdict:{type:'string',enum:['PASS','REWORK_REQUIRED','OWNER_DECISION_REQUIRED']},report:str,findings:{type:'array',items:object({id:str,priority:{type:'integer',enum:[0,1,2]},description:str,evidence:texts})},coverageGaps:texts,ownerQuestions:texts});
@@ -20,7 +22,7 @@ export function validateFormalCandidate(c:FormalCandidate){
 
 export function validateFormalReview(value:unknown,H:string,inputSha256:string):FormalReview{
   const r=value as FormalReview;
-  if(!exactKeys(r,['candidateH','reviewedInputSha256','verdict','report','findings','coverageGaps','ownerQuestions'])||r.candidateH!==H||r.reviewedInputSha256!==inputSha256||!isAuthorityDigest(inputSha256)||!['PASS','REWORK_REQUIRED','OWNER_DECISION_REQUIRED'].includes(r.verdict)||!text(r.report)||!Array.isArray(r.findings)||r.findings.length>20||r.findings.some(f=>!exactKeys(f,['id','priority','description','evidence'])||!text(f.id,128)||![0,1,2].includes(f.priority)||!text(f.description,16000)||!strings(f.evidence,20)||!f.evidence.length)||new Set(r.findings.map(f=>f.id)).size!==r.findings.length||!strings(r.coverageGaps,20)||!strings(r.ownerQuestions,20))throw new Error('formal_review_binding_or_report_invalid');
+  if(!exactKeys(r,['candidateH','reviewedInputSha256','verdict','report','findings','coverageGaps','ownerQuestions'])||r.candidateH!==H||r.reviewedInputSha256!==inputSha256||!isAuthorityDigest(inputSha256)||!['PASS','REWORK_REQUIRED','OWNER_DECISION_REQUIRED'].includes(r.verdict)||!text(r.report)||!Array.isArray(r.findings)||r.findings.length>reviewFindingLimit||r.findings.some(f=>!exactKeys(f,['id','priority','description','evidence'])||!text(f.id,findingIdLimit)||![0,1,2].includes(f.priority)||!text(f.description,16000)||!strings(f.evidence,20)||!f.evidence.length)||new Set(r.findings.map(f=>f.id)).size!==r.findings.length||!strings(r.coverageGaps,20)||!strings(r.ownerQuestions,20))throw new Error('formal_review_binding_or_report_invalid');
   if(r.verdict==='PASS'&&(r.findings.some(f=>f.priority<2)||r.coverageGaps.length||r.ownerQuestions.length))throw new Error('formal_pass_has_unresolved_work');
   if(r.verdict==='OWNER_DECISION_REQUIRED'&&!r.ownerQuestions.length)throw new Error('formal_owner_question_required');
   return structuredClone(r);
@@ -45,7 +47,7 @@ export function validateFormalVerification(value:unknown,batch:ReturnType<typeof
 }
 export function validateFormalVerificationReport(value:unknown,H:string,batchSha256:string):FormalVerification{
   const r=value as FormalVerification;
-  if(!exactKeys(r,['candidateH','batchSha256','report','assessments'])||r.candidateH!==H||r.batchSha256!==batchSha256||!isAuthorityDigest(batchSha256)||!text(r.report)||!Array.isArray(r.assessments)||r.assessments.length>20||new Set(r.assessments.map(a=>a.id)).size!==r.assessments.length||r.assessments.some(a=>!exactKeys(a,['id','decision','report','evidence'])||!text(a.id,128)||!['confirmed','refuted','needs_evidence'].includes(a.decision)||!text(a.report)||!strings(a.evidence,20)||a.decision!=='needs_evidence'&&!a.evidence.length))throw new Error('formal_complete_batch_verification_required');return structuredClone(r);
+  if(!exactKeys(r,['candidateH','batchSha256','report','assessments'])||r.candidateH!==H||r.batchSha256!==batchSha256||!isAuthorityDigest(batchSha256)||!text(r.report)||!Array.isArray(r.assessments)||r.assessments.length>2*reviewFindingLimit||new Set(r.assessments.map(a=>a.id)).size!==r.assessments.length||r.assessments.some(a=>!exactKeys(a,['id','decision','report','evidence'])||!text(a.id,findingIdLimit+'correctness:'.length)||!['confirmed','refuted','needs_evidence'].includes(a.decision)||!text(a.report)||!strings(a.evidence,20)||a.decision!=='needs_evidence'&&!a.evidence.length))throw new Error('formal_complete_batch_verification_required');return structuredClone(r);
 }
 export function sameFormalCandidate(a:FormalCandidate,b:FormalCandidate){return canonical(a)===canonical(b);}
 export function formalDisagreements(fact:FormalVerification,impact:FormalVerification){

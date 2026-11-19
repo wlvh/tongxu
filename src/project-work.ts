@@ -39,6 +39,7 @@ const sourceFor=(scope:ProjectChatScope,d:ProjectWorkDraft):FixedRepository=>({p
  * This store has no independent execution queue, authority or model results. */
 export class ProjectWork{
   private active=new Map<string,Job>();private explanations=new Map<string,Job>();private issueProposals=new Map<string,Job>();private issueReviews=new Map<string,Job>();private receiving=new Map<string,Promise<unknown>>();private accepting=true;
+  private supplementReads=new Map<string,ReturnType<typeof readReviewedSupplement>>();
   private constructor(private config:ProjectWorkConfiguration,private store:ProjectWorkStore,private readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,private verify:(scope:ProjectChatScope)=>Promise<void>,private controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){}
   static async open(reference:{path:string;sha256:string},readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,verify:(scope:ProjectChatScope)=>Promise<void>,controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){
     const bytes=await regular(reference.path,128*1024);if(hash(bytes)!==reference.sha256)throw new Error('project_work_configuration_changed');const c=JSON.parse(bytes.toString()) as ProjectWorkConfiguration;
@@ -48,7 +49,11 @@ export class ProjectWork{
     return new ProjectWork(c,await ProjectWorkStore.open(c.root),readIssue,verify,controls);
   }
   async supplementReview(input:SupplementReviewInput,executionKind:string){
-    return await readReviewedSupplement(this.config.root,input,executionKind)??await readPlannedSupplement(this.config.root,input,executionKind);
+    const key=hash(canonical([input,executionKind])),ongoing=this.supplementReads.get(key);
+    if(ongoing)return ongoing;
+    const read=(async()=>await readReviewedSupplement(this.config.root,input,executionKind)??await readPlannedSupplement(this.config.root,input,executionKind))();
+    this.supplementReads.set(key,read);
+    try{return await read;}finally{this.supplementReads.delete(key);}
   }
   supplementReviewState(input:SupplementReviewInput){
     return this.issueReviews.has(supplementPlanningDirectory(this.config.root,input.requestId))
@@ -212,20 +217,29 @@ export class ProjectWork{
     const works=[];for(const d of this.store.list(scope))works.push(await this.recover(scope,d));
     const entries=works.some(d=>d.catalog)?await(await this.controls(scope)).state():[];
     const development=this.activeDevelopment(scope);
-    return {available:true,settings:this.store.settings(scope),issueProposal:await this.issueDraftState(scope),development:development&&{issue:development.issue,expiresAt:development.expiresAt},works:works.map(d=>({id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),issueReviewActive:this.issueReviews.has(this.issueReviewPath(d)),execution:entries.find(e=>e.id===d.source)?.requests.find((r:Row)=>r.id===d.requestId)??null})),supported:'Registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
+    return {available:true,settings:this.store.settings(scope),issueProposal:await this.issueDraftState(scope),development:development&&{issue:development.issue,expiresAt:development.expiresAt},works:works.map(d=>{
+      const requests=entries.find(e=>e.id===d.source)?.requests??[],root=requests.find(r=>r.id===d.requestId);
+      const execution=d.projectDevelopment&&root?requests.findLast(r=>r.logicalOwner===root.task&&r.status!=='cancelled_unstarted'):root;
+      return {id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),issueReviewActive:this.issueReviews.has(this.issueReviewPath(d)),execution:execution??null};
+    }),supported:'Registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
   }
   async detail(scope:ProjectChatScope,id:string){
     const draft=await this.recover(scope,this.store.get(scope,id));const result=draft.catalog?await this.implementationState(scope,draft):null;
     const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
     let validationProblem:string|null=null;if(draft.preparation?.proposal&&!draft.catalog){try{validationProblem=(await readWorkProposal(draft.preparation.directory,sourceFor(scope,draft))).validationProblem??null;}catch{}}
     const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
+    let validationFailure=null;
+    if(draft.catalog&&draft.source&&result?.requests.length){
+      const controls=await this.controls(scope),request=await controls.validationRequest(draft.source,draft.requestId);
+      validationFailure=await controls.validationState(draft.source,request);
+    }
     const preview=this.integrationInput(scope,draft);
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
       ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview)}:{}),
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
-      preparationDiagnostic:await diagnostic(draft),validationFailure:draft.catalog&&draft.source?await(await this.controls(scope)).validationState(draft.source,draft.requestId):null,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
+      preparationDiagnostic:await diagnostic(draft),validationFailure,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
   }
   private integrationInput(scope:ProjectChatScope,d:ProjectWorkDraft):WorkIntegrationPreviewInput|null{
     const H0=d.preparation?.H,H=d.delivery?.H,B=scope.repository.defaultHead,target=scope.repository.defaultBranch;
@@ -344,16 +358,17 @@ export class ProjectWork{
       await this.buildCurrent(scope,id);
     });
   }
-  async validationConfirmation(scope:ProjectChatScope,id:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');await this.verify(scope);const p=await(await this.controls(scope)).definitionConsentPreview(d.source,d.requestId);if(p.alreadyAuthorized)return {alreadyAuthorized:true};
+  async validationConfirmation(scope:ProjectChatScope,id:string,expected?:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');await this.verify(scope);const controls=await this.controls(scope),requestId=await controls.validationRequest(d.source,d.requestId,expected),p=await controls.definitionConsentPreview(d.source,requestId);if(p.alreadyAuthorized)return {alreadyAuthorized:true,requestId};
+    if(requestId!==d.requestId)throw new Error('work_validation_material_consent_required');
     const profile=workAuthorityProfile(this.config.owner,scope,d.issue.number),expiresAt=Date.parse(d.preparation!.observedAt!)+Math.min(profile.maxGrantDurationMs,86400000);if(expiresAt<=Date.now())throw new Error('project_work_source_changed_prepare_again');return {materialOnly:true,version:d.version,proposalSha256:p.proposalSha256,project:scope.repository.fullName,issue:'#'+d.issue.number+' '+d.issue.title,goal:d.preparation!.proposal!.goal,originalGoal:d.goal,acceptance:d.preparation!.proposal!.acceptance,allowedPaths:d.preparation!.proposal!.allowedPaths,validation:p.definition!.description,readableDefinition:{script:p.definition!.script,sha256:p.definition!.scriptSha256,notice:'仅同意把这份原冻结验收定义只读提供给原实施者；原目标、执行权限、路径与到期不变。'},expiresAt:new Date(expiresAt).toISOString(),identity:profile.sharedAccountApproval?'同一 GitHub 账号；未证明实际操作人与执行者分离':'已有指定本人来源'};
   }
-  async correctValidation(scope:ProjectChatScope,id:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');return(await this.controls(scope)).correctValidation(d.source,d.requestId);}
+  async correctValidation(scope:ProjectChatScope,id:string,expected?:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');const controls=await this.controls(scope),request=await controls.validationRequest(d.source,d.requestId,expected);return controls.correctValidation(d.source,request);}
   async approveValidationMaterial(scope:ProjectChatScope,id:string,payload:{version:number;proposalSha256:string}){
     const d=this.store.get(scope,id);if(d.version!==payload.version||d.stopRequested||!d.source)throw new Error('project_work_preparation_changed');const controls=await this.controls(scope),preview=await controls.definitionConsentPreview(d.source,d.requestId);if(!preview.alreadyAuthorized){if(preview.proposalSha256!==payload.proposalSha256)throw new Error('work_validation_material_consent_changed');
       const {store,profile}=await this.initializeQueue(this.directory(d),d.issue.number,scope,1),q=await QueueStore.open(store);let proposal,requestId;try{const prepared=q.authority().proposal(payload.proposalSha256);proposal=prepared.proposal;requestId=prepared.requestId;}finally{q.close();}if(proposal.kind!=='accept_baseline')throw new Error('work_validation_material_consent_changed');
       const beforePost=()=>{const current=this.store.get(scope,id);if(!this.accepting||current.stopRequested||current.version!==d.version||current.requestId!==d.requestId)throw new Error('project_work_stopped');};
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
-    }return this.correctValidation(scope,id);
+    }return this.correctValidation(scope,id,d.requestId);
   }
   async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),this.issueReviews.get(this.issueReviewPath(d)),...[...this.issueReviews.values()].filter(job=>job.ownerWork===id),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await Promise.allSettled([job.session?.close(),job.stopPeer?.()]);}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}

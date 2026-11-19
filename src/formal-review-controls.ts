@@ -58,7 +58,7 @@ export class FormalReviewControls{
  }
  private entry(id:string){const f=this.entries.find(f=>f.entry.id===id);if(!f)throw new Error('formal_entry_not_selected');return f;}
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
- private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,...(s.request.workflowReview?{workflowRevision:s.request.workflowReview.correctness.revision}:{}),stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned,...(s.returned?.proof?.native?.company?{company:s.returned.proof.native.company,sessionId:s.returned.proof.native.sessionId}:{})})),newModelInputs:0};}
+ private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,executionRound:s.executionRound,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),ownsOriginalSessions:this.hosts.get(s.operation)?.ownsDual()===true,automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,...(s.request.workflowReview?{workflowRevision:s.request.workflowReview.correctness.revision}:{}),stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned,...(s.returned?.proof?.native?.company?{company:s.returned.proof.native.company,sessionId:s.returned.proof.native.sessionId}:{})})),newModelInputs:0};}
  async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,...(entry.workflowContract?{workflowContract:entry.workflowContract}:{}),requests:q.formalReviews().forEntry(entry.id).map(s=>this.public(s))};}finally{q.close();}}));}
  async forWork(issue:{number:number;bodySha256:string},H:string){
   const matched:Array<{entry:string;source:string;candidate:FormalSource['candidate']}>=[];
@@ -88,6 +88,11 @@ export class FormalReviewControls{
   try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior){checkCandidate(prior.request.candidate);return this.public(prior);}let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');checkCandidate(live.candidate);
    if(this.workbenchProject&&this.workbenchProject.fullName.toLowerCase()!==live.candidate.repository.toLowerCase())throw new Error('formal_entry_not_selected');
    const published=previous??records.forEntry(id).find(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&s.terminal.result.fix.H1===live.candidate.H&&s.request.candidate.B===live.candidate.B&&s.request.candidate.target===live.candidate.target);
+   const capture=()=>captureRoleAI(['reviewer','verifier_fact','verifier_impact'],live.candidate.repository),preferences=()=>this.readPreferences?withAIPreferences(this.readPreferences(),capture):capture();
+   const dual=published?!!published.request.workflowReview:entry.workflowContract==='coding-loop-v2';
+   const dualSelections=dual?preferences():null;
+   if(dualSelections&&dualSelections.verifier_impact?.tool!=='kimi')throw new Error('formal_second_company_not_configured');
+   if(dualSelections?.reviewer&&dualSelections.reviewer.tool!=='codex')throw new Error('ai_selected_provider_not_supported_by_operation');
    const original=records.currentSource(source.item);
    const select=()=>q.status().items.find((i:Row)=>i.candidate.repository.toLowerCase()===live.candidate.repository.toLowerCase()&&i.candidate.pr===live.candidate.pr&&i.candidate.H===live.candidate.H&&i.candidate.B===live.candidate.B&&i.candidate.targetRef===live.candidate.target&&canonical(i.context.scope)===canonical(original.context.scope));
    let selected=select();
@@ -116,9 +121,7 @@ export class FormalReviewControls{
    const adoption=q.authority().forScope(current.context.scope.id,{item:selected.id,target:live.candidate.target}).currentAdoption;if(!adoption)throw new Error('formal_adopted_scope_required');const adopted=q.authority().inspectRecordedDecision(adoption),adoptedScope={adoption,proposal:adopted.proposal,source:adopted.source.sourceUrl},candidate={...live.candidate,requirementsSha256:hash(canonical({issue:live.issue,adoptedScope}))},configBytes=await regular(entry.config.path),config=JSON.parse(configBytes.toString());if(hash(configBytes)!==entry.config.sha256||!['fixture','native_capture',undefined].includes(config.executionKind)||!Number.isSafeInteger(config.timeoutMs)||config.timeoutMs<1000||config.timeoutMs>900000)throw new Error('formal_executor_configuration_invalid');
    const policies={reviewer:(await regular(config.prompts.reviewer)).toString(),fact:(await regular(config.prompts.fact)).toString(),impact:(await regular(config.prompts.impact)).toString()},prompts=await assemblePromptSet(policies,{reviewer:'reviewer',fact:'verifier_fact',impact:'verifier_impact'}),objects=published?.terminal?.result.fix.workspace??entry.objects,material=await formalReviewMaterial({objects,candidate,issue:live.issue,adoptedScope,requiredPaths:entry.requiredPaths,contextPaths:[...new Set([...entry.contextPaths,...entry.repair.materialPaths])],sourceEvidence:live.evidence}),round=published?published.request.round+1:1;
    if(round>32)throw new Error('formal_foreground_round_bound');await mkdir(entry.root,{recursive:true,mode:0o700});await privateDirectory(entry.root,false);const directory=join(entry.root,hash(canonical([id,requestId,round])).slice(0,48));if(await exists(directory)){await privateDirectory(directory,false);if((await readdir(directory)).length)throw new Error('formal_unregistered_original_directory_not_empty');}else await mkdir(directory,{mode:0o700});
-   // Read this controller's project settings at new-request freeze time, including
-   // timer callers. Existing registered requests returned above keep their choices.
-   const capture=()=>captureRoleAI(['reviewer','verifier_fact','verifier_impact'],candidate.repository),aiSelections=this.readPreferences?withAIPreferences(this.readPreferences(),capture):capture();
+   const aiSelections=dualSelections??preferences();
    let workflowReview=published?.request.workflowReview as FormalFrozenRequest['workflowReview'];
    if(!published&&entry.workflowContract==='coding-loop-v2'){
     const workflow=await readCodingWorkflowSource();
@@ -130,6 +133,24 @@ export class FormalReviewControls{
   }finally{q.close();}
  }
  async begin(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);let state:Row;try{state=q.formalReviews().state(operation);if(state.request.entry!==id)throw new Error('formal_entry_not_selected');if(state.terminal||state.stopped)return this.public(state);}finally{q.close();}if(this.active.has(operation))return {...this.public(state),duplicate:true};if(!this.accepting)throw new Error('formal_controller_closing');const run=this.execute(id,operation);this.active.set(operation,run);run.catch(()=>{}).finally(()=>this.active.delete(operation));return {...this.public(state),controllerActive:true};}
+ private makeHost(q:QueueStore,operation:string,state:Row,entry:FormalEntry,source:Source){
+   const request=state.request as FormalFrozenRequest;
+   return new QueueFormalRoundHost(q,operation,request,async()=>{
+    await this.catalog();
+    const live=await this.read(entry,source);
+    const expected={repository:request.candidate.repository,pr:request.candidate.pr,H:request.candidate.H,B:request.candidate.B,target:request.candidate.target};
+    if(canonical(live.candidate)!==canonical(expected)||hash(live.issue.body)!==entry.issue.bodySha256||(live.evidence as Row)?.materialSha256!==(request.material.sourceEvidence as Row)?.materialSha256)throw new Error('formal_candidate_or_requirements_changed');
+   },()=>{if(!this.accepting)throw new Error('formal_controller_closing');},state.executionRound);
+ }
+ async replaceEndedDual(id:string,operation:string,round:number){
+   if(!Number.isSafeInteger(round)||this.active.has(operation)||this.hosts.has(operation))throw new Error('formal_dual_replacement_not_verified');
+   const {entry,source}=this.entry(id),q=await QueueStore.open(source.store);
+   try{return await withQueueRepairLock(source.store,operation,async()=>{
+     const state=q.formalReviews().state(operation);
+     if(state.request.entry!==id||state.executionRound!==round||state.phase!=='waiting'||this.hosts.has(operation))throw new Error('formal_dual_replacement_not_verified');
+     return this.public(await this.makeHost(q,operation,state,entry,source).replaceEndedDual());
+   });}finally{q.close();}
+ }
  private async execute(id:string,operation:string){
   const {entry,source}=this.entry(id);
   const q=this.hosts.get(operation)?.q??await QueueStore.open(source.store);
@@ -139,13 +160,7 @@ export class FormalReviewControls{
     if(state.terminal||state.stopped)return state;
     let host=this.hosts.get(operation);
     if(!host){
-     const request=state.request as FormalFrozenRequest;
-     host=new QueueFormalRoundHost(q,operation,request,async()=>{
-      await this.catalog();
-      const live=await this.read(entry,source);
-      const expected={repository:request.candidate.repository,pr:request.candidate.pr,H:request.candidate.H,B:request.candidate.B,target:request.candidate.target};
-      if(canonical(live.candidate)!==canonical(expected)||hash(live.issue.body)!==entry.issue.bodySha256||(live.evidence as Row)?.materialSha256!==(request.material.sourceEvidence as Row)?.materialSha256)throw new Error('formal_candidate_or_requirements_changed');
-     },()=>{if(!this.accepting)throw new Error('formal_controller_closing');});
+     host=this.makeHost(q,operation,state,entry,source);
      this.hosts.set(operation,host);
     }
     const closed=state.request.workflowReview?null:await host.settleRejectedReview();
@@ -162,19 +177,23 @@ export class FormalReviewControls{
    q.formalReviews().progress(operation,'waiting',{reason:error instanceof Error?error.message:'formal_execution_unknown',originalExecutionRetained:true});
    throw error;
   }finally{
-   if(!this.hosts.get(operation)?.ownedFact()){
+   if(!this.hosts.get(operation)?.ownedFact()&&!this.hosts.get(operation)?.ownsDual()){
     this.hosts.delete(operation);
     q.close();
    }
   }
  }
- async report(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');return {...this.public(s),material:s.request.material,prompts:s.request.prompts,...(s.request.workflowReview?{workflowReview:s.request.workflowReview}:{}),fullStages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,result:s.returned?.result??null,proof:s.returned?.proof??null})),result:s.terminal?.result??null,originalsRetained:true};}finally{q.close();}}
+ async report(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');return {...this.public(s),material:s.request.material,prompts:s.request.prompts,...(s.request.workflowReview?{workflowReview:s.request.workflowReview}:{}),fullStages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,result:s.returned?.result??null,proof:s.returned?.proof??null})),result:s.terminal?.result??null,...(s.replacement?{replacement:s.replacement}:{}),originalsRetained:true};}finally{q.close();}}
  async stop(id:string,operation:string,project:Pick<FormalWorkbenchProject,'account'|'repository'>|undefined=this.workbenchProject,legacyProject?:FormalWorkbenchProject){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');
   // New project requests retain their verified identity in the original blob,
   // so cleanup survives a cold/offline page. Old inputs stay immutable and need
   // an already discovered local selection rather than guessed header mapping.
   const bound=s.request.workbenchProject??legacyProject;if(project||bound){if(!project||!bound||!Number.isSafeInteger(project.account)||!Number.isSafeInteger(project.repository)||project.account!==bound.account||project.repository!==bound.repository||bound.fullName.toLowerCase()!==s.request.candidate.repository.toLowerCase())throw new Error('formal_stop_outside_project');}
-  return this.public(q.formalReviews().stop(operation));}finally{q.close();}}
+  const stopped=this.public(q.formalReviews().stop(operation)),host=this.hosts.get(operation);
+  if(host?.ownsDual()&&!this.active.has(operation)){
+   this.hosts.delete(operation);try{await host.closeDual();}finally{host.q.close();}
+  }
+  return stopped;}finally{q.close();}}
  /** Called only by the foreground controller after source/material refresh.
   * Publication is an external fact: no local commit is treated as remote H. */
  async advance(explicit=true){
@@ -202,5 +221,5 @@ export class FormalReviewControls{
    }
   }
  }
- async drain(){this.accepting=false;if(this.timer)clearTimeout(this.timer);this.timer=undefined;await this.checking;await Promise.allSettled(this.active.values());for(const host of this.hosts.values()){await host.ownedFact()?.session.close();host.releaseFact();host.q.close();}this.hosts.clear();}
+ async drain(){this.accepting=false;if(this.timer)clearTimeout(this.timer);this.timer=undefined;await this.checking;await Promise.allSettled(this.active.values());for(const host of this.hosts.values()){await Promise.allSettled([host.ownedFact()?.session.close(),host.closeDual()]);host.releaseFact();host.q.close();}this.hosts.clear();}
 }

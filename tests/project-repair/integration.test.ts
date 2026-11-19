@@ -19,7 +19,7 @@ import {additionalFixture} from '../w7/additional-cli-fixture.js';
 import {messageAuthority} from '../w6/message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {startWorkbench} from '../../src/workbench.js';
-import type {SupplementTarget} from '../../src/project-chat.js';
+import {ProjectChat,type SupplementTarget} from '../../src/project-chat.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {canonical} from '../../src/comparison.js';
 import {projectSecretarySchema,BoundedCodexSession,findingSchema} from '../../src/repair-native.js';
@@ -496,7 +496,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  }
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.technicalEvidence&&context.work){finish({candidateH:context.candidate.H,report:'Explicit fixture Tech Lead explanation: tested download retention, with review and publication still unobserved.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.material?.issue&&context.reviewedInputSha256){finish({candidateH:context.material.head,reviewedInputSha256:context.reviewedInputSha256,verdict:'PASS',report:'Explicit fixture Issue review of the published acceptance plan.',findings:[],coverageGaps:[],ownerQuestions:[]});return;}if(m.params.outputSchema.properties.title){finish({candidateH:context.head,title:'Add download expiry',report:'Track the specified availability deadline for completed downloads.'});return;}if(context.draft&&context.issue){finish({candidateH:context.draft.head,report:'From Downloads, open a result before the deadline, at the deadline and afterward. Check that expired results are refused.'});return;}if(mode==='host-unavailable'&&turn===1)");
- if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement||context.request.continuation.supplement.text!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt<86400000;}\\n';}stage=name;const serial=");
+ if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement)throw Error('fixture_original_supplement_required');const amend=context.request.continuation.supplement.text,second=amend==='Also mark corrected downloads.';if(!second&&amend!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt'+(second||context.request.issue.number!==202||context.originalReport?'<':'<=')+'86400000;}\\n';if(second)args.text+='export const correctedDownload=true;\\n';}stage=name;const serial=");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
  if(readonlyFault){
   code=code.replace("import fs from 'node:fs';", "import fs from 'node:fs';import{createHash}from'node:crypto';import{dirname}from'node:path';");
@@ -561,9 +561,25 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
    await get('/api/github/projects');
    assert.equal((await detail()).validationFailure.eligible,true);
-   const continueResponse=await post('/api/project-work/'+id+'/correct-validation',{});
+   const startSession=BoundedCodexSession.start;
+   let failBootstrap=true;
+   t.mock.method(BoundedCodexSession,'start',async(o:Parameters<typeof startSession>[0])=>{
+     if(failBootstrap&&o.directory===join(prior.plan.operationRoot,'validation-correction/native')){
+       failBootstrap=false;throw new Error('version_failed');
+     }
+     return startSession.call(BoundedCodexSession,o);
+   });
+   const oldLease=await readFile(join(prior.plan.workspace,'.git/tongxu-writer.json')),oldTrace=await readFile(f.trace);
+   const correct=()=>post('/api/project-work/'+id+'/correct-validation',{requestId:failed.draft.requestId});
+   assert.equal((await correct()).status,202);
+   await until(detail,d=>d.execution.requests[0].reason==='version_failed'&&!d.execution.requests[0].controllerActive);
+   assert.deepEqual(await readFile(join(prior.plan.workspace,'.git/tongxu-writer.json')),oldLease);
+   assert.deepEqual(await readFile(f.trace),oldTrace);
+   const bootstrap=join(prior.plan.operationRoot,'validation-correction/native-bootstrap-failure.json'),failureBytes=await readFile(bootstrap);
+   const continueResponse=await correct();
    assert.equal(continueResponse.status,202,JSON.stringify(continueResponse));
    const completed=await until(detail,d=>d.draft.delivery?.status==='received');
+   assert.deepEqual(await readFile(bootstrap),failureBytes);
    assert.equal(completed.draft.requestId,failed.draft.requestId);
    assert.equal(completed.draft.version,failed.draft.version);
    const result=completed.execution.reports[0];
@@ -729,10 +745,28 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(rejected.value.supplements[0].original.reason,'project_supplement_review_binding_changed');
      assert.equal(rejected.value.supplements[0].compiledRequest,null);
      await writeFile(locator,canonical(reference));
+     const approvedReceipt=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
+     assert.equal(approvedReceipt.original.ready,true,JSON.stringify(approvedReceipt.original));
      const priorInputs=(await readFile(f.trace,'utf8')).split('model-input').length-1;
-     assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
+     const processSupplements=ProjectChat.prototype.processSupplements;
+     let failedKick=false;
+     let retryError:unknown;
+     t.mock.method(ProjectChat.prototype,'processSupplements',async function(this:ProjectChat,...args:Parameters<ProjectChat['processSupplements']>){
+       if(args[1]?.source===target.source&&!failedKick){failedKick=true;throw new Error('fixture_supplement_temporarily_unavailable');}
+       try{return await processSupplements.apply(this,args);}
+       catch(error){if(args[1]?.source===target.source)retryError=error;throw error;}
+     });
+     const retry=()=>post('/api/project-secretary/supplement',{conversationId,requestId,target,text});
+     assert.equal((await retry()).value.duplicate,true);
+     await until(async()=>failedKick,Boolean);
+     assert.equal((await retry()).value.duplicate,true);
      const activeSupplement=await until(
-       async()=>(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0],
+       async()=>{
+         if(retryError)throw retryError;
+         const receipt=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
+         if(!receipt.compiledRequest&&receipt.original.reason)throw new Error(receipt.original.reason);
+         return receipt;
+       },
        row=>row.original.dispatchRecorded
      );
      assert.equal(activeSupplement.id,requestId);
@@ -740,6 +774,12 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(activeSupplement.original.coveringCandidate,null);
      assert.equal((await detail(b)).draft.delivery.H,finished.draft.delivery.H);
      releaseSupplement();
+     const failedSupplement=await until(()=>detail(b),r=>r.validationFailure?.eligible);
+     assert.equal(failedSupplement.validationFailure.requestId,compiled);
+     assert.equal(failedSupplement.validationFailure.tests.passed,false);
+     assert.equal(failedSupplement.draft.delivery.H,finished.draft.delivery.H);
+     assert.equal((await post('/api/project-work/'+b+'/correct-validation',{requestId:finished.draft.requestId})).status,503);
+     assert.equal((await post('/api/project-work/'+b+'/correct-validation',{requestId:compiled})).status,202);
      const updated=await until(()=>detail(b),r=>r.draft.delivery?.status==='received'&&r.draft.delivery.H!==finished.draft.delivery.H);
      const delivered=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
      assert.equal(delivered.id,requestId);
@@ -752,6 +792,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(delivered.original.H0,finished.draft.delivery.H);
      const result=updated.execution.reports.find((report:any)=>report.id===compiled);
      assert.equal(result.tests.passed,true);
+     assert.equal(result.originalValidationFailure.tests.passed,false);
      assert.deepEqual(result.tests.tools.map((tool:any)=>[tool.id,tool.exitCode]),[['work-acceptance',0],['supplement-'+hash(amendment).slice(0,20),0]]);
      const q=await QueueStore.open(cb.store);
      let successor;
@@ -767,19 +808,45 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.notEqual(result.sessionId,resultState.result.sessionId);
      assert.equal(await git(successor.plan.workspace,['rev-parse','HEAD^']),finished.draft.delivery.H);
      const before=await readFile(f.trace);
-     assert.equal(before.toString().split('model-input').length-1,priorInputs+1);
+     assert.equal(before.toString().split('model-input').length-1,priorInputs+2);
      assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
      assert.deepEqual(await readFile(f.trace),before);
+     const laterId=randomUUID(),laterCompiled='supplement-'+laterId,laterText='Also mark corrected downloads.';
+     const supplementReview=ProjectWork.prototype.supplementReview,begin=IssueImplementationControls.prototype.begin;
+     t.mock.method(ProjectWork.prototype,'supplementReview',async function(this:ProjectWork,...args:Parameters<ProjectWork['supplementReview']>){
+       if(args[0].requestId!==laterCompiled)return supplementReview.apply(this,args);
+       assert.deepEqual([args[0].H1,args[0].text,args[0].target],[result.H1,laterText,target]);
+       return {inputSha256:hash(laterText),reviewRun:reviewed.run,requirement:laterText,acceptance:['The marker is exported.'],
+         validation:{description:'Check the marker',script:"import assert from 'node:assert/strict';import {correctedDownload} from './src/normalize.mjs';assert.equal(correctedDownload,true);"},replies:[]};
+     });
+     let pause=true;
+     t.mock.method(IssueImplementationControls.prototype,'begin',async function(this:IssueImplementationControls,...args:Parameters<IssueImplementationControls['begin']>){
+       if(args[1]===laterCompiled&&pause){pause=false;throw new Error('fixture_stopped_before_supplement_dispatch');}
+       return begin.apply(this,args);
+     });
+     assert.equal((await post('/api/project-secretary/supplement',{conversationId,requestId:laterId,target,text:laterText})).status,202);
+     await until(()=>detail(b),r=>!pause&&r.execution.requests.some((request:any)=>request.id===laterCompiled&&request.phase==='prepared'));
+     assert.deepEqual(await readFile(f.trace),before);
+     await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
+     await get('/api/github/projects');
+     const saved=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements;
+     assert.equal(saved.find((row:any)=>row.id===requestId).original.successful,true);
+     assert.equal(saved.find((row:any)=>row.id===laterId).original.resumable,true);
+     assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
+     const latest=await until(()=>detail(b),r=>r.execution.reports.some((report:any)=>report.id===laterCompiled&&report.status==='completed'&&report.H1===r.draft.delivery?.H));
+     const latestReport=latest.execution.reports.find((report:any)=>report.id===laterCompiled);
+     assert.equal(latestReport.H0,result.H1);
+     assert.equal((await readFile(f.trace,'utf8')).split('model-input').length-1,priorInputs+3);
      assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
      assert.equal(await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8'),originalWire);
      assert.equal((await post('/api/project-work/'+b+'/explain',{H:finished.draft.delivery.H})).status,503);
-     const explanation=await post('/api/project-work/'+b+'/explain',{H:result.H1});assert.equal(explanation.status,202);
+     const explanation=await post('/api/project-work/'+b+'/explain',{H:latestReport.H1});assert.equal(explanation.status,202);
      const described=await until(()=>detail(b),value=>value.explanation?.state==='returned');
      assert.match(described.explanation.report,/tested download retention/);
-     assert.equal(described.explanation.H,result.H1);
+     assert.equal(described.explanation.H,latestReport.H1);
      assert.equal(described.explanation.workflowRevision,successor.plan.request.workflowPrompt.revision);
      const afterExplanation=await readFile(f.trace);
-     assert.equal((await post('/api/project-work/'+b+'/explain',{H:result.H1})).value.sessionId,described.explanation.sessionId);
+     assert.equal((await post('/api/project-work/'+b+'/explain',{H:latestReport.H1})).value.sessionId,described.explanation.sessionId);
      assert.deepEqual(await readFile(f.trace),afterExplanation);
      const proposalRequest={requestId:randomUUID(),goal:'Show users when retained downloads expire.'};
      assert.equal((await post('/api/project-work/draft-issue',proposalRequest)).status,202);
@@ -856,21 +923,21 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      };
      const previewRoute='/api/project-work/'+b+'/integration-preview';
      const nextBase=await advanceBase('upstream.md','Unrelated upstream change.\n'),withNewBase=await detail(b);
-     assert.deepEqual([withNewBase.integrationSource.H0,withNewBase.integrationSource.H,withNewBase.integrationSource.B],[H,result.H1,nextBase]);
-     assert.equal((await post(previewRoute,{H:result.H1,B:H})).status,503);
-     const clean=await post(previewRoute,{H:result.H1,B:nextBase});
+     assert.deepEqual([withNewBase.integrationSource.H0,withNewBase.integrationSource.H,withNewBase.integrationSource.B],[H,latestReport.H1,nextBase]);
+     assert.equal((await post(previewRoute,{H:latestReport.H1,B:H})).status,503);
+     const clean=await post(previewRoute,{H:latestReport.H1,B:nextBase});
      assert.equal(clean.value.state,'clean',JSON.stringify(clean.value));
      assert.match(clean.value.tree,/^[a-f0-9]{40}$/);
      assert.deepEqual((await detail(b)).integrationPreview,clean.value);
      const conflictingBase=await advanceBase('src/normalize.mjs','export function normalizeLabel(){return "upstream conflict";}\n');
-     const conflict=await post(previewRoute,{H:result.H1,B:conflictingBase});
+     const conflict=await post(previewRoute,{H:latestReport.H1,B:conflictingBase});
      assert.equal(conflict.value.state,'conflicts',JSON.stringify(conflict.value));
      assert.ok(conflict.value.paths.includes('src/normalize.mjs'));
      assert.deepEqual((await detail(b)).integrationPreview,conflict.value);
      assert.equal(await git(f.objects,['rev-parse','HEAD']),conflictingBase);
-     assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),result.H1);
+     assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),latestReport.H1);
      assert.deepEqual(await readFile(f.trace),beforePreview);
-     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:result.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
+     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;
  }

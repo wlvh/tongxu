@@ -1,11 +1,13 @@
 import {join} from 'node:path';
 import {selectedProviderOptions} from './ai-settings.js';
-import {ExtraCliSession,extraProfileFiles} from './additional-cli.js';
+import {ExtraCliSession,extraProfileFiles,parseAcpPrompt} from './additional-cli.js';
 import {BoundedCodexSession,findingSchema} from './repair-native.js';
 import {canonical} from './comparison.js';
+import {hash} from './snapshot.js';
 import {exists,regular} from './repair-workspace.js';
 import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
-import type {FormalRoundHost,OwnedFormalFact} from './formal-review.js';
+import type {OwnedFormalFact} from './formal-review.js';
+import type {QueueFormalRoundHost} from './formal-review-host.js';
 import {formalBatch,formalDisagreements,formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerification,type FormalReview} from './formal-review-contract.js';
 
 export type DualReviewPrompts={
@@ -14,8 +16,33 @@ export type DualReviewPrompts={
 };
 const jsonInput=(facts:unknown)=>canonical(facts);
 const jsonReport=(raw:string)=>JSON.parse(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(raw)?.[1]??raw);
+function frames(bytes:Buffer){
+  const text=new TextDecoder('utf8',{fatal:true}).decode(bytes);
+  if(text&&!text.endsWith('\n'))throw new Error('external_cli_incomplete_frame');
+  return text.split('\n').filter(Boolean).map(line=>JSON.parse(line));
+}
+function verifyImpactBoundary(originals:Record<string,Buffer>,input:string,sessionId:string,requestId:number,final:string){
+  const stdin=originals['stdin.ndjson']!,stdout=originals['stdout.ndjson']!;
+  const boundaries=frames(originals['prompt-boundaries.ndjson']!).filter(row=>row.requestId===requestId);
+  const boundary=boundaries[0],sent=frames(stdin),received=frames(stdout);
+  const requests=sent.filter(row=>row.id===requestId),replies=received.filter(row=>!row.method&&row.id===requestId);
+  const request=requests[0],reply=replies[0],terminal=received.indexOf(reply);
+  if(boundaries.length!==1||requests.length!==1||replies.length!==1||boundary.schemaVersion!==1||
+     request.method!=='session/prompt'||canonical(request.params)!==canonical({sessionId,prompt:[{type:'text',text:input}]})||
+     !Number.isSafeInteger(boundary.stdinBytes)||boundary.stdinBytes<0||boundary.stdinBytes>=stdin.length||
+     !Number.isSafeInteger(boundary.stdoutBytes)||boundary.stdoutBytes<0||boundary.stdoutBytes>=stdout.length||
+     !Number.isSafeInteger(boundary.stdoutEvents)||boundary.stdoutEvents>terminal||
+     hash(stdin.subarray(0,boundary.stdinBytes))!==boundary.stdinSha256||
+     hash(stdout.subarray(0,boundary.stdoutBytes))!==boundary.stdoutSha256||
+     hash(JSON.stringify(request)+'\n')!==boundary.requestSha256||
+     stdin.subarray(boundary.stdinBytes).toString().split('\n')[0]!==JSON.stringify(request)||
+     frames(stdout.subarray(0,boundary.stdoutBytes)).length!==boundary.stdoutEvents||
+     received.slice(terminal+1).some(row=>row.params?.update?.sessionUpdate==='agent_message_chunk')||
+     parseAcpPrompt(received.slice(boundary.stdoutEvents,terminal+1),sessionId,reply.result)!==final)
+    throw new Error('formal_original_impact_capture_unbound');
+}
 
-export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:DualReviewPrompts){
+export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts:DualReviewPrompts){
   const {material,config}=host,source=material.candidate;
   const candidate={kind:'github-pr' as const,repository:source.repository,pr:source.pr,H:source.H,B:source.B,target:source.target};
   const key=(name:string)=>'round-'+host.round+'/'+name,kind=config.executionKind??'native_capture';
@@ -25,7 +52,7 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
     host.progress('waiting',{reason,waitingFor:'Moonshot'});
     return {status:'waiting',reason};
   }
-  let gpt=host.ownedFact()?.session,kimi:ExtraCliSession|undefined,retainGpt=false;
+  let {gpt,kimi}=host.dual,retain=false;
   const stageProof=(role:string,inputSha256:string,systemSha256:string,native:unknown)=>({
     role,inputSha256,systemSha256,candidate:source,completeCapture:true,executionKind:kind,native
   });
@@ -38,7 +65,7 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
     if(!gpt){
       if(!initial||await exists(stage.directory))throw new Error('formal_original_reviewer_context_not_owned');
       const readonly=await host.reviewGate();
-      gpt=await BoundedCodexSession.start({
+      gpt=host.dual.gpt=await BoundedCodexSession.start({
         ...selectedProviderOptions(host.aiSelections?.reviewer,'codex',config.codexExecutable),
         directory:stage.directory,operation:host.directory,candidate,role:'reviewer',system,inputManifestSha256:material.sha256,
         scopeSource:config.scopeSource,arrangementSource:'Formal review with the original reviewer retained through verification and authorized repair',
@@ -66,11 +93,13 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
       if(name!=='impact-initial'||await exists(stage.directory))throw new Error('formal_original_impact_context_not_owned');
       await host.refresh(stage);
       kimi=await ExtraCliSession.open('kimi',selected.executable,stage.directory,system,kind==='fixture');
-      await kimi.select({model:selected.model,effort:selected.effort});
+      try{await kimi.select({model:selected.model,effort:selected.effort});}
+      catch(error){await kimi.close();throw error;}
+      host.dual.kimi=kimi;
     }
     const {final,requestId}=await kimi.prompt(input,config.timeoutMs,undefined,()=>host.refresh(stage),effect=>host.submit(stage,effect));
     const report=parse(jsonReport(final)),sessionId=kimi.session.sessionId,originals:Record<string,Buffer>={};
-    const names=['stdin.ndjson','stdout.ndjson','profile.json','executable.json','launch.json','process.json','initialize.json','session.json','selection.json',
+    const names=['stdin.ndjson','stdout.ndjson','prompt-boundaries.ndjson','profile.json','executable.json','launch.json','process.json','initialize.json','session.json','selection.json',
       ...Object.keys(extraProfileFiles('kimi',kimi.directory,system)),...(kind==='native_capture'?['profile-observed.json']:[])];
     let bytes=0;
     for(const file of names){
@@ -79,7 +108,8 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
       originals[file]=original;
     }
     kimi.assertCanForward();
-    const native={company:'Moonshot',sessionId,requestId,model:selected.model};
+    verifyImpactBoundary(originals,input,sessionId,requestId,final);
+    const native={company:'Moonshot',sessionId,requestId,model:selected.model,promptBoundaryVerified:true};
     host.record(stage,{finalText:final,report},stageProof('verifier_impact',stage.inputSha256,stage.systemSha256,native),originals);
     return {report,sessionId};
   };
@@ -132,14 +162,14 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
     }
     await host.phaseEnded('analysis');
     if(!gpt)throw new Error('formal_original_reviewer_context_not_owned');
-    const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
-    if(gpt.sessionId!==original.firstSessionId)throw new Error('formal_original_reviewer_context_changed');
+    if(gpt.sessionId!==first.sessionId)throw new Error('formal_original_reviewer_context_changed');
     const available=await host.fixAvailable();
     if(!available.available){
-      retainGpt=true;host.holdFact(original);
+      retain=host.retainDual();
       const reason=available.reason??'formal_fix_authority_required';
       host.progress('waiting',{reason,waitingFor:'authorized_fix',batchSha256:batch.sha256});return {status:'waiting',reason};
     }
+    const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
     const input=jsonInput({instructions:prompts.fact.system,stage:'authorized-repair',material,batch,fact,assessed,responseShape:findingSchema});
     const stage=await host.prepare(key('fix'),'fix',input,prompts.correctness.system,'fix');
     host.activate(stage);await host.refresh(stage);await original.gate.handoff(original.firstSessionId);
@@ -150,8 +180,6 @@ export async function runDualFormalReviewRound(host:FormalRoundHost,prompts:Dual
     }
     const fixed=await host.commitFix(result.report,original);await host.phaseEnded('fix');
     return await host.finish({status:'awaiting_publication',candidate:source,...batchResult,fix:fixed});
-  }finally{
-    await kimi?.close();
-    if(!retainGpt){await gpt?.close();host.releaseFact();}
-  }
+  }catch(error){retain=host.retainDual();throw error;}
+  finally{if(!retain)await host.closeDual();}
 }

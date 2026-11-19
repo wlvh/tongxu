@@ -165,6 +165,7 @@ export class BoundedCodexSession {
   get sessionId() { return this.binding.sessionId; }
   get executionBinding(){return structuredClone(this.binding);}
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
+  canContinueTurn(){return !!this.rpc&&!this.closed&&!this.rpc.exit&&!this.rpc.failure&&!this.boundaryFailure&&!this.activeTurn&&!this.pendingTurn&&!this.turnRunning;}
   /** A completed bounded turn can be retained while the same owned fact
    * context waits for synthesis or an explicit write handoff. These are copies
    * of original frames, not a fake whole-process completion receipt. Later

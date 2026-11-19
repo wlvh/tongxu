@@ -44,6 +44,7 @@ export class LiveProcess {
   private replies = new Map<string, { request: string; response: unknown }>();
   private acpRequests = new Set<number>();
   private acpResponses = new Set<number>();
+  private acpPrompt: number | undefined;
   private pending = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   constructor(readonly directory: string, command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, private readonly onRequest?: (m: any) => Promise<unknown>, expected?:ExternalExecutable,private readonly protocol:'codex'|'acp'='codex') {
     const selected=expected??selectExternalExecutable(command);
@@ -81,6 +82,10 @@ export class LiveProcess {
   }
   private receive(m: any) {
     this.events.push(m);
+    if(this.protocol==='acp'&&m?.method==='session/update'&&
+      m.params?.update?.sessionUpdate==='agent_message_chunk'&&this.acpPrompt===undefined){
+      this.fail('external_cli_text_outside_prompt');return;
+    }
     if (typeof m?.method === 'string' && 'id' in m) {
       if(this.protocol==='acp'&&m.method==='session/request_permission'){
         this.send({id:m.id,result:{outcome:{outcome:'cancelled'}}});this.fail('external_cli_tool_request_denied');return;
@@ -102,6 +107,7 @@ export class LiveProcess {
     if(this.protocol==='acp'&&!('method' in m)){
       if(m.jsonrpc!=='2.0'||!this.acpRequests.has(m.id)||this.acpResponses.has(m.id)||Object.hasOwn(m,'result')===Object.hasOwn(m,'error')){this.fail('external_cli_response_ambiguous');return;}
       this.acpResponses.add(m.id);
+      if(m.id===this.acpPrompt)this.acpPrompt=undefined;
     }
     if (p && !('method' in m)) { clearTimeout(p.timer); this.pending.delete(m.id); 'error' in m ? p.reject(new Error('executor_rpc_error')) : p.resolve(m.result); }
   }
@@ -115,6 +121,7 @@ export class LiveProcess {
     if (this.failure || this.exit) throw new Error(this.failure ?? 'executor_closed');
     const id = ++this.sequence;
     if(this.protocol==='acp'&&method==='session/prompt'){
+      if(this.acpPrompt!==undefined)throw new Error('external_cli_prompt_still_pending');
       // Save the exact output prefix observed before this input. A prior turn's
       // terminal response cannot identify where the next input actually began.
       if(this.partial.length)throw new Error('external_cli_partial_before_input');
@@ -128,7 +135,7 @@ export class LiveProcess {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('executor_rpc_timeout')); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });if(this.protocol==='acp')this.acpRequests.add(id);
-      try{const send=()=>this.send({id,method,params});if(dispatchGate)dispatchGate(send);else send();}
+      try{const send=()=>{if(this.protocol==='acp'&&method==='session/prompt')this.acpPrompt=id;this.send({id,method,params});};if(dispatchGate)dispatchGate(send);else send();}
       catch(error){clearTimeout(timer);this.pending.delete(id);reject(error);}
     });
   }

@@ -3,7 +3,7 @@ import {implementationChoice,implementationProjectFileToolsVersion,verifyImpleme
 import {selectedProviderOptions} from './ai-settings.js';
 import {implementationFirstInput} from './implementation-first-input.js';
 import {checkFirstSendFiles,type FirstSendProof} from './implementation-first-send.js';
-import {requireValidationFailure,verifyValidationFiles,type ValidationFailureProof,readFailedValidationTests,readLatestProjectToolValidation} from './implementation-validation.js';
+import {requireValidationFailure,verifyValidationFiles,checkValidationWorkspace,validValidationCorrectionDirectory,type ValidationFailureProof,readFailedValidationTests,readLatestProjectToolValidation} from './implementation-validation.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {mkdir,writeFile,readdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -158,19 +158,30 @@ export function validationCorrectionInput(proof:ValidationFailureProof,request:I
 }
 /** One explicit correction of a proved healthy validation failure. All new
  * artifacts are children; the original initial tree remains the commit base. */
-export async function runValidationCorrection(proof:ValidationFailureProof,request:ImplementationRequest,reference:Row,input:string,firstInputContinuation:Row|null,external:ImplementationGate){
+export async function runValidationCorrection(proof:ValidationFailureProof,request:ImplementationRequest,reference:Row,input:string,firstInputContinuation:Row|null,external:ImplementationGate,admit?:()=>Promise<void>){
  const record=requireValidationFailure(proof),plan=proof.plan as RepairPlan,operation=record.operationRoot,directory=join(operation,'validation-correction'),grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
  const projectFiles=plan.project?.projectFiles===true,projectFileToolsVersion=projectFiles?implementationProjectFileToolsVersion(request,proof.manifest):undefined;
  await verifyValidationFiles(record);validateProjectContract(plan.project!,grant);
- if(reference.failureSha256!==hash(canonical(record))||reference.inputSha256!==hash(input)||reference.nativeDirectory!==join(directory,'native')||grant.maxRepairRounds!==1||!projectFiles&&plan.project?.materialView!=='selected_files')throw new Error('implementation_validation_binding_changed');
+ if(reference.failureSha256!==hash(canonical(record))||reference.inputSha256!==hash(input)||!validValidationCorrectionDirectory(operation,reference.nativeDirectory)||grant.maxRepairRounds!==1||!projectFiles&&plan.project?.materialView!=='selected_files')throw new Error('implementation_validation_binding_changed');
  const billing=plan.billing;if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||hash(await regular(billing.evidence))!==billing.evidenceSha256||!Number.isFinite(Date.parse(billing.observedAt))||Date.now()-Date.parse(billing.observedAt)>86400000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
- const lease=await acquireWorkspace(plan.workspace,operation,false,grant);let session:BoundedCodexSession|undefined;
+ let session:BoundedCodexSession|undefined,sessionId:string,dispatched=false;
+ const editProfile=implementationEditProfile(request,plan,proof.manifest);
  const refresh=async()=>{await external.refresh();await verifyValidationFiles(record);if(await exists(join(operation,'revoked.json')))throw new Error('repair_revoked');};
- const gate=new RepairTools(plan.workspace,directory,grant,lease,plan.nodeExecutable,structuredClone(proof.current),plan.candidate.H,async d=>{const t=await testProject(plan.workspace,d,plan.project!,{refresh,start:effect=>external.check(effect)});if(!t.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(t);},effect=>external.check(effect),refresh,projectFiles?undefined:{materialView:'selected_files',materialPaths:[...plan.project!.materialPaths,...plan.project!.protectedPaths]},implementationEditProfile(request,plan,proof.manifest),proof.initial);
+ const openWriter=async()=>{
+  await admit?.();
+  const lease=await acquireWorkspace(plan.workspace,operation,false,grant);
+  const gate=new RepairTools(plan.workspace,directory,grant,lease,plan.nodeExecutable,structuredClone(proof.current),plan.candidate.H,async d=>{const t=await testProject(plan.workspace,d,plan.project!,{refresh,start:effect=>external.check(effect)});if(!t.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(t);},effect=>external.check(effect),refresh,projectFiles?undefined:{materialView:'selected_files',materialPaths:[...plan.project!.materialPaths,...plan.project!.protectedPaths]},editProfile,proof.initial);
+  await gate.handoff(sessionId,'new_implementer_context');
+  return {gate,lease};
+ };
+ let writer:ReturnType<typeof openWriter>|undefined;
+ const getWriter=()=>{if(!dispatched)throw new Error('implementation_validation_correction_not_admitted');return writer??=openWriter();};
  try{
+  session=await BoundedCodexSession.start({...selectedProviderOptions(implementationChoice(request,plan,proof.manifest),'codex',plan.codexExecutable),directory:reference.nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:proof.manifest.prompt.system,inputManifestSha256:proof.manifest.inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,...(projectFiles?{projectFiles:true,projectFileToolsVersion}:{}),editProfile,gate:{editProfile,check:refresh,call:async(params,before)=>(await getWriter()).gate.call(params,before)},beforeTurn:async()=>{if(admit)await checkValidationWorkspace(proof,true);await refresh();},beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();dispatched=true;return send();}});
+  sessionId=session.sessionId;
+  const report=await session.turn(input,plan.candidate,implementationOutputSchema(plan.candidate.H)),exercised=session.exercisedTools;await session.close();session=undefined;
+  const {gate,lease}=await getWriter();
   await mkdir(join(directory,'commit'),{mode:0o700});
-  session=await BoundedCodexSession.start({...selectedProviderOptions(implementationChoice(request,plan,proof.manifest),'codex',plan.codexExecutable),directory:reference.nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:proof.manifest.prompt.system,inputManifestSha256:proof.manifest.inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,...(projectFiles?{projectFiles:true,projectFileToolsVersion}:{}),editProfile:implementationEditProfile(request,plan),gate,beforeTurn:refresh,beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
-  await gate.handoff(session.sessionId,'new_implementer_context');const report=await session.turn(input,plan.candidate,implementationOutputSchema(plan.candidate.H)),sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
   const capture=await readRepairSession(reference.nativeDirectory);await verifyImplementationModel(request,plan,proof.manifest,reference.nativeDirectory);if(capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_validation_complete_implemented_required');
   const current=await gate.check(),changed=gate.writableChanges(current);
   const latest=projectFiles?await readLatestProjectToolValidation(directory,reference.nativeDirectory,plan):null;
@@ -188,5 +199,5 @@ export async function runValidationCorrection(proof:ValidationFailureProof,reque
   const committed=await commitScopedCandidate(plan.workspace,directory,'commit',1,plan.candidate,current,grant,gate,'implement: correct registered validation for adopted Issue #'+request.issue.number,'tongxu controlled implementation runner');
   if(!projectFiles)await assertUnselectedGitUnchanged(plan.workspace,request.workspaceRequest.candidate.H,committed.candidate.H,[...plan.project!.materialPaths,...plan.project!.protectedPaths]);
   const result={...common,...(latest?{projectValidationCallId:latest.callId}:{}),status:'completed' as const,H1:committed.candidate.H,candidate:committed.candidate,changed,diff:committed.diff,testCandidateBinding:await bindProjectTestToCandidate(plan.workspace,committed.candidate,tests),formalReview:false,published:false,userAccepted:false};save(join(directory,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,'completed');return result;
- }catch(e){save(join(directory,'failure.json'),{reason:e instanceof Error?e.message:'implementation_unknown',automaticRetry:false,originalFilesPreserved:true});throw e;}finally{await session?.close();}
+ }catch(e){save(dispatched?join(directory,'failure.json'):reference.nativeDirectory+'-bootstrap-failure.json',{reason:e instanceof Error?e.message:'implementation_unknown',automaticRetry:false,originalFilesPreserved:true});throw e;}finally{await session?.close();}
 }

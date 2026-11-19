@@ -1,5 +1,5 @@
 import {assertWorkCurrent} from './project-work-current.js';
-import {requireValidationFailure,assertValidationClosure,type ValidationFailureProof} from './implementation-validation.js';
+import {requireValidationFailure,assertValidationClosure,validValidationCorrectionDirectory,type ValidationFailureProof} from './implementation-validation.js';
 import {requireFirstSendProof,type FirstSendProof} from './implementation-first-send.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {readFileSync,existsSync} from 'node:fs';
@@ -176,10 +176,12 @@ export class IssueImplementations {
     const result={status:'failed',requestId:id,task:f.request.task,H0:f.request.workspaceRequest.candidate.H,H1:null,report:record.report,sessionId:record.sessionId,completeCapture:true,testsDirectory:record.testsDirectory,tests:JSON.parse(bytes.toString()),treeSha256:record.treeSha256,firstInputContinuation:this.state(source,id).firstInputContinuation??undefined,failureClosure:{failureSha256:hash(canonical(record)),lease:proof.lease,originalFilesPreserved:true,newModelRequests:0}};
     const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:s.operation,resultSha256});this.updateOperation(s.operation,{...this.operation(s.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
   });}
-  reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,observations:OwnerObservation[]){return this.transaction(()=>{
+  reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,nativeDirectory:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.fixed(source,id),record=requireValidationFailure(proof);if(f.events.some(e=>e.kind==='issue_implementation_validation_correction')||!f.events.some(e=>e.kind==='issue_implementation_validation_failed'&&canonical(e.data)===canonical(record)))throw new Error('implementation_validation_correction_consumed');
     if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');
-    this.checkValue(source,id,observations);const ref={failureSha256:hash(canonical(record)),inputSha256:hash(input),definition, nativeDirectory:record.operationRoot+'/validation-correction/native'};this.event('validation_correction',this.key(source,id),ref);return ref;
+    if(!validValidationCorrectionDirectory(record.operationRoot,nativeDirectory))throw new Error('implementation_validation_binding_changed');
+    this.checkValue(source,id,observations);assertValidationClosure(proof);
+    const ref={failureSha256:hash(canonical(record)),inputSha256:hash(input),definition,nativeDirectory};this.event('validation_correction',this.key(source,id),ref);return ref;
   });}
   complete(source:string,id:string,result:Row){return this.transaction(()=>{
     const f=this.fixed(source,id);if(f.terminal){if(f.terminal.resultSha256!==hash(canonical(result)))throw new Error('implementation_terminal_is_fixed');return this.state(source,id);}

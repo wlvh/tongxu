@@ -380,7 +380,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(action?.[2]==='prepare')json(res,202,await withAI(()=>work.prepare(selection,action[1]!,body)));
         else if(action?.[2]==='start'){try{const preview=await withAI(()=>work.confirmation(selection,action[1]!,body)),payload={...body,...(preview.currentCheckSha256?{currentCheckSha256:preview.currentCheckSha256}:{})},result=preview.active?{id:action[1]!,active:true,originalRetained:true}:preview.alreadyAuthorized?await withAI(()=>work.start(selection,action[1]!,payload)):await workOwner.request(selection,action[1]!,payload,preview);if(!preview.active&&!preview.alreadyAuthorized)work.recordActionProblem(selection,action[1]!,body.version,null);json(res,202,result);}catch(e){work.recordActionProblem(selection,action[1]!,body.version,safeError(e));throw e;}}
         else if(action?.[2]==='recheck'||action?.[2]==='restart-failure'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,action[2]==='recheck'?await withAI(()=>work.recheck(selection,action[1]!)):await withAI(()=>work.restartFailure(selection,action[1]!)));}
-        else if(action?.[2]==='correct-validation'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
+        else if(action?.[2]==='correct-validation'){if(!exactKeys(body,body?.requestId===undefined?[]:['requestId'])||body?.requestId!==undefined&&typeof body.requestId!=='string')throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!,body.requestId);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!,preview.requestId):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
         else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
         else if(action?.[2]==='review-issue')json(res,202,await withAI(()=>work.reviewIssue(selection,action[1]!,body)));
         else if(action?.[2]==='integration-preview')json(res,200,await work.integrationPreview(selection,action[1]!,body));
@@ -448,7 +448,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         }
         if(url.pathname.endsWith('/supplement')){
           const result=await chat.receiveSupplement(selection,body);json(res,202,result);
-          if(!result.duplicate)for(const target of ('targets' in result?result.targets:[body.target])??[])void chat.processSupplements(selection,target).catch(()=>{});
+          for(const target of ('targets' in result?result.targets:[body.target])??[])void chat.processSupplements(selection,target).catch(()=>{});
           return;
         }
         if(url.pathname.endsWith('/review-supplement')){
@@ -473,7 +473,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!formal){if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:false,entries:[]});return;}throw new Error('formal_review_not_configured');}
         if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:true,entries:await formal.state()});return;}
         const report=/^\/api\/formal-review-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([a-f0-9-]{36})$/.exec(url.pathname);if(req.method==='GET'&&report){json(res,200,await formal.report(report[1]!,report[2]!));return;}
-        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
+        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check|replace-ended)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
         if(action[2]==='prepare'){
           const expected=body?.expectedCandidate;
@@ -484,6 +484,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected)));return;
         }
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}
+        if(action[2]==='replace-ended'){if(!exactKeys(body,['operation','round']))throw new Error('formal_request_invalid');json(res,200,await formal.replaceEndedDual(action[1]!,body.operation,body.round));return;}
         if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');json(res,202,await withAI(()=>formal.begin(action[1]!,body.operation)));return;
       }
       if(req.method!=='GET'){
