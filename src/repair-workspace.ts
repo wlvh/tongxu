@@ -264,8 +264,8 @@ export class RepairTools {
   private handoffSerial = 0;
   private expectedHead: string;
   private initial:Tree;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView,readonly editProfile?:EditProfile) {
-    parseEditProfile(editProfile);this.expectedHead=initialHead;this.initial={...expected};
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView,readonly editProfile?:EditProfile,commitBase:Tree=expected) {
+    parseEditProfile(editProfile);this.expectedHead=initialHead;this.initial={...commitBase};
     if(grant.projectFiles&&(grant.profile!=='project-v1'||indexView||grant.allowedPaths.length))throw new Error('project_file_scope_conflicts_with_selected_paths');
   }
   writableChanges(current:Tree){return changedWorkspacePaths(this.initial,current,this.grant);}

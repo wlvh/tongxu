@@ -2,7 +2,7 @@ import {implementationFirstInput} from './implementation-first-input.js';
 import type {RepairPlan} from './repair.js';
 import {replayImplementationWrite} from './implementation-edits.js';
 import {implementationEditProfile,replacementText} from './repair-edits.js';
-import {verifyImplementationModel} from './implementation-ai.js';
+import {implementationTools,verifyImplementationModel} from './implementation-ai.js';
 import {readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {canonical,samples} from './comparison.js';
@@ -120,7 +120,8 @@ export function requireValidationFailure(p:ValidationFailureProof){if(issued.get
  * failure. Sending is admitted separately, under the original operation lock. */
 export async function observeValidationFailure(s:Row,projectFilesReadback=false,logSelection?:ValidationLogSelection):Promise<ValidationReadback>{
  const fixed=s.plan,op=fixed.operationRoot,planBytes=await regular(fixed.path),plan=JSON.parse(planBytes.toString()),initial=await json(join(op,'initial-tree.json')),manifest=await json(join(op,'input-manifest.json')),{inputManifestSha256,...original}=manifest;
- const projectFiles=projectFilesReadback&&fixed.request.workspaceRequest.projectFiles===true&&plan.project?.projectFiles===true;
+ const projectFiles=fixed.request.workspaceRequest.projectFiles===true;
+ if(projectFiles!==Boolean(plan.project?.projectFiles))throw new Error('implementation_validation_original_changed');
  if(hash(planBytes)!==fixed.sha256||(!projectFiles&&plan.project?.materialView!=='selected_files')||canonical(manifest.request)!==canonical(fixed.request)||manifest.planSha256!==fixed.sha256||hash(canonical(original))!==inputManifestSha256)throw new Error('implementation_validation_original_changed');
  const grant:Grant=await json(plan.grant);if(projectFiles&&(!grant.projectFiles||grant.allowedPaths.length||canonical(grant.projectFiles.protectedPaths)!==canonical(fixed.request.workspaceRequest.protectedPaths)||canonical(plan.project.protectedPaths)!==canonical(grant.projectFiles.protectedPaths)||canonical(manifest.prompt)!==canonical(fixed.request.workflowPrompt)))throw new Error('implementation_validation_original_changed');
  if(grant.H!==plan.candidate.H||treeHash(initial)!==grant.treeSha256)throw new Error('implementation_validation_original_changed');
@@ -149,21 +150,24 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false,
  if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
  const calls:Row[]=[];for(const n of await readdir(join(op,'calls'))){if(!n.endsWith('.json'))throw new Error('implementation_validation_calls_unknown');const path=join(op,'calls',n),c=await json(path);if(!c.response||c.status==='write_registered')throw new Error('implementation_validation_calls_unknown');calls.push(c);}
  const pairs=await json(join(native,'reconciled-tools.json'));let expected=structuredClone(initial) as Tree;
- if(calls.length!==pairs.length)throw new Error('implementation_validation_calls_unknown');
+ const inspected=new Set<string>(),testDirectories=new Set<string>();
  for(const pair of pairs){const c:Row|undefined=calls.find((c:Row)=>c.request.callId===pair.request.params.callId);if(!c||c.request.tool!==pair.request.params.tool||canonical(c.request.arguments)!==canonical(pair.request.params.arguments)||canonical(c.response)!==canonical(pair.response.result))throw new Error('implementation_validation_calls_unknown');
+   if(inspected.has(c.request.callId)){if(projectFiles)continue;throw new Error('implementation_validation_calls_unknown');}
+   inspected.add(c.request.callId);
    if(projectFiles){
     if(!tools.some(tool=>tool.name===c.request.tool))throw new Error('implementation_validation_calls_unknown');
     expected=replayImplementationWrite(expected,c.request,c,grant.allowedPaths,implementationEditProfile(fixed.request,plan,manifest),grant.projectFiles);
    }
    else if(c.request.tool==='tongxu_replace_file'){const p=c.request.arguments.path;if(!fixed.request.workspaceRequest.allowedPaths.includes(p)||c.status!=='applied'||expected[p]?.sha256!==c.beforeSha256||c.request.arguments.expectedSha256!==c.beforeSha256||hash(c.beforeText)!==c.beforeSha256||hash(c.afterText)!==c.afterSha256||replacementText(c.request.arguments,Buffer.from(c.beforeText),implementationEditProfile(fixed.request,plan,manifest))!==c.afterText||c.beforeExecutable!==expected[p]?.executable||c.afterExecutable!==expected[p]?.executable)throw new Error('implementation_validation_unregistered_change');expected[p]={...expected[p]!,text:plan.editProfile?new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(c.afterText)):c.afterText,sha256:c.afterSha256,bytes:Buffer.byteLength(c.afterText)};}
-   if(c.request.tool==='tongxu_run_tests'){const t=await readFailedValidationTests(join(op,'tests','tool-'+c.request.callId),plan,false);if(treeHash(t.tested)!==treeHash(expected)||canonical(JSON.parse(c.response.contentItems[0].text))!==canonical(projectModelTestResult(t.result)))throw new Error('implementation_validation_calls_unknown');}
+   if(c.request.tool==='tongxu_run_tests'){const directory=join(op,'tests','tool-'+c.request.callId);testDirectories.add(directory);const t=await readFailedValidationTests(directory,plan,false);if(treeHash(t.tested)!==treeHash(expected)||canonical(JSON.parse(c.response.contentItems[0].text))!==canonical(projectModelTestResult(t.result)))throw new Error('implementation_validation_calls_unknown');}
    if(c.afterTreeSha256!==treeHash(expected))throw new Error('implementation_validation_unregistered_change');
  }
+ if(inspected.size!==calls.length)throw new Error('implementation_validation_calls_unknown');
  if(treeHash(expected)!==treeHash(tests.tested))throw new Error('implementation_validation_unregistered_change');
  if((await readdir(join(op,'attempt-1'))).some(n=>n!=='post-repair-1')||await exists(join(op,'result.json')))throw new Error('implementation_validation_commit_or_result_exists');
  const files:Record<string,string>={};let total=0;async function seal(p:string){for(const e of await readdir(p,{withFileTypes:true})){const path=join(p,e.name);if(e.isSymbolicLink())throw new Error('implementation_validation_unsafe_original');if(e.isDirectory())await seal(path);else{const b=await regular(path,32*1024*1024);if((total+=b.length)>128*1024*1024)throw new Error('implementation_validation_evidence_limit');files[path]=hash(b);}}}
  for(const p of [native,join(op,'calls'),join(op,'attempt-1')])await seal(p);
- if(originalTest)await seal(originalTest.directory);
+ if(originalTest)for(const directory of testDirectories)await seal(directory);
  for(const p of [failurePath,fixed.path,plan.grant,plan.project.testPlan,join(op,'input-manifest.json'),join(op,'initial-tree.json')])files[p]=hash(await regular(p,32*1024*1024));
  const lease=await exists(join(plan.workspace,'.git/tongxu-writer.json'))?await json(join(plan.workspace,'.git/tongxu-writer.json')):null;
  const record={schemaVersion:1,operationRoot:op,requestSha256:s.requestSha256,planSha256:fixed.sha256,inputManifestSha256,nativeDirectory:native,sessionId:capture.binding.sessionId,report,tests:projectModelTestResult(tests.result),testsDirectory,initialTreeSha256:treeHash(initial),treeSha256:treeHash(tests.tested),changed,controllerPid:tests.controllerPid,files};
@@ -171,7 +175,7 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false,
  const proof={record,initial,current:tests.tested,plan,manifest,lease};
  // Display-only proof never enters the set accepted by correction or closure.
  if(projectFiles&&logSelection)return {...proof,log:tests.log};
- if(projectFiles)return {...proof,readback:{
+ if(projectFiles&&projectFilesReadback)return {...proof,readback:{
   diff:await gitRead(join(testsDirectory,'work'),['diff','--no-ext-diff','--no-textconv','--no-renames','--binary',plan.candidate.H,tests.result.H,'--']),
   tests:{...projectModelTestResult(tests.result),tools:tests.result.tools.map((tool:Row,index:number)=>({id:tool.id,status:tool.status,exitCode:tool.exitCode,stdout:tool.stdout,stderr:tool.stderr,...tests.originals[index]})),unexecutedTools:tests.unexecutedTools}
  }};
@@ -184,7 +188,9 @@ export async function readRecordedValidationFailure(s:Row){
 export async function checkValidationTree(p:ValidationFailureProof){
  requireValidationFailure(p);await verifyValidationFiles(p.record);const {plan,record,lease}=p;
  if(await gitRead(plan.workspace,['rev-parse','HEAD'])!==plan.candidate.H||treeHash(await tree(plan.workspace,true))!==record.treeSha256)throw new Error('implementation_validation_tree_changed');
- await checkRepairIndex(plan.workspace,record.operationRoot,p.manifest.request.workspaceRequest.allowedPaths,p.current,{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]},true);
+ const projectFiles=plan.project.projectFiles===true;
+ await checkRepairIndex(plan.workspace,record.operationRoot,projectFiles?record.changed:p.manifest.request.workspaceRequest.allowedPaths,p.current,
+   projectFiles?undefined:{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]},true,projectFiles);
 }
 export async function checkValidationWorkspace(p:ValidationFailureProof,ownController=false){
  const indexSha256=hash(await regular(join(p.plan.workspace,'.git/index')));
@@ -211,6 +217,6 @@ export async function validationResultCapture(s:Row){
  await verifyValidationFiles(s.validationFailure);if(await implementationCaptureDirectory({...s,result:s.firstInputContinuation?{firstInputContinuation:s.firstInputContinuation}:null})!==s.validationFailure.nativeDirectory)throw new Error('implementation_validation_capture_changed');const old=await readRepairSession(s.validationFailure.nativeDirectory);if(old.turns.length!==1||canonical(JSON.parse(old.turns[0]!.final!.text))!==canonical(s.validationFailure.report))throw new Error('implementation_validation_capture_changed');
  const wire=(await regular(join(ref.nativeDirectory,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x)),starts=wire.filter(x=>x.method==='thread/start');
  const inputs=await json(join(ref.nativeDirectory,'inputs.json')),binding=await json(join(ref.nativeDirectory,'binding.json')),manifest=await json(join(s.plan.operationRoot,'input-manifest.json')),plan=await json(s.plan.path);
- if(starts.length!==1||starts[0].params.baseInstructions!==manifest.prompt.system||canonical(starts[0].params.dynamicTools)!==canonical(projectRepairToolsFor(implementationEditProfile(s.plan.request,plan,manifest)))||inputs.length!==1||hash(inputs[0].input)!==ref.inputSha256||binding.run!==s.plan.operationRoot||binding.role!=='implementer'||binding.inputManifestSha256!==manifest.inputManifestSha256||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate))throw new Error('implementation_validation_capture_changed');
+ if(starts.length!==1||starts[0].params.baseInstructions!==manifest.prompt.system||canonical(starts[0].params.dynamicTools)!==canonical(s.plan.request.workspaceRequest.projectFiles?implementationTools(s.plan.request,plan,manifest):projectRepairToolsFor(implementationEditProfile(s.plan.request,plan,manifest)))||inputs.length!==1||hash(inputs[0].input)!==ref.inputSha256||binding.run!==s.plan.operationRoot||binding.role!=='implementer'||binding.inputManifestSha256!==manifest.inputManifestSha256||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate))throw new Error('implementation_validation_capture_changed');
  return ref.nativeDirectory;
 }

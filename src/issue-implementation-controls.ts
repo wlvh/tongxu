@@ -271,7 +271,7 @@ export class IssueImplementationControls{
         if(proof){await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});await releaseWorkspace(fixed.workspace,proof.lease,'verified_unstarted_metadata');}
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:firstInput!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&!fixed.request.workspaceRequest.projectFiles){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:firstInput!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&(!fixed.request.workspaceRequest.projectFiles||this.generated.has(id))){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
@@ -419,7 +419,7 @@ export class IssueImplementationControls{
     if(state.result)return readImplementationResult(state);
     const projectFiles=state.plan?.request.workspaceRequest.projectFiles===true;
     try{
-      const proof=state.validationFailure?null:await observeValidationFailure(state,projectFiles);
+      const proof=projectFiles||!state.validationFailure?await observeValidationFailure(state,projectFiles):null;
       const record=proof?.record??await readRecordedValidationFailure(state);
       return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...proof?.readback,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};
     }catch{/* Incomplete originals remain an observation. */}
@@ -431,7 +431,7 @@ export class IssueImplementationControls{
   }finally{q.close();}}
   async failureLog(id:string,requestId:string,selection:ValidationLogSelection){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const state=q.issueImplementations().state(id,requestId);
-    if(state.result||state.validationFailure||state.plan?.request.workspaceRequest.projectFiles!==true)throw new Error('report_not_found');
+    if(state.result||state.plan?.request.workspaceRequest.projectFiles!==true)throw new Error('report_not_found');
     const {log}=await observeValidationFailure(state,true,selection);
     if(!log)throw new Error('report_not_found');
     return log;

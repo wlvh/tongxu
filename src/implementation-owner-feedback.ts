@@ -48,7 +48,7 @@ export async function readImplementationResult(state:Row){
    try{
     const validation=validationCallId===undefined
      ? await readFailedValidationTests(join(root,'attempt-1','post-repair-1'),plan,false)
-     : await readLatestProjectToolValidation(root,native,plan);
+     : await readLatestProjectToolValidation(state.result.validationCorrection?join(root,'validation-correction'):root,native,plan);
     if(validationCallId!==undefined&&(!('callId' in validation)||validation.callId!==validationCallId)||
        !validation.result.passed||canonical(validation.result)!==canonical(state.result.tests)||
        hash(canonical(validation.result))!==state.result.testCandidateBinding?.testResultCanonicalSha256)throw new Error('implementation_validation_capture_changed');
