@@ -1,8 +1,29 @@
+import {execFile} from 'node:child_process';
+import {lstat,readdir} from 'node:fs/promises';
+import {promisify} from 'node:util';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
-import {regular,treeHash,projectPathWritable,orderedProjectTree,projectRepairToolsFor,type Tree} from './repair-workspace.js';
-import {replacementText,implementationEditProfile} from './repair-edits.js';
+import {regular,treeHash,safeEnv,projectPathWritable,orderedProjectTree,projectRepairToolsFor,type Tree,type ProjectFiles} from './repair-workspace.js';
+import {replacementText,implementationEditProfile,type EditProfile} from './repair-edits.js';
+const exec=promisify(execFile);
+
+export function replayImplementationWrite(expected:Tree,p:any,c:any,allowedPaths:string[],profile:EditProfile|undefined,projectFiles?:ProjectFiles){
+ if(p.tool==='tongxu_replace_file'){
+  const file=p.arguments.path,before=expected[file];if(!(projectFiles?projectPathWritable(projectFiles,file):allowedPaths.includes(file))||!before||c.status!=='applied'||hash(c.beforeText)!==c.beforeSha256||c.beforeSha256!==before.sha256||p.arguments.expectedSha256!==before.sha256||c.beforeExecutable!==before.executable||c.afterExecutable!==before.executable||replacementText(p.arguments,Buffer.from(c.beforeText),profile)!==c.afterText||hash(c.afterText)!==c.afterSha256)throw new Error('implementation_edit_receipt_changed');
+  expected[file]={...before,text:new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(c.afterText)),sha256:c.afterSha256,bytes:Buffer.byteLength(c.afterText)};
+ }
+ if(p.tool==='tongxu_create_file'){
+  const {path,text,mode}=p.arguments;
+  if(!projectFiles||!projectPathWritable(projectFiles,path)||Object.hasOwn(expected,path)||!['100644','100755'].includes(mode)||
+     typeof text!=='string'||c.status!=='applied')throw new Error('implementation_edit_receipt_changed');
+  const file={sha256:hash(text),bytes:Buffer.byteLength(text),text:new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(text)),executable:mode==='100755'?0o100:0};
+  if(canonical(c.newFile)!==canonical(file))throw new Error('implementation_edit_receipt_changed');
+  expected=orderedProjectTree({...expected,[path]:file});
+ }
+ return expected;
+}
+
 /** Historical new-profile receipts are replayed from their original before
  * bytes. Old profiles retain their existing consumers and wire contract. */
 export async function verifyImplementationEdits(state:any,plan:any,manifest:any,native:string){
@@ -22,22 +43,53 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
   const pairs=await json(join(capture,'reconciled-tools.json'));
   for(const pair of pairs){const p=pair.request.params,c=await json(join(directory,'calls',p.callId+'.json'));
    if(c.request.tool!==p.tool||c.request.callId!==p.callId||canonical(c.request.arguments)!==canonical(p.arguments)||canonical(c.response)!==canonical(pair.response.result))throw new Error('implementation_edit_receipt_changed');
-   if(p.tool==='tongxu_replace_file'){
-    const file=p.arguments.path,before=expected[file];if(!(projectFiles?projectPathWritable(projectFiles,file):request.workspaceRequest.allowedPaths.includes(file))||!before||c.status!=='applied'||hash(c.beforeText)!==c.beforeSha256||c.beforeSha256!==before.sha256||p.arguments.expectedSha256!==before.sha256||c.beforeExecutable!==before.executable||c.afterExecutable!==before.executable||replacementText(p.arguments,Buffer.from(c.beforeText),profile)!==c.afterText||hash(c.afterText)!==c.afterSha256)throw new Error('implementation_edit_receipt_changed');
-    expected[file]={...before,text:new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(c.afterText)),sha256:c.afterSha256,bytes:Buffer.byteLength(c.afterText)};
-   }
-   if(p.tool==='tongxu_create_file'){
-    const {path,text,mode}=p.arguments;
-    if(!projectFiles||!projectPathWritable(projectFiles,path)||Object.hasOwn(expected,path)||!['100644','100755'].includes(mode)||
-       typeof text!=='string'||c.status!=='applied')throw new Error('implementation_edit_receipt_changed');
-    const file={sha256:hash(text),bytes:Buffer.byteLength(text),text:new TextDecoder('utf8',{fatal:true}).decode(Buffer.from(text)),executable:mode==='100755'?0o100:0};
-    if(canonical(c.newFile)!==canonical(file))throw new Error('implementation_edit_receipt_changed');
-    expected=orderedProjectTree({...expected,[path]:file});
-   }
+   expected=replayImplementationWrite(expected,p,c,request.workspaceRequest.allowedPaths,profile,projectFiles);
    if(c.afterTreeSha256!==treeHash(expected))throw new Error('implementation_edit_receipt_changed');
   }
  };
  if(state.result?.validationCorrection){await replay(state.plan.operationRoot,state.validationFailure.nativeDirectory);await replay(join(state.plan.operationRoot,'validation-correction'),native);}
  else await replay(state.plan.operationRoot,native);
  if(treeHash(expected)!==(state.result.treeSha256??treeHash(await json(join(state.plan.operationRoot,'initial-tree.json')))))throw new Error('implementation_edit_receipt_changed');
+}
+
+/** Observe registered additions that Git has not staged, without touching the index. */
+export async function retainedProjectAdditions(workspace:string,operation:string,scope:ProjectFiles){
+ const calls=join(operation,'calls'),names=await readdir(calls).catch(error=>{
+  if(error.code==='ENOENT')return [];
+  throw error;
+ });
+ if(!names.length)return {additions:[],diff:''};
+ const initial:Tree=JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString());
+ const receipts=[];
+ for(const name of names.filter(name=>/^[A-Za-z0-9_-]{1,128}\.json$/.test(name))){
+  try{
+   const receipt=JSON.parse((await regular(join(calls,name))).toString());
+   if(receipt.request?.callId===name.slice(0,-5)&&receipt.request.arguments)receipts.push(receipt);
+  }catch{/* An unreadable receipt cannot establish a retained effect. */}
+ }
+ const additions:string[]=[],diffs:string[]=[];
+ for(const receipt of receipts){
+  const {request}=receipt,{path}=request.arguments;
+  if(request.tool!=='tongxu_create_file'||receipt.status!=='applied'||!projectPathWritable(scope,path)||Object.hasOwn(initial,path))continue;
+  try{
+   const created=replayImplementationWrite(initial,request,receipt,[],undefined,scope)[path]!;
+   const recorded=new Set([created.sha256,...receipts.filter(r=>r.status==='applied'&&r.request.tool==='tongxu_replace_file'&&r.request.arguments.path===path&&r.afterExecutable===created.executable).map(r=>r.afterSha256)]);
+   const full=join(workspace,path);
+   const digest=async()=>hash(await regular(full,256*1024));
+   const mode=async()=>(await lstat(full)).mode&0o111;
+   const before=await digest();
+   if(!recorded.has(before)||await mode()!==created.executable)continue;
+   // An addition already present in the index is covered by the main diff.
+   if((await exec('/usr/bin/git',['--literal-pathspecs','-C',workspace,'ls-files','--',path],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0'}})).stdout)continue;
+   const diff=await exec('/usr/bin/git',['-C',workspace,'diff','--no-index','--no-ext-diff','--no-textconv','--binary','--','/dev/null',path],
+    {env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0'},timeout:15000,maxBuffer:2*1024*1024}).catch(error=>{
+     if(error.code===1&&typeof error.stdout==='string')return {stdout:error.stdout as string};
+     throw error;
+    });
+   if(diff.stdout&&await digest()===before&&await mode()===created.executable){additions.push(path);diffs.push(diff.stdout);}
+  }catch(error:any){
+   if(!['ENOENT','ENOTDIR'].includes(error.code)&&!['noncanonical_repair_path','invalid_repair_file','repair_file_changed_during_read','implementation_edit_receipt_changed'].includes(error.message))throw error;
+  }
+ }
+ return {additions,diff:diffs.join('')};
 }

@@ -33,10 +33,11 @@ async function openImplementationReport(entry,request,expectedProject=implementa
   if(expectedProject!==implementationKey())return;
   const nonce=++reportNonce,project=implementationKey();$('report-title').textContent='Issue #'+request.issue+' · 实施成果';$('report-meta').textContent='读取原执行和完整成果…';$('report-body').textContent='';$('report-original').hidden=true;showWorkbenchReport();
   try{const result=await api('/api/implementation-report/'+encodeURIComponent(entry)+'/'+encodeURIComponent(request.id));if(nonce!==reportNonce||project!==implementationKey())return;
-    $('report-meta').textContent=(result.status==='completed'?'实现与注册测试完成；尚未正式审核、发布或本人验收。':'原执行结果：'+(result.status==='no_change'?'核对完成，无需修改':result.status==='owner_decision_required'?'需要本人决定':result.status))+' 原提交 '+result.H0.slice(0,12)+(result.H1?' → 成果提交 '+result.H1.slice(0,12):'');
+    $('report-meta').textContent=(result.status==='completed'?'实现与注册测试完成；尚未正式审核、发布或本人验收。':'原执行结果：'+(result.status==='validation_failed'?'注册测试未通过':result.status==='no_change'?'核对完成，无需修改':result.status==='owner_decision_required'?'需要本人决定':result.status))+' 原提交 '+result.H0.slice(0,12)+(result.H1?' → 成果提交 '+result.H1.slice(0,12):'');
     $('report-body').textContent=result.report?.report||(result.observationOnly?'尚无可核对的完整报告；以下是保留工作区的只读差异观察，不表示原执行已结束。':'本请求在发送前撤回，未产生模型报告。');
-    if(result.diff)$('report-body').textContent+='\n\n本次代码差异\n'+result.diff;
+    if(result.diff){const label=result.validationFailed?'受测失败树差异':result.observationOnly?'保留工作区差异（只读观察）':'本次代码差异';$('report-body').textContent+='\n\n'+label+'\n'+result.diff;}
     if(result.tests){$('report-body').textContent+='\n\n注册测试：'+(result.tests.passed?'通过':'未通过')+'。'+(result.testCandidateBinding?'运行测试的文件内容及可执行标记已与成果提交核对；未推定不同提交的元信息等价。':'尚无成果提交与测试的完整绑定。');for(const tool of result.tests.tools||[])$('report-body').textContent+='\n\n'+tool.id+'\n'+(tool.stdout||'')+(tool.stderr?'\n错误输出\n'+tool.stderr:'');}
+    if(result.tests?.unexecutedTools?.length)$('report-body').textContent+='\n\n注册测试遇到失败后未执行：'+result.tests.unexecutedTools.join('、');
     $('report-raw').textContent=JSON.stringify(result,null,2);document.querySelector('#report-original summary').textContent='核对本次原结果、测试与提交绑定';$('report-original').hidden=false;
   }catch(error){if(nonce===reportNonce)$('report-body').textContent=readableReason(error.message);}
 }

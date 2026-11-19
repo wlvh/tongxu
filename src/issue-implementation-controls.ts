@@ -1,3 +1,4 @@
+import {retainedProjectAdditions} from './implementation-edits.js';
 import {readCodingWorkflowSource} from './coding-workflow-source.js';
 import {readEndedReadonlyImplementationFailure,requireEndedReadonlyProof,readHostReadonlyFailure,observeReadonlyWorkspace,type EndedReadonlyProof} from './implementation-readonly-failure.js';
 import {captureImplementationAI,parseImplementationAI,type ImplementationAI} from './implementation-ai.js';
@@ -240,7 +241,7 @@ export class IssueImplementationControls{
         if(proof){await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});await releaseWorkspace(fixed.workspace,proof.lease,'verified_unstarted_metadata');}
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&!fixed.request.workspaceRequest.projectFiles){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
@@ -369,8 +370,19 @@ export class IssueImplementationControls{
   }finally{q.close();}}
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const state=q.issueImplementations().state(id,requestId);if(!state.result){try{const record=state.validationFailure?await readRecordedValidationFailure(state):(await observeValidationFailure(state)).record;return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};}catch{}if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
-    return readImplementationResult(state);
+    const state=q.issueImplementations().state(id,requestId);
+    if(state.result)return readImplementationResult(state);
+    const projectFiles=state.plan?.request.workspaceRequest.projectFiles===true;
+    try{
+      const proof=state.validationFailure?null:await observeValidationFailure(state,projectFiles);
+      const record=proof?.record??await readRecordedValidationFailure(state);
+      return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...proof?.readback,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};
+    }catch{/* Incomplete originals remain an observation. */}
+    if(!state.plan)throw new Error('implementation_original_report_not_available');
+    const {workspaceRequest}=state.plan.request;
+    const diff=await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...workspaceRequest.allowedPaths]);
+    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,{protectedPaths:workspaceRequest.protectedPaths}):null;
+    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:[diff,added?.diff].filter(Boolean).join('\n'),...(added?{retainedAdditions:added.additions}:{}),observationOnly:true,originalExecutionRetained:true};
   }finally{q.close();}}
   async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){
     if(!implementationOwnerTarget(target))throw new Error('owner_feedback_target_invalid');await this.catalog();await this.verify();const entry=this.entry(target.source);if(entry.store!==store)throw new Error('owner_feedback_target_queue_mismatch');

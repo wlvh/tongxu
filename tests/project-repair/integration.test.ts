@@ -630,13 +630,18 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false){
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,projectFailure=false){
  const project=await implementationProject(t);
+ if(projectFailure){
+   const plan=JSON.parse(await readFile(project.request.testPlan,'utf8'));
+   plan.tools.push({...plan.tools[0],id:'after-failure'});
+   const bytes=JSON.stringify(plan);await writeFile(project.request.testPlan,bytes);project.request.testPlanSha256=hash(bytes);
+ }
  if(projectFiles){
    const script=await readFile(project.config.codexExecutable,'utf8');
    const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
    assert.ok(script.includes(needle));
-   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify("export const defaultLabel='Untitled';\n")+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
+   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify(`export const defaultLabel='${projectFailure?'Wrong':'Untitled'}';\n`)+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
    await writeFile(project.config.codexExecutable,script.replace(needle,fixture).replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})"));
  }
  if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
@@ -681,6 +686,76 @@ test('normal registered workbench starts one project-scoped Issue and returns th
  assert.throws(()=>f.owner.a.checkAction(state.plan.actions.implement,'implementer',oldGrant.sha,[freshScope,oldGrant.observation]),/owner_delegation_boundary_mismatch/);
  assert.equal((await f.post('start',{requestId:id})).status,202);
  assert.equal((await f.get('/api/implementation-report/implementation/'+id)).value.H1,report.value.H1);
+});
+
+for(const outcome of ['stop','failed'] as const)test('project file workbench reads back '+outcome+' without another execution',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true,outcome==='failed');
+ const id='project-files-'+outcome,path='src/fallbacks/default-label.mjs';
+ let resume=()=>{};
+ if(outcome==='stop'){
+   const original=RepairTools.prototype.call,paused=new Promise<void>(resolve=>{resume=resolve;});
+   t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
+     const response=await original.apply(this,args);
+     if(args[0].tool==='tongxu_create_file')await paused;
+     return response;
+   });
+ }
+ assert.equal((await f.post('prepare',{requestId:id,issueNumber:74})).status,200);
+ const state=f.messages.q.issueImplementations().state('implementation',id),workspace=state.plan.workspace,operation=state.plan.operationRoot;
+ try{
+   assert.equal((await f.post('start',{requestId:id})).status,202);
+   if(outcome==='stop'){
+     for(let i=0;i<500&&!await exists(join(workspace,path));i++)await new Promise(r=>setTimeout(r,10));
+     assert.equal(await exists(join(workspace,path)),true);
+     assert.equal((await f.post('stop',{requestId:id})).value.stopped,true);
+   }
+ }finally{resume();}
+ await f.settled(id);
+ assert.equal(await git(workspace,['diff','--cached','--name-only']),'');
+ const index=await readFile(join(workspace,'.git/index'));
+ const reportPath='/api/implementation-report/implementation/'+id;
+ const result=await f.get(reportPath);
+ assert.equal(result.status,200,JSON.stringify(result.value));
+ assert.equal(result.value.H1,null);
+ assert.match(result.value.diff,/new file mode 100755/);
+ assert.ok(result.value.diff.includes(path));
+ assert.equal(await git(workspace,['rev-parse','HEAD']),state.H0);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
+ if(outcome==='stop'){
+   assert.equal(result.value.status,'partial_or_unknown');
+   assert.equal(result.value.completeCapture,false);
+   assert.match(result.value.diff,/\+export const defaultLabel='Untitled';/);
+ }else{
+   assert.equal(result.value.status,'validation_failed',JSON.stringify(result.value));
+   assert.equal(result.value.report.decision,'implemented');
+   assert.equal(result.value.tests.executionHealthy,true);
+   assert.equal(result.value.tests.passed,false);
+   assert.deepEqual(result.value.changed,[path,'src/index.mjs']);
+   assert.equal(result.value.tests.tools[0].exitCode,1);
+   assert.match(result.value.tests.tools[0].stdout,/not ok/);
+   assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
+   assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+ }
+ const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
+ assert.deepEqual(await f.get(reportPath),result);
+ await f.app.close();
+ const reopened=await startWorkbench(f.planPath,undefined,{githubReader:f.github});
+ try{
+   const url=new URL(reopened.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+   await fetch(url.origin+'/api/github/projects',{headers});
+   const response=await fetch(url.origin+reportPath,{headers});
+   assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
+   if(outcome==='failed'){
+     await writeFile(join(operation,'attempt-1/post-repair-1/tool-0/stdout'),'incomplete original');
+     const unknown=await fetch(url.origin+reportPath,{headers}).then(r=>r.json()) as any;
+     assert.equal(unknown.status,'partial_or_unknown');
+     assert.equal(unknown.tests,undefined);
+     assert.equal(unknown.H1,null);
+     assert.ok(unknown.diff.includes(path));
+   }
+ }finally{await reopened.close();}
+ assert.deepEqual(await readFile(sent),before);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
 });
 
 async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){
