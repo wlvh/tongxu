@@ -1098,8 +1098,13 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const {readEventSource}=await import('../../src/event-source.js');
      const formal=await formalFixture(t,'confirmed',false,false,{workspace:currentC.plan.workspace,H:beforeC,B:H,issue:receiptC.draft.issue});
      const formalProgram=await readFile(formal.n.config.codexExecutable,'utf8');
-     await writeFile(formal.n.config.codexExecutable,formalProgram.replace('context.candidate??=context.material.candidate;',
-       "context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';"));
+     const twoRepairs=formalProgram.replace('context.candidate??=context.material.candidate;',
+       "context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';")
+       .replace("f.text.includes('value=4')","f.text.includes('reviewedTwice=true')")
+       .replace("text:'// repaired by synthetic agent fixture\\nexport const value=4;\\n'",
+         "text:v.text.includes('value=4')?v.text+'export const reviewedTwice=true;\\n':'export const value=4;\\n'");
+     assert.ok(twoRepairs.includes("v.text.includes('value=4')"));
+     await writeFile(formal.n.config.codexExecutable,twoRepairs);
      const oldPeer=await readFile(issuePeer!.binary,'utf8');
      const dualSubject="if(responseKind==='message')output={candidateH:envelope.material.head,reviewedInputSha256:envelope.reviewedInputSha256,verdict:'PASS',report:'Explicit fixture independent minimum Issue review.',findings:[],coverageGaps:[],ownerQuestions:[]};";
      const dualPeer="if(responseKind==='message')output=envelope.batch?{candidateH:envelope.material.candidate.H,batchSha256:envelope.batch.sha256,report:'Explicit independent impact evidence',assessments:envelope.batch.findings.map(f=>({id:f.id,decision:'confirmed',report:'Fixture retained the registered evidence',evidence:['test.mjs']}))}:{candidateH:envelope.material.head??envelope.material.candidate.H,reviewedInputSha256:envelope.reviewedInputSha256??envelope.material.sha256,verdict:'PASS',report:'Explicit independent review fixture',findings:[],coverageGaps:[],ownerQuestions:[]};";
@@ -1124,20 +1129,29 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(started.status,200,JSON.stringify(started.value));
      const repairOperation=started.value.operation;
      assert.equal((await post(formalRoute+'/start',{operation:repairOperation})).status,202);
-     const formalReport=()=>get('/api/formal-review-report/'+formal.entry.id+'/'+repairOperation);
-     const fixed=await until(formalReport,r=>!r.value.controllerActive&&r.value.phase==='awaiting_publication');
-     const repair=fixed.value.result.fix;
-     assert.equal(repair.H0,beforeC);assert.notEqual(repair.H1,beforeC);assert.equal(repair.tested.passed,true);
+     const formalReport=(operation:string)=>get('/api/formal-review-report/'+formal.entry.id+'/'+operation);
+     const firstRepair=(await until(()=>formalReport(repairOperation),r=>!r.value.controllerActive&&r.value.phase==='awaiting_publication')).value.result.fix;
+     assert.equal(firstRepair.H0,beforeC);assert.notEqual(firstRepair.H1,beforeC);assert.equal(firstRepair.tested.passed,true);
      const remote=await sourceFixture(t,'fixture/reception');
      formal.q.events().configure(Buffer.from(canonical(remote.profile)));
-     await remote.change({H:repair.H1,B:H,target:formal.live.candidate.target,body:repair.proposedPRBody});
-     await git(formal.entry.objects,['fetch','--no-tags',repair.workspace,repair.H1]);
-     await formal.packet({H:repair.H1,B:H,sourceAt:new Date().toISOString(),executionAt:new Date().toISOString()});
-     await sourceTick(formal.store);
-     formal.live.candidate.H=repair.H1;
-     formal.live.observation=await readEventSource(remote.profile,formal.live.candidate.pr,join(remote.root,'ordinary-joined-publication'));
-     assert.equal((await post(formalRoute+'/check',{})).status,200);
-     await until(()=>get('/api/formal-review'),r=>r.value.entries[0]?.requests.some((review:any)=>review.previousOperation===repairOperation&&review.phase==='pass'));
+     const publishRepair=async(fix:any)=>{
+       await remote.change({H:fix.H1,B:H,target:formal.live.candidate.target,body:fix.proposedPRBody});
+       await git(formal.entry.objects,['fetch','--no-tags',fix.workspace,fix.H1]);
+       await formal.packet({H:fix.H1,B:H,sourceAt:new Date().toISOString(),executionAt:new Date().toISOString()});
+       await sourceTick(formal.store);
+       formal.live.candidate.H=fix.H1;
+       formal.live.observation=await readEventSource(remote.profile,formal.live.candidate.pr,join(remote.root,'ordinary-joined-'+fix.H1));
+       const check=await post(formalRoute+'/check',{});
+       assert.equal(check.status,200,JSON.stringify(check.value));
+     };
+     const formalSuccessor=async(operation:string)=>(await get('/api/formal-review')).value.entries[0]?.requests.find((review:any)=>review.previousOperation===operation);
+     await publishRepair(firstRepair);
+     const intermediate=await until(()=>formalSuccessor(repairOperation),review=>review?.phase==='awaiting_publication'&&!review.controllerActive);
+     const repair=(await formalReport(intermediate.operation)).value.result.fix;
+     assert.equal(repair.H0,firstRepair.H1);assert.notEqual(repair.H1,firstRepair.H1);assert.equal(repair.tested.passed,true);
+     assert.notEqual(firstRepair.sessionId,repair.sessionId);
+     await publishRepair(repair);
+     await until(()=>formalSuccessor(intermediate.operation),review=>review?.phase==='pass'&&!review.controllerActive);
      const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),target:lateTarget,text:lateText};
      assert.equal((await post('/api/project-secretary/supplement',joined)).status,202);
      const joinedRow=async()=>{
@@ -1147,6 +1161,16 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const needsReview=await joinedRow();
      assert.equal(needsReview.original.continuationBase,repair.H1);
      assert.equal(needsReview.original.delivered,false);
+     const beforeEvidence=join(formal.q.formalReviews().state(repairOperation).request.directory,'round-1-correctness-initial','stdout.ndjson');
+     await rename(beforeEvidence,beforeEvidence+'.missing');
+     try{
+       const blocked=await joinedRow();
+       assert.equal(blocked.original.reason,'formal_repair_supplement_lineage_pending',JSON.stringify(blocked));
+       assert.equal(blocked.original.ready,false);
+       assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,503);
+       assert.equal((await post('/api/project-secretary/continue-supplements',{target:lateTarget})).status,202);
+       assert.equal((await joinedRow()).compiledRequest,null);
+     }finally{await rename(beforeEvidence+'.missing',beforeEvidence);}
      assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,202);
      const readyJoined=await until(joinedRow,row=>row?.original?.ready===true);
      assert.equal(readyJoined.original.adopted,false);
@@ -1156,7 +1180,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const joinedReport=cFinal.execution.reports.find((row:any)=>row.H1===cFinal.draft.delivery.H);
      assert.equal(joinedReport.H0,repair.H1);
      assert.equal(joinedReport.tests.tools.some((tool:any)=>tool.id==='fixture-node-tests'),true);
-     t.diagnostic(JSON.stringify({formalRepair:repair.H1,repairSession:repair.sessionId,request:joined.requestId,
+     assert.match(await git(repair.workspace,['show',repair.H1+':sample.js']),/reviewedTwice=true/);
+     t.diagnostic(JSON.stringify({formalHistory:[beforeC,firstRepair.H1,repair.H1],repairSessions:[firstRepair.sessionId,repair.sessionId],request:joined.requestId,
        recipient:finishedJoined.original.recipient,adopted:finishedJoined.original.requirementSha256,covered:cFinal.draft.delivery.H}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}

@@ -28,7 +28,7 @@ import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,runValidationCorrection,validationCorrectionInput,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectContract,ProjectRequest} from './project-repair.js';
 import type {DockerStartGate} from './docker-sandbox.js';
-import type {EndedRepairSupplement,PublishedRepairPredecessor,SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
+import {repairPredecessorMatches,type EndedRepairSupplement,type PublishedRepairPredecessor,type SupplementTarget,type ProjectWorkRequest,type ProjectWorkLink} from './project-chat.js';
 import {assertFirstSendCurrent,readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
@@ -609,7 +609,7 @@ export class IssueImplementationControls{
       const records=q.issueImplementations(),fixed=records.original(source,request.id),root=records.state(source,target.requestId),rootRequest=records.original(source,target.requestId),parent=records.state(source,continuation.predecessor.requestId),parentRequest=records.original(source,parent.id);
       const ended=continuation.endedRepair,published=ended?.published;
       if(target.source!==source||canonical(fixed)!==canonical(request)||rootRequest.continuation||root.task!==continuation.logicalOwner||root.task!==target.task||root.operation!==target.operation||request.id!==continuation.supplement.id||request.issue.number!==root.issue||request.workspaceRequest.candidate.H!==supplementBase(continuation)||request.workspaceRequest.objects!==(published?.workspace??parent.plan?.workspace)||parent.operation!==continuation.predecessor.operation||parent.result?.status!=='completed'||!parent.result.completeCapture||parent.result.H1!==continuation.predecessor.H1||hash(canonical(parent.result))!==continuation.predecessor.resultSha256||parent.id!==root.id&&(parentRequest.continuation?.logicalOwner!==root.task||canonical(parentRequest.continuation.originalTarget)!==canonical(target)))throw new Error('project_supplement_predecessor_changed');
-      if(ended&&(published?.previousH??ended.H)!==parent.result.H1)throw new Error('formal_repair_supplement_current_base_required');
+      if(ended&&!repairPredecessorMatches(ended,parent.result.H1))throw new Error('formal_repair_supplement_current_base_required');
       await readImplementationResult(parent);
       if(current){
         if(ended){
@@ -655,7 +655,7 @@ export class IssueImplementationControls{
     const workflowPrompt=source.request.workflowPrompt;
     if(!workflowPrompt)throw new Error('coding_workflow_source_unavailable');
     const originalH=source.latest.result.H1 as string,published=ended?.published;
-    if(ended&&(published?.previousH??ended.H)!==originalH)throw new Error('formal_repair_supplement_current_base_required');
+    if(ended&&!repairPredecessorMatches(ended,originalH))throw new Error('formal_repair_supplement_current_base_required');
     const H=ended?.H??originalH,requestId='supplement-'+receivedId;
     if(ended)await this.checkEndedRepair(target,requestId,text,H,ended);
     const body=issue.body+(published?'\n\n## Requirements retained on the formally reviewed candidate\n'+formalRequirements(ended!):'');
@@ -686,7 +686,7 @@ export class IssueImplementationControls{
     if(!compiled){
       const original=await this.supplementSource(target);
       const H=original.latest.result?.H1;
-      if(ended&&original.ready&&(ended.published?.previousH??ended.H)!==H)
+      if(ended&&original.ready&&!repairPredecessorMatches(ended,H))
         return {ready:false,H1:H,reason:'formal_repair_supplement_current_base_required'};
       const input=original.ready&&original.entry.projectFiles&&receivedId&&original.entry.workRequestId
         ?supplementReviewInput(original.entry.repository,target,ended?.H??H,'supplement-'+receivedId,text,ended):null;
@@ -755,7 +755,7 @@ export class IssueImplementationControls{
       const source=await this.supplementSource(target);if(!source.ready)throw new Error(source.reason??'project_supplement_original_pending_or_unknown');
       const originalH=source.latest.result.H1,published=endedRepair?.published,H=endedRepair?.H??originalH;
       if(endedRepair){
-        if((published?.previousH??H)!==originalH)throw new Error('formal_repair_supplement_current_base_required');
+        if(!repairPredecessorMatches(endedRepair,originalH))throw new Error('formal_repair_supplement_current_base_required');
         await this.checkEndedRepair(target,id,text,H,endedRepair);
       }
       const amendment=entry.projectFiles&&entry.workRequestId?await this.reviewAmendment(entry,target,H,id,text,endedRepair):null;

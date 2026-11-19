@@ -23,7 +23,7 @@ import {QueueFormalRoundHost,type FormalFrozenRequest} from './formal-review-hos
 import {withQueueRepairLock} from './queue-repair.js';
 import type {ProjectRequest} from './project-repair.js';
 import {adoptedRepairRevisions,readRepairInbox,repairSupplementTest,verifiedRepairSupplementTests,type AdoptedRepairRevision,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
-import type {EndedRepairSupplement,PublishedRepairPredecessor,SupplementTarget} from './project-chat.js';
+import type {EndedRepairSupplement,PublishedRepairPredecessor,PublishedRepairStep,SupplementTarget} from './project-chat.js';
 import {readFailedValidationTests} from './implementation-validation.js';
 import {bindProjectTestToCandidate,projectModelTestResult} from './project-repair.js';
 type Row=Record<string,any>;
@@ -223,27 +223,23 @@ export class FormalReviewControls{
      throw new Error('formal_repair_supplement_current_base_required');
    return {operation:s.operation,round,H,sessionId:native.sessionId,report};
  }
- private async publishedRepairSupplement(q:QueueStore,s:Row,requests:Row[],entry:FormalEntry,source:Source){
-   const records=q.formalReviews(),work=s.request.projectWork,fix=s.terminal.result.fix;
-   const successors=requests.filter(next=>next.request.previousOperation===s.operation);
-   if(successors.length!==1)throw new Error('formal_repair_supplement_review_current_required');
-   const successor=await this.currentView(successors[0]!),candidate=successor.request.candidate;
+ private async publishedRepairStep(q:QueueStore,s:Row,successor:Row,entry:FormalEntry,source:Source){
+   const records=q.formalReviews(),work=s.request.projectWork,fix=s.terminal?.result.fix;
+   const candidate=successor.request.candidate;
    const {repository,pr,H,B,target,requirementsSha256}=candidate;
-   if(successor.stopped||!successor.resourcesSettled||!successor.request.workflowReview||successor.terminal?.result.status!=='pass'||
-      this.active.has(successor.operation)||successor.stages.some((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched)||
+   if(!fix||successor.request.previousOperation!==s.operation||successor.stopped||!successor.resourcesSettled||
+      !successor.request.workflowReview||this.active.has(successor.operation)||
       canonical(successor.request.projectWork)!==canonical(work)||H!==fix.H1||B!==s.request.candidate.B||target!==s.request.candidate.target||
-      repository!==s.request.candidate.repository||pr!==s.request.candidate.pr||successor.request.executionKind!==s.request.executionKind)
+      repository!==s.request.candidate.repository||pr!==s.request.candidate.pr||successor.request.executionKind!==s.request.executionKind||
+      successor.request.round!==s.request.round+1||canonical(successor.request.material.issue)!==canonical(s.request.material.issue))
      throw new Error('formal_repair_supplement_review_current_required');
    const {published}=records.sourceForReviewRecords(s.operation);
    if(!published||published.H!==H||published.beforeH!==s.request.candidate.H||published.recordSha256!==fix.recordSha256||
       hash(canonical(fix.reviewFixRecord))!==fix.recordSha256||canonical(fix.reviewFixRecord.candidate)!==canonical(s.request.candidate)||
       fix.reviewFixRecord.H2!==H||canonical(fix.reviewFixRecord.testCandidateBinding)!==canonical(fix.testCandidateBinding))
      throw new Error('formal_repair_supplement_publication_required');
-   const current=records.currentSource(successor.item),material=successor.request.material;
-   if(!current.current||current.prerequisites.length||current.candidate.H!==H||current.candidate.B!==B||current.candidate.targetRef!==target||
-      current.candidate.repository!==repository||current.candidate.pr!==pr||
-      q.authority().forScope(current.context.scope.id,{item:successor.item,target}).currentAdoption!==material.adoptedScope.adoption||
-      hash(canonical({issue:material.issue,adoptedScope:material.adoptedScope}))!==requirementsSha256)
+   const material=successor.request.material;
+   if(hash(canonical({issue:material.issue,adoptedScope:material.adoptedScope}))!==requirementsSha256)
      throw new Error('formal_repair_supplement_current_base_required');
    const initial=(state:Row,role:string)=>state.stages.find((item:Row)=>item.stage.key==='round-'+state.executionRound+'/'+role+'-initial')?.returned?.proof.native;
    for(const [role,company] of [['correctness','OpenAI'],['impact','Moonshot']]){
@@ -269,11 +265,42 @@ export class FormalReviewControls{
      testPlans.push({path:verification.plan.project.testPlan,sha256:verification.plan.project.testPlanSha256});
    }else if(revisions.length)throw new Error('formal_repair_supplement_evidence_missing');
    if(s.request.project.generatedDirectories.length||!original)throw new Error('formal_repair_supplement_evidence_missing');
-   const handoff=await this.endedRepairSupplement(s,original,entry,source,{
+   return this.endedRepairSupplement(s,original,entry,source,{
      previousH:s.request.candidate.H,workspace:fix.workspace,reviewOperation:successor.operation,reviewMaterialSha256:material.sha256,requirementsSha256,
      publicationSha256:published.captureSha256,fixSha256:fix.recordSha256,testPlans,protectedPaths:s.request.project.protectedPaths,
      contract:s.request.project.contract,revisions:revisions.map(({revision})=>({requirement:revision.requirement,acceptance:revision.acceptance}))
    });
+ }
+ private async publishedRepairSupplement(q:QueueStore,s:Row,requests:Row[],entry:FormalEntry,source:Source){
+   const records=q.formalReviews(),successors=requests.filter(next=>next.request.previousOperation===s.operation);
+   if(successors.length!==1)throw new Error('formal_repair_supplement_review_current_required');
+   const successor=await this.currentView(successors[0]!),material=successor.request.material;
+   const {repository,pr,H,B,target}=successor.request.candidate,fix=s.terminal.result.fix;
+   if(successor.terminal?.result.status!=='pass'||successor.stages.some((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched))
+     throw new Error('formal_repair_supplement_review_current_required');
+   const current=records.currentSource(successor.item);
+   if(!current.current||current.prerequisites.length||current.candidate.H!==H||current.candidate.B!==B||current.candidate.targetRef!==target||
+      current.candidate.repository!==repository||current.candidate.pr!==pr||
+      q.authority().forScope(current.context.scope.id,{item:successor.item,target}).currentAdoption!==material.adoptedScope.adoption)
+     throw new Error('formal_repair_supplement_current_base_required');
+   const handoff=await this.publishedRepairStep(q,s,successor,entry,source),published=handoff.published!;
+   const ancestors:PublishedRepairStep[]=[];
+   let next=s;
+   while(next.request.previousOperation&&ancestors.length<31){
+     const parent=requests.find(request=>request.operation===next.request.previousOperation);
+     if(!parent||requests.filter(request=>request.request.previousOperation===parent.operation).length!==1)break;
+     try{
+       const older=await this.publishedRepairStep(q,parent,next,entry,source),proof=older.published!;
+       if(proof.image!==published.image||proof.contract!==published.contract||
+          proof.revisions.some(revision=>!published.revisions.some(current=>canonical(current)===canonical(revision))))break;
+       ancestors.push({operation:older.operation,round:older.round,previousH:proof.previousH,H:older.H,
+         publicationSha256:proof.publicationSha256,fixSha256:proof.fixSha256});
+       for(const plan of proof.testPlans)if(!published.testPlans.some(current=>current.sha256===plan.sha256))published.testPlans.push(plan);
+       published.protectedPaths=[...new Set([...published.protectedPaths,...proof.protectedPaths])];
+       next=parent;
+     }catch{break;}
+   }
+   if(ancestors.length)published.ancestors=ancestors;
    await this.catalog();
    const live=await this.read(entry,source);
    const reviewed=records.state(successor.operation);
@@ -303,7 +330,8 @@ export class FormalReviewControls{
        const unknown=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched&&!row.returned);
        const guarded=continuingOperation&&other.request.projectWork&&canonical(other.request.projectWork.target)===canonical(target);
        return unknown||fixDispatched&&(!other.terminal||this.active.has(other.operation))||
-         (!other.stopped&&other.terminal?.result.status==='awaiting_publication')||
+         (!other.stopped&&other.terminal?.result.status==='awaiting_publication'&&
+           !requests.some(next=>next.request.previousOperation===other.operation))||
          ((!guarded||fixDispatched)&&!other.stopped&&(!other.terminal||this.active.has(other.operation)));
      });
      for(const stage of fixes){

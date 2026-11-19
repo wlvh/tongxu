@@ -1,7 +1,7 @@
 import {ReceptionControls} from './reception-controls.js';
 import {FormalReviewControls,type FormalSourceReader,type FormalWorkbenchProject} from './formal-review-controls.js';
 import {IssueImplementationControls} from './issue-implementation-controls.js';
-import {ProjectChat,type SupplementTarget} from './project-chat.js';
+import {ProjectChat,repairPredecessorMatches,type SupplementTarget} from './project-chat.js';
 import {ProjectWork} from './project-work.js';
 import {ProjectWorkOwner,workOwnerPage} from './project-work-owner.js';
 import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig,type AIPreferenceSnapshot} from './ai-settings.js';
@@ -320,7 +320,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!repair)return compiledState??original();
         if('repairedH' in repair&&repair.repairedH&&(!compiled||compiledState?.unregistered||'supersededBase' in repair)){
           const pending=compiledState??await original();
-          if(pending.H1&&pending.H1!==repair.H1){
+          if(pending.H1&&pending.H1!==repair.H1&&(!repair.endedRepair||!repairPredecessorMatches(repair.endedRepair,pending.H1))){
             const controls=await openImplementation(scope);
             if(await controls.ordinarySupplementContainsRepair(target,pending.H1,repair.repairedH))return pending;
             return {...repair,H1:null,endedRepair:undefined,resumable:false,reason:supplementLineagePending};
@@ -365,7 +365,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         let published=ended?.published?ended:undefined;
         if(repair&&(!ended||published&&!repair.delivered)){
           const H=(await controls.readSupplement(target,null,text,id)).H1;
-          if('repairedH' in repair&&repair.repairedH&&H&&H!==repair.H1){
+          if('repairedH' in repair&&repair.repairedH&&H&&H!==repair.H1&&(!published||!repairPredecessorMatches(published,H))){
             if(!await controls.ordinarySupplementContainsRepair(target,H,repair.repairedH))throw new Error(supplementLineagePending);
             published=undefined;
           }else if(!ended&&('supersededBase' in repair||H!==repair.H1))throw new Error('formal_repair_supplement_current_base_required');
