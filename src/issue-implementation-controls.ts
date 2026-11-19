@@ -516,7 +516,7 @@ export class IssueImplementationControls{
         ?{repository:original.entry.repository,target,H1:original.latest.result.H1,requestId:'supplement-'+receivedId,text}:null;
       const review=input?await this.supplementReview?.(input,original.entry.executionKind):null;
       const reviewRequired=original.ready&&original.entry.projectFiles&&!review;
-      const planning=input&&reviewRequired?await this.supplementReviewStatus?.(input):null;
+      const planning=input?await this.supplementReviewStatus?.(input):null;
       return {ready:original.ready&&!reviewRequired,...(reviewRequired&&original.entry.workRequestId&&!planning?{canRequestReview:true}:{}),
         ...(planning?{planning}:{}),reason:reviewRequired?'project_supplement_review_required':original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null,
         ...(original.entry.projectFiles?{delivered:false,adopted:false,coveringCandidate:null}:{})};
@@ -539,7 +539,9 @@ export class IssueImplementationControls{
         if(!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
       }
       const report=state.result?.completeCapture?await readImplementationResult(state):null;
-      const amendment=request.continuation?.amendment;
+      const continuation=request.continuation!,amendment=continuation.amendment;
+      const planning=amendment&&!historical?await this.supplementReviewStatus?.({repository:entry.repository,
+        target,H1:continuation.predecessor.H1,requestId:compiled,text}):null;
       let recipient:null|{role:string;work:string;sessionId:string}=null;
       if(amendment&&(report||state.phase==='active_or_unknown'))try{
         const native=report?await validationResultCapture(state):join(state.plan.operationRoot,'implementer');
@@ -552,7 +554,7 @@ export class IssueImplementationControls{
       }catch(error){if(report)throw error;}
       const coveringCandidate=amendment&&report?.status==='completed'&&report?.tests?.passed===true&&report.tests.tools?.some((tool:Row)=>tool.id===supplementTestId(amendment)&&tool.exitCode===0)?report.H1:null;
       const resumable=!!amendment&&!historical&&!state.stopped&&!this.active.has(target.source+':'+compiled)&&['registered','prepared'].includes(state.phase);
-      return {ready:false,resumable,successful:!historical&&original.ready&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted:true,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate}:{}),status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
+      return {ready:false,resumable,successful:!historical&&original.ready&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)),...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted:true,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate}:{}),status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
     }finally{q.close();}
   }
   async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){

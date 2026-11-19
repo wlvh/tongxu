@@ -230,11 +230,15 @@ export class ProjectChat{
       WHERE s.conversation=? ORDER BY s.rowid`).all(conversation) as Row[];
   }
   private supplementText(row:Row){return (row.original_text??row.text) as string;}
-  private async supplementState(scope:ProjectChatScope,conversation:string){
+  private async supplementState(scope:ProjectChatScope,conversation:string,includePlanningReports=true){
     return Promise.all(this.supplementRows(conversation).map(async r=>{
       const target=JSON.parse(r.target),text=this.supplementText(r);let original;
       try{original=this.supplements?await this.supplements.read(scope,target,r.compiled,text,r.id):{reason:'project_supplement_consumer_unavailable'};}
       catch(e){original={reason:reason(e)};}
+      if(!includePlanningReports&&original.planning){
+        const {state,approved,executionKind}=original.planning;
+        original={...original,planning:{state,approved,executionKind}};
+      }
       return {id:r.id,...(r.original_id?{originalRequestId:r.original_id}:{}),text,target,createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};
     }));
   }
@@ -298,12 +302,20 @@ export class ProjectChat{
     if(!r)throw new Error('project_supplement_not_found');
     const row=this.supplementRows(r.conversation).find(item=>item.id===id)!;
     this.conversationRow(scope,row.conversation);
+    const target=JSON.parse(row.target) as SupplementTarget;
     const check=()=>{
       const current=this.db.prepare('SELECT cancelled, compiled FROM task_supplements WHERE id=?').get(id) as Row;
       if(!this.accepting||current.cancelled||current.compiled)throw new Error('project_supplement_cancelled_or_changed');
     };
     check();
-    return this.supplements.review(scope,JSON.parse(row.target),id,this.supplementText(row),check);
+    for(const earlier of this.targetSupplements(scope,target)){
+      if(earlier.id===id)break;
+      if(earlier.cancelled)continue;
+      if(!earlier.compiled||!(await this.supplements.read(scope,target,earlier.compiled,this.supplementText(earlier),earlier.id)).successful)
+        throw new Error('project_supplement_earlier_request_pending');
+    }
+    check();
+    return this.supplements.review(scope,target,id,this.supplementText(row),check);
   }
   async cancelSupplement(scope:ProjectChatScope,id:string){
     if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s LEFT JOIN task_supplement_members m ON m.member=s.id
@@ -312,12 +324,14 @@ export class ProjectChat{
     if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled,this.supplementText(r));
     this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
   }
-  async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
-    if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
-    const rows=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s JOIN conversations c ON c.id=s.conversation
+  private targetSupplements(scope:ProjectChatScope,target:SupplementTarget){
+    return this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s JOIN conversations c ON c.id=s.conversation
       LEFT JOIN task_supplement_members m ON m.member=s.id LEFT JOIN task_supplement_groups g ON g.id=m.group_id
       WHERE c.account=? AND c.repository=? AND c.node_id=? AND s.target=? ORDER BY s.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
-    for(const row of rows){
+  }
+  async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
+    if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
+    for(const row of this.targetSupplements(scope,target)){
       if(row.cancelled)continue;
       const state=await this.supplements.read(scope,target,row.compiled,this.supplementText(row),row.id);
       if(row.compiled&&state.successful)continue;
@@ -339,7 +353,7 @@ export class ProjectChat{
       const preceding=this.preceding(row.conversation,id);
       const history=this.modelHistory(preceding);
       await this.verifyHistory(preceding);
-      const taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
+      const taskSupplements=await this.supplementState(scope,row.conversation,false),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
       const candidate:Candidate={kind:'project-conversation',repository:scope.repository.fullName,pr:null,projectId:scope.repository.id,accountId:scope.account.id,conversationId:row.conversation,H:scope.repository.defaultHead??'',B:scope.repository.defaultHead??'',target:scope.repository.defaultHead?scope.repository.defaultBranch??'':'',sourceSha256:initialId};
       const prompt=await assembleRolePrompt('secretary',projectChatInstructionsFor(!!work)),input={kind:'project_secretary_question',candidate,initialObservation:{observationId:initialId,...initial},conversation:history,taskSupplements,taskWork,...(work?{workTarget:JSON.parse(work.target)}:{}),question:row.question};
       if(Buffer.byteLength(canonical(input))>512*1024)throw new Error('project_chat_context_limit');
