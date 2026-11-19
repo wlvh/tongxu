@@ -140,6 +140,38 @@ test('registered validation refuses a source file missing from the actual candid
   await assert.rejects(testProject(f.workspace,directory,f.projectPlan.project),/project_test_worktree_file_missing_from_candidate/);
   assert.equal(await exists(join(directory,'runtime')),false);
 });
+test('registered validation rejects Git newline transformations before Docker', async t => {
+  const f=await project(t,true);
+  const added='src/nested/line.mjs';
+  await mkdir(join(f.workspace,'src/nested'));
+  for(const [eol,ending,error] of [
+    ['lf','\r\n','project_test_candidate_blob_or_mode_mismatch'],
+    ['crlf','\n','project_test_candidate_checkout_mismatch'],
+  ]){
+    await writeFile(join(f.workspace,'.gitattributes'),added+' text eol='+eol+'\n');
+    await writeFile(join(f.workspace,added),'export const value = 1;'+ending);
+    const directory=join(f.root,'test-newline-'+eol);
+    await assert.rejects(testProject(f.workspace,directory,f.projectPlan.project),{message:error+':'+added});
+    assert.equal(await exists(join(directory,'runtime')),false);
+  }
+});
+test('registered sparse validation preserves BOM bytes through Docker and candidate binding', async t => {
+  const path='src/normalize.mjs';
+  const f=await project(t,true,[docker.node,'-e',
+    "const fs=require('node:fs'),assert=require('node:assert/strict');assert.equal(fs.readFileSync('src/normalize.mjs').subarray(0,3).toString('hex'),'efbbbf');assert.equal(fs.existsSync('.git'),false)"]);
+  const file=join(f.workspace,path);
+  const bytes=Buffer.concat([Buffer.from('efbbbf','hex'),await readFile(file)]);
+  await writeFile(file,bytes);
+  await git(f.workspace,['add','--',path]);
+  await git(f.workspace,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','include BOM']);
+  const H=await git(f.workspace,['rev-parse','HEAD']);
+  const directory=join(f.root,'test-sparse-bom');
+  const tests=await testProject(f.workspace,directory,{...f.projectPlan.project,materialView:'selected_files'});
+  assert.equal(tests.passed,true);
+  assert.deepEqual(await readFile(join(directory,'work',path)),bytes);
+  assert.deepEqual(await readFile(join(directory,'material-work',path)),bytes);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+});
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true);
