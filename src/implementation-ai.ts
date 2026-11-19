@@ -28,7 +28,7 @@ export async function verifyImplementationModel(request:Row,plan:Row,manifest:Ro
  const read=async(name:string)=>JSON.parse((await regular(join(directory,name),16*1024*1024)).toString()),frames=async(name:string)=>(await regular(join(directory,name),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x));
  const sent=await frames('stdin.ndjson'),received=await frames('stdout.ndjson'),starts=sent.filter(x=>x.method==='thread/start'),turns=sent.filter(x=>x.method==='turn/start');
  const selection=choice?await read('model-choice.json'):null,identity=choice?await read('executable.json'):null;
- if(starts.length!==1||canonical(starts[0].params.dynamicTools)!==canonical(projectRepairToolsFor(profile)))throw new Error('implementation_edit_profile_changed');if(!choice)return;
+ if(starts.length!==1||canonical(starts[0].params.dynamicTools)!==canonical(projectRepairToolsFor(profile,request.workspaceRequest?.projectFiles)))throw new Error('implementation_edit_profile_changed');if(!choice)return;
  const requested=modelChoice(choice);if(starts.length!==1||(unsent?turns.length!==0:turns.length!==1)||!capturedExternalExecutable(identity.externalSelection,choice.executable)||identity.path!==choice.executable||canonical(selection.requested)!==canonical(requested))throw new Error('implementation_original_model_changed');
  for(const [key,value] of Object.entries(codexThreadChoice(requested)))if(canonical(starts[0].params[key])!==canonical(value))throw new Error('implementation_original_model_changed');
  for(const turn of turns)for(const [key,value] of Object.entries(codexTurnChoice(requested)))if(canonical(turn.params[key])!==canonical(value))throw new Error('implementation_original_model_changed');

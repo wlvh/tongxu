@@ -21,6 +21,7 @@ export type ProjectContract = {
   priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown;continuation?:unknown };
   queueOperation?: { store: string; operation: string;sourceReviewOperation?:string;memberReturnSha256?:string };
   materialView?: 'selected_files';
+  projectFiles?:true;
 };
 export type ProjectRequest = {
   schemaVersion: 1; kind: 'tongxu-project-repair-request'; executionRoot: string; objects: string; candidate: Candidate;
@@ -31,12 +32,16 @@ export type ProjectRequest = {
   priorReview?: ProjectContract['priorReview'];
   queueOperation?: ProjectContract['queueOperation'];
   materialView?: 'selected_files';
+  projectFiles?:true;
 };
 export function validateProjectContract(p: ProjectContract, grant: Grant) {
   if(p.materialView!==undefined&&p.materialView!=='selected_files')throw new Error('invalid_project_material_view');
   const c = p?.sourceCandidate;
   if (!c || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !commit.test(c.H) || !commit.test(c.B) || typeof c.target !== 'string' || !c.target || /[\x00-\x20]/.test(c.target) || !(c.kind === 'local-git' ? c.repository.startsWith('local/') && c.pr === null : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr! > 0)) throw new Error('invalid_project_source_candidate');
-  if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || !paths(grant.allowedPaths, 32) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
+  if(p.projectFiles!==undefined&&(p.projectFiles!==true||p.materialView||p.priorReview||p.queueOperation||
+    !grant.projectFiles||!Array.isArray(grant.allowedPaths)||grant.allowedPaths.length||canonical(grant.projectFiles.protectedPaths)!==canonical(p.protectedPaths)))throw new Error('invalid_project_file_scope');
+  if(!p.projectFiles&&grant.projectFiles)throw new Error('invalid_project_file_scope');
+  if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || (!p.projectFiles&&!paths(grant.allowedPaths, 32)) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
   if (!Array.isArray(p.generatedDirectories) || p.generatedDirectories.length > 16 || p.generatedDirectories.some(x => !relative(x) || p.generatedDirectories.some(y => y !== x && (x.startsWith(y + '/') || y.startsWith(x + '/')))) || new Set(p.generatedDirectories).size !== p.generatedDirectories.length) throw new Error('invalid_project_output_directories');
   if (p.priorReview && (!digest.test(p.priorReview.bindingHash) || !digest.test(p.priorReview.inputSha256) || typeof p.priorReview.report !== 'string' || Buffer.byteLength(JSON.stringify(p.priorReview)) > 192 * 1024)) throw new Error('invalid_project_prior_review');
   if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || (p.queueOperation.sourceReviewOperation??p.queueOperation.operation) !== p.priorReview?.operation || (p.queueOperation.sourceReviewOperation!==undefined||p.queueOperation.memberReturnSha256!==undefined||p.priorReview?.integrationMember!==undefined)&&(!/^[a-f0-9-]{36}$/.test(p.queueOperation.sourceReviewOperation??'')||!digest.test(p.queueOperation.memberReturnSha256??'')||!p.priorReview?.integrationMember))) throw new Error('invalid_project_queue_binding');
@@ -135,6 +140,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
     return { plan: join(root, 'plan.json'), operation: join(root, 'operation'), candidate: plan.candidate, sourceCandidate: plan.project!.sourceCandidate };
   }
   if (r.schemaVersion !== 1 || r.kind !== 'tongxu-project-repair-request' || !r.candidate || typeof r.objects !== 'string' || resolve(r.objects) !== r.objects || await realpath(r.objects) !== r.objects || typeof r.demonstrationFixture !== 'boolean' || !Array.isArray(r.findings) || r.findings.length > 10 || r.findings.some(x => typeof x.id !== 'string' || !x.id || typeof x.description !== 'string' || !x.description.trim())) throw new Error('invalid_project_repair_request');
+  if(r.projectFiles!==undefined&&(r.projectFiles!==true||!implementationOnlyZeroRounds||r.findings.length))throw new Error('project_file_scope_requires_issue_implementation');
   const a = r.authorization;
   if (!a || typeof a.source !== 'string' || !a.source.trim() || typeof a.allowRepair !== 'boolean' || typeof a.allowReconcileEnded !== 'boolean' || !Number.isInteger(a.maxRepairRounds) || a.maxRepairRounds < (implementationOnlyZeroRounds&&r.findings.length===0?0:1) || a.maxRepairRounds > 3) throw new Error('project_authorization_required');
   const testBytes = await regular(r.testPlan); if (hash(testBytes) !== r.testPlanSha256) throw new Error('project_test_plan_changed');
@@ -142,8 +148,8 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   if (test.schemaVersion !== 2 || !test.executor) throw new Error('project_test_requires_registered_docker');
   const dependencyHash = await dependencyDigest(await validateDependencies(test.dependencyDirectory));
   const workspace = join(root, 'workspace');
-  const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths };
-  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}),...(r.materialView?{materialView:r.materialView}:{}) };
+  const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths, ...(r.projectFiles?{projectFiles:{protectedPaths:r.protectedPaths}}:{}) };
+  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}),...(r.materialView?{materialView:r.materialView}:{}),...(r.projectFiles?{projectFiles:true as const}:{}) };
   validateProjectContract(project, grant);
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
   const sourceMergeBase = await git(r.objects, ['merge-base', r.candidate.B, r.candidate.H]);

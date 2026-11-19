@@ -8,6 +8,7 @@ import {assertWorkCurrent} from '../../src/project-work-current.js';
 import {runValidationCorrection} from '../../src/issue-implementation.js';
 import {observeValidationFailure,checkValidationWorkspace} from '../../src/implementation-validation.js';
 import {AuthorityRecords} from '../../src/authority-store.js';
+import {fixtureOwnerObservation} from '../../src/authority-source.js';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {randomUUID} from 'node:crypto';
@@ -37,7 +38,7 @@ import {TaskControls} from '../../src/task-controls.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {TaskRecords} from '../../src/task-store.js';
-import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
+import { git, tree, treeHash, exists, acquireWorkspace, releaseWorkspace, RepairTools, commitScopedCandidate, type Grant } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -171,6 +172,37 @@ test('registered sparse validation preserves BOM bytes through Docker and candid
   assert.deepEqual(await readFile(join(directory,'work',path)),bytes);
   assert.deepEqual(await readFile(join(directory,'material-work',path)),bytes);
   assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+});
+test('the project file gate reads another caller, creates one new file and commits the exact tested project tree', async t => {
+  const f=await project(t);
+  await mkdir(f.operation,{mode:0o700});
+  await mkdir(join(f.operation,'attempt-1'),{mode:0o700});
+  const existing=JSON.parse(await readFile(f.projectPlan.grant,'utf8')) as Grant;
+  const grant:Grant={...existing,allowedPaths:[],materialPaths:['src/normalize.mjs'],projectFiles:{protectedPaths:['test/normalize.test.mjs']}};
+  const lease=await acquireWorkspace(f.workspace,f.operation,false,grant);
+  let stopped=false;
+  const candidate=f.projectPlan.candidate;
+  const gate=new RepairTools(f.workspace,f.operation,grant,lease,docker.node,await tree(f.workspace,true),candidate.H,
+    directory=>testProject(f.workspace,directory,f.projectPlan.project),effect=>{if(stopped)throw new Error('fixture_stopped');effect?.();});
+  await gate.handoff('fixture-engineer','new_implementer_context');
+  const invoke=(tool:string,args:object,callId:string)=>gate.call({tool,arguments:args,callId});
+  const caller=JSON.parse((await invoke('tongxu_read_file',{path:'src/index.mjs'},'caller')).contentItems[0]!.text);
+  const added={path:'src/fallbacks/default-label.mjs',text:"export const label='Untitled';\n",mode:'100755'};
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'../escape.mjs'},'escape'),/create_denied/);
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'test/normalize.test.mjs'},'protected'),/create_denied/);
+  await invoke('tongxu_create_file',added,'new-source');
+  await assert.rejects(invoke('tongxu_create_file',added,'existing'),/create_denied/);
+  await invoke('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:caller.sha256,text:"import {label} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value){return value.trim() || label;}\n"},'replace-caller');
+  const tests=JSON.parse((await invoke('tongxu_run_tests',{},'test-candidate')).contentItems[0]!.text);
+  assert.equal(tests.passed,true);
+  const result=await commitScopedCandidate(f.workspace,f.operation,'attempt-1',1,candidate,await gate.check(),grant,gate,'include project addition');
+  assert.match(result.diff,/new file mode 100755/);assert.match(result.diff,/src\/fallbacks\/default-label.mjs/);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,result.candidate,tests)).candidateTree,tests.T);
+  stopped=true;
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'never-created.mjs'},'stopped'),/fixture_stopped/);
+  assert.equal(await exists(join(f.workspace,'never-created.mjs')),false);
+  await releaseWorkspace(f.workspace,lease,'completed');
+  assert.deepEqual(await tree(f.objects,true),f.originalTree);
 });
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
@@ -598,23 +630,58 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false){
- const project=await implementationProject(t);if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false){
+ const project=await implementationProject(t);
+ if(projectFiles){
+   const script=await readFile(project.config.codexExecutable,'utf8');
+   const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
+   assert.ok(script.includes(needle));
+   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify("export const defaultLabel='Untitled';\n")+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
+   await writeFile(project.config.codexExecutable,script.replace(needle,fixture).replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})"));
+ }
+ if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
  const context=messages.q.status().items.find((item:any)=>item.id===messages.item).context;
- const scope=await owner.adopt({kind:'adopt_scope',scopeId:context.scope.id,scopeVersion:'implementation-scope',body:{goals:['Implement optional label fallback'],nonGoals:['No publication or merge'],preserve:['Untitled and all original evidence'],acceptance:['Registered tests and committed exact tree'],constraints:['Only explicit existing source file']},previousAdoption:owner.scope.sha});
+ const scope=await owner.adopt({kind:'adopt_scope',scopeId:context.scope.id,scopeVersion:'implementation-scope',body:{goals:['Implement optional label fallback'],nonGoals:['No publication or merge'],preserve:['Untitled and all original evidence'],acceptance:['Registered tests and committed exact tree'],constraints:[projectFiles?'Protected verification sources; one private project checkout':'Only explicit existing source file']},previousAdoption:owner.scope.sha});
  const ledger=resources?await ledgerFixture(t,resourceMode):null;if(ledger)messages.q.resources().configure(Buffer.from(canonical(ledger.profile)));
- const grant=await owner.adopt({kind:'delegate',adoption:scope.sha,roles:['implementer'],targets:['main'],actions:['implement','test'],paths:project.request.materialPaths,resourceRefs:ledger?[ledger.profile.resources[0]!.ref]:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const grant=await owner.adopt({kind:'delegate',adoption:scope.sha,roles:['implementer'],targets:projectFiles?[]:['main'],actions:['implement','test'],paths:projectFiles?[]:project.request.materialPaths,...(projectFiles?{projectFiles:true as const}:{}),resourceRefs:ledger?[ledger.profile.resources[0]!.ref]:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
  const body='Trim labels and keep Untitled by default. An explicit optional fallback Draft must be returned for a blank label.',issue={id:174,number:74,title:'Optional label fallback',body,state:'OPEN',updated_at:new Date().toISOString(),author:{login:'fixture'},labels:{nodes:[]},comments:{totalCount:0}},repository={id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Explicit implementation fixture',private:true,archived:false,defaultBranchRef:{name:'main',target:{oid:project.request.candidate.H}},updated_at:new Date().toISOString()},account={id:7,login:'fixture'};
  let sourceBody=body;
  const github:GitHubReaderFactory=async()=>({query:async op=>({status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repository],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:{...repository,...(op==='issue'?{item:{...issue,body:sourceBody}}:op==='issues'||op==='pulls'?{items:{nodes:op==='issues'?[{...issue,body:sourceBody}]:[],pageInfo:{hasNextPage:false,endCursor:null}}}:{})}}})})});
- const resource=ledger?.profile.resources[0],entry={...(selectedLink?{materialView:'selected_files' as const}:{}),id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:project.request.allowedPaths,materialPaths:project.request.materialPaths,protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
+ const resource=ledger?.profile.resources[0],entry={...(selectedLink?{materialView:'selected_files' as const}:{}),id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:projectFiles?[]:project.request.allowedPaths,materialPaths:projectFiles?['README.md']:project.request.materialPaths,...(projectFiles?{projectFiles:true as const}:{}),protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
  const catalogPath=join(project.root,'implementation-catalog.json');await writeFile(catalogPath,JSON.stringify({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}));
  const planPath=join(project.root,'implementation-workbench.json');await writeFile(planPath,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Implementation fixture',goal:'Run one adopted Issue through normal entry',sources:[],githubProjects:true,issueImplementation:{path:catalogPath,sha256:hash(await readFile(catalogPath))},...(withSecretary?{projectSecretary:{root:join(project.root,'project-chats'),codexExecutable:project.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}:{})}));
  const app=await startWorkbench(planPath,undefined,{githubReader:decorateGitHub?decorateGitHub(github):github});const originalClose=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await originalClose();}};t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/implementation')=>{const result=await fetch(url.origin+path,{headers});return {status:result.status,value:await result.json() as any};},post=async(action:string,data:unknown,extra:Record<string,string>={})=>{const result=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:result.status,value:await result.json() as any};};
  await fetch(url.origin+'/api/github/projects',{headers});
  const settled=async(id:string)=>{for(let i=0;i<1000;i++){const state=(await get()).value.entries[0].requests.find((r:any)=>r.id===id);if(state&&!state.controllerActive&&(state.status||state.reason||state.stopped||state.phase==='active_or_unknown'))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('implementation_fixture_timeout');};
- return {project,messages,owner,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
+ return {project,messages,owner,scope,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
 }
+
+test('normal registered workbench starts one project-scoped Issue and returns the tested new-file candidate',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true),id='project-files-original';
+ const prepared=await f.post('prepare',{requestId:id,issueNumber:74});
+ assert.equal(prepared.status,200,JSON.stringify(prepared.value));
+ assert.equal((await f.post('start',{requestId:id})).status,202);
+ const done=await f.settled(id);
+ assert.equal(done.status,'completed',JSON.stringify(done));
+ const report=await f.get('/api/implementation-report/implementation/'+id);
+ assert.equal(report.status,200,JSON.stringify(report.value));
+ assert.equal(report.value.tests.passed,true);
+ assert.deepEqual(report.value.changed,['src/fallbacks/default-label.mjs','src/index.mjs']);
+ assert.match(report.value.diff,/new file mode 100755/);
+ const state=f.messages.q.issueImplementations().state('implementation',id);
+ const manifest=JSON.parse(await readFile(join(state.plan.operationRoot,'input-manifest.json'),'utf8'));
+ assert.equal(manifest.request.workflowPrompt.use,'engineering_owner');
+ assert.equal(manifest.request.workflowPrompt.revision,'11cf57b34698e6f7b38ee73468e84103cde8f963');
+ assert.deepEqual(manifest.request.workspaceRequest.allowedPaths,[]);
+ assert.deepEqual(manifest.request.workspaceRequest.materialPaths,['README.md']);
+ assert.equal(await git(f.project.objects,['rev-parse','HEAD']),state.H0);
+ const oldGrant=await f.owner.adopt({kind:'delegate',adoption:f.scope.sha,roles:['implementer'],targets:['main'],actions:['implement','test'],paths:['README.md'],resourceRefs:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const source=f.owner.records[f.scope.id],profile=f.owner.a.configuration().profile;
+ const freshScope=fixtureOwnerObservation(profile,f.scope.sha,f.scope.id,Buffer.from(JSON.stringify(source.graph)),Buffer.from(JSON.stringify(source.comment)),new Date().toISOString());
+ assert.throws(()=>f.owner.a.checkAction(state.plan.actions.implement,'implementer',oldGrant.sha,[freshScope,oldGrant.observation]),/owner_delegation_boundary_mismatch/);
+ assert.equal((await f.post('start',{requestId:id})).status,202);
+ assert.equal((await f.get('/api/implementation-report/implementation/'+id)).value.H1,report.value.H1);
+});
 
 async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){
  const r=await fetch(f.url.origin+'/api/project-secretary/'+action,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};

@@ -49,7 +49,7 @@ function implementationPanel(){
   if(data.actionError||data.error)panel.append(el('p',data.actionError||data.error,'github-error'));
   for(const option of data.options){
     const entries=data.entries.find(e=>e.id===option.id)?.requests||[],unfinished=entries.some(r=>r.phase!=='returned');
-    for(const issue of option.issues){const row=append(el('div',null,'report-row'),append(el('div'),el('strong','Issue #'+issue.number+' · '+issue.goal),el('p','从 '+option.H0.slice(0,12)+' 开始 · 获准修改：'+option.allowedPaths.join('、')+(option.executionKind==='fixture'?' · 明确模型协议样例':option.demonstrationFixture?' · Codex 实施，演练源项目':' · Codex 实施'),'small'))),button=el('button','新建本次工作');
+    for(const issue of option.issues){const scope=option.projectFiles?'项目级读写委托 · 受保护文件 '+option.protectedPaths.join('、'):'获准修改 '+option.allowedPaths.join('、');const row=append(el('div',null,'report-row'),append(el('div'),el('strong','Issue #'+issue.number+' · '+issue.goal),el('p','从 '+option.H0.slice(0,12)+' 开始 · '+scope+(option.executionKind==='fixture'?' · 明确模型协议样例':option.demonstrationFixture?' · Codex 实施，演练源项目':' · Codex 实施'),'small'))),button=el('button','新建本次工作');
       button.disabled=data.pending||unfinished;button.onclick=()=>startIssueWork(option,issue,project);row.append(button);panel.append(row);
     }
     for(const request of entries){const label=request.status==='completed'?'实现完成，待正式审核':request.status==='no_change'?'核对完成，无需修改':request.status==='owner_decision_required'?'需要本人决定':request.status==='cancelled_unstarted'?'已撤回，未发送':request.stopped?'已请求停止，沿原执行核对':request.controllerActive?'正在处理':request.phase==='active_or_unknown'?'原执行待核，不自动重发':request.phase==='prepared'?'已准备，待执行':'已登记，待补准备';

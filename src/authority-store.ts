@@ -216,8 +216,8 @@ export class AuthorityRecords {
     const a=this.adoption(p.adoption),scope=a.proposal;this.freshDecision(p.adoption,observations);
     if(request.scopeId!==scope.scopeId||request.scopeVersion!==scope.scopeVersion||request.scopeBodySha256!==scopeBodyHash(scope.body))throw new Error('owner_request_scope_mismatch');
     if(p.kind==='confirm_action'&&(role!==p.performerRole||actionHash(request)!==actionHash(p.request)))throw new Error('owner_confirmation_exact_action_mismatch');
-    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.targets.includes(request.target)||!p.actions.includes(request.action)||request.paths.some(x=>!p.paths.includes(x))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
-    if(request.action==='implement'&&!request.paths.length)throw new Error('implementation_paths_required');
+    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.actions.includes(request.action)||p.projectFiles!==request.projectFiles||!p.projectFiles&&(!p.targets.includes(request.target)||request.paths.some(x=>!p.paths.includes(x)))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
+    if(request.action==='implement'&&!request.projectFiles&&!request.paths.length)throw new Error('implementation_paths_required');
     const stops=this.db.prepare('SELECT kind FROM controls WHERE scope=? AND stopped=1').all(scope.scopeId) as Row[];
     if(stops.some(s=>s.kind==='investment'||s.kind==='implementation'&&request.action==='implement'||s.kind==='merge'&&request.action==='merge'))throw new Error('owner_action_stopped');
     let binding:Row|null=null;

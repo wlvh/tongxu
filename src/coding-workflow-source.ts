@@ -91,3 +91,5 @@ export async function readCodingWorkflowSource(root = includedSource) {
     },
   };
 }
+
+export type CodingWorkflowPrompt=ReturnType<Awaited<ReturnType<typeof readCodingWorkflowSource>>['prompt']>;

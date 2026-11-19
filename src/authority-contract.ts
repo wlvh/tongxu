@@ -21,13 +21,14 @@ export type ActionRequest = {
   payloadSha256?: string;
   formalWorkSha256?:string;
   candidateSource?:AuthorityCandidateSource;
+  projectFiles?:true;
 };
 export type DeliveryOutcomeProposal={kind:'delivery_outcome';adoption:string;batchSha256:string;evidenceSha256:string;previousOutcome:string|null;outcome:'accepted'|'rejected'|'needs_evidence'|'stopped';rationale:string};
 export type OwnerProposal =
   { kind: 'adopt_scope'; scopeId: string; scopeVersion: string; body: ScopeBody; previousAdoption: string | null } |
   { kind: 'accept_baseline'; adoption: string; material: Record<'goals'|'rules'|'capabilities',{name:string;sha256:string}> } |
   { kind: 'confirm_action'; adoption: string; performerRole: AuthorityRole; request: ActionRequest; expiresAt: string } |
-  { kind: 'delegate'; adoption: string; roles: AuthorityRole[]; targets: string[]; actions: AuthorityAction[]; paths: string[]; resourceRefs: string[]; expiresAt: string } |
+  { kind: 'delegate'; adoption: string; roles: AuthorityRole[]; targets: string[]; actions: AuthorityAction[]; paths: string[]; resourceRefs: string[]; expiresAt: string; projectFiles?:true } |
   { kind: 'revoke'; decision: string } |
   { kind: 'control'; adoption: string; control: 'implementation' | 'investment' | 'merge'; state: 'stopped' | 'open' } | DeliveryOutcomeProposal;
 export type PreparedProposal = { schemaVersion: 1; requestId: string; profileSha256: string; repository: string; issue: number; createdAt: string; proposal: OwnerProposal };
@@ -54,7 +55,8 @@ export function sharedAccountApprovalProjection(profile:AuthorityProfile){
   return profile.sharedAccountApproval?{ownerApprovalMode:'shared_account' as const,ownerSourceIdentityAllowed:true as const,operatorSeparationProven:false as const,sharedAccountDecisionReference:{...profile.sharedAccountApproval.decisionReference,verification:'registered_not_rechecked' as const}}:{};
 }
 export function parseActionRequest(x:any):ActionRequest {
-  if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[]),...(x&&Object.hasOwn(x,'formalWorkSha256')?['formalWorkSha256']:[]),...(x&&Object.hasOwn(x,'candidateSource')?['candidateSource']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');
+  if(!exactKeys(x,['schemaVersion','scopeId','scopeVersion','scopeBodySha256','repository','target','action','item','candidate','paths','resourceRefs',...(x&&Object.hasOwn(x,'payloadSha256')?['payloadSha256']:[]),...(x&&Object.hasOwn(x,'formalWorkSha256')?['formalWorkSha256']:[]),...(x&&Object.hasOwn(x,'candidateSource')?['candidateSource']:[]),...(x&&Object.hasOwn(x,'projectFiles')?['projectFiles']:[])])||x.schemaVersion!==1||!text(x.scopeId,128)||!text(x.scopeVersion,128)||!isAuthorityDigest(x.scopeBodySha256)||(typeof x.repository!=='string'||!repoPattern.test(x.repository))||!validBranchRef(x.target)||!actions.includes(x.action)||!(x.item===null||isAuthorityDigest(x.item))||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,y=>text(y,256)))throw new Error('authority_action_request_invalid');
+  if(Object.hasOwn(x,'projectFiles')&&(x.projectFiles!==true||!['implement','test'].includes(x.action)||x.paths.length||x.candidateSource||x.formalWorkSha256))throw new Error('authority_project_file_scope_invalid');
   if(Object.hasOwn(x,'payloadSha256')&&(!['coordinate','test','publish'].includes(x.action)||!isAuthorityDigest(x.payloadSha256)))throw new Error('authority_action_payload_invalid');
   if(Object.hasOwn(x,'formalWorkSha256')&&(!['receive','implement','test','publish'].includes(x.action)||!isAuthorityDigest(x.formalWorkSha256)))throw new Error('formal_work_binding_invalid');
   if(Object.hasOwn(x,'candidateSource')&&(x.action!=='test'||!exactKeys(x.candidateSource,['kind','sha256'])||x.candidateSource.kind!=='controlled-member-observation'||!isAuthorityDigest(x.candidateSource.sha256)||x.item!==x.candidateSource.sha256))throw new Error('authority_candidate_source_invalid');
@@ -74,7 +76,8 @@ export function parseOwnerProposal(x:any,profile:AuthorityProfile,at:number):Own
     parseActionRequest(x.request);if(x.request.repository.toLowerCase()!==profile.repository.toLowerCase())throw new Error('authority_repository_mismatch');
     if(!roleCanRequest(x.performerRole,x.request.action))throw new Error('owner_confirmation_role_cannot_perform_action');
   } else if(x.kind==='delegate') {
-    if(!exactKeys(x,['kind','adoption','roles','targets','actions','paths','resourceRefs','expiresAt'])||!isAuthorityDigest(x.adoption)||!list(x.roles,r=>roles.includes(r))||!x.roles.length||!list(x.targets,validBranchRef)||!x.targets.length||!list(x.actions,a=>actions.includes(a))||!x.actions.length||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,r=>text(r,256)))throw new Error('owner_delegation_invalid');
+    if(!exactKeys(x,['kind','adoption','roles','targets','actions','paths','resourceRefs','expiresAt',...(Object.hasOwn(x,'projectFiles')?['projectFiles']:[])])||!isAuthorityDigest(x.adoption)||!list(x.roles,r=>roles.includes(r))||!x.roles.length||!list(x.targets,validBranchRef)||!x.projectFiles&&!x.targets.length||!list(x.actions,a=>actions.includes(a))||!x.actions.length||!list(x.paths,safeRelativePath)||!list(x.resourceRefs,r=>text(r,256)))throw new Error('owner_delegation_invalid');
+    if(Object.hasOwn(x,'projectFiles')&&(x.projectFiles!==true||x.roles.length!==1||x.roles[0]!=='implementer'||x.targets.length||x.paths.length||x.actions.some((a:string)=>a!=='implement'&&a!=='test')))throw new Error('owner_project_file_scope_invalid');
   } else if(x.kind==='revoke') {
     if(!exactKeys(x,['kind','decision'])||!isAuthorityDigest(x.decision))throw new Error('owner_revocation_invalid');
   } else if(x.kind==='control') {
