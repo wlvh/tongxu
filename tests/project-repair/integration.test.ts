@@ -903,14 +903,14 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(saved.find((row:any)=>row.id===requestId).original.successful,true);
      assert.equal(saved.find((row:any)=>row.id===laterId).original.resumable,true);
      assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
-     const latest=await until(()=>detail(b),r=>r.execution.reports.some((report:any)=>report.id===laterCompiled&&report.status==='completed'&&report.H1===r.draft.delivery?.H));
+     const latest=await until(()=>detail(b),r=>r.resultStatus.current&&r.execution.reports.some((report:any)=>report.id===laterCompiled&&report.status==='completed'&&report.H1===r.draft.delivery?.H));
      const latestReport=latest.execution.reports.find((report:any)=>report.id===laterCompiled);
      assert.equal(latestReport.H0,result.H1);
      assert.equal((await readFile(f.trace,'utf8')).split('model-input').length-1,priorInputs+3);
      assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
      assert.equal(await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8'),originalWire);
      assert.equal((await post('/api/project-work/'+b+'/explain',{H:finished.draft.delivery.H})).status,503);
-     const explanation=await post('/api/project-work/'+b+'/explain',{H:latestReport.H1});assert.equal(explanation.status,202);
+     const explanation=await post('/api/project-work/'+b+'/explain',{H:latestReport.H1});assert.equal(explanation.status,202,JSON.stringify(explanation.value));
      const described=await until(()=>detail(b),value=>value.explanation?.state==='returned');
      assert.match(described.explanation.report,/tested download retention/);
      assert.equal(described.explanation.H,latestReport.H1);
