@@ -182,6 +182,7 @@ export class ProjectWork{
   async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stop(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
+    await mkdir(directory,{recursive:true,mode:0o700});
     const store=join(directory,'queue'),profile=workAuthorityProfile(this.config.owner,scope,issue);if(profile.executorId!==scope.account.id)throw new Error('project_work_owner_identity_not_configured');
     const q=await exists(join(store,'queue.sqlite'))?await QueueStore.open(store):await QueueStore.create(store,scope.repository.fullName,seats);
     try{q.enableReceiver();q.enableSupplements();q.reviewRecords().enable();q.enableCompositions();q.enableReceiverCorrections();q.enableTasks();q.authority().configure(Buffer.from(canonical(profile)));}finally{q.close();}
@@ -221,7 +222,6 @@ export class ProjectWork{
       if(grant&&Date.parse(grant.expiresAt)<=Date.now())throw new Error('owner_authorization_expired');
       const scopeId=grant?this.developmentScope(grant):source,scopeVersion=grant?'project-development-v1':'work-v'+draft.version;
       const authorizationDirectory=grant?join(this.config.root,'works',grant.work,'version-'+grant.version,'development'):this.directory(draft);
-      await mkdir(authorizationDirectory,{recursive:true,mode:0o700});
       const {store,profile}=await this.initializeQueue(authorizationDirectory,grant?.issue??draft.issue.number,scope,grant?2:1);
       const body:ScopeBody=grant?{goals:['Implement explicitly started, verified Issue work in '+scope.repository.fullName],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['Original user checkout, protected paths, and the records of each independent work'],acceptance:['Each work retains its own Issue, fixed start, and registered test outcomes'],constraints:['Use project files only, in the separate controlled checkout of the selected work',projectValidationConstraint]}:{goals:[...new Set([proposal.goal,...(draft.goal?[draft.goal]:[])])],nonGoals:['No automatic merge, deployment, production data or account reset'],preserve:['All unselected files and original user checkout','Original Issue, captures, results and same logical owner for supplements'],acceptance:proposal.acceptance,constraints:['Issue body '+draft.issue.bodySha256,'Initial full Git commit '+draft.preparation!.H,'Work '+draft.id,'Registered test '+hash(proposal.validation.script),readableValidationConstraint(hash(proposal.validation.script))]};
       const ownerDirectory=join(authorizationDirectory,'owner');

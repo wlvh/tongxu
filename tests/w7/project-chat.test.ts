@@ -132,11 +132,18 @@ test('a GitHub outage after claiming a queued question preserves its ID for expl
   assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
   f.offlineAfterProjectChecks(1);
   assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
-  const pending=await f.wait(first.conversationId,m=>m[1]?.status==='queued'&&m[1]?.problem==='github_connection_unavailable');
-  assert.equal(pending.messages[1].id,next.requestId);
+  const database=new DatabaseSync(join(f.root,'chats','conversations.sqlite'),{readOnly:true});
+  try{
+    const pending=database.prepare('SELECT id, phase, problem FROM messages WHERE id=?');
+    for(let i=0;i<150&&!pending.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual({...pending.get(next.requestId)},{id:next.requestId,phase:'queued',problem:'github_connection_unavailable'});
+  }finally{database.close();}
   assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
   await assert.rejects(readFile(join(f.root,'chats',next.requestId,'request.json')), {code:'ENOENT'});
   f.setOffline(false);
+  const restored=await f.get('/api/project-secretary/conversations/'+first.conversationId);
+  assert.equal(restored.data.messages[1].id,next.requestId);
+  assert.equal(restored.data.messages[1].status,'queued');
   assert.equal((await f.post('/api/project-secretary/continue-question',{requestId:next.requestId})).status,202);
   await f.wait(first.conversationId,m=>m[1]?.status==='completed');
   assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
