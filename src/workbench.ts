@@ -308,7 +308,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(!(error instanceof Error)||error.message!=='implementation_validation_capture_changed')throw error;
           compiledProblem=error;return null;
         }):null;
-        if(compiledState&&!compiledState.endedRepair&&!compiledState.resumable)return compiledState;
+        if(compiledState&&!compiledState.endedRepair&&!compiledState.resumable&&!compiledState.unregistered)return compiledState;
         const repair=await formalForSupplement(scope,target,receivedId,text,compiledState?.endedRepair?.operation);
         if(compiledProblem){
           if(!repair?.delivered)throw compiledProblem;
@@ -316,18 +316,25 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
             originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
             reason:compiledProblem.message};
         }
-        if(!repair||compiled&&!repair.delivered)return compiledState??original();
+        if(!repair)return compiledState??original();
+        if('supersededBase' in repair){
+          const pending=compiledState??await original();
+          return pending.H1&&pending.H1!==repair.H1?pending:{...repair,resumable:false};
+        }
+        if(compiled&&!repair.delivered)return compiledState??original();
         if(repair.adopted)return repair;
-        const pending=compiledState??await original().catch(()=>null);
+        const pending=repair.endedRepair?.published&&(!compiledState||compiledState.unregistered)
+          ?await (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId,repair.endedRepair).catch(error=>({reason:(error as Error).message}) as Row)
+          :compiledState??await original().catch(()=>null);
         if(compiled&&pending?.endedRepair){
           return {...pending,resumable:pending.resumable&&!!repair.endedRepair,
             endedRepair:pending.endedRepair,originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
             reason:pending.resumable&&!repair.endedRepair?repair.reason:pending.reason};
         }
         if(repair.endedRepair){
-          if(pending?.H1!==repair.endedRepair.H)return {...repair,endedRepair:undefined,reason:'formal_repair_supplement_current_base_required'};
+          if(pending?.H1!==repair.endedRepair.H)return {...repair,endedRepair:undefined,reason:pending?.reason??'formal_repair_supplement_current_base_required'};
           return {...repair,ready:!compiled&&pending.ready,resumable:!!compiled&&pending.resumable,
-            canRequestReview:pending.canRequestReview,planning:pending.planning,
+            canRequestReview:pending.canRequestReview,planning:pending.planning,continuationBase:repair.endedRepair.H,
             reason:pending.ready||pending.resumable?'formal_repair_supplement_ordinary_ready':pending.reason??repair.reason};
         }
         if(!repair.owned)return repair;
@@ -338,8 +345,19 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         return (await openImplementation(scope)).workSupplement(target,id,text,before,endedRepair);
       },
       ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
-        const prepared=await(await openImplementation(scope)).supplementPlanningInput(target,id,text);
-        return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent);
+        const repair=await formalForSupplement(scope,target,id,text),ended=repair?.endedRepair;
+        if(repair&&'changedBase' in repair&&repair.changedBase&&!ended?.published)throw new Error(repair.reason??'formal_repair_supplement_review_current_required');
+        const controls=await openImplementation(scope);
+        if(repair&&!ended){
+          const H=(await controls.readSupplement(target,null,text,id)).H1;
+          if('supersededBase' in repair?H===repair.H1:H!==repair.H1)throw new Error('formal_repair_supplement_current_base_required');
+        }
+        const published=ended?.published?ended:undefined;
+        const prepared=await controls.supplementPlanningInput(target,id,text,published);
+        return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent,published?async()=>{
+          const proof=(await formalForSupplement(scope,target,id,text,published.operation))?.endedRepair;
+          if(!proof||canonical(proof)!==canonical(published))throw new Error('formal_repair_supplement_current_base_required');
+        }:undefined);
       }}:{}),
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined,p.issueImplementation||p.projectWork?{

@@ -56,13 +56,13 @@ export class ProjectWork{
     try{return await read;}finally{this.supplementReads.delete(key);}
   }
   supplementReviewState(input:SupplementReviewInput){
-    return this.issueReviews.has(supplementPlanningDirectory(this.config.root,input.requestId))
+    return this.issueReviews.has(supplementPlanningDirectory(this.config.root,input))
       ?Promise.resolve({state:'running'}):supplementPlanningStatus(this.config.root,input,this.config.verification);
   }
-  async reviewSupplement(scope:ProjectChatScope,source:SupplementPlanningSource,checkReceived:()=>void){
+  async reviewSupplement(scope:ProjectChatScope,source:SupplementPlanningSource,checkReceived:()=>void,verifySource?:()=>Promise<void>){
     const {input}=source,work=this.store.list(scope).find(d=>d.source===input.target.source);
     if(!work||work.stopRequested||work.requestId!==input.target.requestId)throw new Error('project_supplement_original_target_changed');
-    const path=supplementPlanningDirectory(this.config.root,input.requestId);
+    const path=supplementPlanningDirectory(this.config.root,input);
     if(this.issueReviews.has(path))return {state:'running',requestId:input.requestId};
     const config=await this.executor(true),mode=config.executionKind??'native_capture';
     if(await this.supplementReview(input,mode))return {state:'returned',requestId:input.requestId};
@@ -80,7 +80,7 @@ export class ProjectWork{
         current.source!==input.target.source)throw new Error('project_supplement_original_target_changed');
       checkReceived();
     };
-    const check=async()=>{admit();await this.verify(scope);admit();};
+    const check=async()=>{admit();await this.verify(scope);await verifySource?.();admit();};
     await check();
     if(this.issueReviews.has(path))return {state:'running',requestId:input.requestId};
     this.issueReviews.set(path,job);

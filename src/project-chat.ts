@@ -25,7 +25,12 @@ const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){ret
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
 export type RepairInboxItem={requestId:string;originalRequestId:string;text:string;receivedAt:string};
-export type EndedRepairSupplement={operation:string;round:number;H:string;sessionId:string;report:Row};
+export type PublishedRepairPredecessor={
+  previousH:string;workspace:string;reviewOperation:string;reviewMaterialSha256:string;requirementsSha256:string;
+  publicationSha256:string;fixSha256:string;testPlans:Array<{path:string;sha256:string}>;protectedPaths:string[];image:string;
+  contract:string;revisions:Array<{requirement:string;acceptance:string[]}>;
+};
+export type EndedRepairSupplement={operation:string;round:number;H:string;sessionId:string;report:Row;published?:PublishedRepairPredecessor};
 export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void,endedRepair?:EndedRepairSupplement):Promise<string>;review?(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,stillCurrent:()=>void):Promise<Row>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};

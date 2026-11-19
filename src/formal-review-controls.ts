@@ -8,6 +8,7 @@ import {hash,privateDirectory} from './snapshot.js';
 import {canonical} from './comparison.js';
 import {regular,exists,processState,tree,treeHash,git,checkRepairIndex} from './repair-workspace.js';
 import {readRepairSession} from './repair-native.js';
+import {checkCapture} from './live-process.js';
 import {exactKeys,isAuthorityDigest,safeRelativePath} from './authority-contract.js';
 import {messageId} from './message-contract.js';
 import {readEventSource,eventMaterialHash,type EventSourceObservation} from './event-source.js';
@@ -22,9 +23,9 @@ import {QueueFormalRoundHost,type FormalFrozenRequest} from './formal-review-hos
 import {withQueueRepairLock} from './queue-repair.js';
 import type {ProjectRequest} from './project-repair.js';
 import {adoptedRepairRevisions,readRepairInbox,repairSupplementTest,verifiedRepairSupplementTests,type AdoptedRepairRevision,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
-import type {EndedRepairSupplement,SupplementTarget} from './project-chat.js';
+import type {EndedRepairSupplement,PublishedRepairPredecessor,SupplementTarget} from './project-chat.js';
 import {readFailedValidationTests} from './implementation-validation.js';
-import {projectModelTestResult} from './project-repair.js';
+import {bindProjectTestToCandidate,projectModelTestResult} from './project-repair.js';
 type Row=Record<string,any>;
 type Source={id:string;store:string;item:string};
 export type FormalWorkbenchProject={account:number;repository:number;fullName:string};
@@ -123,23 +124,33 @@ export class FormalReviewControls{
   }
   return matched.length===1?matched[0]:null;
  }
- private async endedRepairSupplement(s:Row,stage:Row,entry:FormalEntry,source:Source):Promise<EndedRepairSupplement>{
+ private async endedRepairSupplement(s:Row,stage:Row,entry:FormalEntry,source:Source,published?:Omit<PublishedRepairPredecessor,'image'>):Promise<EndedRepairSupplement>{
    const result=s.terminal?.result,report=stage.returned?.result;
-   if(!s.request.workflowReview||s.stopped||!s.resourcesSettled||result?.status!=='needs_evidence'||
-      report?.decision!=='no_change'||canonical(result.report)!==canonical(report)||
+   const changed=!!published;
+   if(!s.request.workflowReview||s.stopped||!s.resourcesSettled||result?.status!==(changed?'awaiting_publication':'needs_evidence')||
+      (!changed&&(report?.decision!=='no_change'||canonical(result.report)!==canonical(report)))||
       s.stages.some((item:Row)=>item.dispatched&&!item.returned))
      throw new Error('formal_repair_supplement_writer_unresolved');
-   const round=s.executionRound,H=s.request.candidate.H;
-   if(stage.stage.key!=='round-'+round+'/fix')throw new Error('formal_repair_supplement_writer_unresolved');
+   const round=s.executionRound,originalH=s.request.candidate.H,H=changed?result.fix.H1:originalH;
+   if(!['round-'+round+'/fix',...(changed?['round-'+round+'/fix-supplement']:[])].includes(stage.stage.key))
+     throw new Error('formal_repair_supplement_writer_unresolved');
    const directory=join(s.request.directory,'round-'+round+'-correctness-initial');
    const root=join(s.request.directory,round===s.request.round?'project':'project-round-'+round),workspace=join(root,'workspace'),operation=join(root,'operation');
    const json=async(path:string)=>JSON.parse((await regular(path,16*1024*1024)).toString());
    const process=await json(join(directory,'process.json')),capture=await readRepairSession(directory),native=stage.returned.proof.native;
    const final=capture.turns.at(-1),pairs:Row[]=await json(join(directory,'reconciled-tools.json'));
+   const retained=async(dir:string,originals:Row,name:string,prefix=false)=>{
+     const bytes=await regular(join(dir,name),16*1024*1024),ref=originals[name];
+     if(!ref||bytes.length<ref.bytes||!prefix&&bytes.length!==ref.bytes||hash(bytes.subarray(0,ref.bytes))!==ref.sha256)
+       throw new Error('formal_repair_supplement_writer_unresolved');
+   };
+   for(const name of ['stdin.ndjson','stdout.ndjson','process.json','executable.json','launch.json','effective-config.json'])
+     await retained(directory,stage.returned.proof.originals,name,name.endsWith('.ndjson'));
    if(process.status!=='spawn_attempted'||processState(process.pid)!=='ended'||capture.binding.sessionId!==native.sessionId||
       capture.binding.threadId!==native.threadId||capture.binding.run!==s.request.directory||final?.id!==native.turnId||
-      capture.binding.candidate.H!==H||canonical(JSON.parse(final?.final?.text??'null'))!==canonical(report)||
-      pairs.some(pair=>!['tongxu_read_file','tongxu_run_tests'].includes(pair.request?.params?.tool)))
+      capture.binding.candidate.H!==originalH||capture.binding.inputManifestSha256!==s.request.material.sha256||
+      canonical(JSON.parse(final?.final?.text??'null'))!==canonical(report)||
+      pairs.some(pair=>!['tongxu_read_file','tongxu_run_tests',...(changed?['tongxu_replace_file']:[])].includes(pair.request?.params?.tool)))
      throw new Error('formal_repair_supplement_writer_unresolved');
    if(await exists(join(directory,'native-tool-transports.json'))){
      const transports=await json(join(directory,'native-tool-transports.json'));
@@ -149,7 +160,7 @@ export class FormalReviewControls{
    }
    const plan=await json(join(root,'plan.json')),grant=await json(join(root,'grant.json'));
    if(plan.workspace!==workspace||plan.grant!==join(root,'grant.json')||canonical(plan.project?.sourceCandidate)!==canonical(s.request.project.candidate)||
-      grant.H!==H||grant.workspace!==workspace||await exists(join(workspace,'.git','tongxu-writer.json')))
+      grant.H!==originalH||grant.workspace!==workspace||await exists(join(workspace,'.git','tongxu-writer.json')))
      throw new Error('formal_repair_supplement_writer_unresolved');
    const testDirectory=join(operation,'tests'),tests=new Map<string,Row>();
    for(const pair of pairs.filter(item=>item.request.params.tool==='tongxu_run_tests')){
@@ -158,7 +169,7 @@ export class FormalReviewControls{
      tests.set('tool-'+id,pair.response.result);
    }
    const directories=await exists(testDirectory)?await readdir(testDirectory):[];
-   if(canonical(directories.sort())!==canonical([...tests.keys()].sort()))throw new Error('formal_repair_supplement_writer_unresolved');
+   if(canonical(directories.sort())!==canonical([...tests.keys(),...(changed?['formal-final']:[])].sort()))throw new Error('formal_repair_supplement_writer_unresolved');
    for(const [name,reply] of tests){
      const {result}=await readFailedValidationTests(join(testDirectory,name),plan,false);
      if(canonical(projectModelTestResult(result))!==canonical(JSON.parse(reply.contentItems[0].text)))
@@ -174,6 +185,35 @@ export class FormalReviewControls{
      throw new Error('formal_repair_supplement_writer_unresolved');
    const current=await tree(workspace,true);
    await checkRepairIndex(workspace,operation,[],current,undefined,true);
+   if(changed){
+     const peer=join(s.request.directory,'round-'+round+'-impact-initial');
+     await checkCapture(peer);
+     const exit=await json(join(peer,'exit.json')),peerProcess=await json(join(peer,'process.json'));
+     const lastPeer=s.stages.findLast((item:Row)=>item.stage.role==='verifier_impact'&&item.stage.key.startsWith('round-'+round+'/')&&item.returned);
+     if(!lastPeer||exit.code!==0||exit.signal!==null||peerProcess.status!=='spawn_attempted'||processState(peerProcess.pid)!=='ended')
+       throw new Error('formal_repair_supplement_writer_unresolved');
+     for(const name of ['stdin.ndjson','stdout.ndjson','prompt-boundaries.ndjson','process.json'])
+       await retained(peer,lastPeer.returned.proof.originals,name,name.endsWith('.ndjson'));
+     const fix=result.fix,binding=fix.testCandidateBinding;
+     if(fix.workspace!==workspace||published.workspace!==workspace||fix.sessionId!==native.sessionId||fix.threadId!==native.threadId||
+        fix.H0!==originalH||binding.candidate.H!==H||await git(workspace,['rev-parse','--verify',H+'^'])!==originalH||
+        hash(await regular(join(root,'config.json')))!==s.request.configRef.sha256||
+        canonical(await json(join(root,'request.json')))!==canonical({...s.request.project,executionRoot:root})||
+        plan.project.testPlan!==join(root,'test-plan.json')||plan.project.testPlanSha256!==s.request.project.testPlanSha256)
+       throw new Error('formal_repair_supplement_writer_unresolved');
+     const tested=(await readFailedValidationTests(join(testDirectory,'formal-final'),plan,false)).result;
+     if(!tested.passed||treeHash(current)!==tested.candidateTreeSha256||canonical(projectModelTestResult(tested))!==canonical(fix.tested)||
+        canonical(await bindProjectTestToCandidate(workspace,binding.candidate,tested))!==canonical(binding))
+       throw new Error('formal_repair_supplement_current_base_required');
+     const testedImage=async(test:string)=>{
+       const {connection}=await json(join(test,'runtime','probe','execution.json'));
+       return connection.imageId??connection.config.image;
+     };
+     const image=await testedImage(join(testDirectory,'formal-final')),supplement=fix.reviewFixRecord.supplementVerification;
+     if(!/^sha256:[a-f0-9]{64}$/.test(image)||supplement&&await testedImage(supplement.directory)!==image)
+       throw new Error('formal_repair_supplement_test_config_changed');
+     return {operation:s.operation,round,H,sessionId:native.sessionId,report:fix.report,published:{...published,image}};
+   }
    if(treeHash(current)!==grant.treeSha256||await git(workspace,['rev-parse','HEAD'])!==H)
      throw new Error('formal_repair_supplement_current_base_required');
    await this.catalog();
@@ -182,6 +222,67 @@ export class FormalReviewControls{
       (live.evidence as Row)?.materialSha256!==s.request.material.sourceEvidence?.materialSha256)
      throw new Error('formal_repair_supplement_current_base_required');
    return {operation:s.operation,round,H,sessionId:native.sessionId,report};
+ }
+ private async publishedRepairSupplement(q:QueueStore,s:Row,requests:Row[],entry:FormalEntry,source:Source){
+   const records=q.formalReviews(),work=s.request.projectWork,fix=s.terminal.result.fix;
+   const successors=requests.filter(next=>next.request.previousOperation===s.operation);
+   if(successors.length!==1)throw new Error('formal_repair_supplement_review_current_required');
+   const successor=await this.currentView(successors[0]!),candidate=successor.request.candidate;
+   const {repository,pr,H,B,target,requirementsSha256}=candidate;
+   if(successor.stopped||!successor.resourcesSettled||!successor.request.workflowReview||successor.terminal?.result.status!=='pass'||
+      this.active.has(successor.operation)||successor.stages.some((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched)||
+      canonical(successor.request.projectWork)!==canonical(work)||H!==fix.H1||B!==s.request.candidate.B||target!==s.request.candidate.target||
+      repository!==s.request.candidate.repository||pr!==s.request.candidate.pr||successor.request.executionKind!==s.request.executionKind)
+     throw new Error('formal_repair_supplement_review_current_required');
+   const {published}=records.sourceForReviewRecords(s.operation);
+   if(!published||published.H!==H||published.beforeH!==s.request.candidate.H||published.recordSha256!==fix.recordSha256||
+      hash(canonical(fix.reviewFixRecord))!==fix.recordSha256||canonical(fix.reviewFixRecord.candidate)!==canonical(s.request.candidate)||
+      fix.reviewFixRecord.H2!==H||canonical(fix.reviewFixRecord.testCandidateBinding)!==canonical(fix.testCandidateBinding))
+     throw new Error('formal_repair_supplement_publication_required');
+   const current=records.currentSource(successor.item),material=successor.request.material;
+   if(!current.current||current.prerequisites.length||current.candidate.H!==H||current.candidate.B!==B||current.candidate.targetRef!==target||
+      current.candidate.repository!==repository||current.candidate.pr!==pr||
+      q.authority().forScope(current.context.scope.id,{item:successor.item,target}).currentAdoption!==material.adoptedScope.adoption||
+      hash(canonical({issue:material.issue,adoptedScope:material.adoptedScope}))!==requirementsSha256)
+     throw new Error('formal_repair_supplement_current_base_required');
+   const initial=(state:Row,role:string)=>state.stages.find((item:Row)=>item.stage.key==='round-'+state.executionRound+'/'+role+'-initial')?.returned?.proof.native;
+   for(const [role,company] of [['correctness','OpenAI'],['impact','Moonshot']]){
+     const previous=initial(s,role!),fresh=initial(successor,role!);
+     if(previous?.company!==company||fresh?.company!==company||!fresh.sessionId||previous.sessionId===fresh.sessionId)
+       throw new Error('formal_repair_supplement_review_current_required');
+   }
+   const fixes=s.stages.filter((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched);
+   for(const stage of fixes){
+     const checkpoint=stage.stage.key.endsWith('/fix-supplement')?'after-repair':'before-repair';
+     const items=await readRepairInbox(s.request.directory,s.executionRound,work,checkpoint);
+     if(!items||!records.originalStageInputIncludes(s.operation,stage.stage.key,input=>canonical(input.projectSupplements?.items??[])===canonical(items)))
+       throw new Error('formal_repair_inbox_binding_changed');
+   }
+   const original=fixes.at(-1),verification=fix.reviewFixRecord.supplementVerification;
+   const testPlan=join(fix.workspace,'..','test-plan.json'),testPlans=[{path:testPlan,sha256:s.request.project.testPlanSha256}];
+   const revisions=(material.sourceEvidence?.adoptedProjectSupplements??[]) as AdoptedRepairRevision[];
+   if(verification){
+     const tested=await verifiedRepairSupplementTests(verification,H);
+     if(canonical(verification)!==canonical(successor.request.supplementVerification)||
+        canonical(tested.tools.map((tool:Row)=>tool.id))!==canonical(revisions.map(item=>repairSupplementTest(item.revision))))
+       throw new Error('formal_repair_supplement_evidence_missing');
+     testPlans.push({path:verification.plan.project.testPlan,sha256:verification.plan.project.testPlanSha256});
+   }else if(revisions.length)throw new Error('formal_repair_supplement_evidence_missing');
+   if(s.request.project.generatedDirectories.length||!original)throw new Error('formal_repair_supplement_evidence_missing');
+   const handoff=await this.endedRepairSupplement(s,original,entry,source,{
+     previousH:s.request.candidate.H,workspace:fix.workspace,reviewOperation:successor.operation,reviewMaterialSha256:material.sha256,requirementsSha256,
+     publicationSha256:published.captureSha256,fixSha256:fix.recordSha256,testPlans,protectedPaths:s.request.project.protectedPaths,
+     contract:s.request.project.contract,revisions:revisions.map(({revision})=>({requirement:revision.requirement,acceptance:revision.acceptance}))
+   });
+   await this.catalog();
+   const live=await this.read(entry,source);
+   const reviewed=records.state(successor.operation);
+   if(canonical(live.candidate)!==canonical({repository,pr,H,B,target})||canonical(live.issue)!==canonical(material.issue)||
+      (live.evidence as Row)?.materialSha256!==material.sourceEvidence?.materialSha256||!live.observation?.result.complete||
+      !live.observation.records.some(record=>record.kind==='pr'&&JSON.parse(record.body.toString()).body?.includes(fix.publicRecord))||
+      records.state(s.operation).stopped||reviewed.terminal?.result.status!=='pass'||reviewed.stopped)
+     throw new Error('formal_repair_supplement_current_base_required');
+   return handoff;
  }
  async workRepairInbox(target:SupplementTarget,receivedId?:string,text?:string,continuingOperation?:string){
   for(const {entry,source} of this.entries){
@@ -216,29 +317,32 @@ export class FormalReviewControls{
         if(result.passed&&result.tools.some((tool:Row)=>tool.id===repairSupplementTest(revision)&&tool.exitCode===0))coveringCandidate=fix.H1;
        }catch{verificationMissing=true;}
       }
+      const changedBase=!!fix?.H1&&fix.H1!==s.request.candidate.H;
       let endedRepair:EndedRepairSupplement|undefined,endedProblem:string|undefined;
       if(delivered&&!revision&&!s.stopped&&s.terminal){
-        if(fix?.H1&&fix.H1!==s.request.candidate.H)endedProblem='formal_repair_supplement_current_base_required';
-        else if(!owned&&!requests.some(other=>{
+        if(owned&&changedBase)endedProblem='formal_repair_supplement_publication_required';
+        if(!owned&&!requests.some(other=>{
           if(other.operation===s.operation)return false;
           const fixDispatched=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched);
           const unknown=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched&&!row.returned);
           const guarded=continuingOperation&&other.request.projectWork&&canonical(other.request.projectWork.target)===canonical(target);
-          return unknown||(!other.stopped&&other.terminal?.result.status==='awaiting_publication')||
+          return unknown||fixDispatched&&(!other.terminal||this.active.has(other.operation))||
+            (!other.stopped&&other.terminal?.result.status==='awaiting_publication')||
             ((!guarded||fixDispatched)&&!other.stopped&&(!other.terminal||this.active.has(other.operation)));
         })){
           try{
-            const current=records.currentSource(s.item),candidate=s.request.candidate;
-            if(!current.current||current.prerequisites.length||current.candidate.H!==candidate.H||current.candidate.B!==candidate.B||current.candidate.targetRef!==candidate.target)
+            const candidate=s.request.candidate;
+            const current=changedBase?null:records.currentSource(s.item);
+            if(current&&(!current.current||current.prerequisites.length||current.candidate.H!==candidate.H||current.candidate.B!==candidate.B||current.candidate.targetRef!==candidate.target))
               throw new Error('formal_repair_supplement_current_base_required');
-            endedRepair=await this.endedRepairSupplement(s,stage,entry,source);
+            endedRepair=changedBase?await this.publishedRepairSupplement(q,s,requests,entry,source):await this.endedRepairSupplement(s,stage,entry,source);
           }
-          catch(error){endedProblem=(error as Error).message==='formal_repair_supplement_current_base_required'?
-            'formal_repair_supplement_current_base_required':'formal_repair_supplement_writer_unresolved';}
+          catch(error){const reason=(error as Error).message;endedProblem=/^formal_repair_(?:supplement_(?:publication_required|review_current_required|current_base_required|evidence_missing|test_config_changed)|inbox_binding_changed)$/.test(reason)?
+            reason:'formal_repair_supplement_writer_unresolved';}
         }
       }
       return {owned,formalRepair:true,ready:false,successful:!!coveringCandidate,issue:entry.issue.number,H1:s.request.candidate.H,
-        endedRepair,reason:endedProblem??(verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
+        endedRepair,changedBase,reason:endedProblem??(verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
           (s.detail?.reason==='formal_fixed_supplement_tests_failed'?s.detail.reason:'formal_repair_supplement_coverage_pending'):
           delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending'),
         operation:s.operation,dispatchRecorded:stage.dispatched,delivered:!!delivered,adopted:!!revision,coveringCandidate,
@@ -249,6 +353,9 @@ export class FormalReviewControls{
      if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,endedRepair:undefined,
       reason:fixes.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
       operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
+     if(receivedId&&s.terminal?.result.fix?.H1&&s.terminal.result.fix.H1!==s.request.candidate.H)
+       return {owned:false,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,endedRepair:undefined,
+         supersededBase:true,reason:'formal_repair_supplement_current_base_required',operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
     }
    }finally{q.close();}
   }

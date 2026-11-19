@@ -11,7 +11,7 @@ import {QueueStore} from './queue-store.js';
 import type {SupplementTarget} from './project-chat.js';
 
 export type SupplementReviewInput={
-  repository:string; target:SupplementTarget; H1:string; requestId:string; text:string;
+  repository:string; target:SupplementTarget; H1:string; requestId:string; text:string; formalBase?:string;
 };
 export type ReviewedSupplement={
   inputSha256:string; reviewRun:string; requirement:string; acceptance:string[];
@@ -38,6 +38,9 @@ export async function projectSupplementReviewMessages(completion:string,minimali
  * run retains both independent inputs and the actual two-way exchange. */
 export async function readReviewedSupplement(root:string,input:SupplementReviewInput,executionKind:string):Promise<ReviewedSupplement|null>{
   if(!/^supplement-[a-f0-9-]{36}$/.test(input.requestId))throw new Error('project_supplement_review_binding_changed');
+  // The fixed locator names the legacy review only. The new verified base
+  // uses its own planning and review originals under the same receipt ID.
+  if(input.formalBase)return null;
   const path=join(root,'supplement-reviews',input.requestId+'.json');
   if(!await exists(path))return null;
   const ref=JSON.parse((await regular(path,4096)).toString());

@@ -18,7 +18,11 @@ import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 export type SupplementPlanningSource={
   input:SupplementReviewInput;source:FixedRepository;issue:{number:number;body:string;bodySha256:string;url:string};workflowPrompt:CodingWorkflowPrompt;
 };
-export const supplementPlanningDirectory=(root:string,id:string)=>join(root,'supplement-planning',id);
+export function supplementPlanningDirectory(root:string,input:SupplementReviewInput){
+  if(!/^supplement-[a-f0-9-]{36}$/.test(input.requestId)||input.formalBase!==undefined&&!/^[a-f0-9]{64}$/.test(input.formalBase))
+    throw new Error('project_supplement_review_binding_changed');
+  return join(root,'supplement-planning',input.requestId+(input.formalBase?'-'+input.formalBase:''));
+}
 async function preparationAttempt(directory:string){
   const entries=(await readdir(directory)).flatMap(name=>{
     if(name==='preparation')return [1];
@@ -54,7 +58,7 @@ const reviewedMaterial=(source:SupplementPlanningSource,proposal:{goal:string;ac
     issue:{number:source.issue.number,body,bodySha256:hash(body),url:source.issue.url}}};
 };
 async function readPlanning(root:string,input:SupplementReviewInput,verification?:DockerConfig){
-  const directory=supplementPlanningDirectory(root,input.requestId),ref=join(directory,'request.json');
+  const directory=supplementPlanningDirectory(root,input),ref=join(directory,'request.json');
   if(!await exists(ref))return null;
   const request=JSON.parse((await regular(ref,1024*1024)).toString()) as SupplementPlanningSource;
   if(canonical(request.input)!==canonical(input))throw new Error('project_supplement_review_binding_changed');
@@ -88,7 +92,7 @@ export async function readPlannedSupplement(root:string,input:SupplementReviewIn
 }
 export async function planAndReviewSupplement(root:string,source:SupplementPlanningSource,peer:AIRuntimeChoice,config:RepairConfig,verification:DockerConfig,
   check:()=>Promise<void>,admit:()=>void,stopped:()=>boolean,onSession:(s:BoundedCodexSession)=>void,onPeer:(stop:()=>Promise<void>)=>void){
-  const directory=supplementPlanningDirectory(root,source.input.requestId);
+  const directory=supplementPlanningDirectory(root,source.input);
   return withQueueRepairLock(join(root,'supplement-planning'),source.input.requestId.slice('supplement-'.length),async()=>{
     await check();await privateDirectory(directory,!await exists(directory));
     await writeFixed(join(directory,'request.json'),canonical(source));

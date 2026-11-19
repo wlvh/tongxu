@@ -24,7 +24,64 @@ import {repositoryFiles,repositoryFile,checkWorkMaterial} from '../../src/projec
 import type {ProjectChatScope} from '../../src/project-chat.js';
 import {captureWorkBilling,sealWorkCurrent,assertWorkCurrent,assertCurrentAttemptEnded} from '../../src/project-work-current.js';
 import {fixture as repairFixture} from '../w5/repair-fixture.js';
+import {supplementPlanningDirectory,supplementPlanningStatus} from '../../src/project-supplement-planning.js';
+import {readReviewedSupplement} from '../../src/project-supplement-review.js';
+import {IssueImplementationControls,supplementTestPlan} from '../../src/issue-implementation-controls.js';
 const scope={account:{id:1,login:'fixture'},repository:{id:2,nodeId:'REPO2',fullName:'fixture/project'}} as ProjectChatScope;
+test('a formal successor has its own supplement review version and does not consume a legacy approval',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'tongxu-supplement-review-versions-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const old={repository:'fixture/project',target:{source:'A',requestId:randomUUID(),task:'A',operation:randomUUID()},H1:'a'.repeat(40),requestId:'supplement-'+randomUUID(),text:'one saved request'};
+ const next={...old,H1:'b'.repeat(40),formalBase:'c'.repeat(64)};
+ const original=supplementPlanningDirectory(root,old),successor=supplementPlanningDirectory(root,next);
+ assert.notEqual(original,successor);
+ assert.notEqual(successor,supplementPlanningDirectory(root,{...next,formalBase:'d'.repeat(64)}));
+ await mkdir(original,{recursive:true});const stored=canonical({input:old});await writeFile(join(original,'request.json'),stored);
+ await mkdir(join(root,'supplement-reviews'));await writeFile(join(root,'supplement-reviews',old.requestId+'.json'),'invalid fixture legacy locator');
+ assert.equal(await readReviewedSupplement(root,next,'fixture'),null);
+ await assert.rejects(readReviewedSupplement(root,old,'fixture'),SyntaxError);
+ assert.equal(await supplementPlanningStatus(root,next,{} as any),null);
+ assert.equal((await readFile(join(original,'request.json'))).toString(),stored);
+});
+test('published repair planning reads the tested Git successor and retains the ordinary origin requirements',async t=>{
+ const repo=await mkdtemp(join(tmpdir(),'tongxu-supplement-planning-base-'));t.after(()=>rm(repo,{recursive:true,force:true}));
+ await git(repo,['init']);const save=async(text:string)=>{
+   await writeFile(join(repo,'sample.txt'),text);await git(repo,['add','sample.txt']);
+   await git(repo,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m',text]);
+   return git(repo,['rev-parse','HEAD']);
+ };
+ const H0=await save('original ordinary result'),H1=await save('actual formal repair');
+ const target={source:'A',requestId:randomUUID(),task:'A',operation:randomUUID()},id=randomUUID();
+ const issue={number:72,body:'Original adopted issue',url:'https://github.com/fixture/project/issues/72'};
+ const published={previousH:H0,workspace:repo,reviewOperation:'fresh-dual-review',reviewMaterialSha256:'a'.repeat(64),requirementsSha256:'b'.repeat(64),
+   publicationSha256:'c'.repeat(64),fixSha256:'d'.repeat(64),testPlans:[],protectedPaths:[],image:'sha256:'+'e'.repeat(64),
+   contract:'Verified repair contract',revisions:[{requirement:'Keep A working',acceptance:['A test remains applicable']}]};
+ const ended={operation:'formal-original',round:1,H:H1,sessionId:'original-writer',report:{decision:'repaired'},published};
+ const controls={supplementSource:async()=>({ready:true,root:{issue:issue.number},rootRequest:{issue:{bodySha256:hash(issue.body)}},
+   entry:{id:'A',repository:'fixture/project',projectFiles:true,workRequestId:target.requestId},latest:{result:{H1:H0},plan:{workspace:repo}},request:{workflowPrompt:{}}}),
+   generated:new Map([['A',{}]]),read:async()=>issue,checkEndedRepair:async(_target:unknown,_id:string,_text:string,H:string)=>assert.equal(H,H1)};
+ const plan=await IssueImplementationControls.prototype.supplementPlanningInput.call(controls as any,target,id,'late change',ended);
+ assert.equal(plan.input.requestId,'supplement-'+id);assert.equal(plan.input.H1,H1);
+ assert.equal(plan.input.formalBase,hash(canonical(published)));
+ assert.equal(await git(plan.source.path,['show',plan.source.H+':sample.txt']),'actual formal repair');
+ assert.match(plan.issue.body,/Original adopted issue[\s\S]*Verified repair contract[\s\S]*A test remains applicable/);
+ await assert.rejects(IssueImplementationControls.prototype.supplementPlanningInput.call(controls as any,target,id,'late change',
+   {...ended,published:{...published,previousH:'0'.repeat(40)}}),/formal_repair_supplement_current_base_required/);
+ const ordinary=join(repo,'ordinary-plan.json'),formal=join(repo,'formal-plan.json');
+ const executor={kind:'docker',image:'fixture/current',node:'/usr/bin/node',client:'/fixture/docker',endpoint:'unix:///fixture/docker.sock'};
+ const oldTest={id:'work-acceptance',argv:[executor.node,'--test','old.mjs'],timeoutMs:30000};
+ const fixedTest={id:'formal-test',argv:[executor.node,'--test','fix.mjs'],timeoutMs:30000};
+ const oldBytes=canonical({schemaVersion:2,executor,tools:[oldTest]});await writeFile(ordinary,oldBytes);
+ const original={testPlan:ordinary,testPlanSha256:hash(oldBytes)},writePlan=async(config:unknown)=>{
+   const bytes=canonical(config);await writeFile(formal,bytes);return {...published,testPlans:[{path:formal,sha256:hash(bytes)}]};
+ };
+ const proof=await writePlan({schemaVersion:2,executor,tools:[fixedTest]});
+ const amendment={inputSha256:'f'.repeat(64),reviewRun:'a'.repeat(64),validation:{description:'late check',script:'0'},requirement:'late change',acceptance:['late check runs'],replies:[]};
+ const merged=JSON.parse(await supplementTestPlan(original,amendment,proof));
+ assert.deepEqual(merged.tools.slice(0,2),[oldTest,fixedTest]);assert.equal(merged.executor.image,published.image);assert.equal(merged.tools.length,3);
+ const changed=await writePlan({schemaVersion:2,executor:{...executor,endpoint:'unix:///different.sock'},tools:[fixedTest]});
+ await assert.rejects(supplementTestPlan(original,amendment,changed),/formal_repair_supplement_test_config_changed/);
+ await assert.rejects(supplementTestPlan(original,amendment,proof),/formal_repair_supplement_evidence_missing/);
+});
 test('current billing observations use only official metadata and immutable expiry; partial active attempts cannot be replaced',async t=>{
  const f=await repairFixture(t),parent=join(f.root,'attempt');await mkdir(parent);const directory=join(parent,'billing'),observed=await captureWorkBilling(f.config,directory,()=>{}),sent=(await readFile(join(directory,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
  assert.deepEqual(sent.map(x=>x.method),['initialize','initialized','account/read','config/read','account/rateLimits/read']);assert.equal((await readFile(f.trace,'utf8')).includes('model-input'),false);
