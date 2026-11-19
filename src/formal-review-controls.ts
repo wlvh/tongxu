@@ -60,9 +60,32 @@ export class FormalReviewControls{
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
  private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,...(s.request.workflowReview?{workflowRevision:s.request.workflowReview.correctness.revision}:{}),stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned,...(s.returned?.proof?.native?.company?{company:s.returned.proof.native.company,sessionId:s.returned.proof.native.sessionId}:{})})),newModelInputs:0};}
  async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,...(entry.workflowContract?{workflowContract:entry.workflowContract}:{}),requests:q.formalReviews().forEntry(entry.id).map(s=>this.public(s))};}finally{q.close();}}));}
- async prepare(id:string,requestId:string,previous?:Row,explicit=true){
+ async forWork(issue:{number:number;bodySha256:string},H:string){
+  const matched:Array<{entry:string;source:string;candidate:FormalSource['candidate']}>=[];
+  for(const {entry,source} of this.entries){
+   if(entry.issue.number!==issue.number||entry.issue.bodySha256!==issue.bodySha256)continue;
+   const q=await QueueStore.open(source.store);
+   try{
+    const records=q.formalReviews(),configured=records.currentSource(source.item);
+    const items=q.status().items.filter((item:Row)=>item.candidate.kind!=='development-task'&&item.candidate.pr===configured.candidate.pr&&
+       item.candidate.repository===configured.candidate.repository&&item.candidate.targetRef===configured.candidate.targetRef&&
+       item.candidate.H===H&&canonical(item.context.scope)===canonical(configured.context.scope));
+    for(const item of items){
+     const {repository,pr,B,targetRef}=item.candidate;
+     const observation=records.currentSource(item.id);
+     if(observation.current&&!observation.prerequisites.length)
+      matched.push({entry:entry.id,source:source.id,candidate:{repository,pr,H,B,target:targetRef}});
+    }
+   }finally{q.close();}
+  }
+  return matched.length===1?matched[0]:null;
+ }
+ async prepare(id:string,requestId:string,previous?:Row,explicit=true,expected?:FormalSource['candidate']){
   if(!this.accepting||!messageId(requestId))throw new Error('formal_request_invalid');await this.catalog();const {entry,source}=this.entry(id),q=await QueueStore.open(source.store);
-  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior)return this.public(prior);let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');
+  const checkCandidate=(candidate:FormalFrozenRequest['candidate']|FormalSource['candidate'])=>{
+   if(expected&&canonical({repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target})!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
+  };
+  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior){checkCandidate(prior.request.candidate);return this.public(prior);}let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');checkCandidate(live.candidate);
    if(this.workbenchProject&&this.workbenchProject.fullName.toLowerCase()!==live.candidate.repository.toLowerCase())throw new Error('formal_entry_not_selected');
    const published=previous??records.forEntry(id).find(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&s.terminal.result.fix.H1===live.candidate.H&&s.request.candidate.B===live.candidate.B&&s.request.candidate.target===live.candidate.target);
    const original=records.currentSource(source.item);

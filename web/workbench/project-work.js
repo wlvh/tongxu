@@ -119,6 +119,8 @@ function renderProjectWork(){
     if(active){const stop=el('button','停止这项工作的后续动作','outline');stop.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/stop',{}));section.append(stop);}
     if((current?.stage||item.stage)==='waiting_return'){const receive=el('button','继续接回原成果');receive.disabled=d.pending;receive.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/receive',{}));section.append(receive);}
     const reportGaps=d.detail.execution?.reportGaps||[],delivery=current?.delivery||item.delivery;if(delivery){section.append(el('h3',delivery.status==='received'?'真实项目成果':'成果接回状态'),el('p','分支：'+delivery.branch),el('p','提交：'+delivery.H),el('p','成果工作区：'+delivery.workspace));if(delivery.status==='received'&&!reportGaps.some(gap=>gap.H1===delivery.H))section.append(el('p','实现与测试结果已接回；正式审核、合并、启用和本人成果接受仍分别办理。','small'));}
+    const formalWork=d.detail.formalWork;
+    if(formalWork&&!reportGaps.some(gap=>gap.H1===delivery?.H))section.append(formalReviewPanel(formalWork.source,formalWork));
     if(delivery?.status==='received'&&d.detail.execution?.requests.some(r=>r.H1===delivery.H&&r.workflow)){
       const explanation=d.detail.explanation;
       if(explanation?.state==='returned')section.append(append(el('details',null,'panel'),el('summary','Tech Lead 交付解读'),el('p','候选 '+explanation.H+' · 工作流 '+explanation.workflowRevision,'small'),el('div',explanation.report,'chat-text')));

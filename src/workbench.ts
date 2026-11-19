@@ -354,7 +354,21 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!selection)throw new Error('project_work_requires_project');
         if(!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/project-work'){json(res,200,{available:false,works:[]});return;}throw new Error('project_work_not_configured');}
         const work=await openProjectWork(),detail=/^\/api\/project-work\/([0-9a-f-]{36})$/.exec(url.pathname);
-        if(req.method==='GET'){if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});else if(detail)json(res,200,await work.detail(selection,detail[1]!));else json(res,404,{error:'route_not_found'});return;}
+        if(req.method==='GET'){
+          if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});
+          else if(detail){
+            const result=await work.detail(selection,detail[1]!),delivery=result.draft.delivery;
+            const formalWork=async()=>{
+              const context=await projectPlan(selection),ref=context.plan.formalReview;
+              if(!ref||context.selectedSourcesUnknown)return null;
+              const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+              return formal.forWork(result.draft.issue,delivery!.H);
+            };
+            const review=p.formalReview&&delivery?.status==='received'?await formalWork().catch(()=>null):null;
+            json(res,200,{...result,formalWork:review});
+          }else json(res,404,{error:'route_not_found'});
+          return;
+        }
         const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|recheck|restart-failure|explain|review-issue)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create','/api/project-work/draft-issue'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
@@ -460,7 +474,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const report=/^\/api\/formal-review-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([a-f0-9-]{36})$/.exec(url.pathname);if(req.method==='GET'&&report){json(res,200,await formal.report(report[1]!,report[2]!));return;}
         const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
-        if(action[2]==='prepare'){if(!exactKeys(body,['requestId']))throw new Error('formal_request_invalid');json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId)));return;}
+        if(action[2]==='prepare'){
+          const expected=body?.expectedCandidate;
+          if(!exactKeys(body,['requestId',...(Object.hasOwn(body??{},'expectedCandidate')?['expectedCandidate']:[])])||
+             Object.hasOwn(body,'expectedCandidate')&&(!exactKeys(expected,['repository','pr','H','B','target'])||
+                !Number.isSafeInteger(expected.pr)||expected.pr<1||!['repository','H','B','target'].every(key=>typeof expected[key]==='string')))
+            throw new Error('formal_request_invalid');
+          json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected)));return;
+        }
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}
         if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');json(res,202,await withAI(()=>formal.begin(action[1]!,body.operation)));return;
       }
