@@ -1,7 +1,7 @@
 import {ReceptionControls} from './reception-controls.js';
 import {FormalReviewControls,type FormalSourceReader,type FormalWorkbenchProject} from './formal-review-controls.js';
 import {IssueImplementationControls} from './issue-implementation-controls.js';
-import {ProjectChat} from './project-chat.js';
+import {ProjectChat,type SupplementTarget} from './project-chat.js';
 import {ProjectWork} from './project-work.js';
 import {ProjectWorkOwner,workOwnerPage} from './project-work-owner.js';
 import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig,type AIPreferenceSnapshot} from './ai-settings.js';
@@ -17,6 +17,7 @@ import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
 import {canonical} from './comparison.js';
 import type {OriginalImplementationContactHost} from './task-contact-choice.js';
+import type {FormalProjectWork,ReadRepairInbox} from './formal-repair-inbox.js';
 import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
@@ -165,7 +166,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   const ai=p.aiSettings?await AISettings.open(p.aiSettings,dependencies?.aiProbe,p.projectSecretary?.codexExecutable):null;
   let closing=false,host='';
   const workOwner=new ProjectWorkOwner(()=>host,dependencies?.ownerWindowOpen);
-  type ContactContext={sources:WorkbenchPlan['sources'];originalImplementation?:OriginalImplementationContactHost};
+  type ContactContext={sources:WorkbenchPlan['sources'];originalImplementation?:OriginalImplementationContactHost;scope?:ReturnType<GitHubProjects['selection']>};
   const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot,contactContext?:ContactContext)=>{
     // Catalogue hashes still cover the original complete files. Only entries
     // belonging to this project's original sources load templates or controls.
@@ -181,7 +182,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const secretary=plan.secretary?await SecretaryControls.load(plan.secretary.path,plan.secretary.sha256,p.sources,selectedSources):null;
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
     const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources,readPreferences):null;
-    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences):null;
+    const scope=contactContext?.scope;
+    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round)=>{
+      if(work.account!==scope.account.id||work.repository!==scope.repository.id||work.nodeId!==scope.repository.nodeId)
+        throw new Error('formal_original_project_work_changed');
+      return (await openProjectChat()).repairInbox(scope,work.target,operation,round);
+    }:undefined;
+    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences,readInbox):null;
     return {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions};
   };
   type Local=Awaited<ReturnType<typeof loadLocal>>;
@@ -244,7 +251,16 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     },verifyProject,openImplementation).catch(error=>{projectWork=undefined;throw error;});
   };
   let projectChat:Promise<ProjectChat>|undefined;
-  const openProjectChat=()=>{
+  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,target:SupplementTarget,receivedId?:string,text?:string)=>{
+    if(!p.formalReview||!p.projectWork)return null;
+    const loaded=await locals.get('project:'+scope.repository.id)?.value;
+    if(loaded?.formal)return loaded.formal.workRepairInbox(target,receivedId,text);
+    const context=await projectPlan(scope);
+    const ref=context.plan.formalReview;if(!ref)return null;
+    const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+    return formal.workRepairInbox(target,receivedId,text);
+  };
+  const openProjectChat=():Promise<ProjectChat>=>{
     if(!p.projectSecretary||!github)throw new Error('project_chat_not_configured');
     return projectChat??=ProjectChat.open(p.projectSecretary,async(scope,tool,args)=>{
       if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('project_chat_tool_arguments_invalid');
@@ -270,8 +286,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject,p.issueImplementation||p.projectWork?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
-      read:async(scope,target,compiled,text,receivedId)=>(await openImplementation(scope)).readSupplement(target,compiled,text,receivedId),
-      work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
+      read:async(scope,target,compiled,text,receivedId)=>
+        (!compiled&&await formalForSupplement(scope,target,receivedId,text))||
+        (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId),
+      work:async(scope,target,id,text,before)=>{
+        if((await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
+        return (await openImplementation(scope)).workSupplement(target,id,text,before);
+      },
       ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
         const prepared=await(await openImplementation(scope)).supplementPlanningInput(target,id,text);
         return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent);
@@ -481,7 +502,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
       if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
       const localPlan:WorkbenchPlan={...plan,sources:plan.sources.filter(source=>p.sources.some(original=>original.id===source.id))};
-      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined,{sources:plan.sources,...(selection&&(p.issueImplementation||p.projectWork)?{originalImplementation:{
+      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined,{sources:plan.sources,scope:selection??undefined,...(selection&&(p.issueImplementation||p.projectWork)?{originalImplementation:{
         target:async(store,target)=>(await openImplementation(selection)).ownerFeedbackTarget(store,target),
         proof:async(store,target)=>(await openImplementation(selection)).ownerFeedbackProof(store,target)
       }}:{})});
@@ -495,6 +516,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(action[2]==='prepare'){
           const expected=body?.expectedCandidate;
           const workId=body?.projectWorkId;
+          let projectWork:FormalProjectWork|undefined;
           if(!exactKeys(body,['requestId',...(Object.hasOwn(body??{},'expectedCandidate')?['expectedCandidate']:[]),...(Object.hasOwn(body??{},'projectWorkId')?['projectWorkId']:[])])||
              Object.hasOwn(body,'expectedCandidate')&&(!exactKeys(expected,['repository','pr','H','B','target'])||
                 !Number.isSafeInteger(expected.pr)||expected.pr<1||!['repository','H','B','target'].every(key=>typeof expected[key]==='string')))
@@ -504,8 +526,15 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
             const work=await(await openProjectWork()).detail(selection,workId);
             const binding=work.resultStatus.current&&work.draft.delivery?.H===expected.H?await formal.forWork(work.draft.issue,expected.H):null;
             if(!binding||binding.entry!==action[1]||canonical(binding.candidate)!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
+            if(p.projectSecretary){
+              const targets=await(await openImplementation(selection)).supplementTargets();
+              const original=targets.find(t=>t.source===work.draft.source&&t.requestId===work.draft.requestId);
+              if(!original)throw new Error('formal_original_project_work_changed');
+              const {title:_,...target}=original;
+              projectWork={id:workId,account:selection.account.id,repository:selection.repository.id,nodeId:selection.repository.nodeId,target};
+            }
           }
-          json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected)));return;
+          json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected,projectWork)));return;
         }
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}
         if(action[2]==='replace-ended'){if(!exactKeys(body,['operation','round']))throw new Error('formal_request_invalid');json(res,200,await formal.replaceEndedDual(action[1]!,body.operation,body.round));return;}

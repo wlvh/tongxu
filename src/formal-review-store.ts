@@ -109,6 +109,14 @@ export class FormalReviews{
     return this.state(id);
   });}
   stage(id:string,key:string){const f=this.fixed(id),prepared=f.events.find(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.key===key)?.data;if(!prepared)throw new Error('formal_original_stage_required');const returned=f.events.find(e=>e.kind==='formal_review_stage_returned'&&e.data.key===key)?.data;if(returned)for(const ref of Object.values(returned.proof.originals) as Row[])if(this.bytes(ref.sha256).length!==ref.bytes)throw new Error('formal_original_capture_changed');if(returned?.proof.evidenceIndexSha256){const refs=JSON.parse(this.bytes(returned.proof.evidenceIndexSha256).toString());for(const ref of refs)if(this.bytes(ref.sha256).length!==ref.bytes)throw new Error('formal_original_evidence_changed');}return {stage:prepared.stage as FormalStage,dispatched:f.events.some(e=>e.kind==='formal_review_stage_dispatched'&&e.data.key===key),returned:returned??null};}
+  originalStageInputIncludes(id:string,key:string,match:(input:Row)=>boolean){
+    const {stage,returned}=this.stage(id,key);
+    if(!returned)return false;
+    const stdin=this.bytes(returned.proof.originals['stdin.ndjson'].sha256);
+    const turns=stdin.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)).filter(frame=>frame.method==='turn/start');
+    const matches=turns.filter(frame=>typeof frame.params?.input?.[0]?.text==='string'&&hash(frame.params.input[0].text)===stage.inputSha256);
+    return matches.length===1&&match(JSON.parse(matches[0].params.input[0].text));
+  }
   prepareStage(id:string,stage:FormalStage){return this.transaction(()=>{
     this.mode();validateFormalCandidate(stage.candidate);if(!exactKeys(stage,['key','role','candidate','inputSha256','systemSha256','materialSha256','actorRole','directory','authorityIntent','budgetIntent','action','authorization','resources'])||!/^round-[1-9]\d*\/(?:review|refutation-review|fact|(?:synthesis|fact|impact)-[0-3]|(?:correctness|impact)-(?:initial|exchange|final)|test-[1-9]\d*|fix)$/.test(stage.key)||!isAuthorityDigest(stage.inputSha256)||!isAuthorityDigest(stage.systemSha256)||!isAuthorityDigest(stage.materialSha256)||!['background','receiver','implementer'].includes(stage.actorRole)||!isAuthorityDigest(stage.action.formalWorkSha256)||!['reviewer','verifier_fact','verifier_impact','test','fix'].includes(stage.role)||!Array.isArray(stage.resources)||stage.resources.length>16||stage.resources.some(r=>r.operation!==id||r.authorityIntent!==stage.budgetIntent||r.actionSha256!==hash(canonical(stage.action))))throw new Error('formal_stage_binding_invalid');
     const f=this.fixed(id);

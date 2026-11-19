@@ -20,6 +20,8 @@ import {runFormalReviewRound} from './formal-review.js';
 import {QueueFormalRoundHost,type FormalFrozenRequest} from './formal-review-host.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import type {ProjectRequest} from './project-repair.js';
+import {readRepairInbox,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
+import type {SupplementTarget} from './project-chat.js';
 type Row=Record<string,any>;
 type Source={id:string;store:string;item:string};
 export type FormalWorkbenchProject={account:number;repository:number;fullName:string};
@@ -50,11 +52,11 @@ export class FormalReviewControls{
  }
  private async foregroundCheck(){try{await this.advance(false);}catch{/* The original waiting record is updated by advance; no resend or inferred publication. */}}
 
- private constructor(private path:string,private sha256:string,private entries:Array<{entry:FormalEntry;source:Source}>,private read:FormalSourceReader,private verify:()=>Promise<void>,private workbenchProject?:FormalWorkbenchProject,private readPreferences?:()=>AIPreferenceSnapshot){}
- static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>,read:FormalSourceReader=readSource,verify:()=>Promise<void>=async()=>{},workbenchProject?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot){
+ private constructor(private path:string,private sha256:string,private entries:Array<{entry:FormalEntry;source:Source}>,private read:FormalSourceReader,private verify:()=>Promise<void>,private workbenchProject?:FormalWorkbenchProject,private readPreferences?:()=>AIPreferenceSnapshot,private readWorkInbox?:ReadRepairInbox){}
+ static async load(path:string,sha256:string,sources:Source[],selected?:ReadonlySet<string>,read:FormalSourceReader=readSource,verify:()=>Promise<void>=async()=>{},workbenchProject?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot,readWorkInbox?:ReadRepairInbox){
   const bytes=await regular(path,128*1024),p=JSON.parse(bytes.toString());if(hash(bytes)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-formal-review-catalog'||!Array.isArray(p.entries)||p.entries.length>8)throw new Error('formal_catalog_invalid');
   const entries:Array<{entry:FormalEntry;source:Source}>=[];for(const e of p.entries as FormalEntry[]){if(selected&&!selected.has(e.source))continue;const source=sources.find(s=>s.id===e.source);if(!source||!exactKeys(e,['id','source','root','objects','config','issue','requiredPaths','contextPaths','repair','authorization','budgets',...(e.workflowContract!==undefined?['workflowContract']:[])])||e.workflowContract!==undefined&&e.workflowContract!=='coding-loop-v2'||!messageId(e.id)||![e.root,e.objects,e.config?.path,e.repair?.testPlan].every(p=>typeof p==='string'&&resolve(p)===p)||!exactKeys(e.config,['path','sha256'])||!isAuthorityDigest(e.config.sha256)||!exactKeys(e.issue,['number','bodySha256','adjudication'])||!Number.isSafeInteger(e.issue.number)||e.issue.number<1||!isAuthorityDigest(e.issue.bodySha256)||!e.issue.adjudication?.trim()||!paths(e.requiredPaths,32)||!paths(e.contextPaths,64)||!exactKeys(e.repair,['allowedPaths','materialPaths','protectedPaths','contract','testPlan','testPlanSha256','generatedDirectories','demonstrationFixture'])||!paths(e.repair.allowedPaths,32)||!paths(e.repair.materialPaths,64)||!paths(e.repair.protectedPaths,128)||!paths(e.repair.generatedDirectories,16)||!isAuthorityDigest(e.repair.testPlanSha256)||typeof e.repair.demonstrationFixture!=='boolean'||!e.repair.contract?.trim()||!exactKeys(e.authorization,['receive','implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['phase','ledgerId','resourceRef','unit','quantity'])||!['analysis','fix','candidate'].includes(b.phase)||!Number.isSafeInteger(b.quantity)||b.quantity<1))throw new Error('formal_entry_invalid');entries.push({entry:e,source});}
-  if(new Set(entries.map(e=>e.entry.id)).size!==entries.length)throw new Error('formal_duplicate_entry');return new FormalReviewControls(path,sha256,entries,read,verify,workbenchProject,readPreferences);
+  if(new Set(entries.map(e=>e.entry.id)).size!==entries.length)throw new Error('formal_duplicate_entry');return new FormalReviewControls(path,sha256,entries,read,verify,workbenchProject,readPreferences,readWorkInbox);
  }
  private entry(id:string){const f=this.entries.find(f=>f.entry.id===id);if(!f)throw new Error('formal_entry_not_selected');return f;}
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
@@ -80,16 +82,52 @@ export class FormalReviewControls{
   }
   return matched.length===1?matched[0]:null;
  }
- async prepare(id:string,requestId:string,previous?:Row,explicit=true,expected?:FormalSource['candidate']){
+ async workRepairInbox(target:SupplementTarget,receivedId?:string,text?:string){
+  for(const {entry,source} of this.entries){
+   const q=await QueueStore.open(source.store);
+   try{
+    const records=q.formalReviews();
+    const requests=records.forEntry(entry.id).reverse();
+    for(const s of requests){
+     const work=s.request.projectWork;
+     if(!work||canonical(work.target)!==canonical(target))continue;
+     const stages=s.stages as Array<ReturnType<typeof records.stage>>;
+     const owned=stages.some(stage=>stage.stage.role==='fix'&&stage.dispatched&&!stage.returned)||this.active.has(s.operation)||
+       !s.stopped&&(!s.terminal||s.terminal.result.status==='awaiting_publication'&&!requests.some(r=>r.request.previousOperation===s.operation));
+     const rounds=[...new Set(stages.filter(stage=>stage.stage.role==='fix').map(stage=>Number(stage.stage.key.split('/')[0]!.slice(6))))].reverse();
+     for(const round of rounds){
+      const key='round-'+round+'/fix',stage=stages.find(stage=>stage.stage.key===key)!;
+      const items=await readRepairInbox(s.request.directory,round,work);
+      const item=items?.find(item=>item.requestId===receivedId&&item.text===text);
+      if(!item)continue;
+      const proof=stage.returned?.proof?.native;
+      const delivered=proof?.company==='OpenAI'&&proof.sessionId&&records.originalStageInputIncludes(s.operation,key,input=>
+        canonical(input.projectSupplements?.items)===canonical(items));
+      return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
+        reason:delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending',
+        operation:s.operation,dispatchRecorded:stage.dispatched,delivered:!!delivered,adopted:false,coveringCandidate:null,
+        completeCapture:!!delivered,recipient:delivered?{role:'formal-repair',work:work.id,sessionId:proof.sessionId}:null,
+        report:delivered?stage.returned.result:null};
+     }
+     if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
+      reason:rounds.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
+      operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
+    }
+   }finally{q.close();}
+  }
+  return null;
+ }
+ async prepare(id:string,requestId:string,previous?:Row,explicit=true,expected?:FormalSource['candidate'],requestedWork?:FormalProjectWork){
   if(!this.accepting||!messageId(requestId))throw new Error('formal_request_invalid');await this.catalog();const {entry,source}=this.entry(id),q=await QueueStore.open(source.store);
   const checkCandidate=(candidate:FormalFrozenRequest['candidate']|FormalSource['candidate'])=>{
    if(expected&&canonical({repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target})!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
   };
-  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior){checkCandidate(prior.request.candidate);return this.public(prior);}let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');checkCandidate(live.candidate);
+  try{const records=q.formalReviews(),prior=records.forEntry(id).find(s=>s.request.id===requestId&&(!previous||s.request.round===previous.request.round+1));if(prior){checkCandidate(prior.request.candidate);if(requestedWork&&canonical(prior.request.projectWork)!==canonical(requestedWork))throw new Error('formal_original_project_work_changed');return this.public(prior);}let live=await this.read(entry,source);if(hash(live.issue.body)!==entry.issue.bodySha256)throw new Error('formal_adopted_issue_changed');checkCandidate(live.candidate);
    if(this.workbenchProject&&this.workbenchProject.fullName.toLowerCase()!==live.candidate.repository.toLowerCase())throw new Error('formal_entry_not_selected');
    const published=previous??records.forEntry(id).find(s=>!s.stopped&&s.terminal?.result.status==='awaiting_publication'&&s.terminal.result.fix.H1===live.candidate.H&&s.request.candidate.B===live.candidate.B&&s.request.candidate.target===live.candidate.target);
    const capture=()=>captureRoleAI(['reviewer','verifier_fact','verifier_impact'],live.candidate.repository),preferences=()=>this.readPreferences?withAIPreferences(this.readPreferences(),capture):capture();
    const dual=published?!!published.request.workflowReview:entry.workflowContract==='coding-loop-v2';
+   const projectWork=dual?(requestedWork??published?.request.projectWork):undefined;
    const dualSelections=dual?preferences():null;
    if(dualSelections&&dualSelections.verifier_impact?.tool!=='kimi')throw new Error('formal_second_company_not_configured');
    if(dualSelections?.reviewer&&dualSelections.reviewer.tool!=='codex')throw new Error('ai_selected_provider_not_supported_by_operation');
@@ -128,8 +166,8 @@ export class FormalReviewControls{
     workflowReview={correctness:workflow.prompt('pr_review_correctness'),impact:workflow.prompt('pr_review_impact'),
       fact:workflow.prompt('finding_verification_fact'),verificationImpact:workflow.prompt('finding_verification_impact')};
    }
-   const project:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:join(directory,'project'),objects,candidate:{kind:'github-pr',repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target},...entry.repair,findings:[],authorization:{source:entry.issue.adjudication,allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1}},workSha256=hash(canonical({materialSha256:material.sha256,configSha256:entry.config.sha256,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{})}));
-   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:published?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
+   const project:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:join(directory,'project'),objects,candidate:{kind:'github-pr',repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target},...entry.repair,findings:[],authorization:{source:entry.issue.adjudication,allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1}},workSha256=hash(canonical({materialSha256:material.sha256,configSha256:entry.config.sha256,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(projectWork?{projectWork}:{})}));
+   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:published?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{}),...(projectWork?{projectWork}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
   }finally{q.close();}
  }
  async begin(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);let state:Row;try{state=q.formalReviews().state(operation);if(state.request.entry!==id)throw new Error('formal_entry_not_selected');if(state.terminal||state.stopped)return this.public(state);}finally{q.close();}if(this.active.has(operation))return {...this.public(state),duplicate:true};if(!this.accepting)throw new Error('formal_controller_closing');const run=this.execute(id,operation);this.active.set(operation,run);run.catch(()=>{}).finally(()=>this.active.delete(operation));return {...this.public(state),controllerActive:true};}
@@ -166,7 +204,7 @@ export class FormalReviewControls{
     const closed=state.request.workflowReview?null:await host.settleRejectedReview();
     if(closed)return closed;
     try{
-     return await (state.request.workflowReview?runDualFormalReviewRound(host,state.request.workflowReview):runFormalReviewRound(host));
+     return await (state.request.workflowReview?runDualFormalReviewRound(host,state.request.workflowReview,this.readWorkInbox):runFormalReviewRound(host));
     }catch(error){
      const rejected=state.request.workflowReview?null:await host.settleRejectedReview();
      if(rejected)return rejected;

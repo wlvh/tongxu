@@ -16,11 +16,12 @@ import type {ActionRequest} from './authority-contract.js';
 import type {FormalReviews,FormalStage} from './formal-review-store.js';
 import type {DualReviewPrompts} from './formal-dual-review.js';
 import type {FormalRoundHost,OwnedFormalFact} from './formal-review.js';
+import {readRepairInbox,freezeRepairInbox,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
 import type {RepairPlan} from './repair.js';
 import {regular,exists,tree,treeHash,git,checkRepairIndex,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,processState,type Grant,type Tree,type Lease} from './repair-workspace.js';
 import {prepareProjectRepair,testProject,projectModelTestResult,bindProjectTestToCandidate,reconcileProjectTests,type ProjectRequest} from './project-repair.js';
 type Row=Record<string,any>;
-export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:string;item:string;round:number;previousOperation:string|null;candidate:FormalStage['candidate'];executionKind:'fixture'|'native_capture';workSha256:string;directory:string;material:FormalRoundHost['material'];config:FormalRoundHost['config'];configRef:{path:string;sha256:string};prompts:{prompts:FormalRoundHost['systems'];promptAssemblies:Row};project:ProjectRequest;authorization:{receive:string;implement:string;test:string};budgets:Array<{phase:'analysis'|'fix'|'candidate';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;aiSelections:Row;workflowReview?:DualReviewPrompts;workbenchProject?:{account:number;repository:number;fullName:string}};
+export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:string;item:string;round:number;previousOperation:string|null;candidate:FormalStage['candidate'];executionKind:'fixture'|'native_capture';workSha256:string;directory:string;material:FormalRoundHost['material'];config:FormalRoundHost['config'];configRef:{path:string;sha256:string};prompts:{prompts:FormalRoundHost['systems'];promptAssemblies:Row};project:ProjectRequest;authorization:{receive:string;implement:string;test:string};budgets:Array<{phase:'analysis'|'fix'|'candidate';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;aiSelections:Row;workflowReview?:DualReviewPrompts;workbenchProject?:{account:number;repository:number;fullName:string};projectWork?:FormalProjectWork};
 
 /** A host for one original operation. Every native turn, registered test and
  * atomic write passes the same authority/claim/source/stop consumers. */
@@ -128,6 +129,13 @@ export class QueueFormalRoundHost implements FormalRoundHost{
   return stage;
  }
  activeStage(){if(!this.active)throw new Error('formal_active_stage_required');return this.active;}
+ async repairInbox(read?:ReadRepairInbox){
+  const work=this.request.projectWork;if(!work)return [];
+  const prior=await readRepairInbox(this.directory,this.round,work);
+  if(prior)return prior;
+  if(!read)throw new Error('formal_repair_inbox_unavailable');
+  return freezeRepairInbox(this.directory,this.round,work,await read(work,this.operation,this.round));
+ }
  activate(stage:FormalStage){this.active=stage;this.progress(stage.key,{candidate:stage.candidate,role:stage.role});}
  submit<T>(stage:FormalStage,effect:()=>T):T{this.accepting();return this.records().effect(this.operation,stage.key,this.observations,effect,true);}
  record(stage:FormalStage,result:Row,proof:Row,originals:Record<string,Buffer>){this.records().returned(this.operation,stage.key,result,proof,originals);}

@@ -24,6 +24,7 @@ const reason=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?
 const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){return e.code!=='ESRCH';}};
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
+export type RepairInboxItem={requestId:string;originalRequestId:string;text:string;receivedAt:string};
 export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;review?(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,stillCurrent:()=>void):Promise<Row>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
@@ -49,6 +50,7 @@ export class ProjectChat{
       CREATE TABLE IF NOT EXISTS task_supplements(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),target TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0,compiled TEXT);
       CREATE TABLE IF NOT EXISTS task_supplement_groups(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),text TEXT NOT NULL,created_at TEXT NOT NULL,targets TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_supplement_members(member TEXT PRIMARY KEY REFERENCES task_supplements(id),group_id TEXT NOT NULL REFERENCES task_supplement_groups(id));
+      CREATE TABLE IF NOT EXISTS task_supplement_repair_inboxes(operation TEXT NOT NULL,round INTEGER NOT NULL,target TEXT NOT NULL,requests TEXT NOT NULL,PRIMARY KEY(operation,round));
       CREATE TABLE IF NOT EXISTS task_work_requests(id TEXT PRIMARY KEY REFERENCES messages(id),target TEXT NOT NULL,original_request TEXT,linked INTEGER NOT NULL DEFAULT 0,coordinated INTEGER NOT NULL DEFAULT 0,cancel_requested INTEGER NOT NULL DEFAULT 0,problem TEXT);
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation,created_at,id);`);
     return new ProjectChat(structuredClone(config),db,read,verify,supplements,work);
@@ -266,6 +268,26 @@ export class ProjectChat{
       WHERE s.conversation=? ORDER BY s.rowid`).all(conversation) as Row[];
   }
   private supplementText(row:Row){return (row.original_text??row.text) as string;}
+  repairInbox(scope:ProjectChatScope,target:SupplementTarget,operation:string,round:number):RepairInboxItem[]{
+    return this.transaction(()=>{
+      const selection=canonical({account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId,target});
+      const previous=this.db.prepare('SELECT target,requests FROM task_supplement_repair_inboxes WHERE operation=? AND round=?').get(operation,round) as Row|undefined;
+      if(previous&&previous.target!==selection)throw new Error('formal_repair_inbox_binding_changed');
+      const rows=this.targetSupplements(scope,target);
+      const selected=previous?(JSON.parse(previous.requests) as string[]).map(id=>{
+        const row=rows.find(r=>r.id===id);
+        if(!row||row.cancelled)throw new Error('formal_repair_inbox_binding_changed');
+        return row;
+      }):rows.filter(row=>!row.cancelled&&!row.compiled&&!this.inRepairInbox(row.id));
+      const inbox=selected.map(row=>({requestId:row.id,originalRequestId:row.original_id??row.id,text:this.supplementText(row),receivedAt:row.created_at}));
+      if(inbox.length>32||Buffer.byteLength(canonical(inbox))>192*1024)throw new Error('project_supplement_context_limit');
+      if(!previous)this.db.prepare('INSERT INTO task_supplement_repair_inboxes VALUES (?,?,?,?)').run(operation,round,selection,canonical(inbox.map(item=>item.requestId)));
+      return inbox;
+    });
+  }
+  private inRepairInbox(id:string){
+    return !!this.db.prepare('SELECT 1 FROM task_supplement_repair_inboxes, json_each(requests) WHERE json_each.value=? LIMIT 1').get(id);
+  }
   private async supplementState(scope:ProjectChatScope,conversation:string,includePlanningReports=true){
     return Promise.all(this.supplementRows(conversation).map(async r=>{
       const target=JSON.parse(r.target),text=this.supplementText(r);let original;
@@ -358,10 +380,10 @@ export class ProjectChat{
       LEFT JOIN task_supplement_groups g ON g.id=m.group_id WHERE s.id=?`).get(id) as Row|undefined;if(!r)throw new Error('project_supplement_not_found');this.conversationRow(scope,r.conversation);
     if(r.cancelled)return {requestId:id,cancelled:true,duplicate:true,newModelInputs:0};
     if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled,this.supplementText(r));
-    this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
+    this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');if(this.inRepairInbox(id))throw new Error('formal_repair_supplement_already_reserved');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
   }
   private targetSupplements(scope:ProjectChatScope,target:SupplementTarget){
-    return this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s JOIN conversations c ON c.id=s.conversation
+    return this.db.prepare(`SELECT s.*,g.id AS original_id,g.text AS original_text FROM task_supplements s JOIN conversations c ON c.id=s.conversation
       LEFT JOIN task_supplement_members m ON m.member=s.id LEFT JOIN task_supplement_groups g ON g.id=m.group_id
       WHERE c.account=? AND c.repository=? AND c.node_id=? AND s.target=? ORDER BY s.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
   }
@@ -373,7 +395,7 @@ export class ProjectChat{
       if(row.compiled&&state.successful)continue;
       if(row.compiled?!state.resumable:!state.ready)break;
       const compiled=row.compiled??'supplement-'+row.id;
-      if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
+      if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');if(this.inRepairInbox(row.id))throw new Error('formal_repair_supplement_already_reserved');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
       const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};
       await this.supplements.work(scope,target,compiled,this.supplementText(row),beforeRegistration);break;
     }
