@@ -80,6 +80,7 @@ export async function readCodingWorkflowSource(root = includedSource) {
   return {
     identity,
     entrypoint,
+    entrypointSource: files.get(entrypoint)!,
     adoption,
     sources: ordered.map(reference),
     manifest: [...roles].map(([use, promptPaths]) => ({ use, promptPaths: [...promptPaths] })),

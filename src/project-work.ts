@@ -1,8 +1,10 @@
 import {captureImplementationAI} from './implementation-ai.js';
 import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
+import {readProjectIssueReview,runProjectIssueReview} from './project-issue-review.js';
+import {readProjectIssueDraft,runProjectIssueDraft} from './project-issue-draft.js';
 import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
 import {readReviewedSupplement,type SupplementReviewInput} from './project-supplement-review.js';
-import {selectedProviderOptions} from './ai-settings.js';
+import {currentAIChoice,selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
 import {projectValidationConstraint,readableValidationConstraint} from './work-validation-definition.js';
@@ -10,7 +12,7 @@ import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {assertWorkEnvironmentEnded} from './project-work-environment.js';
-import {ProjectWorkStore,type ProjectWorkDraft,type ProjectDevelopment} from './project-work-store.js';
+import {ProjectWorkStore,workProjectKey,type ProjectWorkDraft,type ProjectDevelopment} from './project-work-store.js';
 import {prepareWorkProposal,readWorkProposal,checkWorkMaterial,fixedGit,readWorkPreparationDiagnostic,type FixedRepository} from './project-work-preparation.js';
 import {applyWorkOwnerProposal,receiveWorkResult,verifyRepositoryPath,ensureWorkCommit,workAuthorityProfile,writeFixed} from './project-work-runtime.js';
 import {exactKeys,isAuthorityDigest,type AuthorityProfile,type ScopeBody} from './authority-contract.js';
@@ -27,14 +29,14 @@ import type {BoundedCodexSession} from './repair-native.js';
 type Row=Record<string,any>;
 export type ProjectWorkConfiguration={root:string;executor:{path:string;sha256:string};verification:DockerConfig;preparationTimeoutMs?:number;owner:Omit<AuthorityProfile,'repository'|'issue'|'kind'|'schemaVersion'>};
 type Issue={number:number;title:string;body:string;url:string;defaultHead?:string|null};
-type Job={stop:boolean;promise:Promise<void>;session?:BoundedCodexSession};
+type Job={stop:boolean;promise:Promise<void>;session?:BoundedCodexSession;stopPeer?:()=>Promise<void>};
 const now=()=>new Date().toISOString();
 const problem=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?e.message:'project_work_preparation_failed';
 const sourceFor=(scope:ProjectChatScope,d:ProjectWorkDraft):FixedRepository=>({path:d.preparation!.repositoryPath,H:d.preparation!.H,repository:scope.repository.fullName});
 /** Product-owned preparation around the existing implementation consumer.
  * This store has no independent execution queue, authority or model results. */
 export class ProjectWork{
-  private active=new Map<string,Job>();private explanations=new Map<string,Job>();private receiving=new Map<string,Promise<unknown>>();private accepting=true;
+  private active=new Map<string,Job>();private explanations=new Map<string,Job>();private issueProposals=new Map<string,Job>();private issueReviews=new Map<string,Job>();private receiving=new Map<string,Promise<unknown>>();private accepting=true;
   private constructor(private config:ProjectWorkConfiguration,private store:ProjectWorkStore,private readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,private verify:(scope:ProjectChatScope)=>Promise<void>,private controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){}
   static async open(reference:{path:string;sha256:string},readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,verify:(scope:ProjectChatScope)=>Promise<void>,controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){
     const bytes=await regular(reference.path,128*1024);if(hash(bytes)!==reference.sha256)throw new Error('project_work_configuration_changed');const c=JSON.parse(bytes.toString()) as ProjectWorkConfiguration;
@@ -55,6 +57,92 @@ export class ProjectWork{
   catalogs(scope:ProjectChatScope){return this.store.list(scope).flatMap(d=>[...(d as Row).prior??[],d].flatMap(v=>v.catalog?[v.catalog]:[])) as Array<{path:string;sha256:string}>;}
   currentSources(scope:ProjectChatScope){return new Set(this.store.list(scope).flatMap(d=>d.source&&!d.stopRequested?[d.source]:[]));}
   private save(scope:ProjectChatScope,d:ProjectWorkDraft,kind:string,detail:string){d.events.push({at:now(),kind,detail});if(d.events.length>256)throw new Error('project_work_history_limit');return this.store.save(scope,d,d.revision);}
+  private issueDraftRoot(scope:ProjectChatScope){
+    return join(this.config.root,'issue-drafts',hash(workProjectKey(scope)));
+  }
+  private async issueDraftState(scope:ProjectChatScope){
+    const saved=this.store.issueProposal(scope);if(!saved)return null;
+    const state=this.issueProposals.has(join(this.issueDraftRoot(scope),saved.id))?{state:'running',requestId:saved.id}
+      :await readProjectIssueDraft(join(this.issueDraftRoot(scope),saved.id),saved.id,scope.repository.fullName);
+    return {requestId:saved.id,goal:saved.goal,...(state??{state:'saved'})};
+  }
+  async draftIssue(scope:ProjectChatScope,body:unknown){
+    const b=body as Row;
+    if(!exactKeys(b,['requestId','goal'])||!chatId(b.requestId)||typeof b.goal!=='string'||!b.goal.trim()||b.goal.length>2048||b.goal.includes('\0'))throw new Error('project_issue_draft_invalid');
+    const H=scope.repository.defaultHead;if(!H||!/^[a-f0-9]{40}$/.test(H))throw new Error('project_work_repository_commit_required');
+    const root=this.issueDraftRoot(scope),directory=join(root,b.requestId),saved=this.store.issueProposal(scope,b.requestId);
+    if(saved&&saved.goal!==b.goal)throw new Error('project_issue_draft_request_is_fixed');
+    if(this.issueProposals.has(directory))return {requestId:b.requestId,state:'running'};
+    if(await exists(directory)){
+      const original=await readProjectIssueDraft(directory,b.requestId,scope.repository.fullName);
+      if(saved&&original?.state==='ready')this.store.sealIssueProposal(scope,b.requestId,original.bodySha256);
+      return original;
+    }
+    await this.verify(scope);
+    const config=await this.executor(true);
+    const head=this.store.registerIssueProposal(scope,b.requestId,b.goal,H);
+    if(this.issueProposals.has(directory))return {requestId:b.requestId,state:'running'};
+    const job:Job={stop:false,promise:Promise.resolve()};
+    const allowed=()=>{if(!this.accepting||job.stop)throw new Error('project_work_closing');};
+    const check=async()=>{allowed();await this.verify(scope);allowed();};
+    allowed();this.issueProposals.set(directory,job);
+    job.promise=(async()=>{
+      await mkdir(root,{recursive:true,mode:0o700});
+      await runProjectIssueDraft(directory,{requestId:b.requestId,repository:scope.repository.fullName,head,goal:b.goal},config,check,allowed,session=>{job.session=session;});
+      const draft=await readProjectIssueDraft(directory,b.requestId,scope.repository.fullName);
+      if(draft?.state!=='ready')throw new Error('project_issue_draft_original_changed');
+      this.store.sealIssueProposal(scope,b.requestId,draft.bodySha256);
+    })().catch(()=>{/* Keep the exact prior draft attempt in place. */}).finally(()=>this.issueProposals.delete(directory));
+    return {requestId:b.requestId,state:'running'};
+  }
+  private issueReviewMaterial(scope:ProjectChatScope,d:ProjectWorkDraft){
+    const head=(d.issue as Row).defaultHead??d.preparation?.H;
+    if(typeof head!=='string'||!/^[a-f0-9]{40}$/.test(head))return null;
+    return {work:d.id,repository:scope.repository.fullName,head,goal:d.issue.title,
+      issue:{number:d.issue.number,body:d.issue.body,bodySha256:d.issue.bodySha256,url:d.issue.url}};
+  }
+  private issueReviewPath(d:ProjectWorkDraft){
+    const head=(d.issue as Row).defaultHead??d.preparation?.H;
+    return join(this.config.root,'works',d.id,'issue-review-'+hash(canonical([d.issue.bodySha256,head])));
+  }
+  private async issueReviewState(scope:ProjectChatScope,d:ProjectWorkDraft){
+    const material=this.issueReviewMaterial(scope,d);if(!material)return null;
+    const path=this.issueReviewPath(d);
+    return this.issueReviews.has(path)?{state:'running' as const,issueBodySha256:d.issue.bodySha256}:readProjectIssueReview(path,material);
+  }
+  async reviewIssue(scope:ProjectChatScope,id:string,body:unknown){
+    const d=this.store.get(scope,id),b=body as Row,material=this.issueReviewMaterial(scope,d);
+    if(!exactKeys(b,['issueBodySha256'])||b.issueBodySha256!==d.issue.bodySha256||!material||d.stopRequested)throw new Error('project_issue_review_binding_changed');
+    if(!/^#{1,6} 用户视角验收计划\s*\n[\s\S]*\S/m.test(d.issue.body))throw new Error('project_issue_review_acceptance_plan_required');
+    const path=this.issueReviewPath(d),previous=await this.issueReviewState(scope,d);
+    if(previous)return previous;
+    const peer=currentAIChoice('verifier_impact');
+    if(peer?.tool!=='kimi'||peer.project.repository!==scope.repository.id||peer.project.account!==scope.account.id||peer.project.nodeId!==scope.repository.nodeId)throw new Error('project_issue_review_second_company_required');
+    const job:Job={stop:false,promise:Promise.resolve()};
+    const admit=()=>{
+      const current=this.store.get(scope,id);
+      if(!this.accepting||job.stop||current.stopRequested||canonical(this.issueReviewMaterial(scope,current))!==canonical(material))throw new Error('project_issue_review_binding_changed');
+    };
+    const verify=async()=>{
+      admit();await this.verify(scope);const issue=await this.readIssue(scope,d.issue.number);
+      if(issue.url!==material.issue.url||hash(issue.body)!==material.issue.bodySha256)throw new Error('project_issue_review_binding_changed');
+      admit();
+    };
+    await verify();
+    if(this.issueReviews.has(path))return {state:'running',issueBodySha256:d.issue.bodySha256};
+    const reviewed=this.store.get(scope,id);
+    if(!reviewed.issueReviewRequired)this.save(scope,{...reviewed,issueReviewRequired:true},'issue_review_requested','Formal review requested for the exact Issue body and acceptance plan');
+    this.issueReviews.set(path,job);
+    job.promise=(async()=>{
+      await mkdir(join(this.config.root,'works',id),{recursive:true,mode:0o700});
+      await runProjectIssueReview(path,material,peer,await this.executor(true),verify,admit,session=>{job.session=session;},stop=>{job.stopPeer=stop;});
+    })().catch(()=>{/* No automatic input replay after an original capture is created. */}).finally(()=>this.issueReviews.delete(path));
+    return {state:'running',issueBodySha256:d.issue.bodySha256};
+  }
+  private async requireIssueReview(scope:ProjectChatScope,d:ProjectWorkDraft){
+    const review=await this.issueReviewState(scope,d);
+    if((d.issueReviewRequired||review)&&(review?.state!=='returned'||!review.approved))throw new Error('project_issue_review_approval_pending');
+  }
   async settings(scope:ProjectChatScope,body:unknown){
     if(!exactKeys(body,['repositoryPath'])||typeof (body as Row).repositoryPath!=='string'||(body as Row).repositoryPath.length>4096||(body as Row).repositoryPath.includes('\0'))throw new Error('project_work_settings_invalid');await this.verify(scope);
     try{const repositoryPath=await verifyRepositoryPath(scope,(body as Row).repositoryPath);this.store.setSettings(scope,{repositoryPath,verified:true,problem:null});return {repositoryPath,saved:true};}
@@ -67,7 +155,9 @@ export class ProjectWork{
     if(!b.newWork){const previous=this.store.list(scope).find(d=>d.issue.number===b.issueNumber);if(previous)return previous;}
     let issue:Issue={number:b.issueNumber,title:'Issue #'+b.issueNumber,body:'',url:`https://github.com/${scope.repository.fullName}/issues/${b.issueNumber}`},failure:string|null=null;
     try{issue=await this.readIssue(scope,b.issueNumber);}catch(e){failure=problem(e);}
-    const at=now();return this.store.create(scope,{id:b.requestId,conversationId:b.conversationId,issue:{...issue,bodySha256:hash(issue.body)},goal:b.goal,createdAt:at,updatedAt:at,revision:0,version:0,requestId:randomUUID(),stage:failure?'needs_input':'draft',problem:failure,events:[{at,kind:'draft_saved',detail:'Saved without model input or implementation'}]},!b.newWork);
+    const at=now(),bodySha256=hash(issue.body),fromProposal=this.store.originatedFromProposal(scope,bodySha256);
+    return this.store.create(scope,{id:b.requestId,conversationId:b.conversationId,issue:{...issue,bodySha256},goal:b.goal,
+      ...(fromProposal?{issueReviewRequired:true as const}:{}),createdAt:at,updatedAt:at,revision:0,version:0,requestId:randomUUID(),stage:failure?'needs_input':'draft',problem:failure,events:[{at,kind:'draft_saved',detail:'Saved without model input or implementation'}]},!b.newWork);
   }
   private async recover(scope:ProjectChatScope,d:ProjectWorkDraft){
     if(d.stage!=='preparing'||this.active.has(d.id))return d;
@@ -84,14 +174,14 @@ export class ProjectWork{
     const works=[];for(const d of this.store.list(scope))works.push(await this.recover(scope,d));
     const entries=works.some(d=>d.catalog)?await(await this.controls(scope)).state():[];
     const development=this.activeDevelopment(scope);
-    return {available:true,settings:this.store.settings(scope),development:development&&{issue:development.issue,expiresAt:development.expiresAt},works:works.map(d=>({id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),execution:entries.find(e=>e.id===d.source)?.requests.find((r:Row)=>r.id===d.requestId)??null})),supported:'Registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
+    return {available:true,settings:this.store.settings(scope),issueProposal:await this.issueDraftState(scope),development:development&&{issue:development.issue,expiresAt:development.expiresAt},works:works.map(d=>({id:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url},conversationId:d.conversationId,version:d.version,stage:d.stage,problem:d.problem,hasImplementation:!!d.catalog,stopRequested:!!d.stopRequested,delivery:d.delivery,createdAt:d.createdAt,updatedAt:d.updatedAt,active:this.active.has(d.id),issueReviewActive:this.issueReviews.has(this.issueReviewPath(d)),execution:entries.find(e=>e.id===d.source)?.requests.find((r:Row)=>r.id===d.requestId)??null})),supported:'Registered Docker Node validation; separate result branch; no automatic merge',newModelInputs:0};
   }
   async detail(scope:ProjectChatScope,id:string){
     const draft=await this.recover(scope,this.store.get(scope,id));const result=draft.catalog?await this.implementationState(scope,draft):null;
     const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
     let validationProblem:string|null=null;if(draft.preparation?.proposal&&!draft.catalog){try{validationProblem=(await readWorkProposal(draft.preparation.directory,sourceFor(scope,draft))).validationProblem??null;}catch{}}
     const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
-    return {draft,execution:result,history,validationProblem,
+    return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
@@ -130,7 +220,7 @@ export class ProjectWork{
       let workflowPrompt:CodingWorkflowPrompt|undefined,workflowProblem:string|undefined;
       try{workflowPrompt=(await readCodingWorkflowSource()).prompt('engineering_owner');}
       catch(error){workflowProblem=problem(error);}
-      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,...(workflowPrompt?{workflowPrompt}:{}),...(workflowProblem?{workflowProblem}:{}),inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
+      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},...(this.store.originatedFromProposal(scope,hash(issue.body))?{issueReviewRequired:true as const}:{}),version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,...(workflowPrompt?{workflowPrompt}:{}),...(workflowProblem?{workflowProblem}:{}),inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
       const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
@@ -191,7 +281,7 @@ export class ProjectWork{
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
     }return this.correctValidation(scope,id);
   }
-  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
+  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),this.issueReviews.get(this.issueReviewPath(d)),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await Promise.allSettled([job.session?.close(),job.stopPeer?.()]);}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
     await mkdir(directory,{recursive:true,mode:0o700});
@@ -204,6 +294,7 @@ export class ProjectWork{
     if(!exactKeys(b,['version','proposalSha256',...(b.projectDevelopment===true?['projectDevelopment']:[])])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');
     const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(b.projectDevelopment===true&&d.restart)throw new Error('project_development_restart_requires_original_scope');if(d.stage==='authorizing'&&!!d.projectDevelopment!==(b.projectDevelopment===true))throw new Error('project_work_authorization_mode_changed');if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
     if(b.projectDevelopment===true&&d.preparation?.workflowProblem)throw new Error(d.preparation.workflowProblem);
+    await this.requireIssueReview(scope,d);
     if(this.active.has(id))return {active:true,alreadyAuthorized:undefined,currentCheckSha256:undefined};if(d.catalog)return {active:undefined,alreadyAuthorized:true,currentCheckSha256:d.currentCheck?.sha256};
     await this.verify(scope);if(!d.currentCheck)captureImplementationAI(scope.repository.fullName);const verified=await readWorkProposal(d.preparation.directory,sourceFor(scope,d)),issue=await this.readIssue(scope,d.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;
     if(verified.validationProblem)throw new Error(verified.validationProblem);
@@ -226,6 +317,7 @@ export class ProjectWork{
       await verifyRepositoryPath(scope,draft.preparation!.repositoryPath);await checkWorkMaterial(sourceFor(scope,draft),verified.proposal);
       draft=this.save(scope,{...draft,stage:'authorizing',problem:null,...(b.projectDevelopment===true?{projectDevelopment:true as const}:{})},'confirmation_requested','Explicit scope/implementation/test confirmation; exact Owner source still required');
       if(b.projectDevelopment===true&&draft.preparation?.workflowProblem)throw new Error(draft.preparation.workflowProblem);
+      await this.requireIssueReview(scope,draft);
       const proposal=verified.proposal,source='work-'+draft.id+'-v'+draft.version,target='tongxu/work-'+draft.id+'-v'+draft.version;
       const expiresAt=draft.currentCheck?assertWorkCurrent(draft.currentCheck,this.currentBinding(draft)).expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(this.config.owner.maxGrantDurationMs,86400000)).toISOString();
       let grant=b.projectDevelopment===true?this.activeDevelopment(scope):null;
@@ -257,7 +349,7 @@ export class ProjectWork{
       const configPath=join(this.directory(draft),'executor.json');await writeFixed(configPath,canonical(config));
       const plan={schemaVersion:2,executor:this.config.verification,tools:[{id:'work-acceptance',argv:[this.config.verification.node,'--input-type=module','--eval',proposal.validation.script],timeoutMs:30000}]};
       const testPlan=join(this.directory(draft),'tests.json');await writeFixed(testPlan,canonical(plan));
-      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:scopeVersion,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:grant?[]:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256,goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,...(grant?{projectFiles:true as const,...(draft.preparation!.workflowPrompt?{workflowPrompt:draft.preparation!.workflowPrompt}:{})}:{materialView:'selected_files' as const}),workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
+      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:scopeVersion,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:grant?[]:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256+((await this.issueReviewState(scope,draft))?.state==='returned'?' · exchanged Issue review '+draft.issue.bodySha256:''),goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,...(grant?{projectFiles:true as const,...(draft.preparation!.workflowPrompt?{workflowPrompt:draft.preparation!.workflowPrompt}:{})}:{materialView:'selected_files' as const}),workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
       const bytes=canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}),path=join(this.directory(draft),'implementation.json');await writeFixed(path,bytes);
       draft=this.store.get(scope,id);draft=this.save(scope,{...draft,source,catalog:{path,sha256:hash(bytes)},stage:'execution',problem:null},'implementation_linked','Immutable original consumer input; execution state remains in original queue');
       const controls=await this.controls(scope);await controls.prepare(source,{requestId:draft.requestId,issueNumber:draft.issue.number});if(job.stop)throw new Error('project_work_preparation_stopped');await controls.begin(source,draft.requestId);
@@ -344,5 +436,5 @@ export class ProjectWork{
     }catch(e){d=this.store.get(scope,id);this.save(scope,{...d,stage:'waiting_return',problem:problem(e),delivery:{...d.delivery!,problem:problem(e)}},'result_receipt_waiting',problem(e));throw e;}
   }
   async onFinished(scope:ProjectChatScope,target:SupplementTarget){const draft=this.store.list(scope).find(d=>d.source===target.source);if(draft)await this.receive(scope,draft.id);}
-  async drain(){this.accepting=false;for(const job of [...this.active.values(),...this.explanations.values()]){job.stop=true;await job.session?.close();}await Promise.allSettled([...this.active.values(),...this.explanations.values()].map(j=>j.promise));await Promise.allSettled(this.receiving.values());this.store.close();}
+  async drain(){this.accepting=false;for(const job of [...this.active.values(),...this.explanations.values(),...this.issueProposals.values(),...this.issueReviews.values()]){job.stop=true;await Promise.allSettled([job.session?.close(),job.stopPeer?.()]);}await Promise.allSettled([...this.active.values(),...this.explanations.values(),...this.issueProposals.values(),...this.issueReviews.values()].map(j=>j.promise));await Promise.allSettled(this.receiving.values());this.store.close();}
 }

@@ -51,6 +51,10 @@ export const implementationSchema = {
 };
 export const implementationOutputSchema=(candidateH:string)=>({...implementationSchema,properties:{...implementationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
 const isImplementationOutputSchema=(schema:unknown,candidateH:string)=>isDeepStrictEqual(schema,implementationSchema)||isDeepStrictEqual(schema,implementationOutputSchema(candidateH));
+export const projectIssueDraftSchema={
+  type:'object',properties:{candidateH:{type:'string'},title:{type:'string'},report:{type:'string'}},
+  required:['candidateH','title','report'],additionalProperties:false
+};
 export const deliveryExplanationSchema={
   type:'object',properties:{candidateH:{type:'string'},report:{type:'string'}},
   required:['candidateH','report'],additionalProperties:false
@@ -98,6 +102,11 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
   // manifest/batch. Here the common native transport checks the actual schema
   // and candidate before recording this turn as a complete structured result.
   if(preparationSchemaFamily(schema)){if(!isWorkPreparationSchema(schema,candidate.H))throw new Error('native_project_preparation_output_required');parseWorkPreparationOutput(report,candidate.H);return;}
+  if(isDeepStrictEqual(schema,projectIssueDraftSchema)){
+    if(!report||Object.keys(report).sort().join()!=='candidateH,report,title'||report.candidateH!==candidate.H||
+      typeof report.title!=='string'||!report.title.trim()||report.title.length>4096||typeof report.report!=='string'||!report.report.trim())throw new Error('project_issue_draft_invalid');
+    return;
+  }
   if(isDeepStrictEqual(schema,deliveryExplanationSchema)){
     if(!report||Object.keys(report).sort().join()!=='candidateH,report'||report.candidateH!==candidate.H||typeof report.report!=='string'||!report.report.trim())throw new Error('invalid_delivery_explanation');
     return;

@@ -127,7 +127,7 @@ export class AISettings{
     return current();
   }
   async workflow(use?: string,scope?:AISettingsScope) {
-    const {prompt, ...source} = await readCodingWorkflowSource();
+    const {prompt,entrypointSource:_,...source} = await readCodingWorkflowSource();
     return {
       activeRevision: upstreamRevision,
       candidate: source,
