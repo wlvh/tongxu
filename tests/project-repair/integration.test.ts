@@ -1067,6 +1067,60 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal((await readFile(f.trace,'utf8')).split('model-input').length,beforePreview.toString().split('model-input').length+3);
      t.diagnostic(JSON.stringify({integrationTested:combined.value.H,base:nextBase,tree:combined.value.T,
        testTools:combined.value.tests.tools.map((tool:any)=>tool.id),integrationFailed:failedCombination.value.H,failedBase:badBase}));
+     // Exercise the ordinary consumer itself with the authenticated-handoff
+     // boundary supplied here. The formal HTTP tests cover producing this proof.
+     const cCatalog=receiptC.draft.catalog,entryC=JSON.parse(await readFile(cCatalog.path,'utf8')).entries[0],cQueue=await QueueStore.open(entryC.store);
+     let currentC;
+     try{currentC=cQueue.issueImplementations().requests(entryC.id).find(s=>s.result?.H1===receiptC.draft.delivery.H);}
+     finally{cQueue.close();}
+     assert.ok(currentC?.plan);
+     const beforeC=receiptC.draft.delivery.H,formalWorkspace=join(f.root,'published-repair-predecessor'),formalValidation=join(f.root,'formal-predecessor-tests.json');
+     await git(f.objects,['clone','--quiet','--no-hardlinks',currentC.plan.workspace,formalWorkspace]);
+     await writeFile(join(formalWorkspace,'formal-repair.mjs'),'export const preservedRepair = true;\n');
+     await git(formalWorkspace,['add','--','formal-repair.mjs']);
+     await git(formalWorkspace,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','verified formal predecessor marker']);
+     const formalH=await git(formalWorkspace,['rev-parse','HEAD']);
+     assert.equal(await git(formalWorkspace,['rev-parse','HEAD^']),beforeC);
+     await writeFile(formalValidation,canonical({schemaVersion:2,executor:docker,tools:[{
+       id:'formal-predecessor-marker',argv:[docker.node,'--input-type=module','--eval',
+         "import assert from 'node:assert/strict';import {preservedRepair} from './formal-repair.mjs';assert.equal(preservedRepair,true);"],
+       timeoutMs:30000
+     }]}));
+     const proof={operation:randomUUID(),round:1,H:formalH,sessionId:'explicit-formal-proof-fixture',report:{decision:'repaired'},
+       published:{previousH:beforeC,workspace:formalWorkspace,reviewOperation:randomUUID(),
+         reviewMaterialSha256:'a'.repeat(64),requirementsSha256:'b'.repeat(64),publicationSha256:'c'.repeat(64),fixSha256:'d'.repeat(64),
+         testPlans:[{path:formalValidation,sha256:hash(await readFile(formalValidation))}],protectedPaths:['formal-repair.mjs'],
+         image:docker.image,contract:'Keep the proven repair marker.',revisions:[]}};
+     const lateId='supplement-'+randomUUID(),lateText='Also mark corrected downloads.';
+     const lateTarget={source:targetC.source,requestId:targetC.requestId,task:targetC.task,operation:targetC.operation};
+     const approvedLate={inputSha256:hash(lateId),reviewRun:hash(lateText),requirement:'Expose whether a download is corrected.',
+       acceptance:['The corrected download marker is true.'],
+       validation:{description:'Corrected download marker',script:"import assert from 'node:assert/strict';import {correctedDownload} from './src/normalize.mjs';assert.equal(correctedDownload,true);"},replies:[]};
+     const empty=join(f.root,'isolated-continuation-catalog.json');
+     await writeFile(empty,canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[]}));
+     const controls=await IssueImplementationControls.load(empty,hash(await readFile(empty)),entryC.repository,async n=>{
+       const result=(await detail(c)).draft.issue;assert.equal(result.number,n);return result;
+     },async()=>{});
+     await controls.includeGenerated([cCatalog]);
+     controls.setEndedRepair(async(selected,id,received,operation)=>canonical(selected)===canonical(lateTarget)&&
+       'supplement-'+id===lateId&&received===lateText&&operation===proof.operation?proof:undefined);
+     controls.setSupplementReview(async(input,kind)=>kind==='fixture'&&input.H1===formalH&&input.formalBase===hash(canonical(proof.published))&&
+       input.requestId===lateId&&input.text===lateText?approvedLate:null);
+     try{
+       assert.equal(await controls.workSupplement(lateTarget,lateId,lateText,()=>{},proof),lateId);
+       const returned=await until(async()=>{const entry=(await controls.state()).find(row=>row.id===entryC.id);return entry?.requests.find(row=>row.id===lateId);},
+         row=>!!row&&!row.controllerActive&&!!(row.status||row.reason));
+       assert.equal(returned?.status,'completed',JSON.stringify(returned));
+       const after=await controls.report(entryC.id,lateId),completion=await controls.readSupplement(lateTarget,lateId,lateText);
+       assert.equal(after.H0,formalH);
+       assert.ok(after.tests.passed);
+       assert.equal(after.tests.tools.some((tool:any)=>tool.id==='formal-predecessor-marker'),true);
+       assert.equal(completion.adopted,true);
+       assert.equal(completion.coveringCandidate,after.H1);
+       assert.notEqual(after.H1,formalH);
+       t.diagnostic(JSON.stringify({ordinaryHandoff:lateId,original:beforeC,formalRepair:formalH,adopted:approvedLate.inputSha256,
+         recipient:completion.recipient,candidate:after.H1,actualTests:after.tests.tools.map((tool:any)=>tool.id)}));
+     }finally{await controls.drain();}
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;
