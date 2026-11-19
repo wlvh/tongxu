@@ -423,7 +423,11 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(!exactKeys(body,['requestId']))throw new Error('project_chat_id_invalid');
           json(res,202,await withAI(()=>chat.continueQuestion(selection,body.requestId)));return;
         }
-        if(url.pathname.endsWith('/supplement')){const result=await chat.receiveSupplement(selection,body);json(res,202,result);void chat.processSupplements(selection,body.target).catch(()=>{});return;}
+        if(url.pathname.endsWith('/supplement')){
+          const result=await chat.receiveSupplement(selection,body);json(res,202,result);
+          if(!result.duplicate)for(const target of ('targets' in result?result.targets:[body.target])??[])void chat.processSupplements(selection,target).catch(()=>{});
+          return;
+        }
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
         if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
         if(url.pathname.endsWith('/continue-work')||url.pathname.endsWith('/cancel-work')||url.pathname.endsWith('/stop-work')){if(!exactKeys(body,['requestId']))throw new Error('project_work_request_invalid');json(res,200,url.pathname.endsWith('/cancel-work')?await chat.cancelWork(selection,body.requestId):url.pathname.endsWith('/stop-work')?await chat.stopWork(selection,body.requestId):await withAI(()=>chat.coordinateWork(selection,body.requestId)));return;}

@@ -45,6 +45,8 @@ export class ProjectChat{
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,account INTEGER NOT NULL,repository INTEGER NOT NULL,node_id TEXT NOT NULL,name TEXT NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),parent TEXT,question TEXT NOT NULL,phase TEXT NOT NULL,created_at TEXT NOT NULL,finished_at TEXT,pid INTEGER,owner TEXT,problem TEXT,report TEXT,receipt TEXT);
       CREATE TABLE IF NOT EXISTS task_supplements(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),target TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0,compiled TEXT);
+      CREATE TABLE IF NOT EXISTS task_supplement_groups(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),text TEXT NOT NULL,created_at TEXT NOT NULL,targets TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_supplement_members(member TEXT PRIMARY KEY REFERENCES task_supplements(id),group_id TEXT NOT NULL REFERENCES task_supplement_groups(id));
       CREATE TABLE IF NOT EXISTS task_work_requests(id TEXT PRIMARY KEY REFERENCES messages(id),target TEXT NOT NULL,original_request TEXT,linked INTEGER NOT NULL DEFAULT 0,coordinated INTEGER NOT NULL DEFAULT 0,cancel_requested INTEGER NOT NULL DEFAULT 0,problem TEXT);
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation,created_at,id);`);
     return new ProjectChat(structuredClone(config),db,read,verify,supplements,work);
@@ -125,7 +127,7 @@ export class ProjectChat{
     if(!this.accepting)throw new Error('project_chat_closing');const b=structuredClone(body) as Row;
     if(!exactKeys(b,['conversationId','requestId','parent','question',...(b&&Object.hasOwn(b,'workTarget')?['workTarget']:[])])||!chatId(b.conversationId)||!chatId(b.requestId)||!(b.parent===null||chatId(b.parent))||typeof b.question!=='string'||!b.question.trim()||b.question.length>8192||b.question.includes('\0')||Object.hasOwn(b,'workTarget')&&!projectWorkTarget(b.workTarget))throw new Error('project_chat_question_invalid');
     const duplicate=()=>{
-      if(this.db.prepare('SELECT id FROM task_supplements WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
+      if(this.db.prepare('SELECT id FROM task_supplements WHERE id=? UNION SELECT id FROM task_supplement_groups WHERE id=?').get(b.requestId,b.requestId))throw new Error('project_chat_request_changed');
       const old=this.db.prepare('SELECT * FROM messages WHERE id=?').get(b.requestId) as Row|undefined;
       if(!old)return null;
       this.conversationRow(scope,old.conversation);
@@ -222,43 +224,95 @@ export class ProjectChat{
     this.transaction(()=>this.db.prepare('UPDATE task_work_requests SET cancel_requested=1 WHERE id=?').run(id));
     try{const current=this.workRow(id)!,result=await this.work.cancel(scope,JSON.parse(current.target),this.workRequest(row,current));this.db.prepare('UPDATE task_work_requests SET problem=NULL WHERE id=?').run(id);return {requestId:id,...result};}catch(e){this.db.prepare('UPDATE task_work_requests SET problem=? WHERE id=?').run(reason(e),id);throw e;}
   }
-  private supplementRows(conversation:string){return this.db.prepare('SELECT * FROM task_supplements WHERE conversation=? ORDER BY rowid').all(conversation) as Row[];}
+  private supplementRows(conversation:string){
+    return this.db.prepare(`SELECT s.*,g.id AS original_id,g.text AS original_text FROM task_supplements s
+      LEFT JOIN task_supplement_members m ON m.member=s.id LEFT JOIN task_supplement_groups g ON g.id=m.group_id
+      WHERE s.conversation=? ORDER BY s.rowid`).all(conversation) as Row[];
+  }
+  private supplementText(row:Row){return (row.original_text??row.text) as string;}
   private async supplementState(scope:ProjectChatScope,conversation:string){
-    return Promise.all(this.supplementRows(conversation).map(async r=>{let original;try{original=this.supplements?await this.supplements.read(scope,JSON.parse(r.target),r.compiled,r.text,r.id):{reason:'project_supplement_consumer_unavailable'};}catch(e){original={reason:reason(e)};}return {id:r.id,text:r.text,target:JSON.parse(r.target),createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};}));
+    return Promise.all(this.supplementRows(conversation).map(async r=>{
+      const target=JSON.parse(r.target),text=this.supplementText(r);let original;
+      try{original=this.supplements?await this.supplements.read(scope,target,r.compiled,text,r.id):{reason:'project_supplement_consumer_unavailable'};}
+      catch(e){original={reason:reason(e)};}
+      return {id:r.id,...(r.original_id?{originalRequestId:r.original_id}:{}),text,target,createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};
+    }));
   }
   async receiveSupplement(scope:ProjectChatScope,body:unknown){
     if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');const b=body as Row;
+    if(b&&Object.hasOwn(b,'targets'))return this.receiveSharedSupplement(scope,b);
     if(!exactKeys(b,['conversationId','requestId','target','text'])||!chatId(b.conversationId)||!chatId(b.requestId)||!exactKeys(b.target,['source','requestId','task','operation'])||typeof b.text!=='string'||!b.text.trim()||b.text.length>8192||b.text.includes('\0'))throw new Error('project_supplement_invalid');
     const target=canonical(b.target),old=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(b.requestId) as Row|undefined;
     if(old){this.conversationRow(scope,old.conversation);if(old.conversation!==b.conversationId||old.target!==target||old.text!==b.text)throw new Error('project_supplement_id_is_fixed');return {requestId:b.requestId,received:true,duplicate:true,newModelInputs:0};}
     await this.verify(scope);const targets=await this.supplements.targets(scope);if(!targets.some(({title,...t})=>canonical(t)===target))throw new Error('project_supplement_target_not_registered');await this.verify(scope);
     this.transaction(()=>{
       const repeated=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(b.requestId) as Row|undefined;if(repeated){this.conversationRow(scope,repeated.conversation);if(repeated.conversation!==b.conversationId||repeated.target!==target||repeated.text!==b.text)throw new Error('project_supplement_id_is_fixed');return;}
-      if(this.db.prepare('SELECT id FROM messages WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
+      if(this.db.prepare('SELECT id FROM messages WHERE id=? UNION SELECT id FROM task_supplement_groups WHERE id=?').get(b.requestId,b.requestId))throw new Error('project_chat_request_changed');
       const c=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(b.conversationId);if(c)this.conversationRow(scope,b.conversationId);else{const count=this.db.prepare('SELECT COUNT(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;if(count.n>=128)throw new Error('project_chat_history_limit');this.db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)').run(b.conversationId,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,b.text.slice(0,80),now());}
-      const rows=this.supplementRows(b.conversationId);if(rows.length>=32||Buffer.byteLength(canonical(rows.map(r=>r.text)))+Buffer.byteLength(b.text)>192*1024)throw new Error('project_supplement_history_limit');
+      const rows=this.supplementRows(b.conversationId);if(rows.length>=32||Buffer.byteLength(canonical([...new Map(rows.map(row=>[row.original_id??row.id,this.supplementText(row)])).values()]))+Buffer.byteLength(b.text)>192*1024)throw new Error('project_supplement_history_limit');
       this.db.prepare('INSERT INTO task_supplements(id,conversation,target,text,created_at) VALUES(?,?,?,?,?)').run(b.requestId,b.conversationId,target,b.text,now());
     });
     return {requestId:b.requestId,received:true,duplicate:false,newModelInputs:0,meaning:'saved_intent_not_native_delivery'};
   }
+  private async receiveSharedSupplement(scope:ProjectChatScope,b:Row){
+    if(!exactKeys(b,['conversationId','requestId','targets','text'])||!chatId(b.conversationId)||!chatId(b.requestId)||
+      !Array.isArray(b.targets)||b.targets.length<2||b.targets.length>8||
+      !b.targets.every((target:unknown)=>exactKeys(target,['source','requestId','task','operation']))||
+      typeof b.text!=='string'||!b.text.trim()||b.text.length>8192||b.text.includes('\0'))throw new Error('project_supplement_invalid');
+    const targets=[...new Set<string>(b.targets.map(canonical))].sort(),binding=canonical(targets);
+    if(targets.length!==b.targets.length)throw new Error('project_supplement_invalid');
+    const receipt=(duplicate:boolean)=>({requestId:b.requestId,received:true,duplicate,newModelInputs:0,targets:targets.map(target=>JSON.parse(target)),meaning:'saved_intent_not_native_delivery'});
+    const duplicate=()=>{
+      const old=this.db.prepare('SELECT * FROM task_supplement_groups WHERE id=?').get(b.requestId) as Row|undefined;
+      if(!old)return false;
+      this.conversationRow(scope,old.conversation);
+      if(old.conversation!==b.conversationId||old.targets!==binding||old.text!==b.text)throw new Error('project_supplement_id_is_fixed');
+      return true;
+    };
+    if(duplicate())return receipt(true);
+    await this.verify(scope);
+    const registered=new Set((await this.supplements!.targets(scope)).map(({title:_,...target})=>canonical(target)));
+    if(!targets.every(target=>registered.has(target)))throw new Error('project_supplement_target_not_registered');
+    await this.verify(scope);
+    return this.transaction(()=>{
+      if(duplicate())return receipt(true);
+      const occupied=(id:string)=>this.db.prepare('SELECT id FROM messages WHERE id=? UNION SELECT id FROM task_supplements WHERE id=? UNION SELECT id FROM task_supplement_groups WHERE id=?').get(id,id,id);
+      if(occupied(b.requestId))throw new Error('project_chat_request_changed');
+      this.ensureConversation(scope,b.conversationId,b.text.slice(0,80));
+      const rows=this.supplementRows(b.conversationId),texts=[...new Map(rows.map(row=>[row.original_id??row.id,this.supplementText(row)])).values()];
+      if(rows.length+targets.length>32||Buffer.byteLength(canonical(texts))+Buffer.byteLength(b.text)>192*1024)throw new Error('project_supplement_history_limit');
+      const at=now();
+      this.db.prepare('INSERT INTO task_supplement_groups (id,conversation,text,created_at,targets) VALUES (?,?,?,?,?)').run(b.requestId,b.conversationId,b.text,at,binding);
+      for(const target of targets){
+        const digest=hash(canonical([b.requestId,target])).slice(0,32),id=digest.replace(/^(........)(....)(....)(....)(............)$/,'$1-$2-$3-$4-$5');
+        if(occupied(id))throw new Error('project_chat_request_changed');
+        this.db.prepare('INSERT INTO task_supplements(id,conversation,target,text,created_at) VALUES (?,?,?,?,?)').run(id,b.conversationId,target,'',at);
+        this.db.prepare('INSERT INTO task_supplement_members(member,group_id) VALUES (?,?)').run(id,b.requestId);
+      }
+      return receipt(false);
+    });
+  }
   async cancelSupplement(scope:ProjectChatScope,id:string){
-    if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row|undefined;if(!r)throw new Error('project_supplement_not_found');this.conversationRow(scope,r.conversation);
+    if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s LEFT JOIN task_supplement_members m ON m.member=s.id
+      LEFT JOIN task_supplement_groups g ON g.id=m.group_id WHERE s.id=?`).get(id) as Row|undefined;if(!r)throw new Error('project_supplement_not_found');this.conversationRow(scope,r.conversation);
     if(r.cancelled)return {requestId:id,cancelled:true,duplicate:true,newModelInputs:0};
-    if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled,r.text);
+    if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled,this.supplementText(r));
     this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
   }
   async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
     if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
-    const rows=this.db.prepare('SELECT task_supplements.* FROM task_supplements JOIN conversations ON conversations.id=task_supplements.conversation WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=? AND target=? ORDER BY task_supplements.rowid').all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
+    const rows=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s JOIN conversations c ON c.id=s.conversation
+      LEFT JOIN task_supplement_members m ON m.member=s.id LEFT JOIN task_supplement_groups g ON g.id=m.group_id
+      WHERE c.account=? AND c.repository=? AND c.node_id=? AND s.target=? ORDER BY s.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
     for(const row of rows){
       if(row.cancelled)continue;
-      const state=await this.supplements.read(scope,target,row.compiled,row.text,row.id);
+      const state=await this.supplements.read(scope,target,row.compiled,this.supplementText(row),row.id);
       if(row.compiled&&state.successful)continue;
       if(row.compiled?!state.resumable:!state.ready)break;
       const compiled=row.compiled??'supplement-'+row.id;
       if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
       const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};
-      await this.supplements.work(scope,target,compiled,row.text,beforeRegistration);break;
+      await this.supplements.work(scope,target,compiled,this.supplementText(row),beforeRegistration);break;
     }
     return {newModelInputs:null,originalRequestsRetained:true};
   }

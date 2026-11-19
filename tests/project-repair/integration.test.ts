@@ -514,9 +514,10 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');assert.equal((await get('/api/project-work/'+first.requestId)).value.draft.goal,first.goal);
  assert.equal((await post('/api/project-work/settings',{repositoryPath:f.objects})).status,200);
  if(fault==='project-development'){
-   const a=first.requestId,b=randomUUID();
+   const a=first.requestId,b=randomUUID(),c=randomUUID();
    assert.equal((await post('/api/project-work/create',{...first,requestId:b,issueNumber:202})).status,200);
-   for(const id of [a,b]){
+   assert.equal((await post('/api/project-work/create',{...first,requestId:c,issueNumber:203})).status,200);
+   for(const id of [a,b,c]){
      assert.equal((await post('/api/project-work/'+id+'/prepare',{goal:first.goal})).status,202);
      await wait(id,'prepared');
    }
@@ -524,13 +525,13 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    const start=async(id:string)=>{const {draft}=await detail(id);return post('/api/project-work/'+id+'/start',{version:draft.version,proposalSha256:draft.preparation.proposalDigest,projectDevelopment:true});};
    const reached=new Map<string,string>();
    const release=new Map<string,()=>void>();
-   const gates=new Map([a,b].map(id=>[id,new Promise<void>(resolve=>release.set(id,resolve))]));
+   const gates=new Map([a,b,c].map(id=>[id,new Promise<void>(resolve=>release.set(id,resolve))]));
    let releaseSupplement=()=>{};
    const waitForSupplement=new Promise<void>(resolve=>{releaseSupplement=resolve;});
    const call=RepairTools.prototype.call;
    t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
      const result=await call.apply(this,args);
-     const id=[a,b].find(id=>this.workspace.includes('/works/'+id+'/'));
+     const id=[a,b,c].find(id=>this.workspace.includes('/works/'+id+'/'));
      if(id&&args[0].tool==='tongxu_run_tests'){
        if(this.workspace.includes('/executions/supplement-'))await waitForSupplement;
        else{reached.set(id,this.workspace);await gates.get(id);}
@@ -540,7 +541,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    const until=async<T>(read:()=>Promise<T>,done:(value:T)=>boolean)=>{
      for(let i=0;i<1800;i++){const value=await read();if(done(value))return value;await new Promise(r=>setTimeout(r,20));}
      const describe=async(id:string)=>{const {draft,execution}=await detail(id);return {stage:draft.stage,problem:draft.problem,requests:execution?.requests.map((r:any)=>({phase:r.phase,reason:r.reason}))};};
-     assert.fail(JSON.stringify({a:await describe(a),b:await describe(b)}));
+     assert.fail(JSON.stringify({a:await describe(a),b:await describe(b),c:await describe(c)}));
    };
    try{
      const approval=await start(a);assert.equal(approval.status,202);assert.equal(approval.value.waitingForOwner,true);
@@ -550,7 +551,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal((await fetch(url.origin+'/api/project-owner/approve',{method:'POST',headers:ownerHeaders,body:'{}'})).status,202);
      await until(()=>get('/api/project-work'),r=>!!r.value.development);
      const next=await start(b);assert.equal(next.status,202,JSON.stringify(next.value));assert.equal(next.value.active,true);
-     await until(async()=>reached.size,n=>n===2);
+     assert.equal((await start(c)).status,202);
+     await until(async()=>reached.size,n=>n===3);
      assert.equal(ownerURLs.length,1);
      assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
      assert.notEqual(reached.get(a),reached.get(b));
@@ -564,6 +566,24 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(ca.projectFiles&&cb.projectFiles,true);
      const targets=(await get('/api/project-secretary')).value.supplementTargets as Array<Record<string,any>>;
      const {title,...target}=targets.find(t=>t.source===cb.id)!;
+     const {title:titleA,...targetA}=targets.find(t=>t.source===ca.id)!;
+     const shared={conversationId:randomUUID(),requestId:randomUUID(),targets:[targetA,target],text:'大报表改为后台生成后下载'};
+     const sharedReceipt=await post('/api/project-secretary/supplement',shared);
+     assert.equal(sharedReceipt.status,202,JSON.stringify(sharedReceipt.value));
+     assert.equal(sharedReceipt.value.newModelInputs,0);
+     const repost=await post('/api/project-secretary/supplement',{...shared,targets:[target,targetA]});
+     assert.equal(repost.value.duplicate,true);
+     assert.equal((await post('/api/project-secretary/supplement',{...shared,text:'同编号替换原话'})).status,503);
+     const linked=(await get('/api/project-secretary/conversations/'+shared.conversationId)).value.supplements;
+     assert.equal(linked.length,2);
+     assert.deepEqual(new Set(linked.map((row:any)=>row.target.source)),new Set([ca.id,cb.id]));
+     for(const row of linked)assert.deepEqual([row.originalRequestId,row.text,row.compiledRequest],[shared.requestId,shared.text,null]);
+     assert.equal((await post('/api/project-work/'+a+'/stop',{})).value.stopRequested,true);
+     release.get(a)!();release.get(c)!();
+     const unrelated=await until(()=>detail(c),r=>r.draft.delivery?.status==='received');
+     assert.equal(unrelated.execution.reports[0].tests.passed,true);
+     assert.equal((await detail(b)).draft.stopRequested,false);
+     for(const row of linked)assert.equal((await post('/api/project-secretary/cancel-supplement',{requestId:row.id})).status,200);
      const conversationId=(await detail(b)).draft.conversationId,requestId=randomUUID();
      const supplement=await post('/api/project-secretary/supplement',{conversationId,requestId,target,text:'Also add a retention deadline for the download.'});
      assert.equal(supplement.status,202,JSON.stringify(supplement.value));
@@ -571,9 +591,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const received=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
      assert.deepEqual([received.id,received.target.source,received.compiledRequest,received.receivedIsNotDelivered],[requestId,cb.id,null,true]);
      assert.match(title,/Issue #202/);
-     assert.equal((await post('/api/project-work/'+a+'/stop',{})).value.stopRequested,true);
      assert.equal((await detail(b)).draft.stopRequested,false);
-     release.get(a)!();release.get(b)!();
+     release.get(b)!();
      const finished=await until(()=>detail(b),r=>r.draft.delivery?.status==='received');
      assert.equal(finished.execution.reports.at(-1).tests.passed,true);
      assert.equal(await git(f.objects,['rev-parse','HEAD']),H);
@@ -591,6 +610,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const cold=await get('/api/project-secretary/conversations/'+conversationId);
      assert.equal(cold.status,200);
      assert.deepEqual(cold.value.supplements[0],pending);
+     const sharedCold=(await get('/api/project-secretary/conversations/'+shared.conversationId)).value.supplements;
+     assert.deepEqual(sharedCold.map((row:any)=>[row.id,row.originalRequestId,row.cancelled]),linked.map((row:any)=>[row.id,shared.requestId,true]));
      const queue=await QueueStore.open(cb.store);
      const resultState=queue.issueImplementations().state(cb.id,finished.draft.requestId);queue.close();
      const stdoutPath=join(resultState.plan.operationRoot,'tests','tool-'+resultState.result.projectValidationCallId,'tool-0','stdout');
@@ -678,7 +699,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual(await readFile(f.trace),before);
      assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
      assert.equal(await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8'),originalWire);
-     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
+     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;
  }
