@@ -28,6 +28,7 @@ export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
 export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
 type Active={promise:Promise<void>;session?:BoundedCodexSession;stop:boolean;timedOut?:boolean};
+type ProjectChatIdentity={account:{id:number};repository:{id:number;nodeId:string}};
 
 /** One durable conversation history. Existing task queues and native capture
  * contracts remain authoritative; opening or replaying a chat never sends. */
@@ -35,7 +36,7 @@ export class ProjectChat{
   private active=new Map<string,Active>();private accepting=true;private owner=randomUUID();
   // Only admissions made in this process can start automatically. The row,
   // not this map, is authoritative for whether anything has been sent.
-  private waiting=new Map<string,AIPreferenceSnapshot|null>();
+  private waiting=new Map<string,{scope:ProjectChatScope;preferences:AIPreferenceSnapshot|null}>();
   private constructor(private config:ProjectChatConfig,private db:DatabaseSync,private read:Reader,private verify:(scope:ProjectChatScope)=>Promise<void>,private supplements?:SupplementConsumer,private work?:ProjectWorkConsumer){}
   static async open(config:ProjectChatConfig,read:Reader,verify:(scope:ProjectChatScope)=>Promise<void>,supplements?:SupplementConsumer,work?:ProjectWorkConsumer){
     validateProjectChatConfig(config);if(!await exists(config.root))await privateDirectory(config.root,true);else await privateDirectory(config.root,false);
@@ -57,7 +58,7 @@ export class ProjectChat{
   private preceding(conversation:string,id:string){
     return this.db.prepare('SELECT * FROM messages WHERE conversation=? AND rowid < (SELECT rowid FROM messages WHERE id=?) ORDER BY rowid').all(conversation,id) as Row[];
   }
-  private projectMessages(scope:ProjectChatScope,phase:'active'|'queued'){
+  private projectMessages(scope:ProjectChatIdentity,phase:'active'|'queued'){
     const phases=phase==='active'?"('registered','running','unknown')":"('queued')";
     return this.db.prepare(`SELECT messages.* FROM messages JOIN conversations ON conversations.id=messages.conversation
       WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=?
@@ -148,7 +149,10 @@ export class ProjectChat{
       return {conversationId:b.conversationId,requestId:b.requestId,duplicate:false,status,registered:!queued,newModelInputs:queued?0:null};
     });
     if(!result.duplicate){
-      if(result.status==='queued'){this.waiting.set(b.requestId,currentAIPreferences(['secretary']));this.processWaiting(scope);}
+      if(result.status==='queued'){
+        this.waiting.set(b.requestId,{scope,preferences:currentAIPreferences(['secretary'])});
+        this.processWaiting(scope);
+      }
       else this.start(scope,b.requestId);
     }
     return result;
@@ -159,10 +163,11 @@ export class ProjectChat{
       this.active.delete(id);this.processWaiting(scope);
     });
   }
-  private processWaiting(scope:ProjectChatScope){
-    if(!this.accepting||this.projectMessages(scope,'active').length)return;
-    const next=this.projectMessages(scope,'queued')[0];if(!next||!this.waiting.has(next.id))return;
-    const preferences=this.waiting.get(next.id)!;
+  private processWaiting(project:ProjectChatIdentity){
+    if(!this.accepting||this.projectMessages(project,'active').length)return;
+    const next=this.projectMessages(project,'queued')[0];if(!next)return;
+    const waiting=this.waiting.get(next.id);if(!waiting)return;
+    const {scope,preferences}=waiting;
     this.waiting.delete(next.id);
     const resume=()=>this.continueQuestion(scope,next.id);
     void (preferences?withAIPreferences(preferences,resume):resume()).catch(()=>{/* The saved question remains available for explicit continuation. */});
@@ -320,11 +325,12 @@ export class ProjectChat{
   }
   async stopSelected(accountId:number,repositoryId:number,id:string){
     if(!chatId(id)||!Number.isSafeInteger(accountId)||!Number.isSafeInteger(repositoryId))throw new Error('project_chat_id_invalid');
-    const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
+    const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository,conversations.node_id FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
     if(!row||row.account!==accountId||row.repository!==repositoryId)throw new Error('project_chat_outside_project');
     if(row.phase==='queued'){
       const cancelled=this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem='project_chat_queued_cancelled' WHERE id=? AND phase='queued'").run(now(),id).changes===1;
       this.waiting.delete(id);
+      if(cancelled)this.processWaiting({account:{id:accountId},repository:{id:repositoryId,nodeId:row.node_id}});
       return {requestId:id,stopRequested:cancelled,stopRecordSaved:cancelled,newModelInputs:0};
     }
     const active=this.active.get(id);if(!active){await this.recover(row);return {requestId:id,stopRequested:false,newModelInputs:0};}

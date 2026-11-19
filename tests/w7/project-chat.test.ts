@@ -217,6 +217,46 @@ test('cold reopening keeps pending intake readable; explicit continuation or can
     assert.deepEqual(inputs[1].conversation,[{requestId:first.requestId,question:first.question,status:'interrupted',answer:null}]);
   }finally{await reopened.close();}
 });
+for(const offline of [false,true])test('withdrawing a cold queue head advances only current-process intake '+(offline?'through the offline authorization check':'without a manual continuation'),async t=>{
+  const f=await fixture(t,'hold-first'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.wait(first.conversationId,m=>m[0]?.status==='running');
+  const old=question('重启前的待办',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',old)).data.status,'queued');
+  await f.close();
+  const reopened=await f.launch(),conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const project=await reopened.get('/api/project-secretary');
+    assert.deepEqual(project.data.busy,[]);
+    assert.equal(project.data.nextQuestion.requestId,old.requestId);
+    const next=question('重启后保存的原话',old.requestId,first.conversationId);
+    assert.equal((await reopened.post('/api/project-secretary/ask',next)).data.status,'queued');
+    assert.deepEqual((await reopened.get(conversation)).data.messages.map((m:any)=>m.status),['interrupted','queued','queued']);
+    const inputs=async()=>(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);
+    assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
+
+    f.setOffline(offline);
+    const receipt=await reopened.post('/api/project-secretary/stop',{requestId:old.requestId});
+    assert.equal(receipt.status,200);
+    assert.equal(receipt.data.stopRecordSaved,true);
+    const outcomePath=join(f.root,'chats',next.requestId,offline?'outcome.json':'answer.json');
+    let result;
+    for(let n=0;n<120;n++){
+      try{result=JSON.parse(await readFile(outcomePath,'utf8'));break;}
+      catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.ok(result,'the next request should execute without another HTTP request');
+    f.setOffline(false);
+    const saved=(await reopened.get(conversation)).data.messages;
+    assert.deepEqual([saved[1].id,saved[1].question,saved[1].problem],[old.requestId,old.question,'project_chat_queued_cancelled']);
+    assert.deepEqual([saved[2].id,saved[2].question,saved[2].status],[next.requestId,next.question,offline?'failed':'completed']);
+    const actual=await inputs();
+    assert.deepEqual(actual.map(r=>r.question),offline?[first.question]:[first.question,next.question]);
+    if(offline)assert.equal(result.nativeProcessState,'not_started');
+    else assert.deepEqual(actual[1].conversation,[{requestId:first.requestId,question:first.question,status:'interrupted',answer:null}]);
+  }finally{f.setOffline(false);await reopened.close();}
+});
 test('tampered original capture is unavailable, cannot seed follow-up context, and triggers no model',async t=>{
   const f=await fixture(t),q=question();await f.post('/api/project-secretary/ask',q);await f.wait(q.conversationId,m=>m[0]?.status==='completed');await appendFile(join(f.root,'chats',q.requestId,'native','stdout.ndjson'),'broken capture');
   const state=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(state.data.messages[0].status,'unavailable');assert.equal(state.data.messages[0].answer,null);
