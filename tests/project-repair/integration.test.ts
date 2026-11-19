@@ -358,8 +358,18 @@ test('selected material implementation preserves full Git history and unselected
 });
 
 async function firstUseProjectWork(t:TestContext,fault?:string){
- const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);const H=await git(f.objects,['rev-parse','HEAD']);
+ const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);
  const proposal={goal:'Preserve trim/default and implement the optional fallback',acceptance:['Blank with Draft returns Draft','Default remains Untitled'],allowedPaths:['validation-large','literal-large'].includes(fault!)?['src/normalize.mjs','src/index.mjs','README.md']:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md','policy-a.md','policy-b.md','policy-c.md'],protectedPaths:['test/normalize.test.mjs','policy-a.md','policy-b.md','policy-c.md'],validation:{description:'Actual normalized optional fallback',script:"import assert from 'node:assert/strict';import fs from 'node:fs';import{normalizeLabel}from './src/index.mjs';assert.equal(fs.existsSync('.git'),false);assert.equal(normalizeLabel('  Alpha  '),'Alpha');assert.equal(normalizeLabel(' '),'Untitled');assert.equal(normalizeLabel(' ','Draft'),'Draft');"},questions:[],report:'Protocol preparation read actual source; this is not real model acceptance.'};
+ if(fault==='validation-legacy'){
+  const editorPath='.vscode/launch.json';
+  await mkdir(join(f.objects,'.vscode'));
+  await writeFile(join(f.objects,editorPath),'{"configurations":[]}');
+  await git(f.objects,['add','--',editorPath]);
+  await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','ordinary editor configuration']);
+  proposal.materialPaths.push(editorPath);
+  proposal.protectedPaths.push(editorPath);
+ }
+ const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
  const prepareOwner=AuthorityRecords.prototype.prepare;
  if(validationFault&&!futureValidation){
@@ -517,6 +527,13 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      if(fault?.startsWith('validation-restart')){await restartAndAssert(failed,old,q,store);return;}
      if(fault==='validation-legacy'){
        for(const [relative,transform] of [['workspace/src/normalize.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign edit\n')])],['workspace/test/normalize.test.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign protected change\n')])],['operation/implementer/completed.json',()=>Buffer.from('{}')],['operation/attempt-1/post-repair-1/result.json',()=>Buffer.from('{}')],['plan.json',()=>Buffer.from('{}')]] as Array<[string,(b:Buffer)=>Buffer]>){const path=join(old.plan.request.workspaceRequest.executionRoot,relative),b=await readFile(path);await writeFile(path,transform(b));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);assert.deepEqual(await readFile(f.trace),before);await writeFile(path,b);}
+       const checkout=join(old.plan.operationRoot,'attempt-1','post-repair-1','candidate-checkout');
+       assert.equal(await readFile(join(checkout,'.vscode','launch.json'),'utf8'),'{"configurations":[]}');
+       const unbound=join(old.plan.operationRoot,'attempt-1','unregistered','candidate-checkout');
+       await mkdir(unbound,{recursive:true});await writeFile(join(unbound,'launch.json'),'{}');
+       const unknownChild=await post('/api/project-work/'+id+'/correct-validation',{});
+       assert.equal(unknownChild.status,503);assert.match(unknownChild.value.error,/child_active_or_unknown/);
+       await rm(dirname(unbound),{recursive:true});
        const child=join(old.plan.operationRoot,'implementer','tool-host-'+process.pid);await mkdir(child);await writeFile(join(child,'launch.json'),'{}');await writeFile(join(child,'process.json'),canonical({pid:process.pid}));const activeChild=await post('/api/project-work/'+id+'/correct-validation',{});assert.equal(activeChild.status,503);assert.match(activeChild.value.error,/child_active_or_unknown/);await rm(child,{recursive:true});
        const indexPath=join(old.plan.workspace,'.git/index'),index=await readFile(indexPath);await git(old.plan.workspace,['update-index','--force-remove','README.md']);assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(indexPath,index);
        const definitionBytes=await readFile(join(versionRoot,'tests.json'));await writeFile(join(versionRoot,'tests.json'),canonical({schemaVersion:2,executor:docker,tools:[]}));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(join(versionRoot,'tests.json'),definitionBytes);
@@ -732,7 +749,8 @@ for(const outcome of ['stop','failed'] as const)test('project file workbench rea
    assert.equal(result.value.tests.passed,false);
    assert.deepEqual(result.value.changed,[path,'src/index.mjs']);
    assert.equal(result.value.tests.tools[0].exitCode,1);
-   assert.match(result.value.tests.tools[0].stdout,/not ok/);
+   assert.match(result.value.tests.tools[0].stdout,/empty labels need the fixed fallback/);
+   assert.match(result.value.tests.tools[0].stdout,/'Wrong'/);
    assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
    assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
  }

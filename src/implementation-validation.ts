@@ -7,7 +7,7 @@ import {readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {canonical,samples} from './comparison.js';
 import {hash} from './snapshot.js';
-import {regular,exists,tree,treeHash,scopeChanges,changedWorkspacePaths,processState,checkRepairIndex,type Tree,type Grant} from './repair-workspace.js';
+import {regular,exists,tree,treeHash,scopeChanges,changedWorkspacePaths,processState,checkRepairIndex,projectTestNamespace,type Tree,type Grant} from './repair-workspace.js';
 import {projectTestPlan,projectModelTestResult} from './project-repair.js';
 import {dockerTerminalEvidence,dockerEvidenceMatches} from './docker-sandbox.js';
 import {readRepairSession,implementationOutputSchema} from './repair-native.js';
@@ -51,10 +51,22 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
  for(let i=result.tools.length;i<fixed.plan.tools.length;i++)if(await exists(join(directory,'tool-'+i))||await exists(join(directory,'output',String(i))))throw new Error('implementation_validation_test_unknown');
  return {result,tested,controllerPid:intent.controllerPid,unexecutedTools};
 }
-async function registeredChildrenEnded(directory:string){
+async function registeredChildrenEnded(directory:string,operation:string,workspace:string,testPlanSha256:string){
  const launch=await exists(join(directory,'launch.json')),processFile=join(directory,'process.json');
  if(launch){if(await exists(processFile)){if(processState((await json(processFile)).pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}else if(!await exists(join(directory,'blocked-before-spawn.json')))throw new Error('implementation_validation_child_active_or_unknown');}
- for(const e of await readdir(directory,{withFileTypes:true})){if(!e.isDirectory()||['work','material-work','output','workspace'].includes(e.name)||e.name.startsWith('generated-'))continue;await registeredChildrenEnded(join(directory,e.name));}
+ const entries=await readdir(directory,{withFileTypes:true});
+ let registeredTest=false;
+ if(projectTestNamespace(operation,directory)&&entries.some(e=>e.isDirectory()&&e.name==='candidate-checkout')){
+  const intentPath=join(directory,'test-intent.json');
+  if(await exists(intentPath)){
+   const intent=await json(intentPath);
+   registeredTest=intent?.kind==='registered-project-tests-v1'&&intent.directory===directory&&intent.workspace===workspace&&intent.testPlanSha256===testPlanSha256;
+  }
+ }
+ for(const e of entries){
+  if(!e.isDirectory()||['work','material-work','output','workspace'].includes(e.name)||e.name.startsWith('generated-')||registeredTest&&e.name==='candidate-checkout')continue;
+  await registeredChildrenEnded(join(directory,e.name),operation,workspace,testPlanSha256);
+ }
 }
 const issued=new WeakMap<object,string>();
 const closureReady=new WeakMap<object,string>();
@@ -81,7 +93,8 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false)
      input!==implementationFirstInput(fixed.request,plan as RepairPlan,initial,null,JSON.parse(input).validationDefinition))throw new Error('implementation_validation_capture_unknown');
  }
  if(await exists(join(native,'native-tool-transports.json'))){for(const t of await json(join(native,'native-tool-transports.json'))){if(t.appServerPid!==nativeProcess.pid||!Array.isArray(t.observedHelperPids))throw new Error('implementation_validation_child_active_or_unknown');for(const pid of t.observedHelperPids){if(!Number.isSafeInteger(pid)||pid<=0||(await json(join(native,'tool-host-'+pid,'process.json'))).pid!==pid||processState(pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}}}
- await registeredChildrenEnded(native);await registeredChildrenEnded(join(op,'attempt-1'));
+ await registeredChildrenEnded(native,op,plan.workspace,plan.project.testPlanSha256);
+ await registeredChildrenEnded(join(op,'attempt-1'),op,plan.workspace,plan.project.testPlanSha256);
  const testsDirectory=join(op,'attempt-1/post-repair-1');
  const tests=await readFailedValidationTests(testsDirectory,plan),changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
  if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
