@@ -1018,6 +1018,14 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual(combined.value.tests.tools.map((tool:any)=>tool.id),latestReport.tests.tools.map((tool:any)=>tool.id));
      assert.equal(combined.value.formalReview,'not_run');
      assert.deepEqual((await detail(b)).integrationValidation,combined.value);
+     assert.equal((await detail(b)).explanationHead,combined.value.H);
+     assert.equal((await post('/api/project-work/'+b+'/explain',{H:combined.value.H})).status,202);
+     const combinedExplanation=await until(()=>detail(b),value=>value.explanation?.state==='returned');
+     assert.equal(combinedExplanation.explanation.H,combined.value.H);
+     const combinedInput=JSON.parse(await readFile(join(config.root,'works',b,'version-1','explanation-'+combined.value.H,'request.json'),'utf8')).material;
+     assert.equal(combinedInput.candidate.B,nextBase);
+     assert.equal(combinedInput.technicalEvidence.combination.implementation,latestReport.H1);
+     assert.deepEqual(combinedInput.technicalEvidence.tested.tools,combined.value.tests.tools);
      const badBase=await advanceBase('src/index.mjs','export function normalizeLabel(){ return "changed by upstream"; }\n');
      assert.equal((await post(previewRoute,{H:latestReport.H1,B:badBase})).value.state,'clean');
      const failedCombination=await post(testRoute,{H:latestReport.H1,B:badBase});
@@ -1032,7 +1040,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual((await detail(b)).integrationPreview,conflict.value);
      assert.equal(await git(f.objects,['rev-parse','HEAD']),conflictingBase);
      assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),latestReport.H1);
-     assert.deepEqual(await readFile(f.trace),beforePreview);
+     assert.equal((await readFile(f.trace,'utf8')).split('model-input').length,beforePreview.toString().split('model-input').length+1);
      t.diagnostic(JSON.stringify({integrationTested:combined.value.H,base:nextBase,tree:combined.value.T,
        testTools:combined.value.tests.tools.map((tool:any)=>tool.id),integrationFailed:failedCombination.value.H,failedBase:badBase}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));

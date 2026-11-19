@@ -20,7 +20,7 @@ import {applyWorkOwnerProposal,receiveWorkResult,verifyRepositoryPath,ensureWork
 import {exactKeys,isAuthorityDigest,type AuthorityProfile,type ScopeBody} from './authority-contract.js';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
-import {exists,regular,processState} from './repair-workspace.js';
+import {exists,regular,processState,gitReadOnly} from './repair-workspace.js';
 import {chatId} from './project-chat-contract.js';
 import {QueueStore} from './queue-store.js';
 import {parseDockerConfig,type DockerConfig} from './docker-sandbox.js';
@@ -238,13 +238,15 @@ export class ProjectWork{
       if(!validationFailure)validationRecovery=await controls.validationRecovery(draft.source,request);
     }
     const resultStatus=this.resultStatus(draft,result),preview=resultStatus.current?this.integrationInput(scope,draft):null;
+    const integrationValidation=preview?await readWorkIntegrationValidation(this.integrationDirectory(draft,preview),preview):null;
+    const explanationHead=integrationValidation?.state==='tested'?integrationValidation.H:draft.delivery?.H;
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
       resultStatus,
       ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview),
-        integrationValidation:await readWorkIntegrationValidation(this.integrationDirectory(draft,preview),preview)}:{}),
-      ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
-        ?{state:'running',H:draft.delivery.H}
-        :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
+        integrationValidation}:{}),
+      ...(explanationHead?{explanationHead,explanation:this.explanations.has(draft.id+':'+explanationHead)
+        ?{state:'running',H:explanationHead}
+        :await readProjectExplanation(join(this.directory(draft),'explanation-'+explanationHead),draft.id,explanationHead)}:{}),
       preparationDiagnostic:await diagnostic(draft),validationFailure,validationRecovery,
       firstInputContinuation:draft.source&&resultStatus.latest?{requestId:resultStatus.latest.requestId,
         ...await(await this.controls(scope)).firstInputContinuation(draft.source,resultStatus.latest.requestId)}:null,newModelInputs:0};
@@ -489,30 +491,43 @@ export class ProjectWork{
     return {current:!!current,receipt,latest:latest?{requestId:latest.id,phase:latest.phase,status:latest.status,H:latest.H1}:null};
   }
   async explain(scope:ProjectChatScope,id:string,b:unknown){
-    const d=this.store.get(scope,id),H=d.delivery?.H;
-    if(!exactKeys(b,['H'])||!H||(b as Row).H!==H||d.delivery?.status!=='received')throw new Error('project_delivery_explanation_candidate_required');
+    const d=this.store.get(scope,id),H=(b as Row)?.H as string,workHead=d.delivery?.H;
+    if(!exactKeys(b,['H'])||typeof H!=='string'||!/^[a-f0-9]{40}$/.test(H)||!workHead||d.delivery?.status!=='received')throw new Error('project_delivery_explanation_candidate_required');
     const path=join(this.directory(d),'explanation-'+H),key=d.id+':'+H;
     if(this.explanations.has(key))return {state:'running',H};
     if(await exists(path))return readProjectExplanation(path,d.id,H);
     const actual=await this.implementationState(scope,d);
     if(!this.resultStatus(d,actual).current)throw new Error('project_delivery_explanation_candidate_changed');
-    const report=actual.reports.find(r=>r.H1===H&&r.status==='completed'&&r.tests?.passed===true);
+    const integration=H!==workHead?this.integrationInput(scope,d):null;
+    const integrationDirectory=integration?this.integrationDirectory(d,integration):null;
+    const combined=integration?await readWorkIntegrationValidation(integrationDirectory!,integration):null;
+    if(H!==workHead&&(combined?.state!=='tested'||combined.H!==H))
+      throw new Error('project_delivery_explanation_candidate_changed');
+    const report=actual.reports.find(r=>r.H1===workHead&&r.status==='completed'&&r.tests?.passed===true);
     const workflow=actual.requests.find((r:Row)=>r.id===report?.requestId)?.workflow;
     if(!report?.candidate||!workflow)throw new Error('project_delivery_explanation_workflow_unavailable');
     const job:Job={stop:false,promise:Promise.resolve()};
     const allowed=()=>{
       const current=this.store.get(scope,id);
-      if(!this.accepting||job.stop||current.stopRequested||current.version!==d.version||current.delivery?.H!==H)throw new Error('project_delivery_explanation_candidate_changed');
+      if(!this.accepting||job.stop||current.stopRequested||current.version!==d.version||current.delivery?.H!==workHead)throw new Error('project_delivery_explanation_candidate_changed');
     };
     const check=async()=>{
       allowed();await this.verify(scope);
       if(!this.resultStatus(d,await this.implementationState(scope,d)).current)throw new Error('project_delivery_explanation_candidate_changed');
+      if(integration){
+        const issue=await this.readIssue(scope,d.issue.number),proof=await readWorkIntegrationValidation(integrationDirectory!,integration);
+        if((issue.defaultHead??scope.repository.defaultHead)!==integration.B||hash(issue.body)!==d.issue.bodySha256||
+           proof?.state!=='tested'||proof.H!==H||canonical(proof)!==canonical(combined))throw new Error('project_delivery_explanation_candidate_changed');
+      }
       allowed();
     };
+    const candidate=integration?{...report.candidate,H,B:integration.B,target:integration.target}:report.candidate;
+    const diff=integration?await gitReadOnly(join(integrationDirectory!,'validation','worktree'),['diff','--no-ext-diff','--no-textconv',integration.B,H,'--']):report.diff;
     const material={work:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url,body:d.issue.body,bodySha256:d.issue.bodySha256},
-      candidate:report.candidate,goal:d.goal,workflowRevision:workflow.revision,
-      technicalEvidence:{H0:report.H0,H1:H,diff:report.diff,implementation:report.report,tested:report.modelTests,
-        testCandidateBinding:report.testCandidateBinding,adoptedRequirements:report.originalValidationFailure?{originalFailedTests:report.originalValidationFailure.tests}:null,
+      candidate,goal:d.goal,workflowRevision:workflow.revision,
+      technicalEvidence:{H0:report.H0,H1:H,diff,implementation:report.report,tested:combined?.state==='tested'?combined.tests:report.modelTests,
+        ...(combined?.state==='tested'?{combination:{implementation:workHead,base:combined.B,tree:combined.T}}:{testCandidateBinding:report.testCandidateBinding}),
+        adoptedRequirements:report.originalValidationFailure?{originalFailedTests:report.originalValidationFailure.tests}:null,
         recordedActions:d.events,formalReview:'no formal review evidence in this explanation input',publication:'no publication evidence in this explanation input',userAcceptance:'no user acceptance evidence in this explanation input'}};
     if(this.explanations.has(key))return {state:'running',H};
     allowed();this.explanations.set(key,job);

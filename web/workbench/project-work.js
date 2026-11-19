@@ -170,7 +170,7 @@ function renderProjectWork(){
       else if(explanation)section.append(el('p',explanation.state==='running'?'正在生成此候选的交付解读。':'原交付解读请求已保留，完整结果待核。','small'));
       else if(currentDelivery&&!item.stopRequested){
         const explain=el('button','生成交付解读','outline');explain.disabled=d.pending||active;
-        explain.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/explain',{H:delivery.H}));section.append(explain);
+        explain.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/explain',{H:d.detail.explanationHead||delivery.H}));section.append(explain);
       }
     }
     for(const gap of reportGaps)section.append(el('p','验证原件待核'+(gap.H1?' · '+gap.H1:'')+'，当前无法确认注册测试通过。','github-error'));
