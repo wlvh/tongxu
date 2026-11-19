@@ -113,6 +113,65 @@ test('fixed project input is repaired and tested in isolated copies, then indepe
   await writeFile(join(f.workspace, 'src/normalize.mjs'), 'changed after completed tests');
   await assert.rejects(bindProjectTestToCandidate(f.workspace, result.after, tests), /project_candidate_test_tree_mismatch/);
 });
+test('registered validation tests a new nested executable source through an existing caller and binds the candidate tree', async t => {
+  const f=await project(t);
+  const added='src/fallbacks/default-label.mjs';
+  const addedPath=join(f.workspace,added);
+  await mkdir(dirname(addedPath));
+  await writeFile(addedPath,"export const defaultLabel = 'Untitled';\n");
+  await chmod(addedPath,0o755);
+  await writeFile(join(f.workspace,'src/index.mjs'),"import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value){return value.trim() || defaultLabel;}\n");
+  const tests=await testProject(f.workspace,join(f.root,'test-nested-addition'),f.projectPlan.project);
+  assert.equal(tests.executionHealthy,true);
+  assert.equal(tests.passed,true);
+  const work=join(f.root,'test-nested-addition','work');
+  assert.match(await git(work,['ls-tree',tests.H,'--',added]),/^100755 blob [0-9a-f]+\t/);
+  await git(f.workspace,['add','--',added,'src/index.mjs']);
+  await git(f.workspace,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','include new candidate source']);
+  const H=await git(f.workspace,['rev-parse','HEAD']);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+  assert.deepEqual(await tree(f.objects,true),f.originalTree);
+});
+test('registered validation refuses a source file missing from the actual candidate Git tree', async t => {
+  const f=await project(t,true);
+  await writeFile(join(f.workspace,'.gitignore'),'local-only.mjs\n');
+  await writeFile(join(f.workspace,'local-only.mjs'),'export const localOnly = true;\n');
+  const directory=join(f.root,'test-untracked-input');
+  await assert.rejects(testProject(f.workspace,directory,f.projectPlan.project),/project_test_worktree_file_missing_from_candidate/);
+  assert.equal(await exists(join(directory,'runtime')),false);
+});
+test('registered validation rejects Git newline transformations before Docker', async t => {
+  const f=await project(t,true);
+  const added='src/nested/line.mjs';
+  await mkdir(join(f.workspace,'src/nested'));
+  for(const [eol,ending,error] of [
+    ['lf','\r\n','project_test_candidate_blob_or_mode_mismatch'],
+    ['crlf','\n','project_test_candidate_checkout_mismatch'],
+  ]){
+    await writeFile(join(f.workspace,'.gitattributes'),added+' text eol='+eol+'\n');
+    await writeFile(join(f.workspace,added),'export const value = 1;'+ending);
+    const directory=join(f.root,'test-newline-'+eol);
+    await assert.rejects(testProject(f.workspace,directory,f.projectPlan.project),{message:error+':'+added});
+    assert.equal(await exists(join(directory,'runtime')),false);
+  }
+});
+test('registered sparse validation preserves BOM bytes through Docker and candidate binding', async t => {
+  const path='src/normalize.mjs';
+  const f=await project(t,true,[docker.node,'-e',
+    "const fs=require('node:fs'),assert=require('node:assert/strict');assert.equal(fs.readFileSync('src/normalize.mjs').subarray(0,3).toString('hex'),'efbbbf');assert.equal(fs.existsSync('.git'),false)"]);
+  const file=join(f.workspace,path);
+  const bytes=Buffer.concat([Buffer.from('efbbbf','hex'),await readFile(file)]);
+  await writeFile(file,bytes);
+  await git(f.workspace,['add','--',path]);
+  await git(f.workspace,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','include BOM']);
+  const H=await git(f.workspace,['rev-parse','HEAD']);
+  const directory=join(f.root,'test-sparse-bom');
+  const tests=await testProject(f.workspace,directory,{...f.projectPlan.project,materialView:'selected_files'});
+  assert.equal(tests.passed,true);
+  assert.deepEqual(await readFile(join(directory,'work',path)),bytes);
+  assert.deepEqual(await readFile(join(directory,'material-work',path)),bytes);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+});
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true);
@@ -267,8 +326,18 @@ test('selected material implementation preserves full Git history and unselected
 });
 
 async function firstUseProjectWork(t:TestContext,fault?:string){
- const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);const H=await git(f.objects,['rev-parse','HEAD']);
+ const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);
  const proposal={goal:'Preserve trim/default and implement the optional fallback',acceptance:['Blank with Draft returns Draft','Default remains Untitled'],allowedPaths:['validation-large','literal-large'].includes(fault!)?['src/normalize.mjs','src/index.mjs','README.md']:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md','policy-a.md','policy-b.md','policy-c.md'],protectedPaths:['test/normalize.test.mjs','policy-a.md','policy-b.md','policy-c.md'],validation:{description:'Actual normalized optional fallback',script:"import assert from 'node:assert/strict';import fs from 'node:fs';import{normalizeLabel}from './src/index.mjs';assert.equal(fs.existsSync('.git'),false);assert.equal(normalizeLabel('  Alpha  '),'Alpha');assert.equal(normalizeLabel(' '),'Untitled');assert.equal(normalizeLabel(' ','Draft'),'Draft');"},questions:[],report:'Protocol preparation read actual source; this is not real model acceptance.'};
+ if(fault==='validation-legacy'){
+  const editorPath='.vscode/launch.json';
+  await mkdir(join(f.objects,'.vscode'));
+  await writeFile(join(f.objects,editorPath),'{"configurations":[]}');
+  await git(f.objects,['add','--',editorPath]);
+  await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','ordinary editor configuration']);
+  proposal.materialPaths.push(editorPath);
+  proposal.protectedPaths.push(editorPath);
+ }
+ const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
  const prepareOwner=AuthorityRecords.prototype.prepare;
  if(validationFault&&!futureValidation){
@@ -426,6 +495,13 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      if(fault?.startsWith('validation-restart')){await restartAndAssert(failed,old,q,store);return;}
      if(fault==='validation-legacy'){
        for(const [relative,transform] of [['workspace/src/normalize.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign edit\n')])],['workspace/test/normalize.test.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign protected change\n')])],['operation/implementer/completed.json',()=>Buffer.from('{}')],['operation/attempt-1/post-repair-1/result.json',()=>Buffer.from('{}')],['plan.json',()=>Buffer.from('{}')]] as Array<[string,(b:Buffer)=>Buffer]>){const path=join(old.plan.request.workspaceRequest.executionRoot,relative),b=await readFile(path);await writeFile(path,transform(b));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);assert.deepEqual(await readFile(f.trace),before);await writeFile(path,b);}
+       const checkout=join(old.plan.operationRoot,'attempt-1','post-repair-1','candidate-checkout');
+       assert.equal(await readFile(join(checkout,'.vscode','launch.json'),'utf8'),'{"configurations":[]}');
+       const unbound=join(old.plan.operationRoot,'attempt-1','unregistered','candidate-checkout');
+       await mkdir(unbound,{recursive:true});await writeFile(join(unbound,'launch.json'),'{}');
+       const unknownChild=await post('/api/project-work/'+id+'/correct-validation',{});
+       assert.equal(unknownChild.status,503);assert.match(unknownChild.value.error,/child_active_or_unknown/);
+       await rm(dirname(unbound),{recursive:true});
        const child=join(old.plan.operationRoot,'implementer','tool-host-'+process.pid);await mkdir(child);await writeFile(join(child,'launch.json'),'{}');await writeFile(join(child,'process.json'),canonical({pid:process.pid}));const activeChild=await post('/api/project-work/'+id+'/correct-validation',{});assert.equal(activeChild.status,503);assert.match(activeChild.value.error,/child_active_or_unknown/);await rm(child,{recursive:true});
        const indexPath=join(old.plan.workspace,'.git/index'),index=await readFile(indexPath);await git(old.plan.workspace,['update-index','--force-remove','README.md']);assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(indexPath,index);
        const definitionBytes=await readFile(join(versionRoot,'tests.json'));await writeFile(join(versionRoot,'tests.json'),canonical({schemaVersion:2,executor:docker,tools:[]}));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(join(versionRoot,'tests.json'),definitionBytes);

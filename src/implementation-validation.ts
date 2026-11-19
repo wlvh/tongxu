@@ -4,7 +4,7 @@ import {readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
-import {regular,exists,tree,treeHash,scopeChanges,processState,checkRepairIndex,type Tree} from './repair-workspace.js';
+import {regular,exists,tree,treeHash,scopeChanges,processState,checkRepairIndex,projectTestNamespace,type Tree} from './repair-workspace.js';
 import {projectTestPlan,projectModelTestResult} from './project-repair.js';
 import {dockerTerminalEvidence,dockerEvidenceMatches} from './docker-sandbox.js';
 import {readRepairSession,implementationOutputSchema} from './repair-native.js';
@@ -32,10 +32,22 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
  if(result.passed!==result.tools.every((t:any)=>t.exitCode===0&&t.status==='completed')||result.sourceInput.frozenWorkingTreeSha256!==frozen||result.sourceInput.testedCommit!==result.H||result.sourceInput.testedTree!==result.T||result.sourceInput.sourceHeadTree!==await gitRead(plan.workspace,['rev-parse',plan.candidate.H+'^{tree}']))throw new Error('implementation_validation_test_unknown');
  return {result,tested,controllerPid:intent.controllerPid};
 }
-async function registeredChildrenEnded(directory:string){
+async function registeredChildrenEnded(directory:string,operation:string,workspace:string,testPlanSha256:string){
  const launch=await exists(join(directory,'launch.json')),processFile=join(directory,'process.json');
  if(launch){if(await exists(processFile)){if(processState((await json(processFile)).pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}else if(!await exists(join(directory,'blocked-before-spawn.json')))throw new Error('implementation_validation_child_active_or_unknown');}
- for(const e of await readdir(directory,{withFileTypes:true})){if(!e.isDirectory()||['work','material-work','output','workspace'].includes(e.name)||e.name.startsWith('generated-'))continue;await registeredChildrenEnded(join(directory,e.name));}
+ const entries=await readdir(directory,{withFileTypes:true});
+ let registeredTest=false;
+ if(projectTestNamespace(operation,directory)&&entries.some(e=>e.isDirectory()&&e.name==='candidate-checkout')){
+  const intentPath=join(directory,'test-intent.json');
+  if(await exists(intentPath)){
+   const intent=await json(intentPath);
+   registeredTest=intent?.kind==='registered-project-tests-v1'&&intent.directory===directory&&intent.workspace===workspace&&intent.testPlanSha256===testPlanSha256;
+  }
+ }
+ for(const e of entries){
+  if(!e.isDirectory()||['work','material-work','output','workspace'].includes(e.name)||e.name.startsWith('generated-')||registeredTest&&e.name==='candidate-checkout')continue;
+  await registeredChildrenEnded(join(directory,e.name),operation,workspace,testPlanSha256);
+ }
 }
 const issued=new WeakMap<object,string>();
 const closureReady=new WeakMap<object,string>();
@@ -53,7 +65,8 @@ export async function observeValidationFailure(s:Row):Promise<ValidationFailureP
  const inputs=await json(join(native,'inputs.json')),sent=(await regular(join(native,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x)),start=sent.filter(x=>x.method==='thread/start');
  if(inputs.length!==1||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate)||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||start.length!==1||start[0].params.baseInstructions!==manifest.prompt.system||canonical(start[0].params.dynamicTools)!==canonical(projectRepairToolsFor(implementationEditProfile(s.plan.request,plan,manifest))))throw new Error('implementation_validation_capture_unknown');
  if(await exists(join(native,'native-tool-transports.json'))){for(const t of await json(join(native,'native-tool-transports.json'))){if(t.appServerPid!==nativeProcess.pid||!Array.isArray(t.observedHelperPids))throw new Error('implementation_validation_child_active_or_unknown');for(const pid of t.observedHelperPids){if(!Number.isSafeInteger(pid)||pid<=0||(await json(join(native,'tool-host-'+pid,'process.json'))).pid!==pid||processState(pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}}}
- await registeredChildrenEnded(native);await registeredChildrenEnded(join(op,'attempt-1'));
+ await registeredChildrenEnded(native,op,plan.workspace,plan.project.testPlanSha256);
+ await registeredChildrenEnded(join(op,'attempt-1'),op,plan.workspace,plan.project.testPlanSha256);
  const tests=await readFailedValidationTests(join(op,'attempt-1/post-repair-1'),plan),changed=scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
  if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
  const calls:Row[]=[];for(const n of await readdir(join(op,'calls'))){if(!n.endsWith('.json'))throw new Error('implementation_validation_calls_unknown');const path=join(op,'calls',n),c=await json(path);if(!c.response||c.status==='write_registered')throw new Error('implementation_validation_calls_unknown');calls.push(c);}

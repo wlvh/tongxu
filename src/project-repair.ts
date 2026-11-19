@@ -1,10 +1,10 @@
 import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile } from 'node:fs/promises';
 import { join, resolve,dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
-import { git, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
+import { git, gitReadOnly, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
 import { parsePlan, fingerprint } from './verification.js';
 import { validateDependencies, dependencyDigest } from './sandbox.js';
 import { DockerRuntime, reconcileDocker,type DockerStartGate } from './docker-sandbox.js';
@@ -194,8 +194,56 @@ export async function testProject(workspace: string, directory: string, p: Proje
   await selectMaterialView(work,p,setupGit);
   await setupGit(['fetch', '--no-tags', '--no-recurse-submodules', workspace, await git(workspace, ['rev-parse', 'HEAD'])]);
   await setupGit(['checkout', '--detach', 'FETCH_HEAD']);
-  for (const [path, entry] of Object.entries(current)) { const full = join(work, path); await writeFile(full, entry.text, { mode: 0o600 }); await chmod(full, 0o600 | (entry.executable ?? 0)); }
+  const directories=new Set([work]);
+  for(const [path,entry] of Object.entries(current)){
+    const components=path.split('/');
+    const filename=components.pop()!;
+    let parent=work;
+    for(const component of components){
+      parent=join(parent,component);
+      if(directories.has(parent))continue;
+      if(await exists(parent)){
+        if(!(await lstat(parent)).isDirectory())throw new Error('project_test_candidate_path_conflict');
+      }else await mkdir(parent,{mode:0o700});
+      directories.add(parent);
+    }
+    const file=join(parent,filename);
+    if(await exists(file))await regular(file,256*1024);
+    const bytes=await regular(join(workspace,path),256*1024);
+    if(hash(bytes)!==entry.sha256)throw new Error('project_test_source_changed:'+path);
+    await writeFile(file,bytes,{mode:0o600});
+    await chmod(file,0o600|(entry.executable??0));
+  }
   await setupGit(['add', '--all']); await setupGit(['-c', 'user.name=Tongxu fixed test input', '-c', 'user.email=tests@localhost', '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-m', 'fixed project test input']);
+  const H=await git(work,['rev-parse','HEAD']),T=await git(work,['rev-parse','HEAD^{tree}']);
+  const tracked=new Map((await gitReadOnly(work,['ls-tree','-r','-z',H])).split('\0').filter(Boolean).map(row=>{
+    const tab=row.indexOf('\t');
+    return [row.slice(tab+1),row.slice(0,tab)];
+  }));
+  const sourcePaths=Object.keys(current);
+  for(const [path,entry] of Object.entries(current)){
+    const record=tracked.get(path);
+    if(!record)throw new Error('project_test_worktree_file_missing_from_candidate:'+path);
+    const bytes=await regular(join(work,path),256*1024);
+    const object=createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
+    const executable=Boolean((entry.executable??0)&0o100);
+    const mode=executable?'100755':'100644';
+    if(hash(bytes)!==entry.sha256 || Boolean((await lstat(join(work,path))).mode&0o100)!==executable || record!==`${mode} blob ${object}`)
+      throw new Error('project_test_candidate_blob_or_mode_mismatch:'+path);
+  }
+  // A matching blob can still be transformed by Git on checkout.
+  if(sourcePaths.length){
+    const checkout=join(directory,'candidate-checkout');
+    await mkdir(checkout,{mode:0o700});
+    for(let start=0;start<sourcePaths.length;start+=32)
+      await setupGit(['checkout-index','--force','--ignore-skip-worktree-bits','--prefix='+checkout+'/', '--',...sourcePaths.slice(start,start+32)]);
+    for(const path of sourcePaths){
+      const file=join(checkout,path);
+      if(hash(await regular(file,256*1024))!==current[path]!.sha256 ||
+        Boolean((await lstat(file)).mode&0o100)!==Boolean((current[path]!.executable??0)&0o100))
+        throw new Error('project_test_candidate_checkout_mismatch:'+path);
+    }
+  }
   const generated = [];
   for (const [index, path] of p.generatedDirectories.entries()) {
     const source = join(directory, 'generated-' + index); await mkdir(source, { mode: 0o700 }); await mkdir(join(work, path), { recursive: true, mode: 0o700 }); generated.push({ path, source });
@@ -205,13 +253,13 @@ export async function testProject(workspace: string, directory: string, p: Proje
     // parent bind. This empty directory is a mount target, never a dependency.
     await mkdir(join(work, 'node_modules'), { mode: 0o700 });
   }
-  const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
+  const pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
   // Keep Git metadata in the host fingerprint, outside the candidate mount.
   // Tests see byte-identical selected files and cannot recover omitted blobs.
   const executionWork=p.materialView?join(directory,'material-work'):work;
   if(p.materialView){
-    await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,entry.text,{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
+    await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,await regular(join(work,path),256*1024),{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
     for(const path of p.generatedDirectories)await mkdir(join(executionWork,path),{recursive:true,mode:0o700});if(fixed.dependencies)await mkdir(join(executionWork,'node_modules'),{mode:0o700});
     if(treeHash(await tree(executionWork,true))!==inputHash)throw new Error('project_test_material_copy_changed');
   }
@@ -265,7 +313,7 @@ export async function reconcileProjectTests(operation: string, p: ProjectContrac
       const intent = JSON.parse((await regular(join(directory, 'test-intent.json'))).toString());
       const progress = JSON.parse((await regular(join(directory, 'test-progress.json'))).toString());
       if (intent.directory !== directory || intent.testPlanSha256 !== p.testPlanSha256 || JSON.stringify(intent.generatedDirectories) !== JSON.stringify(p.generatedDirectories) || !['preparing_input', 'runtime_requested', 'tool_requested', 'completed'].includes(progress.phase)) throw new Error('project_test_intent_unverified');
-      testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');
+      testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');testDataDirectories.add('candidate-checkout');
       p.generatedDirectories.forEach((_, i) => testDataDirectories.add('generated-' + i));
       if (progress.phase !== 'preparing_input' && !await exists(join(directory, 'runtime/probe/execution.json'))) throw new Error('project_test_capture_missing');
       const requested = progress.phase === 'completed' ? progress.toolsRequested : progress.phase === 'tool_requested' ? progress.toolIndex + 1 : 0;
