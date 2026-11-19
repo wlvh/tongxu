@@ -3,7 +3,7 @@ import {implementationChoice,verifyImplementationModel,type ImplementationAI} fr
 import {selectedProviderOptions} from './ai-settings.js';
 import {implementationFirstInput} from './implementation-first-input.js';
 import {checkFirstSendFiles,type FirstSendProof} from './implementation-first-send.js';
-import {requireValidationFailure,verifyValidationFiles,type ValidationFailureProof,readFailedValidationTests} from './implementation-validation.js';
+import {requireValidationFailure,verifyValidationFiles,type ValidationFailureProof,readFailedValidationTests,readLatestProjectToolValidation} from './implementation-validation.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {mkdir,writeFile,readdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -89,6 +89,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   await external.refresh();external.unsent();await originalPreparation();
   const lease=await acquireWorkspace(plan.workspace,operation,false,grant);
   let session:BoundedCodexSession|undefined;
+  let projectValidationCallId:string|undefined;
   const gate=new RepairTools(plan.workspace,operation,grant,lease,plan.nodeExecutable,structuredClone(initial),plan.candidate.H,
     async directory=>{const result=await testProject(plan.workspace,directory,plan.project!,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});if(!result.executionHealthy)throw new Error('project_test_environment_or_capture_failed');return projectModelTestResult(result);},
     effect=>external.check(effect),()=>external.refresh(),plan.project.materialView?{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]}:undefined,editProfile);
@@ -113,17 +114,26 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     }
     const writes=grant.projectFiles?['tongxu_replace_file','tongxu_create_file','tongxu_delete_file','tongxu_rename_file']:['tongxu_replace_file'];
     if(!changed.length||!['tongxu_read_file','tongxu_run_tests'].every(name=>exercised.includes(name))||!writes.some(name=>exercised.includes(name)))throw new Error('implementation_actual_change_and_tests_required');
-    const tests=await testProject(plan.workspace,join(operation,'attempt-1','post-repair-1'),plan.project,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});
+    let tests;
+    if(grant.projectFiles){
+      const original=await readLatestProjectToolValidation(operation,nativeDirectory,plan);
+      if(treeHash(current)!==treeHash(original.tested))throw new Error('implementation_agent_did_not_test_current_tree');
+      projectValidationCallId=original.callId;
+      tests=original.result;
+    }else tests=await testProject(plan.workspace,join(operation,'attempt-1','post-repair-1'),plan.project,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});
     if(!tests.passed||!tests.executionHealthy)throw new Error('implementation_registered_tests_failed');
-    const calls=await Promise.all((await readdir(join(operation,'calls'))).filter(name=>name.endsWith('.json')).map(async name=>JSON.parse((await regular(join(operation,'calls',name))).toString())));
-    if(!calls.some(call=>call.request?.tool==='tongxu_run_tests'&&call.response&&JSON.parse(call.response.contentItems[0].text).passed===true&&JSON.parse(call.response.contentItems[0].text).candidateTreeSha256===treeHash(current)))throw new Error('implementation_agent_did_not_test_current_tree');
+    if(!grant.projectFiles){
+      const calls=await Promise.all((await readdir(join(operation,'calls'))).filter(name=>name.endsWith('.json')).map(async name=>JSON.parse((await regular(join(operation,'calls',name))).toString())));
+      if(!calls.some(call=>call.request?.tool==='tongxu_run_tests'&&call.response&&JSON.parse(call.response.contentItems[0].text).passed===true&&JSON.parse(call.response.contentItems[0].text).candidateTreeSha256===treeHash(current)))throw new Error('implementation_agent_did_not_test_current_tree');
+    }
     const committed=await commitScopedCandidate(plan.workspace,operation,'attempt-1',1,plan.candidate,current,grant,gate,'implement: adopted Issue #'+request.issue.number,'tongxu controlled implementation runner');
     if(plan.project.materialView)await assertUnselectedGitUnchanged(plan.workspace,plan.project.sourceCandidate.H,committed.candidate.H,[...plan.project.materialPaths,...plan.project.protectedPaths]);
     const testCandidateBinding=await bindProjectTestToCandidate(plan.workspace,committed.candidate,tests);
     const result={status:'completed' as const,requestId:request.id,task:request.task,H0:plan.project.sourceCandidate.H,H1:committed.candidate.H,candidate:committed.candidate,changed,diff:committed.diff,treeSha256:treeHash(current),testCandidateBinding,tests,modelTests:projectModelTestResult(tests),report,sessionId,completeCapture:true,newNativeContext:true,nativeSessionResumed:false,formalReview:false,published:false,userAccepted:false,...(firstSend?{firstInputContinuation:firstSend.reference}:{})};
-    save(join(operation,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,'completed');return result;
+    const recorded={...result,...(projectValidationCallId?{projectValidationCallId}:{})};
+    save(join(operation,'result.json'),recorded);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,'completed');return recorded;
   }catch(error){
-    save(join(operation,firstSend?'first-input/failure.json':'failure.json'),{reason:error instanceof Error?error.message:'implementation_unknown',originalFilesPreserved:true,automaticRetry:false});throw error;
+    save(join(operation,firstSend?'first-input/failure.json':'failure.json'),{reason:error instanceof Error?error.message:'implementation_unknown',originalFilesPreserved:true,automaticRetry:false,...(projectValidationCallId?{projectValidationCallId}:{})});throw error;
   }finally{await session?.close();}
 }
 

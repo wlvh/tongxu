@@ -724,6 +724,8 @@ test('normal registered workbench starts one project-scoped Issue and returns th
  assert.deepEqual(report.value.changed,['src/fallbacks/default-label.mjs','src/index.mjs']);
  assert.match(report.value.diff,/new file mode 100755/);
  const state=f.messages.q.issueImplementations().state('implementation',id);
+ assert.deepEqual(await readdir(join(state.plan.operationRoot,'tests')),['tool-'+report.value.projectValidationCallId]);
+ assert.equal(await exists(join(state.plan.operationRoot,'attempt-1/post-repair-1')),false);
  const manifest=JSON.parse(await readFile(join(state.plan.operationRoot,'input-manifest.json'),'utf8'));
  assert.equal(manifest.request.workflowPrompt.use,'engineering_owner');
  assert.equal(manifest.request.workflowPrompt.revision,'11cf57b34698e6f7b38ee73468e84103cde8f963');
@@ -798,7 +800,7 @@ for(const outcome of ['stop','failed'] as const)test('project file workbench rea
    assert.match(result.value.tests.tools[0].stdout,/empty labels need the fixed fallback/);
    assert.match(result.value.tests.tools[0].stdout,/'Wrong'/);
    assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
-   assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+   assert.equal(await exists(join(operation,'attempt-1/post-repair-1')),false);
  }
  const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
  assert.deepEqual(await f.get(reportPath),result);
@@ -810,7 +812,10 @@ for(const outcome of ['stop','failed'] as const)test('project file workbench rea
    const response=await fetch(url.origin+reportPath,{headers});
    assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
    if(outcome==='failed'){
-     await writeFile(join(operation,'attempt-1/post-repair-1/tool-0/stdout'),'incomplete original');
+     const actualTests=await readdir(join(operation,'tests'));
+     assert.equal(actualTests.length,1);
+     assert.equal(await exists(join(operation,'tests',actualTests[0]!,'tool-1')),false);
+     await writeFile(join(operation,'tests',actualTests[0]!,'tool-0/stdout'),'incomplete original');
      const unknown=await fetch(url.origin+reportPath,{headers}).then(r=>r.json()) as any;
      assert.equal(unknown.status,'partial_or_unknown');
      assert.equal(unknown.tests,undefined);
