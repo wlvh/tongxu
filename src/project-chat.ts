@@ -424,12 +424,16 @@ export class ProjectChat{
         if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');
         if(this.inRepairInbox(row.id)){
           const binding=canonical({account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId,target});
-          const latest=this.db.prepare('SELECT operation,round FROM task_supplement_repair_inboxes WHERE target=? ORDER BY rowid DESC LIMIT 1').get(binding) as Row;
-          const operations=endedRepair?[endedRepair.operation,endedRepair.operation+'/after-repair']:[];
-          if(!endedRepair||latest?.round!==endedRepair.round||!operations.includes(latest.operation))
+          const latest=endedRepair?.published
+            ?this.db.prepare(`SELECT operation,round FROM task_supplement_repair_inboxes,json_each(requests)
+              WHERE target=? AND json_each.value=? ORDER BY task_supplement_repair_inboxes.rowid DESC LIMIT 1`).get(binding,row.id)
+            :this.db.prepare('SELECT operation,round FROM task_supplement_repair_inboxes WHERE target=? ORDER BY rowid DESC LIMIT 1').get(binding);
+          const proof=endedRepair?[endedRepair,...(endedRepair.published?.ancestors??[])]:[];
+          if(typeof latest?.round!=='number'||typeof latest.operation!=='string'||
+             !proof.some(step=>step.round===latest.round&&(latest.operation===step.operation||latest.operation===step.operation+'/after-repair')))
             throw new Error('formal_repair_supplement_already_reserved');
           const reserved=this.db.prepare(`SELECT 1 FROM task_supplement_repair_inboxes,json_each(requests)
-            WHERE target=? AND round=? AND operation IN (?,?) AND json_each.value=?`).get(binding,endedRepair.round,operations[0]!,operations[1]!,row.id);
+            WHERE target=? AND round=? AND operation=? AND json_each.value=?`).get(binding,latest.round,latest.operation,row.id);
           if(!reserved)throw new Error('formal_repair_inbox_binding_changed');
         }else if(endedRepair&&!endedRepair.published)throw new Error('formal_repair_inbox_binding_changed');
         this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);

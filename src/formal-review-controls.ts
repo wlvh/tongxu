@@ -272,9 +272,9 @@ export class FormalReviewControls{
    });
  }
  private async publishedRepairSupplement(q:QueueStore,s:Row,requests:Row[],entry:FormalEntry,source:Source){
-   const records=q.formalReviews(),successors=requests.filter(next=>next.request.previousOperation===s.operation);
-   if(successors.length!==1)throw new Error('formal_repair_supplement_review_current_required');
-   const successor=await this.currentView(successors[0]!),material=successor.request.material;
+   const records=q.formalReviews(),latest=requests.find(next=>next.request.previousOperation===s.operation);
+   if(!latest)throw new Error('formal_repair_supplement_review_current_required');
+   const successor=await this.currentView(latest),material=successor.request.material;
    const {repository,pr,H,B,target}=successor.request.candidate,fix=s.terminal.result.fix;
    if(successor.terminal?.result.status!=='pass'||successor.stages.some((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched))
      throw new Error('formal_repair_supplement_review_current_required');
@@ -288,7 +288,8 @@ export class FormalReviewControls{
    let next=s;
    while(next.request.previousOperation&&ancestors.length<31){
      const parent=requests.find(request=>request.operation===next.request.previousOperation);
-     if(!parent||requests.filter(request=>request.request.previousOperation===parent.operation).length!==1)break;
+     if(!parent||requests.some(sibling=>sibling.request.previousOperation===parent.operation&&sibling.operation!==next.operation&&
+        sibling.stages.some((stage:Row)=>stage.stage.role==='fix'&&stage.dispatched)))break;
      try{
        const older=await this.publishedRepairStep(q,parent,next,entry,source),proof=older.published!;
        if(proof.image!==published.image||proof.contract!==published.contract||
@@ -311,15 +312,30 @@ export class FormalReviewControls{
      throw new Error('formal_repair_supplement_current_base_required');
    return handoff;
  }
+ private async currentRepairHandoff(q:QueueStore,s:Row,requests:Row[],entry:FormalEntry,source:Source,conflict:boolean){
+   const frame={owned:false,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H as string,
+     repairedH:s.terminal.result.fix.H1 as string,operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
+   if(!s.stopped&&!conflict){
+     try{
+       const endedRepair=await this.publishedRepairSupplement(q,s,requests,entry,source);
+       return {...frame,endedRepair,changedBase:true,reason:'formal_repair_supplement_current_base_ready'};
+     }catch{/* The original commit stays fenced until a reviewed successor can be verified. */}
+   }
+   return {...frame,endedRepair:undefined,supersededBase:true,reason:'formal_repair_supplement_current_base_required'};
+ }
  async workRepairInbox(target:SupplementTarget,receivedId?:string,text?:string,continuingOperation?:string){
   for(const {entry,source} of this.entries){
    const q=await QueueStore.open(source.store);
    try{
     const records=q.formalReviews();
     const requests=records.forEntry(entry.id).reverse();
-    for(const s of requests){
+    const selected=continuingOperation?requests.findIndex(request=>request.operation===continuingOperation):0;
+    if(selected<0)continue;
+    if(continuingOperation&&canonical(requests[selected]?.request.projectWork?.target)!==canonical(target))continue;
+    let currentRepair:Awaited<ReturnType<FormalReviewControls['currentRepairHandoff']>>|undefined;
+    for(const s of requests.slice(selected)){
      const work=s.request.projectWork;
-     if(!work||canonical(work.target)!==canonical(target)||continuingOperation&&s.operation!==continuingOperation)continue;
+     if(!work||canonical(work.target)!==canonical(target))continue;
      const stages=s.stages as Array<ReturnType<typeof records.stage>>;
      const owned=stages.some(stage=>stage.stage.role==='fix'&&stage.dispatched&&!stage.returned)||this.active.has(s.operation)||
        !s.stopped&&(!s.terminal||s.terminal.result.status==='awaiting_publication'&&!requests.some(r=>r.request.previousOperation===s.operation));
@@ -357,8 +373,12 @@ export class FormalReviewControls{
       const changedBase=!!fix?.H1&&fix.H1!==s.request.candidate.H;
       let endedRepair:EndedRepairSupplement|undefined,endedProblem:string|undefined;
       if(delivered&&!revision&&!s.stopped&&s.terminal){
-        if(owned&&changedBase)endedProblem='formal_repair_supplement_publication_required';
-        if(!owned&&!conflictingRepair()){
+        if(currentRepair){
+          const current=currentRepair.endedRepair;
+          if(current?.published?.ancestors?.some(step=>step.operation===s.operation&&step.round===round))endedRepair=current;
+          else endedProblem='formal_repair_supplement_lineage_pending';
+        }else if(owned&&changedBase)endedProblem='formal_repair_supplement_publication_required';
+        else if(!owned&&!conflictingRepair()){
           try{
             const candidate=s.request.candidate;
             const current=changedBase?null:records.currentSource(s.item);
@@ -371,7 +391,7 @@ export class FormalReviewControls{
         }
       }
       return {owned,formalRepair:true,ready:false,successful:!!coveringCandidate,issue:entry.issue.number,H1:s.request.candidate.H,
-        endedRepair,changedBase,reason:endedProblem??(verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
+        endedRepair,changedBase:changedBase||!!currentRepair,reason:endedProblem??(verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
           (s.detail?.reason==='formal_fixed_supplement_tests_failed'?s.detail.reason:'formal_repair_supplement_coverage_pending'):
           delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending'),
         operation:s.operation,dispatchRecorded:stage.dispatched,delivered:!!delivered,adopted:!!revision,coveringCandidate,
@@ -382,18 +402,10 @@ export class FormalReviewControls{
      if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,endedRepair:undefined,
       reason:fixes.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
       operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
-     if(receivedId&&s.terminal?.result.fix?.H1&&s.terminal.result.fix.H1!==s.request.candidate.H){
-       const frame={owned:false,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,repairedH:s.terminal.result.fix.H1 as string,
-         operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
-       if(!s.stopped&&!conflictingRepair()){
-         try{
-           const endedRepair=await this.publishedRepairSupplement(q,s,requests,entry,source);
-           return {...frame,endedRepair,changedBase:true,reason:'formal_repair_supplement_current_base_ready'};
-         }catch{/* Without a current verified successor the original commit cannot receive new work. */}
-       }
-       return {...frame,endedRepair:undefined,supersededBase:true,reason:'formal_repair_supplement_current_base_required'};
-     }
+     if(receivedId&&!currentRepair&&s.terminal?.result.fix?.H1&&s.terminal.result.fix.H1!==s.request.candidate.H)
+       currentRepair=await this.currentRepairHandoff(q,s,requests,entry,source,conflictingRepair());
     }
+    if(currentRepair)return currentRepair;
    }finally{q.close();}
   }
   return null;

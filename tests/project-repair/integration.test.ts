@@ -1093,6 +1093,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const lateTarget={source:targetC.source,requestId:targetC.requestId,task:targetC.task,operation:targetC.operation};
      const lateText='Also mark corrected downloads.';
      const {formalFixture}=await import('../w5/formal-round-fixture.js');
+     const {QueueFormalRoundHost}=await import('../../src/formal-review-host.js');
      const {sourceFixture}=await import('../events/source-fixture.js');
      const {sourceTick}=await import('../../src/event-tick.js');
      const {readEventSource}=await import('../../src/event-source.js');
@@ -1128,10 +1129,32 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const started=await post(formalRoute+'/prepare',{requestId:'ordinary-project-joined-review',projectWorkId:c,expectedCandidate:formal.live.candidate});
      assert.equal(started.status,200,JSON.stringify(started.value));
      const repairOperation=started.value.operation;
-     assert.equal((await post(formalRoute+'/start',{operation:repairOperation})).status,202);
      const formalReport=(operation:string)=>get('/api/formal-review-report/'+formal.entry.id+'/'+operation);
+     const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),target:lateTarget,text:lateText};
+     const joinedRow=async(id=joined.requestId)=>{
+       const conversation=(await get('/api/project-secretary/conversations/'+joined.conversationId)).value;
+       return conversation.supplements.find((row:any)=>row.id===id);
+     };
+     let enterFix=()=>{},resumeFix=()=>{};
+     const enteredFix=new Promise<void>(resolve=>{enterFix=resolve;});
+     const holdFix=new Promise<void>(resolve=>{resumeFix=resolve;});
+     const available=QueueFormalRoundHost.prototype.fixAvailable;
+     const pauseFirstFix=t.mock.method(QueueFormalRoundHost.prototype,'fixAvailable',async function(this:InstanceType<typeof QueueFormalRoundHost>){
+       const result=await available.call(this);
+       if(result.available){enterFix();await holdFix;}
+       return result;
+     });
+     assert.equal((await post(formalRoute+'/start',{operation:repairOperation})).status,202);
+     try{
+       await Promise.race([enteredFix,until(()=>formalReport(repairOperation),r=>!r.value.controllerActive).then(()=>assert.fail('formal repair did not reach its original inbox'))]);
+       assert.equal((await post('/api/project-secretary/supplement',joined)).status,202);
+       assert.equal((await joinedRow()).original.delivered,false);
+     }finally{resumeFix();pauseFirstFix.mock.restore();}
      const firstRepair=(await until(()=>formalReport(repairOperation),r=>!r.value.controllerActive&&r.value.phase==='awaiting_publication')).value.result.fix;
      assert.equal(firstRepair.H0,beforeC);assert.notEqual(firstRepair.H1,beforeC);assert.equal(firstRepair.tested.passed,true);
+     const firstFormalDelivery=await joinedRow();
+     assert.equal(firstFormalDelivery.original.recipient.sessionId,firstRepair.sessionId);
+     assert.deepEqual([firstFormalDelivery.original.delivered,firstFormalDelivery.original.adopted,firstFormalDelivery.original.coveringCandidate],[true,false,null]);
      const remote=await sourceFixture(t,'fixture/reception');
      formal.q.events().configure(Buffer.from(canonical(remote.profile)));
      const publishRepair=async(fix:any)=>{
@@ -1152,15 +1175,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.notEqual(firstRepair.sessionId,repair.sessionId);
      await publishRepair(repair);
      await until(()=>formalSuccessor(intermediate.operation),review=>review?.phase==='pass'&&!review.controllerActive);
-     const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),target:lateTarget,text:lateText};
-     assert.equal((await post('/api/project-secretary/supplement',joined)).status,202);
-     const joinedRow=async()=>{
-       const conversation=(await get('/api/project-secretary/conversations/'+joined.conversationId)).value;
-       return conversation.supplements.find((row:any)=>row.id===joined.requestId);
-     };
+     const fresh={...joined,requestId:randomUUID(),text:'Fresh supplement after both repairs.'};
+     assert.equal((await post('/api/project-secretary/supplement',fresh)).status,202);
+     const freshState=await joinedRow(fresh.requestId);
+     assert.equal(freshState.original.continuationBase,repair.H1);
+     assert.equal(freshState.original.delivered,false);
+     assert.equal((await post('/api/project-secretary/cancel-supplement',{requestId:fresh.requestId})).status,200);
      const needsReview=await joinedRow();
      assert.equal(needsReview.original.continuationBase,repair.H1);
-     assert.equal(needsReview.original.delivered,false);
+     assert.equal(needsReview.original.recipient.sessionId,firstRepair.sessionId);
      const beforeEvidence=join(formal.q.formalReviews().state(repairOperation).request.directory,'round-1-correctness-initial','stdout.ndjson');
      await rename(beforeEvidence,beforeEvidence+'.missing');
      try{
@@ -1172,14 +1195,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
        assert.equal((await joinedRow()).compiledRequest,null);
      }finally{await rename(beforeEvidence+'.missing',beforeEvidence);}
      assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,202);
-     const readyJoined=await until(joinedRow,row=>row?.original?.ready===true);
+     const readyJoined=await until(()=>joinedRow(),row=>row?.original?.ready===true);
      assert.equal(readyJoined.original.adopted,false);
      assert.equal((await post('/api/project-secretary/continue-supplements',{target:lateTarget})).status,202);
-     const finishedJoined=await until(joinedRow,row=>!!row?.original?.coveringCandidate);
+     const finishedJoined=await until(()=>joinedRow(),row=>!!row?.original?.coveringCandidate);
      const cFinal=await until(()=>detail(c),value=>value.resultStatus.current&&value.draft.delivery.H===finishedJoined.original.coveringCandidate);
      const joinedReport=cFinal.execution.reports.find((row:any)=>row.H1===cFinal.draft.delivery.H);
      assert.equal(joinedReport.H0,repair.H1);
      assert.equal(joinedReport.tests.tools.some((tool:any)=>tool.id==='fixture-node-tests'),true);
+     assert.equal(finishedJoined.original.originalFormalDelivery.recipient.sessionId,firstRepair.sessionId);
      assert.match(await git(repair.workspace,['show',repair.H1+':sample.js']),/reviewedTwice=true/);
      t.diagnostic(JSON.stringify({formalHistory:[beforeC,firstRepair.H1,repair.H1],repairSessions:[firstRepair.sessionId,repair.sessionId],request:joined.requestId,
        recipient:finishedJoined.original.recipient,adopted:finishedJoined.original.requirementSha256,covered:cFinal.draft.delivery.H}));
