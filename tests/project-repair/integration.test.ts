@@ -479,6 +479,11 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  if(fault==='preparation-typed-retry')code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'&&context.preparationVersion===3){finish({candidateH:context.source.H,decision:'confirmed',report:${JSON.stringify(rejectedLegacyReport)}});return;}if(stage==='tongxu_read_file'){`);
  code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){const rejected=${fault==='preparation-questions'}&&!fs.existsSync(trace+'.preparation-question'),needsOwner=${fault==='preparation-typed-retry'}&&context.previousPreparation?.omitted==='project_work_previous_already_prepared';if(rejected){fs.writeFileSync(trace+'.preparation-question','1');emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic project test premise changed; propose a bounded adjustment.',options:null}],text:'Synthetic unaccepted question.'}}});}finish({candidateH:context.source.H,decision:rejected||needsOwner?'needs_owner':'confirmed',...(context.preparationVersion===4?{proposal:{...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]}}:{report:JSON.stringify({...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]})})});return;}if(stage==='tongxu_read_file'){`);
  code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(![2,3,4].includes(context.preparationVersion)||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
+ if(fault==='project-development'){
+   const nativeSuppl={...proposal,goal:'Retain downloads for strictly less than 24 hours',acceptance:['No download at the exact boundary'],validation:{description:'Retention boundary',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);"}};
+   const stage="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also add a retention deadline for the download.')";
+   code=code.replace("if(stage==='tongxu_repository_file'){const rejected=",stage+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(nativeSuppl)+'});return;}'+"if(stage==='tongxu_repository_file'){const rejected=");
+ }
  if(fault==='validation-failed')code=code.replace("decision:repairing?'implemented':","decision:context.originalReport?'no_change':repairing?'implemented':");
  if(fault==='validation-interrupt')code=code.replace("if(stage==='tongxu_replace_file'){","if(stage==='tongxu_replace_file'){if(context.originalReport)process.exit(7);");
  if(fault==='validation-large')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file')args.text+='\\n// '+ 'g'.repeat(202000);stage=name;const serial=");
@@ -809,6 +814,24 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal((await start(authoredWork)).status,202);
      const firstDelivery=await until(()=>detail(authoredWork),value=>value.draft.delivery?.status==='received');
      assert.equal(firstDelivery.execution.reports[0].tests.passed,true);
+     assert.equal(ownerURLs.length,1);
+     const workC=(await detail(c)).draft;
+     const {title:titleC,...targetC}=((await get('/api/project-secretary')).value.supplementTargets as Array<Record<string,any>>).find(item=>item.source===workC.source)!;
+     assert.match(titleC,/Issue #203/);
+     const nativeSupplement={requestId:randomUUID(),conversationId:workC.conversationId,target:targetC,text};
+     assert.equal((await post('/api/project-secretary/supplement',nativeSupplement)).status,202);
+     assert.equal((await post('/api/project-secretary/review-supplement',{requestId:nativeSupplement.requestId})).status,202);
+     const readNativeSupplement=async()=>(await get('/api/project-secretary/conversations/'+nativeSupplement.conversationId)).value.supplements.find((receipt:any)=>receipt.id===nativeSupplement.requestId);
+     const reviewedInWorkbench=await until(readNativeSupplement,value=>value.original.ready===true);
+     assert.equal(reviewedInWorkbench.id,nativeSupplement.requestId);
+     assert.equal((await post('/api/project-secretary/continue-supplements',{target:targetC})).status,202);
+     const covered=await until(readNativeSupplement,value=>!!value.original.coveringCandidate);
+     assert.equal(covered.original.delivered,true);
+     assert.equal(covered.original.adopted,true);
+     assert.equal(covered.original.recipient.work,workC.source);
+     assert.notEqual(covered.original.coveringCandidate,unrelated.draft.delivery.H);
+     const receiptC=await until(()=>detail(c),value=>value.draft.delivery?.H===covered.original.coveringCandidate&&value.execution.requests.every((r:any)=>!r.controllerActive));
+     assert.equal(receiptC.execution.reports.at(-1).tests.passed,true);
      assert.equal(ownerURLs.length,1);
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
    }finally{for(const open of release.values())open();releaseSupplement();}

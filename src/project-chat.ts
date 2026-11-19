@@ -23,7 +23,7 @@ const reason=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?
 const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){return e.code!=='ESRCH';}};
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
-export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
+export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;review?(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,stillCurrent:()=>void):Promise<Row>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
 export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
@@ -291,6 +291,19 @@ export class ProjectChat{
       }
       return receipt(false);
     });
+  }
+  async reviewSupplement(scope:ProjectChatScope,id:string){
+    if(!chatId(id)||!this.supplements?.review)throw new Error('project_supplement_consumer_unavailable');
+    const r=this.db.prepare('SELECT conversation FROM task_supplements WHERE id=?').get(id) as Row|undefined;
+    if(!r)throw new Error('project_supplement_not_found');
+    const row=this.supplementRows(r.conversation).find(item=>item.id===id)!;
+    this.conversationRow(scope,row.conversation);
+    const check=()=>{
+      const current=this.db.prepare('SELECT cancelled, compiled FROM task_supplements WHERE id=?').get(id) as Row;
+      if(!this.accepting||current.cancelled||current.compiled)throw new Error('project_supplement_cancelled_or_changed');
+    };
+    check();
+    return this.supplements.review(scope,JSON.parse(row.target),id,this.supplementText(row),check);
   }
   async cancelSupplement(scope:ProjectChatScope,id:string){
     if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s LEFT JOIN task_supplement_members m ON m.member=s.id

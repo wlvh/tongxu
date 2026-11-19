@@ -1,5 +1,6 @@
 import {captureImplementationAI} from './implementation-ai.js';
 import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
+import {planAndReviewSupplement,readPlannedSupplement,supplementPlanningDirectory,supplementPlanningStatus,type SupplementPlanningSource} from './project-supplement-planning.js';
 import {readProjectIssueReview,runProjectIssueReview} from './project-issue-review.js';
 import {readProjectIssueDraft,runProjectIssueDraft} from './project-issue-draft.js';
 import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
@@ -29,7 +30,7 @@ import type {BoundedCodexSession} from './repair-native.js';
 type Row=Record<string,any>;
 export type ProjectWorkConfiguration={root:string;executor:{path:string;sha256:string};verification:DockerConfig;preparationTimeoutMs?:number;owner:Omit<AuthorityProfile,'repository'|'issue'|'kind'|'schemaVersion'>};
 type Issue={number:number;title:string;body:string;url:string;defaultHead?:string|null};
-type Job={stop:boolean;promise:Promise<void>;session?:BoundedCodexSession;stopPeer?:()=>Promise<void>};
+type Job={stop:boolean;promise:Promise<void>;session?:BoundedCodexSession;stopPeer?:()=>Promise<void>;ownerWork?:string};
 const now=()=>new Date().toISOString();
 const problem=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?e.message:'project_work_preparation_failed';
 const sourceFor=(scope:ProjectChatScope,d:ProjectWorkDraft):FixedRepository=>({path:d.preparation!.repositoryPath,H:d.preparation!.H,repository:scope.repository.fullName});
@@ -45,7 +46,42 @@ export class ProjectWork{
     c.verification=parseDockerConfig(c.verification);workAuthorityProfile(c.owner,{account:{id:c.owner.ownerId,login:'configuration'},repository:{id:1,nodeId:'configuration',fullName:'local/configuration'}} as ProjectChatScope,1);
     return new ProjectWork(c,await ProjectWorkStore.open(c.root),readIssue,verify,controls);
   }
-  supplementReview(input:SupplementReviewInput,executionKind:string){return readReviewedSupplement(this.config.root,input,executionKind);}
+  async supplementReview(input:SupplementReviewInput,executionKind:string){
+    return await readReviewedSupplement(this.config.root,input,executionKind)??await readPlannedSupplement(this.config.root,input,executionKind);
+  }
+  supplementReviewState(input:SupplementReviewInput){
+    return this.issueReviews.has(supplementPlanningDirectory(this.config.root,input.requestId))
+      ?Promise.resolve({state:'running'}):supplementPlanningStatus(this.config.root,input);
+  }
+  async reviewSupplement(scope:ProjectChatScope,source:SupplementPlanningSource,checkReceived:()=>void){
+    const {input}=source,work=this.store.list(scope).find(d=>d.source===input.target.source);
+    if(!work||work.stopRequested||work.requestId!==input.target.requestId)throw new Error('project_supplement_original_target_changed');
+    const path=supplementPlanningDirectory(this.config.root,input.requestId);
+    if(this.issueReviews.has(path))return {state:'running',requestId:input.requestId};
+    const config=await this.executor(true),mode=config.executionKind??'native_capture';
+    if(await this.supplementReview(input,mode))return {state:'returned',requestId:input.requestId};
+    if(await exists(path))return {state:'pending_or_unknown',requestId:input.requestId};
+    const peer=currentAIChoice('verifier_impact');
+    if(peer?.tool!=='kimi'||peer.project.repository!==scope.repository.id||peer.project.account!==scope.account.id||peer.project.nodeId!==scope.repository.nodeId)
+      throw new Error('project_issue_review_second_company_required');
+    const job:Job={stop:false,promise:Promise.resolve(),ownerWork:work.id};
+    const admit=()=>{
+      const current=this.store.get(scope,work.id);
+      if(!this.accepting||job.stop||current.stopRequested||current.requestId!==input.target.requestId||
+        current.source!==input.target.source)throw new Error('project_supplement_original_target_changed');
+      checkReceived();
+    };
+    const check=async()=>{admit();await this.verify(scope);admit();};
+    await check();
+    if(this.issueReviews.has(path))return {state:'running',requestId:input.requestId};
+    this.issueReviews.set(path,job);
+    job.promise=(async()=>{
+      await mkdir(join(this.config.root,'supplement-planning'),{recursive:true,mode:0o700});
+      await planAndReviewSupplement(this.config.root,source,peer,config,this.config.verification,check,admit,()=>job.stop,
+        session=>{job.session=session;},stop=>{job.stopPeer=stop;});
+    })().catch(()=>{/* The intent and any partial review stay available at the fixed original path. */}).finally(()=>this.issueReviews.delete(path));
+    return {state:'running',requestId:input.requestId};
+  }
   private directory(d:ProjectWorkDraft){return join(this.config.root,'works',d.id,'version-'+d.version);}
   private activeDevelopment(scope:ProjectChatScope){
     const grant=this.store.development(scope);
@@ -281,7 +317,7 @@ export class ProjectWork{
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
     }return this.correctValidation(scope,id);
   }
-  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),this.issueReviews.get(this.issueReviewPath(d)),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await Promise.allSettled([job.session?.close(),job.stopPeer?.()]);}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
+  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),this.issueReviews.get(this.issueReviewPath(d)),...[...this.issueReviews.values()].filter(job=>job.ownerWork===id),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await Promise.allSettled([job.session?.close(),job.stopPeer?.()]);}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
     await mkdir(directory,{recursive:true,mode:0o700});

@@ -233,7 +233,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       ]);
       for(const result of results)if(result.status==='rejected')throw result.reason;
     });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
-    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind));await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
+    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
   const openProjectWork=()=>{
@@ -271,6 +271,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
       read:async(scope,target,compiled,text,receivedId)=>(await openImplementation(scope)).readSupplement(target,compiled,text,receivedId),
       work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
+      ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
+        const prepared=await(await openImplementation(scope)).supplementPlanningInput(target,id,text);
+        return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent);
+      }}:{}),
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined,p.issueImplementation||p.projectWork?{
       options:async scope=>(await openImplementation(scope)).options().flatMap(entry=>entry.issues.map(issue=>({source:entry.id,issueNumber:issue.number,title:'Issue #'+issue.number+' · '+issue.goal}))),
@@ -419,7 +423,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),...(p.projectWork?{projectWorks:(await(await openProjectWork()).state(selection)).works}:{}),timeoutMs:p.projectSecretary.timeoutMs,aiDefault:ai?.defaultSecretary()??{tool:'codex',path:p.projectSecretary.codexExecutable,source:'project_secretary_startup',observed:null,observedAt:null},aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
-        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/continue-question','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/continue-supplements','/api/project-secretary/continue-work','/api/project-secretary/cancel-work','/api/project-secretary/stop-work'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/continue-question','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/review-supplement','/api/project-secretary/continue-supplements','/api/project-secretary/continue-work','/api/project-secretary/cancel-work','/api/project-secretary/stop-work'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
@@ -431,6 +435,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           const result=await chat.receiveSupplement(selection,body);json(res,202,result);
           if(!result.duplicate)for(const target of ('targets' in result?result.targets:[body.target])??[])void chat.processSupplements(selection,target).catch(()=>{});
           return;
+        }
+        if(url.pathname.endsWith('/review-supplement')){
+          if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');
+          json(res,202,await withAI(()=>chat.reviewSupplement(selection,body.requestId)));return;
         }
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
         if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}

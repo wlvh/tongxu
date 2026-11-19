@@ -1,3 +1,4 @@
+import type {SupplementPlanningSource} from './project-supplement-planning.js';
 import type {ReviewedSupplement,SupplementReviewInput} from './project-supplement-review.js';
 import {retainedProjectAdditions} from './implementation-edits.js';
 import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
@@ -46,7 +47,10 @@ export class IssueImplementationControls{
   private generated=new Map<string,{path:string;sha256:string}>();
   private retired=new Set<string>();
   private supplementReview?: (input:SupplementReviewInput,executionKind:string)=>Promise<ReviewedSupplement|null>;
-  setSupplementReview(read:NonNullable<IssueImplementationControls['supplementReview']>){this.supplementReview=read;}
+  private supplementReviewStatus?: (input:SupplementReviewInput)=>Promise<Row|null>;
+  setSupplementReview(read:NonNullable<IssueImplementationControls['supplementReview']>,inspect?:IssueImplementationControls['supplementReviewStatus']){
+    this.supplementReview=read;this.supplementReviewStatus=inspect;
+  }
   onFinished(callback:(target:SupplementTarget)=>Promise<void>){this.finished=callback;}
   private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>,private repository:string,private historySources:()=>Promise<readonly HistorySource[]>){}
   static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>,historySources:()=>Promise<readonly HistorySource[]>=async()=>[]){
@@ -481,6 +485,17 @@ export class IssueImplementationControls{
     await this.boundSupplement(target,id,text);return this.cancel(target.source,id);
   }
   async supplementTargets(){const targets:Array<SupplementTarget&{title:string}>=[];for(const entry of this.entries){if(this.retired.has(entry.id))continue;const q=await QueueStore.open(entry.store);try{for(const s of q.issueImplementations().requests(entry.id)){const request=q.issueImplementations().original(entry.id,s.id);if(!request.continuation&&s.operation)targets.push({source:entry.id,requestId:s.id,task:s.task,operation:s.operation,title:'Issue #'+s.issue+' · '+q.tasks().definition(s.task).title});}}finally{q.close();}}return targets;}
+  async supplementPlanningInput(target:SupplementTarget,receivedId:string,text:string):Promise<SupplementPlanningSource>{
+    const source=await this.supplementSource(target);
+    if(!source.ready||!source.entry.projectFiles||!source.entry.workRequestId||!this.generated.has(source.entry.id))
+      throw new Error(source.reason??'project_supplement_review_required');
+    const issue=await this.read(source.root.issue);
+    if(hash(issue.body)!==source.rootRequest.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+    const H=source.latest.result.H1 as string;
+    return {input:{repository:source.entry.repository,target,H1:H,requestId:'supplement-'+receivedId,text},
+      source:{path:source.latest.plan.workspace,H,repository:source.entry.repository},
+      issue:{number:issue.number,body:issue.body,bodySha256:source.rootRequest.issue.bodySha256,url:issue.url}};
+  }
   private async reviewAmendment(entry:ReadEntry&{executionKind:string},target:SupplementTarget,H1:string,requestId:string,text:string){
     return this.supplementReview?.({repository:entry.repository,target,H1,requestId,text},entry.executionKind)??null;
   }
@@ -497,10 +512,13 @@ export class IssueImplementationControls{
   async readSupplement(target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>{
     if(!compiled){
       const original=await this.supplementSource(target);
-      const review=original.ready&&original.entry.projectFiles&&receivedId&&original.entry.workRequestId
-        ?await this.reviewAmendment(original.entry,target,original.latest.result.H1,'supplement-'+receivedId,text):null;
+      const input=original.ready&&original.entry.projectFiles&&receivedId&&original.entry.workRequestId
+        ?{repository:original.entry.repository,target,H1:original.latest.result.H1,requestId:'supplement-'+receivedId,text}:null;
+      const review=input?await this.supplementReview?.(input,original.entry.executionKind):null;
       const reviewRequired=original.ready&&original.entry.projectFiles&&!review;
-      return {ready:original.ready&&!reviewRequired,reason:reviewRequired?'project_supplement_review_required':original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null,
+      const planning=input&&reviewRequired?await this.supplementReviewStatus?.(input):null;
+      return {ready:original.ready&&!reviewRequired,...(reviewRequired&&original.entry.workRequestId&&!planning?{canRequestReview:true}:{}),
+        ...(planning?{planning}:{}),reason:reviewRequired?'project_supplement_review_required':original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null,
         ...(original.entry.projectFiles?{delivered:false,adopted:false,coveringCandidate:null}:{})};
     }
     const {entry,historical}=await this.readEntry(target.source,target.requestId);
