@@ -9,8 +9,65 @@ import {parseAIModels,requireModelChoice,codexModelList,type AIProvider} from '.
 import {AISettings,withAIPreferences,currentAIChoice,participantWithAI} from '../../src/ai-settings.js';
 import {capturedCodexModels,checkCodexSelected,codexTurnChoice,codexThreadChoice,recordedCodexTurnChoice,claudeChoiceArgs} from '../../src/ai-execution.js';
 import {captureImplementationAI,parseImplementationAI,implementationChoice} from '../../src/implementation-ai.js';
+import {startWorkbench} from '../../src/workbench.js';
+import {firstCodingWorkflowRevision} from '../../src/coding-workflow-source.js';
+import {randomUUID} from 'node:crypto';
 
 const scope=(id=1)=>({account:{id:7},repository:{id,nodeId:'R_'+id,fullName:'fixture/project-'+id}});
+test('normal workflow check pins the first adoption even after upstream main moves and keeps an explicit later check fixed',async t=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-workflow-check-')));
+  const path=join(root,'workbench.json'),repo={
+    id:1,nodeId:'R_1',full_name:'fixture/project-1',description:'Workflow check fixture',private:false,archived:false,
+    defaultBranchRef:{name:'main',target:{oid:'c'.repeat(40)}},updated_at:new Date().toISOString()
+  };
+  const account={id:7,login:'fixture'};
+  let main='a'.repeat(40),firstMerged=true,observations=0;
+  const dependencies:NonNullable<Parameters<typeof startWorkbench>[2]>={
+    githubReader:async()=>({query:async op=>({
+      status:200,headers:{},provenance:'gh-http-body',
+      body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repo],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:repo}})
+    })}),
+    workflowUpstream:async()=>{observations++;return {main,firstMerged};}
+  };
+  await writeFile(path,JSON.stringify({
+    schemaVersion:1,kind:'tongxu-local-workbench',title:'Workflow check fixture',goal:'Pin the observed upstream version',sources:[],
+    githubProjects:true,aiSettings:{root:join(root,'settings'),configured:[],disabledMcpServers:[]}
+  }));
+  let app=await startWorkbench(path,undefined,dependencies);
+  t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
+  const http=async(route:string,body?:object)=>{
+    const url=new URL(app.url),response=await fetch(url.origin+route,{
+      headers:{Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1',
+        ...(body?{Origin:url.origin,'Content-Type':'application/json'}:{})},
+      ...(body?{method:'POST',body:JSON.stringify(body)}:{})
+    });
+    return {status:response.status,data:await response.json() as any};
+  };
+  await http('/api/github/projects');
+  const route='/api/ai-settings/workflow/check',first={requestId:randomUUID(),mode:'first-adoption'};
+  const chosen=await http(route,first);
+  assert.equal(chosen.status,200);
+  assert.deepEqual([chosen.data.selectedRevision,chosen.data.observedMain,chosen.data.activated,chosen.data.modelInputs],
+    [firstCodingWorkflowRevision,main,false,0]);
+  assert.equal(chosen.data.reason,'coding_workflow_controls_pending');
+  main='b'.repeat(40);
+  assert.deepEqual(await http(route,first),chosen);
+  assert.equal(observations,1);
+  assert.equal((await http(route,{...first,mode:'upstream-main'})).data.error,'coding_workflow_request_changed');
+  await app.close();app=await startWorkbench(path,undefined,dependencies);await http('/api/github/projects');
+  const reopened=await http('/api/ai-settings/workflow/engineering_owner');
+  assert.deepEqual(reopened.data.check,chosen.data);
+  assert.equal(reopened.data.activeRevision,chosen.data.activeRevision);
+  assert.equal(observations,1);
+  const followup={requestId:randomUUID(),mode:'upstream-main'},found=await http(route,followup);
+  assert.equal(found.data.selectedRevision,main);
+  assert.equal(found.data.reason,'coding_workflow_candidate_package_unavailable');
+  assert.equal(found.data.activated,false);
+  main='d'.repeat(40);firstMerged=false;
+  assert.deepEqual(await http(route,followup),found);
+  assert.equal((await http(route,{...first,requestId:randomUUID()})).data.reason,'coding_workflow_first_revision_not_merged');
+  assert.equal(observations,3);
+});
 test('current tool catalogs determine model IDs and per-model efforts, without a release or model-name allowlist',async()=>{
   const codex=parseAIModels('codex',[{model:'future-model-z',displayName:'Future',supportedReasoningEfforts:[{reasoningEffort:'new-depth'}],defaultReasoningEffort:'new-depth'}]);
   requireModelChoice(codex,{model:'future-model-z',effort:'new-depth'});assert.throws(()=>requireModelChoice(codex,{model:'gpt-6-astra',effort:'max'}),/no_longer_available/);assert.throws(()=>requireModelChoice(codex,{model:'future-model-z',effort:'xhigh'}),/effort_not_supported/);

@@ -33,6 +33,27 @@ async function openAIRolePrompt(role){
   try{const result=await api('/api/ai-settings/prompts/'+role.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=result.meaning;$('report-body').textContent=result.assembly.system;}
   catch(e){if(nonce===reportNonce)$('report-body').textContent='提示词读取未完成：'+aiError(e);}
 }
+const workflowCheckReasons={
+  coding_workflow_controls_pending:'源包已验证，配套执行和正式采用仍待完成。',
+  coding_workflow_first_revision_not_merged:'已选的首次采用提交无法证明在上游 main 中。',
+  coding_workflow_candidate_package_unavailable:'已固定上游 main 的提交，本机尚无该提交的兼容源包。',
+  coding_workflow_upstream_unavailable:'本次无法读取上游 main，请保留原请求并重试。',
+  coding_workflow_source_unavailable:'本机源文件缺失或无法读取。',
+  coding_workflow_source_digest_mismatch:'本机源文件与固定提交的摘要不一致。',
+};
+async function checkCodingWorkflow(mode,nonce,button,other){
+  const page=aiPage(),epoch=gh.epoch;
+  page.workflowRequests??=new Map();
+  const requestId=page.workflowRequests.get(mode)??crypto.randomUUID();
+  page.workflowRequests.set(mode,requestId);button.disabled=true;other.disabled=true;
+  try{
+    const response=await workspaceFetch('/api/ai-settings/workflow/check',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,mode}),cache:'no-store'}),record=await response.json();
+    if(!response.ok)throw Error(record.error);
+    if(epoch!==gh.epoch||nonce!==reportNonce||!$('report-dialog').open)return;
+    page.workflowRequests.delete(mode);await openCodingWorkflowSource();
+  }catch(error){if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)$('report-meta').append(el('p',workflowCheckReasons[error.message]||aiError(error),'github-error'));}
+  finally{button.disabled=false;other.disabled=false;}
+}
 async function openCodingWorkflowSource(){
   const nonce=++reportNonce;
   $('report-title').textContent='编程工作流来源';
@@ -40,13 +61,19 @@ async function openCodingWorkflowSource(){
   $('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;
   showWorkbenchReport();
   try{
-    const {activeRevision,candidate,assembly}=await api('/api/ai-settings/workflow/engineering_owner');
+    const {activeRevision,candidate,assembly,check}=await api('/api/ai-settings/workflow/engineering_owner');
     if(nonce!==reportNonce||!$('report-dialog').open)return;
     const {identity,manifest}=candidate;
     const upstream='https://github.com/'+identity.repository+'/blob/';
     const link=(name,revision,path)=>{const a=el('a',name+' '+revision.slice(0,7));a.href=upstream+revision+'/'+path;a.target='_blank';a.rel='noopener noreferrer';return a;};
     $('report-meta').replaceChildren(link('当前提示来源',activeRevision,candidate.entrypoint),document.createTextNode(' · '),link('候选来源',identity.revision,candidate.entrypoint),document.createTextNode(' · '),link('采用说明',identity.revision,candidate.adoption));
-    $('report-body').textContent='候选来源校验通过。配套执行尚待接入。\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
+    const first=el('button','核对首次采用的固定版本','outline'),latest=el('button','核对上游 main 当前版本','outline');
+    first.type=latest.type='button';
+    first.onclick=()=>checkCodingWorkflow('first-adoption',nonce,first,latest);
+    latest.onclick=()=>checkCodingWorkflow('upstream-main',nonce,latest,first);
+    $('report-meta').append(first,latest);
+    const checked=check?'已选定 '+check.selectedRevision+'\n本次观察到的上游 main '+check.observedMain+'\n'+(workflowCheckReasons[check.reason]||check.reason)+'\n\n':'';
+    $('report-body').textContent=checked+'候选来源校验通过。配套执行尚待接入。\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
   }catch(e){
     if(nonce!==reportNonce||!$('report-dialog').open)return;
     const reasons={

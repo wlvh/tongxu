@@ -6,7 +6,8 @@ import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
 
 const repository = 'wlvh/coding-workflow';
-const revision = '11cf57b34698e6f7b38ee73468e84103cde8f963';
+export const firstCodingWorkflowRevision = '11cf57b34698e6f7b38ee73468e84103cde8f963';
+const revision=firstCodingWorkflowRevision;
 const packageSha256 = '61c96895fd565eab71c2e302144ad69f8fcb19d2713f15bc7055e13a464465ad';
 const indexPath = 'zh/prompts/coding_workflow.json';
 const entrypoint = 'zh/docs/development_workflow/README.md';
@@ -93,3 +94,24 @@ export async function readCodingWorkflowSource(root = includedSource) {
 }
 
 export type CodingWorkflowPrompt=ReturnType<Awaited<ReturnType<typeof readCodingWorkflowSource>>['prompt']>;
+
+export async function readCodingWorkflowUpstream():Promise<{main:string;firstMerged:boolean}>{
+  const root='https://api.github.com/repos/'+repository;
+  const read=async(path:string)=>{
+    const response=await fetch(root+path,{redirect:'error',signal:AbortSignal.timeout(15000),headers:{Accept:'application/vnd.github+json'}});
+    if(!response.ok)throw new Error('coding_workflow_upstream_unavailable');
+    return response.json();
+  };
+  let main:string;
+  try{
+    const branch=await read('/branches/main');
+    main=branch.commit?.sha;
+    if(branch.name!=='main'||!/^[a-f0-9]{40}$/.test(main))throw new Error('coding_workflow_upstream_invalid');
+    if(main===revision)return {main,firstMerged:true};
+    const comparison=await read('/compare/'+revision+'...'+main);
+    return {main,firstMerged:comparison.status==='ahead'&&comparison.base_commit?.sha===revision&&comparison.merge_base_commit?.sha===revision};
+  }catch(error){
+    if(error instanceof Error&&error.message.startsWith('coding_workflow_'))throw error;
+    throw new Error('coding_workflow_upstream_unavailable');
+  }
+}

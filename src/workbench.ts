@@ -157,7 +157,7 @@ export async function workbenchMessageReport(p:WorkbenchPlan,source:string,run:s
   const selected=p.sources.find(s=>s.id===source);if(!selected||!/^[a-f0-9]{64}$/.test(run)||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(messageId))throw new Error('report_not_found');
   return QueueStore.observeMessageReport(selected.store,selected.item,run,messageId);
 }
-export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider;formalSourceReader?:FormalSourceReader;ownerWindowOpen?:(url:string)=>Promise<void>}) {
+export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider;formalSourceReader?:FormalSourceReader;ownerWindowOpen?:(url:string)=>Promise<void>;workflowUpstream?:typeof import('./coding-workflow-source.js').readCodingWorkflowUpstream}) {
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const github=p.githubProjects?new GitHubProjects(dependencies?.githubReader):null;
@@ -398,13 +398,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');
         const workflow=/^\/api\/ai-settings\/workflow(?:\/([a-z_]+))?$/.exec(url.pathname);
-        if(req.method==='GET'&&workflow){json(res,200,await ai.workflow(workflow[1]));return;}
+        if(req.method==='GET'&&workflow){json(res,200,await ai.workflow(workflow[1],selection));return;}
         const prompt=/^\/api\/ai-settings\/prompts\/([a-z_]+)$/.exec(url.pathname);if(req.method==='GET'&&prompt){json(res,200,await ai.prompt(prompt[1]!));return;}
         if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
-        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role','/api/ai-settings/workflow/check'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>8192){json(res,413,{error:'ai_settings_request_invalid'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
+        if(url.pathname.endsWith('/workflow/check')){json(res,200,await ai.checkWorkflow(selection,body,()=>verifyProject(selection),dependencies?.workflowUpstream));return;}
         if(url.pathname.endsWith('/scan')){if(!exactKeys(body,[]))throw new Error('ai_settings_request_invalid');const result=await ai.scan(selection);await verifyProject(selection);json(res,200,result);}else json(res,200,await ai.change(selection,body));return;
       }
       if(url.pathname.startsWith('/api/project-secretary')){

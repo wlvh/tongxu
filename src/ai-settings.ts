@@ -6,13 +6,14 @@ import {isAbsolute,resolve,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {exactKeys} from './authority-contract.js';
 import {canonical} from './comparison.js';
+import {chatId} from './project-chat-contract.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {discoverAIEntries,inspectAIProvider,requireModelChoice,validateModelChoice,type AIProvider,type AIModelChoice,type AICatalogConfig} from './ai-catalog.js';
 import {selectExternalExecutable} from './external-executable.js';
 import {externalExecutableFamily} from './external-executable.js';
 import type {MessageParticipant} from './message-contract.js';
 import {assembleRolePrompt, upstreamRevision} from './role-prompts.js';
-import {readCodingWorkflowSource} from './coding-workflow-source.js';
+import {firstCodingWorkflowRevision,readCodingWorkflowSource,readCodingWorkflowUpstream} from './coding-workflow-source.js';
 
 export const aiRoles=[
   {id:'secretary',name:'工作秘书',need:'scopedTools',description:'读取项目原报告，或协调用户明确选定的已审定工作'},
@@ -83,7 +84,7 @@ const scopeKey=(s:AISettingsScope)=>{if(!Number.isSafeInteger(s.account.id)||s.a
 export class AISettings{
   private scanning:Promise<AIProvider[]>|undefined;
   private constructor(private config:AISettingsConfig,private db:DatabaseSync,private probe:typeof inspectAIProvider,private secretaryExecutable?:string){}
-  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL)');return new AISettings(config,db,probe,secretaryExecutable);}
+  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_checks(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request))');return new AISettings(config,db,probe,secretaryExecutable);}
   private catalog(){const row=this.db.prepare('SELECT body FROM catalogs ORDER BY id DESC LIMIT 1').get() as {body:string}|undefined;return row?JSON.parse(row.body) as AIProvider[]:[];}
   private prefs(scope:AISettingsScope){const row=this.db.prepare('SELECT revision,body FROM preferences WHERE scope=?').get(scopeKey(scope)) as {revision:number;body:string}|undefined;return row?{revision:row.revision,choices:JSON.parse(row.body) as Partial<Record<AIRole,AISettingChoice>>}:{revision:0,choices:{}};}
   defaultSecretary(){
@@ -93,12 +94,45 @@ export class AISettings{
   }
   state(scope:AISettingsScope){return {defaults:{secretary:this.defaultSecretary()},roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
   async prompt(role:string){if(!aiRoles.some(r=>r.id===role))throw new Error('ai_role_not_found');return {role,assembly:await assembleRolePrompt(role as AIRole),meaning:'当前公共边界、角色与固定上游提示全文。每次实际执行还会加入该任务的材料、工具和输出要求，并随原运行保存；此处不是某次历史运行的完整输入。',modelInputs:0};}
-  async workflow(use?: string) {
+  private workflowCheck(scope:AISettingsScope,request?:string){
+    const key=scopeKey(scope);
+    const result=request
+      ?this.db.prepare('SELECT body FROM workflow_checks WHERE scope=? AND request=?').get(key,request)
+      :this.db.prepare('SELECT body FROM workflow_checks WHERE scope=? ORDER BY rowid DESC LIMIT 1').get(key);
+    return result?JSON.parse(result.body as string):null;
+  }
+  async checkWorkflow(scope:AISettingsScope,input:unknown,verify:()=>Promise<void>,observe=readCodingWorkflowUpstream){
+    const b=input as {requestId:string;mode:string};
+    if(!exactKeys(b,['requestId','mode'])||!chatId(b.requestId)||!['first-adoption','upstream-main'].includes(b.mode))throw new Error('coding_workflow_request_invalid');
+    const current=()=>{
+      const saved=this.workflowCheck(scope,b.requestId);
+      if(saved&&saved.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return saved;
+    };
+    const original=current();if(original)return original;
+    const observed=await observe();
+    if(!/^[a-f0-9]{40}$/.test(observed.main)||typeof observed.firstMerged!=='boolean')throw new Error('coding_workflow_upstream_invalid');
+    const selected=b.mode==='first-adoption'?firstCodingWorkflowRevision:observed.main;
+    let packageSha256:string|null=null,reason:string;
+    if(b.mode==='first-adoption'&&!observed.firstMerged)reason='coding_workflow_first_revision_not_merged';
+    else if(selected!==firstCodingWorkflowRevision)reason='coding_workflow_candidate_package_unavailable';
+    else try{
+      const {identity}=await readCodingWorkflowSource();
+      packageSha256=identity.packageSha256;reason='coding_workflow_controls_pending';
+    }catch(error){reason=error instanceof Error?error.message:'coding_workflow_source_unavailable';}
+    await verify();
+    const record={requestId:b.requestId,mode:b.mode,selectedRevision:selected,observedMain:observed.main,
+      observedAt:new Date().toISOString(),packageSha256,reason,activeRevision:upstreamRevision,activated:false,modelInputs:0};
+    this.db.prepare('INSERT OR IGNORE INTO workflow_checks(scope,request,body) VALUES (?,?,?)').run(scopeKey(scope),b.requestId,canonical(record));
+    return current();
+  }
+  async workflow(use?: string,scope?:AISettingsScope) {
     const {prompt, ...source} = await readCodingWorkflowSource();
     return {
       activeRevision: upstreamRevision,
       candidate: source,
       status: 'controls_pending',
+      ...(scope?{check:this.workflowCheck(scope)}:{}),
       ...(use ? {assembly: prompt(use)} : {}),
       modelInputs: 0,
     };
