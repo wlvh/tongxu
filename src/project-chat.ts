@@ -142,7 +142,7 @@ export class ProjectChat{
       this.ensureConversation(scope,b.conversationId,b.question);
       const history=this.rows(b.conversationId);
       if((history.at(-1)?.id??null)!==b.parent)throw new Error('project_chat_parent_changed');
-      this.modelHistory(history);
+      if(!queued)this.modelHistory(history);
       const status=queued?'queued':'registered';
       this.db.prepare('INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,?,?,?,?,?,?)').run(b.requestId,b.conversationId,b.parent,b.question,status,now(),queued?null:process.pid,queued?null:this.owner);
       if(b.workTarget)this.db.prepare('INSERT INTO task_work_requests(id,target) VALUES(?,?)').run(b.requestId,canonical(b.workTarget));
@@ -169,8 +169,12 @@ export class ProjectChat{
     const waiting=this.waiting.get(next.id);if(!waiting)return;
     const {scope,preferences}=waiting;
     this.waiting.delete(next.id);
-    const resume=()=>this.continueQuestion(scope,next.id);
-    void (preferences?withAIPreferences(preferences,resume):resume()).catch(()=>{/* The saved question remains available for explicit continuation. */});
+    // Automatic continuation bypasses the HTTP project check. Verify before
+    // claiming the row so a failed check leaves the original question queued.
+    void this.verify(scope).then(()=>{
+      const resume=()=>this.continueQuestion(scope,next.id);
+      return preferences?withAIPreferences(preferences,resume):resume();
+    }).catch(()=>{/* The saved question remains available for explicit continuation. */});
   }
   async continueQuestion(scope:ProjectChatScope,id:string){
     if(!this.accepting||!chatId(id))throw new Error('project_chat_id_invalid');
