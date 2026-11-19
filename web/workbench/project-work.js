@@ -87,7 +87,11 @@ function renderProjectWork(){
         for(const [company,record] of [['OpenAI',issueReview.correctness],['Moonshot',issueReview.minimality]]){
           if(record)section.append(append(el('details',null,'panel'),el('summary',company+' · '+record.exchanged.verdict),el('p',record.initial.report,'chat-text'),el('p',record.exchanged.report,'chat-text')));
         }
-      }else section.append(el('p',issueReview.state==='running'?'正在进行本版 Issue 的独立审查和交流。':'本版 Issue 的原审查保留，完整结论待核。','small'));
+      }else{
+        section.append(el('p',issueReview.state==='running'?'正在进行本版 Issue 的独立审查和交流。':'本版 Issue 的原审查保留，完整结论待核。','small'));
+        if(issueReview.reason==='formal_pass_has_unresolved_work')
+          section.append(el('p','原审查的通过结论和它列出的未解决项冲突。需要核实该审查结论。','github-error'));
+      }
     }
     if(current?.problem||item.problem)section.append(el('p',projectWorkError(current?.problem||item.problem),'github-error'));
     const goal=el('textarea');goal.id='work-goal';goal.rows=4;goal.maxLength=2048;goal.value=d.goal;goal.placeholder='补充希望得到的结果或必须保留的行为；无需列出工程文件和命令。';goal.oninput=()=>{d.goal=goal.value;d.goalEdited=true;};goal.oncompositionstart=()=>{d.composing=true;};goal.oncompositionend=()=>{d.composing=false;};section.append(append(el('label','本次目标与必要补充'),goal));if(item.draftGoal!=null)section.append(el('p','补充原话已保留为待准备草案；下方范围仍属于原版本，重新准备完成前不会采用这些补充。','small'));

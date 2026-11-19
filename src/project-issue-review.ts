@@ -12,9 +12,15 @@ import type {AIRuntimeChoice} from './ai-settings.js';
 import type {RepairConfig} from './repair.js';
 
 type ReviewMaterial={work:string;repository:string;issue:{number:number;body:string;bodySha256:string;url:string};goal:string;head:string};
-type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture'};
+type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture';verdictProtocol?:1};
 const subject=(m:ReviewMaterial)=>({kind:'local-git' as const,repository:'local/project-issue-review',pr:null,H:m.head,B:m.head,target:'issue-review'});
-const envelope=(material:ReviewMaterial,peer:unknown)=>canonical({material,reviewedInputSha256:hash(canonical(material)),peer,responseShape:formalReviewSchema});
+const verdictProtocol={PASS:'Return PASS only with an empty coverageGaps and ownerQuestions array and zero priority 0 or 1 findings. Keep transferable nonblocking observations in priority 2 findings, if applicable.',
+  REWORK_REQUIRED:'Use for any blocking defect or missing acceptance coverage.',OWNER_DECISION_REQUIRED:'Use for a decision that only the Owner can make. Include at least one concrete owner question.'};
+const envelope=(request:ReviewRequest,peer:unknown)=>{
+  const {material}=request;
+  return canonical({material,reviewedInputSha256:hash(canonical(material)),peer,responseShape:formalReviewSchema,
+    ...(request.verdictProtocol===1?{verdictProtocol}:{})});
+};
 const read=async(directory:string,name:string)=>regular(join(directory,name),16*1024*1024);
 const rows=(raw:Buffer)=>raw.toString().trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
 const parse=(text:string,material:ReviewMaterial)=>validateFormalReview(JSON.parse(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(text)?.[1]??text),material.head,hash(canonical(material)));
@@ -76,20 +82,27 @@ export async function readProjectIssueReview(directory:string,material:ReviewMat
       canonical(gpt.binding.candidate)!==canonical(subject(material))||gpt.turns.length!==2||inputs.length!==2||
       inputs.some((input:any)=>canonical(input.schema)!==canonical(formalReviewSchema))||gpt.binding.sessionId===kimi.sessionId)throw new Error('project_issue_review_binding_changed');
     const originalCorrectness=parse(gpt.turns[0]!.final!.text,material),originalMinimality=kimi.turns[0]!.report;
-    if(inputs[0].input!==envelope(material,null)||kimi.turns[0]!.input!==inputs[0].input||
-      inputs[1].input!==envelope(material,originalMinimality)||kimi.turns[1]!.input!==envelope(material,originalCorrectness))throw new Error('project_issue_review_exchange_changed');
+    if(inputs[0].input!==envelope(request,null)||kimi.turns[0]!.input!==inputs[0].input||
+      inputs[1].input!==envelope(request,originalMinimality)||kimi.turns[1]!.input!==envelope(request,originalCorrectness))throw new Error('project_issue_review_exchange_changed');
     const correctness=parse(gpt.turns[1]!.final!.text,material),minimality=kimi.turns[1]!.report;
     return {state:'returned' as const,issueBodySha256:material.issue.bodySha256,workflowRevision:request.correctness.revision,
       approved:correctness.verdict==='PASS'&&minimality.verdict==='PASS',executionKind:request.executionKind,
       correctness:{sessionId:gpt.binding.sessionId,initial:originalCorrectness,exchanged:correctness},
       minimality:{sessionId:kimi.sessionId,initial:originalMinimality,exchanged:minimality}};
-  }catch{return {state:'pending_or_unknown' as const,issueBodySha256:material.issue.bodySha256};}
+  }catch{
+    let diagnostic:string|undefined;
+    try{
+      const original=await read(directory,'request.json'),note=JSON.parse((await read(directory,'review-diagnostic.json')).toString());
+      if(note?.requestSha256===hash(original)&&typeof note.reason==='string'&&/^[a-z0-9_:,-]{1,160}$/.test(note.reason))diagnostic=note.reason;
+    }catch{/* Earlier originals can lack a dispatch diagnostic. */}
+    return {state:'pending_or_unknown' as const,issueBodySha256:material.issue.bodySha256,...(diagnostic?{reason:diagnostic}:{})};
+  }
 }
 
 export async function runProjectIssueReview(directory:string,material:ReviewMaterial,peer:AIRuntimeChoice,config:RepairConfig,verify:()=>Promise<void>,admit:()=>void,onSession:(session:BoundedCodexSession)=>void,onPeer:(stop:()=>Promise<void>)=>void){
   if(peer.tool!=='kimi')throw new Error('project_issue_review_second_company_required');
   const source=await readCodingWorkflowSource(),correctness=source.prompt('issue_review_completion'),minimality=source.prompt('issue_review_minimality');
-  const request:ReviewRequest={material,correctness,minimality,peer,executionKind:config.executionKind??'native_capture'},candidate=subject(material);
+  const request:ReviewRequest={material,correctness,minimality,peer,executionKind:config.executionKind??'native_capture',verdictProtocol:1},candidate=subject(material);
   await verify();await privateDirectory(directory,true);await writeFixed(join(directory,'request.json'),canonical(request));
   let gpt:BoundedCodexSession|undefined,kimi:ExtraCliSession|undefined;
   try{
@@ -105,11 +118,15 @@ export async function runProjectIssueReview(directory:string,material:ReviewMate
     const openedPeer=kimi;onPeer(()=>openedPeer.close());
     await kimi.select({model:peer.model,effort:peer.effort});
     const check=(result:unknown)=>validateFormalReview(result,material.head,hash(canonical(material)));
-    const initial=envelope(material,null);
+    const initial=envelope(request,null);
     const a=check(await gpt.turn(initial,candidate,formalReviewSchema));
     const b=parse((await kimi.prompt(initial,config.timeoutMs,admit,verify)).final,material);
-    check(await gpt.turn(envelope(material,b),candidate,formalReviewSchema));
-    parse((await kimi.prompt(envelope(material,a),config.timeoutMs,admit,verify)).final,material);
+    check(await gpt.turn(envelope(request,b),candidate,formalReviewSchema));
+    parse((await kimi.prompt(envelope(request,a),config.timeoutMs,admit,verify)).final,material);
+  }catch(error){
+    const reason=error instanceof Error&&/^[a-z0-9_:,-]{1,160}$/.test(error.message)?error.message:'project_issue_review_capture_unknown';
+    await writeFixed(join(directory,'review-diagnostic.json'),canonical({requestSha256:hash(canonical(request)),reason}));
+    throw error;
   }finally{await Promise.allSettled([gpt?.close(),kimi?.close()]);}
   const result=await readProjectIssueReview(directory,material);
   if(result?.state!=='returned')throw new Error('project_issue_review_capture_unknown');
