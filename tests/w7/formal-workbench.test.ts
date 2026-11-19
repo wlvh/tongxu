@@ -12,6 +12,7 @@ import {git} from '../../src/repair-workspace.js';
 import {additionalFixture} from './additional-cli-fixture.js';
 import {formalBatch,validateFormalReview,validateFormalVerification} from '../../src/formal-review-contract.js';
 import {FormalReviewControls} from '../../src/formal-review-controls.js';
+import {FormalReviews} from '../../src/formal-review-store.js';
 import {QueueFormalRoundHost} from '../../src/formal-review-host.js';
 import type {AIPreferenceSnapshot} from '../../src/ai-settings.js';
 import {ProjectWork} from '../../src/project-work.js';
@@ -278,6 +279,46 @@ for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published
      assert.equal((await http(route+'/check',{})).status,200);
      const successor=async()=>(await http('/api/formal-review')).data.entries[0].requests.find((row:any)=>row.previousOperation===operation);
      await waitFor(async()=>{const next=await successor();return next?.phase==='pass'&&!next.controllerActive;});
+     if(newAfter){
+       // Supply only the next formal history at the store boundary. Ordinary
+       // routing, saved receipts and Git ancestry still run through the host.
+       const reviewed=f.q.formalReviews().state((await successor()).operation);
+       const H2=await git(f.entry.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit-tree',fix.H1+'^{tree}','-p',fix.H1,'-m','second published repair fixture']);
+       const secondFix={...reviewed,terminal:{result:{status:'awaiting_publication',fix:{H1:H2}}}};
+       const finalReview={...reviewed,operation:randomUUID(),request:{...reviewed.request,previousOperation:reviewed.operation,candidate:{...reviewed.request.candidate,H:H2}}};
+       const forEntry=FormalReviews.prototype.forEntry;
+       const history=t.mock.method(FormalReviews.prototype,'forEntry',function(this:FormalReviews,id:string){
+         const rows=forEntry.call(this,id);
+         return id===f.entry.id?[...rows.filter(row=>row.operation!==reviewed.operation),secondFix,finalReview]:rows;
+       });
+       const ordinary=t.mock.method(IssueImplementationControls.prototype as any,'supplementSource',async()=>({
+         ready:true,latest:{result:{H1:old},plan:{workspace:f.entry.objects}}
+       }));
+       const requestId=randomUUID(),conversationId=randomUUID();
+       const load=async()=>(await http(projectChat+'/conversations/'+conversationId)).data.supplements[0];
+       f.live.candidate.H=H2;
+       try{
+         const calls=await f.calls();
+         assert.equal((await http(projectChat+'/supplement',{requestId,conversationId,target:a,text})).status,202);
+         const pending=await load();
+         assert.equal(pending.original.reason,'formal_repair_supplement_lineage_pending',JSON.stringify(pending));
+         assert.equal(pending.original.H1,null);
+         assert.equal(pending.original.continuationBase,undefined);
+         assert.equal(pending.original.canRequestReview,undefined);
+         assert.equal(pending.original.ready,false);
+         assert.equal(pending.compiledRequest,null);
+         const review=await http(projectChat+'/review-supplement',{requestId});
+         assert.equal(review.status,503);
+         assert.equal(review.data.error,pending.original.reason);
+         assert.equal((await take()).status,202);
+         assert.deepEqual(await load(),pending);
+         assert.deepEqual(await f.calls(),calls);
+         assert.equal(handoffs.length,0);
+         assert.deepEqual(f.q.formalReviews().state(operation).terminal,original.terminal);
+         assert.deepEqual(await readFile(inboxPath),bytes);
+         assert.equal((await http(projectChat+'/cancel-supplement',{requestId})).status,200);
+       }finally{f.live.candidate.H=fix.H1;history.mock.restore();ordinary.mock.restore();}
+     }
      if(newAfter)assert.equal((await http(projectChat+'/supplement',{requestId:groupId,conversationId,target:a,text})).status,202);
      const priorApproval=(await inbox())[0];assert.equal(priorApproval.original.ready,false);assert.equal(priorApproval.original.continuationBase,fix.H1);
      approved=true;

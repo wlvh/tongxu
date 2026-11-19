@@ -35,6 +35,7 @@ import {SecretaryControls} from './secretary-controls.js';
 import {ReturnControls} from './return-controls.js';
 
 type Row = Record<string, any>;
+const supplementLineagePending='formal_repair_supplement_lineage_pending';
 export type WorkbenchPlan = {
   schemaVersion: 1; kind: 'tongxu-local-workbench'|'tongxu-controlled-workbench'; title: string; goal: string;
   sources: Array<{ id: string; title: string; store: string; item: string }>;
@@ -317,16 +318,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
             reason:compiledProblem.message};
         }
         if(!repair)return compiledState??original();
-        if('supersededBase' in repair){
+        if('repairedH' in repair&&repair.repairedH&&(!compiled||compiledState?.unregistered||'supersededBase' in repair)){
           const pending=compiledState??await original();
-          return pending.H1&&pending.H1!==repair.H1?pending:{...repair,resumable:false};
+          if(pending.H1&&pending.H1!==repair.H1){
+            const controls=await openImplementation(scope);
+            if(await controls.ordinarySupplementContainsRepair(target,pending.H1,repair.repairedH))return pending;
+            return {...repair,H1:null,endedRepair:undefined,resumable:false,reason:supplementLineagePending};
+          }
         }
+        if('supersededBase' in repair)return {...repair,H1:null,resumable:false};
         if(compiled&&!repair.delivered&&!repair.endedRepair?.published)return compiledState??original();
         if(repair.adopted)return repair;
-        if(repair.endedRepair?.published&&!repair.delivered&&!compiled){
-          const latest=await original().catch(()=>null);
-          if(latest?.H1&&latest.H1!==repair.H1)return latest;
-        }
         const pending=repair.endedRepair?.published&&(!compiledState||compiledState.unregistered)
           ?await (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId,repair.endedRepair).catch(error=>({reason:(error as Error).message}) as Row)
           :compiledState??await original().catch(()=>null);
@@ -345,19 +347,29 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         return {...repair,canRequestReview:pending?.H1===repair.H1&&pending?.canRequestReview,planning:pending?.H1===repair.H1?pending?.planning:undefined};
       },
       work:async(scope,target,id,text,before,endedRepair)=>{
-        if(!endedRepair&&(await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
-        return (await openImplementation(scope)).workSupplement(target,id,text,before,endedRepair);
+        const controls=await openImplementation(scope);
+        if(!endedRepair){
+          if((await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
+          const receivedId=id.slice('supplement-'.length),repair=await formalForSupplement(scope,target,receivedId,text);
+          if(repair&&'repairedH' in repair&&repair.repairedH){
+            const {H1}=await controls.readSupplement(target,null,text,receivedId);
+            if(!H1||!await controls.ordinarySupplementContainsRepair(target,H1,repair.repairedH))throw new Error(supplementLineagePending);
+          }
+        }
+        return controls.workSupplement(target,id,text,before,endedRepair);
       },
       ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
         const repair=await formalForSupplement(scope,target,id,text),ended=repair?.endedRepair;
         if(repair&&'changedBase' in repair&&repair.changedBase&&!ended?.published)throw new Error(repair.reason??'formal_repair_supplement_review_current_required');
         const controls=await openImplementation(scope);
-        if(repair&&!ended){
+        let published=ended?.published?ended:undefined;
+        if(repair&&(!ended||published&&!repair.delivered)){
           const H=(await controls.readSupplement(target,null,text,id)).H1;
-          if('supersededBase' in repair?H===repair.H1:H!==repair.H1)throw new Error('formal_repair_supplement_current_base_required');
+          if('repairedH' in repair&&repair.repairedH&&H&&H!==repair.H1){
+            if(!await controls.ordinarySupplementContainsRepair(target,H,repair.repairedH))throw new Error(supplementLineagePending);
+            published=undefined;
+          }else if(!ended&&('supersededBase' in repair||H!==repair.H1))throw new Error('formal_repair_supplement_current_base_required');
         }
-        const latest=ended?.published&&!repair?.delivered?await controls.readSupplement(target,null,text,id).catch(()=>null):null;
-        const published=ended?.published&&(!latest?.H1||latest.H1===repair?.H1)?ended:undefined;
         const prepared=await controls.supplementPlanningInput(target,id,text,published);
         return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent,published?async()=>{
           const proof=(await formalForSupplement(scope,target,id,text,published.operation))?.endedRepair;

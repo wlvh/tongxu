@@ -355,7 +355,7 @@ export class FormalReviewControls{
       reason:fixes.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
       operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
      if(receivedId&&s.terminal?.result.fix?.H1&&s.terminal.result.fix.H1!==s.request.candidate.H){
-       const frame={owned:false,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
+       const frame={owned:false,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,repairedH:s.terminal.result.fix.H1 as string,
          operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
        if(!s.stopped&&!conflictingRepair()){
          try{

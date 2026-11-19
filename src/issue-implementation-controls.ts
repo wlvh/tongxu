@@ -676,6 +676,12 @@ export class IssueImplementationControls{
       return {entry,root,rootRequest,latest,request,ready:true,reason:null};
     }finally{q.close();}
   }
+  async ordinarySupplementContainsRepair(target:SupplementTarget,H:string,repairedH:string){
+    if(!/^[a-f0-9]{40}$/.test(repairedH))return false;
+    const source=await this.supplementSource(target);
+    if(!source.ready||source.latest.result.H1!==H)return false;
+    return await git(source.latest.plan.workspace,['merge-base',repairedH,H]).catch(()=>null)===repairedH;
+  }
   async readSupplement(target:SupplementTarget,compiled:string|null,text:string,receivedId?:string,ended?:EndedRepairSupplement):Promise<Row>{
     if(!compiled){
       const original=await this.supplementSource(target);
