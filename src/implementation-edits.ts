@@ -34,6 +34,16 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
     if(canonical(c.newFile)!==canonical(file))throw new Error('implementation_edit_receipt_changed');
     expected=orderedProjectTree({...expected,[path]:file});
    }
+   if(p.tool==='tongxu_delete_file'||p.tool==='tongxu_rename_file'){
+    const {path,destination,expectedSha256}=p.arguments,move=p.tool==='tongxu_rename_file';
+    const file=expected[path];
+    if(!projectFiles||!projectPathWritable(projectFiles,path)||!Object.hasOwn(expected,path)||!file||
+       file.sha256!==expectedSha256||canonical(file)!==canonical(c.beforeFile)||c.status!=='applied'||
+       move&&(!projectPathWritable(projectFiles,destination)||Object.hasOwn(expected,destination)))throw new Error('implementation_edit_receipt_changed');
+    delete expected[path];
+    if(move)expected[destination]=file;
+    expected=orderedProjectTree(expected);
+   }
    if(c.afterTreeSha256!==treeHash(expected))throw new Error('implementation_edit_receipt_changed');
   }
  };

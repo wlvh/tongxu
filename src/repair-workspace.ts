@@ -68,8 +68,7 @@ export function projectPathWritable(scope:ProjectFiles,path:unknown):path is str
 }
 export function changedWorkspacePaths(before:Tree,after:Tree,grant:Grant){
   if(!grant.projectFiles)return scopeChanges(before,after,grant.allowedPaths);
-  if(Object.keys(before).some(path=>!Object.hasOwn(after,path)))throw new Error('workspace_file_deletion_not_supported');
-  const changed=Object.keys(after).filter(path=>before[path]?.sha256!==after[path]!.sha256||before[path]?.executable!==after[path]!.executable);
+  const changed=[...new Set([...Object.keys(before),...Object.keys(after)])].filter(path=>before[path]?.sha256!==after[path]?.sha256||before[path]?.executable!==after[path]?.executable).sort();
   if(changed.some(path=>!projectPathWritable(grant.projectFiles!,path)))throw new Error('out_of_scope_workspace_change');
   return changed;
 }
@@ -98,7 +97,7 @@ export function processState(pid: unknown): 'alive' | 'ended' | 'unknown' {
  * blobs before refusing; matching staged bytes from registered repair tools
  * remain recoverable under the original allowed paths. No filters run. */
 export type SelectedGitView={materialView:'selected_files';materialPaths:readonly string[]};
-export async function checkRepairIndex(workspace:string,operation:string,allowedPaths:string[],current:Tree,view?:SelectedGitView,readOnly=false){
+export async function checkRepairIndex(workspace:string,operation:string,allowedPaths:string[],current:Tree,view?:SelectedGitView,readOnly=false,allowDeletion=false){
   const directory=join(workspace,'.git');if(await exists(join(directory,'index.lock')))throw new Error('git_write_active_or_unknown');
   const index=await regular(join(directory,'index'),8*1024*1024),capture=async(args:string[])=>{
     const r=await exec('/usr/bin/git',['--literal-pathspecs','--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},encoding:'buffer',maxBuffer:8*1024*1024,timeout:15000});return r.stdout;
@@ -117,7 +116,7 @@ export async function checkRepairIndex(workspace:string,operation:string,allowed
   }
   const changed=[...new Set([...head.keys(),...staged.keys()])].filter(path=>{const h=head.get(path),v=staged.get(path);return !h||v?.length!==1||v[0]!.stage!==0||v[0]!.mode!==h.mode||v[0]!.object!==h.object;});
   const blobs:Record<string,string>={},changes=[];let matched=true,total=0;
-  for(const path of changed){const v=staged.get(path)??[],file=current[path];let same=false;
+  for(const path of changed){const v=staged.get(path)??[],file=current[path];let same=allowDeletion&&!file&&head.has(path)&&v.length===0;
     if(file){const b=await regular(join(workspace,path),256*1024);if(hash(b)!==file.sha256)throw new Error('repair_index_working_source_changed');const object=createHash('sha1').update(Buffer.from(`blob ${b.length}\0`)).update(b).digest('hex');same=v.length===1&&v[0]!.stage===0&&v[0]!.object===object&&(v[0]!.mode==='100755')===Boolean(file.executable?file.executable&0o100:false);}
     for(const e of v){if(blobs[e.object])continue;const b=await capture(['cat-file','blob',e.object]);if(b.length>256*1024||(total+=b.length)>16*1024*1024)throw new Error('repair_index_evidence_limit');blobs[e.object]=b.toString('base64');}
     const accepted=same&&allowedPaths.includes(path);matched&&=accepted;changes.push({path,head:head.get(path)??null,index:v,working:file??null,accepted});
@@ -281,7 +280,7 @@ export class RepairTools {
     if (await git(this.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== this.grant.H || await git(this.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
     const current = await tree(this.workspace, project);
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool');
-    await checkRepairIndex(this.workspace,this.operation,this.grant.projectFiles?this.writableChanges(current):this.grant.allowedPaths,current,this.indexView);return current;
+    await checkRepairIndex(this.workspace,this.operation,this.grant.projectFiles?this.writableChanges(current):this.grant.allowedPaths,current,this.indexView,false,!!this.grant.projectFiles);return current;
   }
   async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session') {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
@@ -291,6 +290,16 @@ export class RepairTools {
     if(this.phase==='closed'||!this.grant.allowRepair||readFileSync(join(this.workspace,'.git','tongxu-writer.json'),'utf8')!==JSON.stringify(this.lease))throw new Error('writer_lease_changed');
     try{readFileSync(join(this.operation,'revoked.json'));throw new Error('repair_revoked');}catch(error:any){if(error.code!=='ENOENT')throw error;}
     if(this.externalGate)this.externalGate(effect);else effect();
+  }
+  private projectFileTarget(path:string){
+    let parent=this.workspace;
+    const parts=path.split('/'),name=parts.pop()!;
+    for(const component of parts){
+      parent=join(parent,component);
+      try{mkdirSync(parent,{mode:0o700});}catch(error:any){if(error.code!=='EEXIST')throw error;}
+      if(!lstatSync(parent).isDirectory()||realpathSync(parent)!==parent)throw new Error('project_file_parent_conflict');
+    }
+    return join(parent,name);
   }
   async call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void) {
     const current = await this.check();beforeRegistration?.();
@@ -336,18 +345,36 @@ export class RepairTools {
       writeFileSync(temporary,bytes,{flag:'wx',mode:0o600|executable});
       this.commitStart(()=>{
         beforeRegistration?.();
-        let parent=this.workspace;
-        const parts=a.path.split('/'),name=parts.pop()!;
-        for(const component of parts){
-          parent=join(parent,component);
-          try{mkdirSync(parent,{mode:0o700});}catch(error:any){if(error.code!=='EEXIST')throw error;}
-          if(!lstatSync(parent).isDirectory()||realpathSync(parent)!==parent)throw new Error('project_file_parent_conflict');
-        }
-        linkSync(temporary,join(parent,name));
+        linkSync(temporary,this.projectFileTarget(a.path));
         unlinkSync(temporary);
       });
       this.expected=orderedProjectTree({...current,[a.path]:file});
       output={path:a.path,afterSha256:file.sha256,mode:a.mode};
+      const response={success:true,contentItems:[{type:'inputText',text:JSON.stringify(output)}]};
+      save(path,{...receipt,status:'applied',response,afterTreeSha256:treeHash(this.expected)});return response;
+    } else if(p.tool==='tongxu_delete_file'||p.tool==='tongxu_rename_file'){
+      const move=p.tool==='tongxu_rename_file',sourceFile=current[a.path];
+      if(this.phase!=='write'||!this.grant.projectFiles||!projectPathWritable(this.grant.projectFiles,a.path)||
+         !Object.hasOwn(current,a.path)||!sourceFile||a.expectedSha256!==sourceFile.sha256||
+         Object.keys(a).sort().join()!==(move?'destination,expectedSha256,path':'expectedSha256,path')||
+         move&&(!projectPathWritable(this.grant.projectFiles,a.destination)||Object.hasOwn(current,a.destination)))throw new Error('project_file_change_denied');
+      const source=join(this.workspace,a.path),receipt={request:p,beforeFile:sourceFile,status:'write_registered'};
+      save(path,receipt);
+      this.commitStart(()=>{
+        beforeRegistration?.();
+        const stat=lstatSync(source);
+        if(!stat.isFile()||stat.nlink!==1||realpathSync(source)!==source||(stat.mode&0o111)!==sourceFile.executable||hash(readFileSync(source))!==sourceFile.sha256)throw new Error('write_boundary_changed');
+        if(move){
+          const target=this.projectFileTarget(a.destination);
+          try{lstatSync(target);throw new Error('project_file_target_exists');}catch(error:any){if(error.code!=='ENOENT')throw error;}
+          renameSync(source,target);
+        }else unlinkSync(source);
+      });
+      const files={...current};
+      delete files[a.path];
+      if(move)files[a.destination]=sourceFile;
+      this.expected=orderedProjectTree(files);
+      output={path:a.path,beforeSha256:sourceFile.sha256,...(move?{destination:a.destination}:{})};
       const response={success:true,contentItems:[{type:'inputText',text:JSON.stringify(output)}]};
       save(path,{...receipt,status:'applied',response,afterTreeSha256:treeHash(this.expected)});return response;
     } else if (p.tool === 'tongxu_run_tests') {
@@ -380,7 +407,7 @@ export async function commitScopedCandidate(workspace:string,operation:string,at
   if(grant.projectFiles){
     const changed=gate.writableChanges(current);
     if(!changed.length)return {candidate,diff:''};
-    await mutateGit(workspace,['add','--',...changed],join(operation,attempt,'git-add-'+round),effect=>gate.commitStart(effect));
+    await mutateGit(workspace,['add','--all','--',...changed],join(operation,attempt,'git-add-'+round),effect=>gate.commitStart(effect));
     await gate.check();
     const diff=await git(workspace,['diff','--cached','--binary',grant.H,'--',...changed]);
     if(!diff)throw new Error('project_changes_missing_from_git_index');
@@ -413,5 +440,7 @@ export function projectRepairToolsFor(profile?:EditProfile,projectFiles?:true){
  const tools=profile?projectRepairToolSpecs.map(tool=>tool.name!=='tongxu_replace_file'?tool:{...tool,description:tool.description+' Send either full text or 1–16 literal edits against the same original text. Each nonempty oldText must occur exactly once, including overlapping matches; edit ranges cannot overlap. Preserve BOM and UTF-8. Each old/new text is at most 16 KiB; combined 32 KiB; edits arguments 64 KiB; full-text arguments 2 MiB; result 256 KiB.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'},text:{type:'string'},edits:{type:'array',minItems:1,maxItems:16,items:{type:'object',properties:{oldText:{type:'string',minLength:1},newText:{type:'string'}},required:['oldText','newText'],additionalProperties:false}}},required:['path','expectedSha256'],oneOf:[{required:['text'],not:{required:['edits']}},{required:['edits'],not:{required:['text']}}],additionalProperties:false}}):projectRepairToolSpecs;
  if(!projectFiles)return tools;
  return [...tools.map(tool=>tool.name==='tongxu_read_file'?{...tool,description:'Read a regular source file and its digest from the private project checkout.'}:tool.name==='tongxu_replace_file'?{...tool,description:'Update an existing writable project source file after checking its exact digest. Use text or bounded literal edits.'}:tool),
-  {type:'function',name:'tongxu_create_file',description:'Create a UTF-8 source file at a new path in the private project checkout. Never overwrites existing files.',inputSchema:{type:'object',properties:{path:{type:'string'},text:{type:'string'},mode:{type:'string',enum:['100644','100755']}},required:['path','text','mode'],additionalProperties:false}}];
+  {type:'function',name:'tongxu_create_file',description:'Create a UTF-8 source file at a new path in the private project checkout. Never overwrites existing files.',inputSchema:{type:'object',properties:{path:{type:'string'},text:{type:'string'},mode:{type:'string',enum:['100644','100755']}},required:['path','text','mode'],additionalProperties:false}},
+  {type:'function',name:'tongxu_delete_file',description:'Delete a writable project source file after checking its exact digest.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'}},required:['path','expectedSha256'],additionalProperties:false}},
+  {type:'function',name:'tongxu_rename_file',description:'Move a writable project source file to a new unoccupied path, retaining its bytes and mode.',inputSchema:{type:'object',properties:{path:{type:'string'},destination:{type:'string'},expectedSha256:{type:'string'}},required:['path','destination','expectedSha256'],additionalProperties:false}}];
 }

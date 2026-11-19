@@ -204,6 +204,38 @@ test('the project file gate reads another caller, creates one new file and commi
   await releaseWorkspace(f.workspace,lease,'completed');
   assert.deepEqual(await tree(f.objects,true),f.originalTree);
 });
+test('project-scoped delete and rename preserve the validated Git candidate and reject stale or protected paths',async t=>{
+  const f=await project(t);
+  await mkdir(f.operation,{mode:0o700});
+  await mkdir(join(f.operation,'attempt-1'),{mode:0o700});
+  const registered=JSON.parse(await readFile(f.projectPlan.grant,'utf8')) as Grant;
+  const grant:Grant={...registered,allowedPaths:[],projectFiles:{protectedPaths:['test/normalize.test.mjs']}};
+  const lease=await acquireWorkspace(f.workspace,f.operation,false,grant);
+  const initial=await tree(f.workspace,true),candidate=f.projectPlan.candidate;
+  const gate=new RepairTools(f.workspace,f.operation,grant,lease,docker.node,initial,candidate.H,
+    directory=>testProject(f.workspace,directory,{...f.projectPlan.project,projectFiles:true}));
+  await gate.handoff('fixture-engineer','new_implementer_context');
+  const invoke=(tool:string,args:object,callId:string)=>gate.call({tool,arguments:args,callId});
+  const source='src/normalize.mjs',destination='src/shared/normalize.mjs',expectedSha256=initial[source]!.sha256;
+  await assert.rejects(invoke('tongxu_rename_file',{path:source,destination:'src/index.mjs',expectedSha256},'collision'),/change_denied/);
+  await assert.rejects(invoke('tongxu_rename_file',{path:source,destination,expectedSha256:'f'.repeat(64)},'stale'),/change_denied/);
+  await assert.rejects(invoke('tongxu_delete_file',{path:'test/normalize.test.mjs',expectedSha256:initial['test/normalize.test.mjs']!.sha256},'protected'),/change_denied/);
+  await invoke('tongxu_rename_file',{path:source,destination,expectedSha256},'rename');
+  await invoke('tongxu_delete_file',{path:'README.md',expectedSha256:initial['README.md']!.sha256},'delete');
+  await invoke('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:initial['src/index.mjs']!.sha256,text:"import {normalizeLabel as trim} from './shared/normalize.mjs';\nexport function normalizeLabel(value){return trim(value) || 'Untitled';}\n"},'caller');
+  const tests=JSON.parse((await invoke('tongxu_run_tests',{},'test-candidate')).contentItems[0]!.text);
+  assert.equal(tests.passed,true);
+  const result=await commitScopedCandidate(f.workspace,f.operation,'attempt-1',1,candidate,await gate.check(),grant,gate,'apply project file changes');
+  assert.match(result.diff,/rename from src\/normalize\.mjs/);assert.match(result.diff,/deleted file mode 100644/);
+  assert.match(await git(f.workspace,['diff','--name-status',candidate.H,result.candidate.H]),/R100\s+src\/normalize\.mjs\s+src\/shared\/normalize\.mjs/);
+  assert.deepEqual(await readFile(join(f.workspace,destination)),await readFile(join(f.objects,source)));
+  assert.equal((await bindProjectTestToCandidate(f.workspace,result.candidate,tests)).candidateTree,tests.T);
+  const mounted=join(f.operation,'tests','tool-test-candidate','work');
+  assert.equal(await exists(join(mounted,source)),false);
+  assert.equal(await exists(join(mounted,'README.md')),false);
+  await releaseWorkspace(f.workspace,lease,'completed');
+  assert.deepEqual(await tree(f.objects,true),f.originalTree);
+});
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true);
@@ -630,14 +662,15 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false){
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,projectFileMoves=false){
  const project=await implementationProject(t);
  if(projectFiles){
    const script=await readFile(project.config.codexExecutable,'utf8');
    const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
    assert.ok(script.includes(needle));
    const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify("export const defaultLabel='Untitled';\n")+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
-   await writeFile(project.config.codexExecutable,script.replace(needle,fixture).replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})"));
+   const moves="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'&&!globalThis.callerDigest){globalThis.callerDigest=v.sha256;tool('tongxu_read_file',{path:'src/normalize.mjs'});}else if(stage==='tongxu_read_file'&&!globalThis.movedSource){globalThis.movedSource=true;tool('tongxu_rename_file',{path:'src/normalize.mjs',destination:'src/shared/normalize.mjs',expectedSha256:v.sha256});}else if(stage==='tongxu_rename_file'){tool('tongxu_read_file',{path:'README.md'});}else if(stage==='tongxu_read_file'){tool('tongxu_delete_file',{path:'README.md',expectedSha256:v.sha256});}else if(stage==='tongxu_delete_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {normalizeLabel as trimWithDefault} from './shared/normalize.mjs';\nexport function normalizeLabel(value,fallback='Untitled'){return value.trim()?trimWithDefault(value):fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-scoped move and delete; original pending work preserved.'});return;}if(stage==='tongxu_read_file'){";
+   await writeFile(project.config.codexExecutable,script.replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})").replace(needle,projectFileMoves?moves:fixture));
  }
  if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
  const context=messages.q.status().items.find((item:any)=>item.id===messages.item).context;
@@ -681,6 +714,19 @@ test('normal registered workbench starts one project-scoped Issue and returns th
  assert.throws(()=>f.owner.a.checkAction(state.plan.actions.implement,'implementer',oldGrant.sha,[freshScope,oldGrant.observation]),/owner_delegation_boundary_mismatch/);
  assert.equal((await f.post('start',{requestId:id})).status,202);
  assert.equal((await f.get('/api/implementation-report/implementation/'+id)).value.H1,report.value.H1);
+});
+
+test('normal project file implementation reports the exact deletion and rename on original result readback',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true,true),id='project-file-moves';
+ const prepared=await f.post('prepare',{requestId:id,issueNumber:74});assert.equal(prepared.status,200,JSON.stringify(prepared.value));
+ assert.equal((await f.post('start',{requestId:id})).status,202);
+ const done=await f.settled(id);assert.equal(done.status,'completed',JSON.stringify(done));
+ const result=await f.get('/api/implementation-report/implementation/'+id);
+ assert.equal(result.status,200,JSON.stringify(result.value));
+ assert.equal(result.value.tests.passed,true);
+ assert.match(result.value.diff,/rename from src\/normalize\.mjs/);
+ assert.match(result.value.diff,/deleted file mode 100644/);
+ assert.deepEqual(result.value.changed,['README.md','src/index.mjs','src/normalize.mjs','src/shared/normalize.mjs']);
 });
 
 async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){

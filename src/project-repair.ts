@@ -1,4 +1,4 @@
-import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile, unlink } from 'node:fs/promises';
 import { join, resolve,dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -200,6 +200,12 @@ export async function testProject(workspace: string, directory: string, p: Proje
   await selectMaterialView(work,p,setupGit);
   await setupGit(['fetch', '--no-tags', '--no-recurse-submodules', workspace, await git(workspace, ['rev-parse', 'HEAD'])]);
   await setupGit(['checkout', '--detach', 'FETCH_HEAD']);
+  if(p.projectFiles){
+    const checkout=await tree(work,true);
+    for(const path of Object.keys(checkout)){
+      if(!Object.hasOwn(current,path))await unlink(join(work,path));
+    }
+  }
   const directories=new Set([work]);
   for(const [path,entry] of Object.entries(current)){
     const components=path.split('/');

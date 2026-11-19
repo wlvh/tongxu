@@ -111,7 +111,8 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
       const result={status,requestId:request.id,task:request.task,H0:plan.project.sourceCandidate.H,H1:null,report,sessionId,completeCapture:true,newNativeContext:true,...(firstSend?{firstInputContinuation:firstSend.reference}:{})};
       save(join(operation,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,result.status);return result;
     }
-    if(!changed.length||!['tongxu_read_file','tongxu_run_tests'].every(name=>exercised.includes(name))||!exercised.includes('tongxu_replace_file')&&!(grant.projectFiles&&exercised.includes('tongxu_create_file')))throw new Error('implementation_actual_change_and_tests_required');
+    const writes=grant.projectFiles?['tongxu_replace_file','tongxu_create_file','tongxu_delete_file','tongxu_rename_file']:['tongxu_replace_file'];
+    if(!changed.length||!['tongxu_read_file','tongxu_run_tests'].every(name=>exercised.includes(name))||!writes.some(name=>exercised.includes(name)))throw new Error('implementation_actual_change_and_tests_required');
     const tests=await testProject(plan.workspace,join(operation,'attempt-1','post-repair-1'),plan.project,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});
     if(!tests.passed||!tests.executionHealthy)throw new Error('implementation_registered_tests_failed');
     const calls=await Promise.all((await readdir(join(operation,'calls'))).filter(name=>name.endsWith('.json')).map(async name=>JSON.parse((await regular(join(operation,'calls',name))).toString())));
