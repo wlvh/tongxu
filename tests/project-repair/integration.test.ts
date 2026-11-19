@@ -489,6 +489,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    code=code.replace("if(stage==='tongxu_read_file'){readHash",`if(stage==='tongxu_create_file'&&globalThis.keepSource){tool('tongxu_replace_file',{path:'src/normalize.mjs',expectedSha256:globalThis.keepSource,text:'initial registered write'});return;}if(stage==='tongxu_read_file'&&!context.originalReport){globalThis.keepSource=v.sha256;tool('tongxu_create_file',{path:'src/retained-marker.mjs',text:'export const retained = true;\\n',mode:'100644'});return;}if(stage==='tongxu_read_file'){if(context.kind!=='project_implementation_correction'||!context.validationDefinition?.readOnly||!context.retainedChanges.paths.includes('src/retained-marker.mjs'))throw Error('fixture_correction_input_required');readHash`);
    code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&!context.originalReport)args.text='export function normalizeLabel(value){return value.trim() || \"Wrong\";}\\n';stage=name;const serial=");
  }
+ if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.technicalEvidence&&context.work){finish({candidateH:context.candidate.H,report:'Explicit fixture Tech Lead explanation: tested download retention, with review and publication still unobserved.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement||context.request.continuation.supplement.text!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt<86400000;}\\n';}stage=name;const serial=");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
  if(readonlyFault){
@@ -613,6 +614,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const ca=JSON.parse(await readFile((await detail(a)).draft.catalog.path,'utf8')).entries[0];
      const cb=JSON.parse(await readFile((await detail(b)).draft.catalog.path,'utf8')).entries[0];
      assert.equal(ca.store,cb.store);
+     assert.deepEqual(ca.workflowPrompt,(await detail(a)).draft.preparation.workflowPrompt);
+     assert.deepEqual(cb.workflowPrompt,(await detail(b)).draft.preparation.workflowPrompt);
      assert.deepEqual(ca.authorization,cb.authorization);
      assert.notEqual(ca.target,cb.target);
      assert.deepEqual(ca.allowedPaths,[]);
@@ -752,6 +755,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual(await readFile(f.trace),before);
      assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
      assert.equal(await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8'),originalWire);
+     assert.equal((await post('/api/project-work/'+b+'/explain',{H:finished.draft.delivery.H})).status,503);
+     const explanation=await post('/api/project-work/'+b+'/explain',{H:result.H1});assert.equal(explanation.status,202);
+     const described=await until(()=>detail(b),value=>value.explanation?.state==='returned');
+     assert.match(described.explanation.report,/tested download retention/);
+     assert.equal(described.explanation.H,result.H1);
+     assert.equal(described.explanation.workflowRevision,successor.plan.request.workflowPrompt.revision);
+     const afterExplanation=await readFile(f.trace);
+     assert.equal((await post('/api/project-work/'+b+'/explain',{H:result.H1})).value.sessionId,described.explanation.sessionId);
+     assert.deepEqual(await readFile(f.trace),afterExplanation);
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;

@@ -12,10 +12,10 @@ async function loadProjectWorks(detail=false){
     if(!d.repositoryPath&&value.settings)d.repositoryPath=value.settings.repositoryPath;
     if(!d.selected&&!d.newWork){const conversation=chatData()?.conversationId;d.selected=d.requestedIssue!==null?value.works.find(w=>w.issue.number===d.requestedIssue)?.id??null:value.works.find(w=>w.conversationId===conversation)?.id??value.works[0]?.id??null;}
     const summary=value.works.find(w=>w.id===d.selected),signature=JSON.stringify([summary?.updatedAt,summary?.execution?.phase,summary?.execution?.status,summary?.execution?.H1]);
-    if(d.selected&&(detail||signature!==d.detailSignature)){const result=await api('/api/project-work/'+d.selected);if(!current()||d.selected!==result.draft.id)return;d.detail=result;d.detailSignature=signature;if(!d.goalEdited)d.goal=result.draft.draftGoal??result.draft.goal;}
+    if(d.selected&&(detail||signature!==d.detailSignature||d.detail?.explanation?.state==='running')){const result=await api('/api/project-work/'+d.selected);if(!current()||d.selected!==result.draft.id)return;d.detail=result;d.detailSignature=signature;if(!d.goalEdited)d.goal=result.draft.draftGoal??result.draft.goal;}
   }catch(e){if(current()){d.error=projectWorkError(e.message);d.ready=true;}}
   finally{d.loading=false;if(current()&&!d.composing)render();}
-  if(current()&&(d.works.some(w=>w.active||w.execution?.controllerActive)||(d.ownerPending||[]).length))setTimeout(()=>{if(current())void loadProjectWorks();},1500);
+  if(current()&&(d.works.some(w=>w.active||w.execution?.controllerActive)||(d.ownerPending||[]).length||d.detail?.explanation?.state==='running'))setTimeout(()=>{if(current())void loadProjectWorks();},1500);
 }
 async function projectWorkAction(action){
   const d=projectWorkData(),identity=projectWorkKey(),epoch=gh.epoch,current=()=>identity===projectWorkKey()&&epoch===gh.epoch;if(!d||d.pending)return;d.pending=true;d.actionError=null;render();
@@ -79,6 +79,15 @@ function renderProjectWork(){
     if(active){const stop=el('button','停止这项工作的后续动作','outline');stop.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/stop',{}));section.append(stop);}
     if((current?.stage||item.stage)==='waiting_return'){const receive=el('button','继续接回原成果');receive.disabled=d.pending;receive.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/receive',{}));section.append(receive);}
     const reportGaps=d.detail.execution?.reportGaps||[],delivery=current?.delivery||item.delivery;if(delivery){section.append(el('h3',delivery.status==='received'?'真实项目成果':'成果接回状态'),el('p','分支：'+delivery.branch),el('p','提交：'+delivery.H),el('p','成果工作区：'+delivery.workspace));if(delivery.status==='received'&&!reportGaps.some(gap=>gap.H1===delivery.H))section.append(el('p','实现与测试结果已接回；正式审核、合并、启用和本人成果接受仍分别办理。','small'));}
+    if(delivery?.status==='received'&&d.detail.execution?.requests.some(r=>r.H1===delivery.H&&r.workflow)){
+      const explanation=d.detail.explanation;
+      if(explanation?.state==='returned')section.append(append(el('details',null,'panel'),el('summary','Tech Lead 交付解读'),el('p','候选 '+explanation.H+' · 工作流 '+explanation.workflowRevision,'small'),el('div',explanation.report,'chat-text')));
+      else if(explanation)section.append(el('p',explanation.state==='running'?'正在生成此候选的交付解读。':'原交付解读请求已保留，完整结果待核。','small'));
+      else if(!reportGaps.some(gap=>gap.H1===delivery.H)&&!item.stopRequested){
+        const explain=el('button','生成交付解读','outline');explain.disabled=d.pending||active;
+        explain.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/explain',{H:delivery.H}));section.append(explain);
+      }
+    }
     for(const gap of reportGaps)section.append(el('p','验证原件待核'+(gap.H1?' · '+gap.H1:'')+'，当前无法确认注册测试通过。','github-error'));
     for(const result of d.detail.execution?.reports||[]){const report=append(el('details',null,'panel'),el('summary',(result.requestId===item.requestId?'原实施':'原任务补充')+(result.hostEvidenceComplete?' · 宿主失败证据（无完整模型报告）':' · 完整报告与实际改动')),el('div',result.hostReport||result.report?.report||'','chat-text'),el('pre',result.diff||''),el('p',result.tests?'实际注册测试：'+(result.tests.passed?'通过':'未通过'):'本记录没有成功测试声明'));section.append(report);}
     for(const old of d.detail.history||[]){for(const result of old.execution?.reports||[]){section.append(append(el('details',null,'panel'),el('summary','历史版本 '+old.version+' · '+(result.hostEvidenceComplete?'只读超时宿主证据（无完整模型报告）':'原失败与完整报告')),el('p',result.H1?'原提交：'+result.H1:'原结果没有成功提交。','small'),el('div',result.hostReport||result.report?.report||'','chat-text'),el('pre',result.diff||'')));}}

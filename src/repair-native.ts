@@ -51,6 +51,10 @@ export const implementationSchema = {
 };
 export const implementationOutputSchema=(candidateH:string)=>({...implementationSchema,properties:{...implementationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
 const isImplementationOutputSchema=(schema:unknown,candidateH:string)=>isDeepStrictEqual(schema,implementationSchema)||isDeepStrictEqual(schema,implementationOutputSchema(candidateH));
+export const deliveryExplanationSchema={
+  type:'object',properties:{candidateH:{type:'string'},report:{type:'string'}},
+  required:['candidateH','report'],additionalProperties:false
+};
 export const reviewSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, verdict: { type: 'string', enum: ['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'] }, report: { type: 'string' }, findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, priority: { type: 'integer', enum: [0, 1, 2] }, description: { type: 'string' } }, required: ['id', 'priority', 'description'], additionalProperties: false } } }, required: ['candidateH', 'verdict', 'report', 'findings'], additionalProperties: false
 };
@@ -94,6 +98,10 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
   // manifest/batch. Here the common native transport checks the actual schema
   // and candidate before recording this turn as a complete structured result.
   if(preparationSchemaFamily(schema)){if(!isWorkPreparationSchema(schema,candidate.H))throw new Error('native_project_preparation_output_required');parseWorkPreparationOutput(report,candidate.H);return;}
+  if(isDeepStrictEqual(schema,deliveryExplanationSchema)){
+    if(!report||Object.keys(report).sort().join()!=='candidateH,report'||report.candidateH!==candidate.H||typeof report.report!=='string'||!report.report.trim())throw new Error('invalid_delivery_explanation');
+    return;
+  }
   if(isDeepStrictEqual(schema,formalReviewSchema)){validateFormalReview(report,candidate.H,report?.reviewedInputSha256);return;}
   if(isDeepStrictEqual(schema,formalVerificationSchema)){validateFormalVerificationReport(report,candidate.H,report?.batchSha256);return;}
   if(isMessageReplySchema(schema)){

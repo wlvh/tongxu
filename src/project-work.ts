@@ -1,4 +1,6 @@
 import {captureImplementationAI} from './implementation-ai.js';
+import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
+import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
 import {readReviewedSupplement,type SupplementReviewInput} from './project-supplement-review.js';
 import {selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
@@ -32,7 +34,7 @@ const sourceFor=(scope:ProjectChatScope,d:ProjectWorkDraft):FixedRepository=>({p
 /** Product-owned preparation around the existing implementation consumer.
  * This store has no independent execution queue, authority or model results. */
 export class ProjectWork{
-  private active=new Map<string,Job>();private receiving=new Map<string,Promise<unknown>>();private accepting=true;
+  private active=new Map<string,Job>();private explanations=new Map<string,Job>();private receiving=new Map<string,Promise<unknown>>();private accepting=true;
   private constructor(private config:ProjectWorkConfiguration,private store:ProjectWorkStore,private readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,private verify:(scope:ProjectChatScope)=>Promise<void>,private controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){}
   static async open(reference:{path:string;sha256:string},readIssue:(scope:ProjectChatScope,n:number)=>Promise<Issue>,verify:(scope:ProjectChatScope)=>Promise<void>,controls:(scope:ProjectChatScope)=>Promise<IssueImplementationControls>){
     const bytes=await regular(reference.path,128*1024);if(hash(bytes)!==reference.sha256)throw new Error('project_work_configuration_changed');const c=JSON.parse(bytes.toString()) as ProjectWorkConfiguration;
@@ -89,7 +91,11 @@ export class ProjectWork{
     const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
     let validationProblem:string|null=null;if(draft.preparation?.proposal&&!draft.catalog){try{validationProblem=(await readWorkProposal(draft.preparation.directory,sourceFor(scope,draft))).validationProblem??null;}catch{}}
     const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
-    return {draft,execution:result,history,validationProblem,preparationDiagnostic:await diagnostic(draft),validationFailure:draft.catalog&&draft.source?await(await this.controls(scope)).validationState(draft.source,draft.requestId):null,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
+    return {draft,execution:result,history,validationProblem,
+      ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
+        ?{state:'running',H:draft.delivery.H}
+        :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
+      preparationDiagnostic:await diagnostic(draft),validationFailure:draft.catalog&&draft.source?await(await this.controls(scope)).validationState(draft.source,draft.requestId):null,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
   }
   private job(scope:ProjectChatScope,id:string,action:(job:Job)=>Promise<void>){
     if(!this.accepting)throw new Error('project_work_closing');if(this.active.has(id))return {id,active:true,duplicate:true};
@@ -121,7 +127,10 @@ export class ProjectWork{
       // Only the immediately preceding version obtained through this scoped
       // store may contribute data. Never search older works or caller paths.
       const previous=!d.catalog&&d.preparation?.directory===join(this.directory(d),'preparation')?{directory:d.preparation.directory,source:{path:d.preparation.repositoryPath,H:d.preparation.H,repository:scope.repository.fullName},issue:{number:d.issue.number,bodySha256:d.issue.bodySha256},goal:d.goal}:undefined;
-      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
+      let workflowPrompt:CodingWorkflowPrompt|undefined,workflowProblem:string|undefined;
+      try{workflowPrompt=(await readCodingWorkflowSource()).prompt('engineering_owner');}
+      catch(error){workflowProblem=problem(error);}
+      d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,...(workflowPrompt?{workflowPrompt}:{}),...(workflowProblem?{workflowProblem}:{}),inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
       const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
@@ -182,7 +191,7 @@ export class ProjectWork{
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
     }return this.correctValidation(scope,id);
   }
-  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
+  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const jobs=[this.active.get(id),...[...this.explanations].filter(([key])=>key.startsWith(id+':')).map(([,job])=>job)];for(const job of jobs)if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
     await mkdir(directory,{recursive:true,mode:0o700});
@@ -194,6 +203,7 @@ export class ProjectWork{
   async confirmation(scope:ProjectChatScope,id:string,b:Row){
     if(!exactKeys(b,['version','proposalSha256',...(b.projectDevelopment===true?['projectDevelopment']:[])])||!Number.isSafeInteger(b.version)||!isAuthorityDigest(b.proposalSha256))throw new Error('project_work_confirmation_invalid');
     const d=this.store.get(scope,id);if(d.stopRequested)throw new Error('project_work_stopped');if(b.projectDevelopment===true&&d.restart)throw new Error('project_development_restart_requires_original_scope');if(d.stage==='authorizing'&&!!d.projectDevelopment!==(b.projectDevelopment===true))throw new Error('project_work_authorization_mode_changed');if(d.version!==b.version||!d.preparation?.proposal||hash(canonical(d.preparation.proposal))!==b.proposalSha256)throw new Error('project_work_preparation_changed');
+    if(b.projectDevelopment===true&&d.preparation?.workflowProblem)throw new Error(d.preparation.workflowProblem);
     if(this.active.has(id))return {active:true,alreadyAuthorized:undefined,currentCheckSha256:undefined};if(d.catalog)return {active:undefined,alreadyAuthorized:true,currentCheckSha256:d.currentCheck?.sha256};
     await this.verify(scope);if(!d.currentCheck)captureImplementationAI(scope.repository.fullName);const verified=await readWorkProposal(d.preparation.directory,sourceFor(scope,d)),issue=await this.readIssue(scope,d.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;
     if(verified.validationProblem)throw new Error(verified.validationProblem);
@@ -215,6 +225,7 @@ export class ProjectWork{
       const issue=await this.readIssue(scope,draft.issue.number),head=issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead;if(hash(issue.body)!==draft.issue.bodySha256||head!==draft.preparation!.H)throw new Error('project_work_source_changed_prepare_again');
       await verifyRepositoryPath(scope,draft.preparation!.repositoryPath);await checkWorkMaterial(sourceFor(scope,draft),verified.proposal);
       draft=this.save(scope,{...draft,stage:'authorizing',problem:null,...(b.projectDevelopment===true?{projectDevelopment:true as const}:{})},'confirmation_requested','Explicit scope/implementation/test confirmation; exact Owner source still required');
+      if(b.projectDevelopment===true&&draft.preparation?.workflowProblem)throw new Error(draft.preparation.workflowProblem);
       const proposal=verified.proposal,source='work-'+draft.id+'-v'+draft.version,target='tongxu/work-'+draft.id+'-v'+draft.version;
       const expiresAt=draft.currentCheck?assertWorkCurrent(draft.currentCheck,this.currentBinding(draft)).expiresAt:new Date(Date.parse(draft.preparation!.observedAt!)+Math.min(this.config.owner.maxGrantDurationMs,86400000)).toISOString();
       let grant=b.projectDevelopment===true?this.activeDevelopment(scope):null;
@@ -246,7 +257,7 @@ export class ProjectWork{
       const configPath=join(this.directory(draft),'executor.json');await writeFixed(configPath,canonical(config));
       const plan={schemaVersion:2,executor:this.config.verification,tools:[{id:'work-acceptance',argv:[this.config.verification.node,'--input-type=module','--eval',proposal.validation.script],timeoutMs:30000}]};
       const testPlan=join(this.directory(draft),'tests.json');await writeFixed(testPlan,canonical(plan));
-      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:scopeVersion,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:grant?[]:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256,goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,...(grant?{projectFiles:true as const}:{materialView:'selected_files' as const}),workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
+      const entry:ImplementationEntry={id:source,repository:scope.repository.fullName,store,root:join(this.directory(draft),'executions'),objects:draft.preparation!.repositoryPath,H0:draft.preparation!.H,base:draft.preparation!.H,target,context:{schemaVersion:1,scope:{id:scopeId,version:scopeVersion,source:draft.issue.url+' adopted scope '+adoption},arrangement:{id:source,version:'1',source:draft.issue.url+' explicit project work'},decisionKind:'delegated_action',requires:[]},config:{path:configPath,sha256:hash(canonical(config))},allowedPaths:grant?[]:proposal.allowedPaths,materialPaths:proposal.materialPaths,protectedPaths:proposal.protectedPaths,testPlan,testPlanSha256:hash(canonical(plan)),approvedIssues:[{number:draft.issue.number,bodySha256:draft.issue.bodySha256,adjudication:'User-confirmed engineering preparation '+verified.captureSha256,goal:proposal.goal,acceptance:proposal.acceptance}],authorization:{implement:delegation,test:delegation},budgets:[],executionKind:config.executionKind??'native_capture',demonstrationFixture:false,...(grant?{projectFiles:true as const,...(draft.preparation!.workflowPrompt?{workflowPrompt:draft.preparation!.workflowPrompt}:{})}:{materialView:'selected_files' as const}),workRequestId:draft.requestId,...(draft.currentCheck?{currentCheck:draft.currentCheck}:{}),...(draft.restart?{initialRepairRounds:0 as const}:{})};
       const bytes=canonical({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}),path=join(this.directory(draft),'implementation.json');await writeFixed(path,bytes);
       draft=this.store.get(scope,id);draft=this.save(scope,{...draft,source,catalog:{path,sha256:hash(bytes)},stage:'execution',problem:null},'implementation_linked','Immutable original consumer input; execution state remains in original queue');
       const controls=await this.controls(scope);await controls.prepare(source,{requestId:draft.requestId,issueNumber:draft.issue.number});if(job.stop)throw new Error('project_work_preparation_stopped');await controls.begin(source,draft.requestId);
@@ -264,6 +275,32 @@ export class ProjectWork{
       }
     }
     return {requests,reports,...(reportGaps.length?{reportGaps}:{})};
+  }
+  async explain(scope:ProjectChatScope,id:string,b:unknown){
+    const d=this.store.get(scope,id),H=d.delivery?.H;
+    if(!exactKeys(b,['H'])||!H||(b as Row).H!==H||d.delivery?.status!=='received')throw new Error('project_delivery_explanation_candidate_required');
+    const path=join(this.directory(d),'explanation-'+H),key=d.id+':'+H;
+    if(this.explanations.has(key))return {state:'running',H};
+    if(await exists(path))return readProjectExplanation(path,d.id,H);
+    const actual=await this.implementationState(scope,d),report=actual.reports.find(r=>r.H1===H&&r.status==='completed'&&r.tests?.passed===true);
+    const workflow=actual.requests.find((r:Row)=>r.id===report?.requestId)?.workflow;
+    if(!report?.candidate||!workflow)throw new Error('project_delivery_explanation_workflow_unavailable');
+    const job:Job={stop:false,promise:Promise.resolve()};
+    const allowed=()=>{
+      const current=this.store.get(scope,id);
+      if(!this.accepting||job.stop||current.stopRequested||current.version!==d.version||current.delivery?.H!==H)throw new Error('project_delivery_explanation_candidate_changed');
+    };
+    const check=async()=>{allowed();await this.verify(scope);allowed();};
+    const material={work:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url,body:d.issue.body,bodySha256:d.issue.bodySha256},
+      candidate:report.candidate,goal:d.goal,workflowRevision:workflow.revision,
+      technicalEvidence:{H0:report.H0,H1:H,diff:report.diff,implementation:report.report,tested:report.modelTests,
+        testCandidateBinding:report.testCandidateBinding,adoptedRequirements:report.originalValidationFailure?{originalFailedTests:report.originalValidationFailure.tests}:null,
+        recordedActions:d.events,formalReview:'no formal review evidence in this explanation input',publication:'no publication evidence in this explanation input',userAcceptance:'no user acceptance evidence in this explanation input'}};
+    if(this.explanations.has(key))return {state:'running',H};
+    allowed();this.explanations.set(key,job);
+    job.promise=(async()=>runProjectExplanation(path,material,await this.executor(),check,allowed,session=>{job.session=session;}))()
+      .catch(()=>{/* The registered capture remains readable or explicitly unknown. */}).finally(()=>this.explanations.delete(key));
+    return {state:'registered',H};
   }
   async receive(scope:ProjectChatScope,id:string){
     this.store.get(scope,id);const prior=this.receiving.get(id);if(prior)return prior;
@@ -307,5 +344,5 @@ export class ProjectWork{
     }catch(e){d=this.store.get(scope,id);this.save(scope,{...d,stage:'waiting_return',problem:problem(e),delivery:{...d.delivery!,problem:problem(e)}},'result_receipt_waiting',problem(e));throw e;}
   }
   async onFinished(scope:ProjectChatScope,target:SupplementTarget){const draft=this.store.list(scope).find(d=>d.source===target.source);if(draft)await this.receive(scope,draft.id);}
-  async drain(){this.accepting=false;for(const job of this.active.values()){job.stop=true;await job.session?.close();}await Promise.allSettled([...this.active.values()].map(j=>j.promise));await Promise.allSettled(this.receiving.values());this.store.close();}
+  async drain(){this.accepting=false;for(const job of [...this.active.values(),...this.explanations.values()]){job.stop=true;await job.session?.close();}await Promise.allSettled([...this.active.values(),...this.explanations.values()].map(j=>j.promise));await Promise.allSettled(this.receiving.values());this.store.close();}
 }

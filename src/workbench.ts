@@ -351,7 +351,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/project-work'){json(res,200,{available:false,works:[]});return;}throw new Error('project_work_not_configured');}
         const work=await openProjectWork(),detail=/^\/api\/project-work\/([0-9a-f-]{36})$/.exec(url.pathname);
         if(req.method==='GET'){if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});else if(detail)json(res,200,await work.detail(selection,detail[1]!));else json(res,404,{error:'route_not_found'});return;}
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|recheck|restart-failure)$/.exec(url.pathname);
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|recheck|restart-failure|explain)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
@@ -363,6 +363,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(action?.[2]==='recheck'||action?.[2]==='restart-failure'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,action[2]==='recheck'?await withAI(()=>work.recheck(selection,action[1]!)):await withAI(()=>work.restartFailure(selection,action[1]!)));}
         else if(action?.[2]==='correct-validation'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
         else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
+        else if(action?.[2]==='explain')json(res,202,await work.explain(selection,action[1]!,body));
         else if(action?.[2]==='receive'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,200,await work.receive(selection,action[1]!));}
         return;
       }
