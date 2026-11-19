@@ -15,7 +15,7 @@ import { hash } from './snapshot.js';
 import { parseCodexResult, currentCodexProtocol, resultCliVersion, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
-import { repairToolSpecs, projectRepairToolSpecs,projectRepairToolsFor, exists,regular,processState } from './repair-workspace.js';
+import { repairToolSpecs, projectRepairToolSpecs,projectRepairToolsFor, exists,regular,processState,type projectFileMovesVersion } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
 import {formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerificationReport} from './formal-review-contract.js';
@@ -27,6 +27,7 @@ export const boundedRoleDeveloperInstructions='Only the supplied role and fixed 
 export type NativeOptions = {
   aiModel?:AIModelChoice;
   editProfile?:EditProfile;
+  projectFileToolsVersion?:typeof projectFileMovesVersion;
   executable: string; directory: string; operation: string; candidate: Candidate;
   role: 'implementer' | 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
@@ -190,7 +191,7 @@ export class BoundedCodexSession {
       entry.receipt=receipt;entry.phase='acknowledged';save(join(this.o.directory,prefix+'-ack.json'),receipt);return structuredClone(receipt);
     }catch(e){pending?.catch(()=>{});const reason=e instanceof Error?e.message:'native_control_unknown';entry.problem=reason;if(entry.phase!=='sent')entry.phase='held';save(join(this.o.directory,prefix+'-problem.json'),{requestSha256,reason,phase:entry.phase,automaticResend:false});throw e;}
   }
-  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile,this.o.projectFiles) : repairToolSpecs; }
+  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile,this.o.projectFiles,this.o.projectFileToolsVersion) : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);
