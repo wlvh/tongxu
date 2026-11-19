@@ -33,7 +33,7 @@ export type NativeOptions = {
   readonlyMessage?:true;
   projectSecretary?:true;
   projectSecretaryWork?:true;
-  projectPreparation?:true|'file-slices';
+  projectPreparation?:true|'file-slices'|'file-search';
   dispatchGate?:<T>(effect:()=>T)=>T;
   expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
@@ -211,7 +211,8 @@ export class BoundedCodexSession {
       entry.receipt=receipt;entry.phase='acknowledged';save(join(this.o.directory,prefix+'-ack.json'),receipt);return structuredClone(receipt);
     }catch(e){pending?.catch(()=>{});const reason=e instanceof Error?e.message:'native_control_unknown';entry.problem=reason;if(entry.phase!=='sent')entry.phase='held';save(join(this.o.directory,prefix+'-problem.json'),{requestSha256,reason,phase:entry.phase,automaticResend:false});throw e;}
   }
-  private get toolSpecs() { return this.o.projectPreparation?preparationToolsFor(this.o.projectPreparation==='file-slices'):this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile,this.o.projectFiles,this.o.projectFileToolsVersion) : repairToolSpecs; }
+  private get preparationLookup() {return this.o.projectPreparation==='file-search'?'search':this.o.projectPreparation==='file-slices';}
+  private get toolSpecs() { return this.o.projectPreparation?preparationToolsFor(this.preparationLookup):this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile,this.o.projectFiles,this.o.projectFileToolsVersion) : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);
@@ -337,7 +338,7 @@ export class BoundedCodexSession {
     if(typed&&!this.o.projectPreparation)throw new Error('native_project_preparation_output_profile_mismatch');
     if(this.o.projectPreparation){
       const original=JSON.parse(input),version=workPreparationVersion(this.o.system,original,candidate.H),expected=version>=4?workPreparationSchema(candidate.H):findingSchema;
-      if((original.repositoryFileSlices===true)!==(this.o.projectPreparation==='file-slices'))throw new Error('native_project_preparation_output_profile_mismatch');
+      if((original.repositoryFileSlices??false)!==this.preparationLookup)throw new Error('native_project_preparation_output_profile_mismatch');
       if(!isDeepStrictEqual(schema,expected)||version<4&&this.o.executionKind!=='fixture')throw new Error('native_project_preparation_output_required');
     }
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
@@ -487,7 +488,7 @@ export async function readRepairSession(directory: string) {
     const inputs=await read('inputs.json'),c=binding.candidate,start=starts[0],turn=turns[0];
     if(binding.role!=='verifier_fact'||c.kind!=='local-git'||c.repository!=='local/project-work-preparation'||c.pr!==null||c.B!==c.H||c.target!=='preparation'||starts.length!==1||turns.length!==1||parsed.turns.length!==1||inputs.length!==1||binding.run!==dirname(directory)||binding.workspace!==join(directory,'workspace')||turn.params.input?.length!==1||turn.params.input[0].type!=='text')throw new Error('native_project_preparation_capture_changed');
     const text=turn.params.input[0].text,original=JSON.parse(text),version=workPreparationVersion(start.params.baseInstructions,original,c.H),schema=version>=4?workPreparationSchema(c.H):findingSchema;
-    if(!isDeepStrictEqual(start.params.dynamicTools,preparationToolsFor(original.repositoryFileSlices===true))||!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
+    if(!isDeepStrictEqual(start.params.dynamicTools,preparationToolsFor(original.repositoryFileSlices??false))||!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
     validateNativeReport(JSON.parse(parsed.turns[0]!.final!.text),c,schema);
   }
   return parsed;

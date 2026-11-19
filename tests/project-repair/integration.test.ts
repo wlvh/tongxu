@@ -502,9 +502,15 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const {data:d}=v, path='large-validation.mjs', phase=globalThis.readPhase??0;
      globalThis.readPhase=phase+1;
      if(phase===0){if(d.unavailable!=='range_required'||d.H!==context.source.H)throw Error('expected_range_hint');tool('tongxu_repository_file',{path,startByte:0,byteCount:65536});return;}
-     if(phase===1){if(d.nextByte!==65535||d.bytes!==65535)throw Error('split_utf8_character');tool('tongxu_repository_file',{path,startByte:d.nextByte,byteCount:7});return;}
-     if(phase===2){if(d.text!=='界read'||d.nextByte!==65542)throw Error('unexpected_slice');tool('tongxu_repository_file',{path:'missing-selected-test.mjs'});return;}
-     if(phase===3){if(d.unavailable!=='not_regular_tracked_file')throw Error('missing_lookup_should_return');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}
+     if(phase===1){if(d.nextByte!==65535||d.bytes!==65535)throw Error('split_utf8_character');tool('tongxu_repository_file',{path,contains:'界read'});return;}
+     if(phase===2){if(d.matches.length!==1||d.matches[0].startByte!==65535||d.matches[0].byteCount!==7)throw Error('expected_exact_search');tool('tongxu_repository_file',{path,...d.matches[0]});return;}
+     if(phase===3){if(d.text!=='界read'||d.nextByte!==65542)throw Error('unexpected_slice');tool('tongxu_repository_file',{path:'missing-selected-test.mjs'});return;}
+     if(phase===4&&d.unavailable!=='not_regular_tracked_file')throw Error('missing_lookup_should_return');
+     if(phase>=4&&!globalThis.budgetSeen){
+       if(d.unavailable==='preparation_material_budget_remaining'){globalThis.budgetSeen=true;tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}
+       if(phase>18)throw Error('expected_budget_observation');
+       tool('tongxu_repository_file',{path,startByte:65542,byteCount:65536});return;
+     }
    }if(stage==='tongxu_repository_file'){const rejected=`);
  }
  if(fault==='project-development'){
@@ -1254,11 +1260,14 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    if(fault==='preparation-large-file'){
      const directory=detail.draft.preparation.directory,original=await readFile(join(directory,'native/completed.json'));
      const reads=JSON.parse(await readFile(join(directory,'observations.json'),'utf8')).map((entry:any)=>entry.data);
-     assert.deepEqual(reads.map((entry:any)=>entry.path),['large-validation.mjs','large-validation.mjs','large-validation.mjs','missing-selected-test.mjs','src/normalize.mjs']);
-     assert.equal(reads[2].text,'界read');
-     assert.equal(reads[2].object,await git(f.objects,['rev-parse',H+':large-validation.mjs']));
-     assert.equal(reads[2].sha256,hash('界read'));
-     assert.equal(reads[4].H,H);
+     assert.deepEqual(reads.slice(0,5).map((entry:any)=>entry.path),['large-validation.mjs','large-validation.mjs','large-validation.mjs','large-validation.mjs','missing-selected-test.mjs']);
+     assert.deepEqual(reads[2].matches,[{startByte:65535,byteCount:7}]);
+     assert.equal(reads[3].text,'界read');
+     assert.equal(reads[3].object,await git(f.objects,['rev-parse',H+':large-validation.mjs']));
+     assert.equal(reads[3].sha256,hash('界read'));
+     assert.equal(reads.at(-2).unavailable,'preparation_material_budget_remaining');
+     assert.equal(reads.at(-1).path,'src/normalize.mjs');
+     assert.equal(reads.at(-1).H,H);
      await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
      await get('/api/github/projects');
      assert.equal((await get('/api/project-work/'+id)).value.draft.stage,'prepared');

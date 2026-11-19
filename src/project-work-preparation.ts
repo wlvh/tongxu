@@ -45,19 +45,33 @@ export async function repositoryFile(source:FixedRepository,path:string){
   const bytes=await readTrackedBlob(source,file);
   return {path,text:new TextDecoder('utf8',{fatal:true}).decode(bytes),sha256:hash(bytes),bytes:bytes.length};
 }
-async function lookupPreparationFile(source:FixedRepository,files:TrackedFile[],args:{path:string;startByte?:number;byteCount?:number}){
-  const {path,startByte,byteCount}=args;
+async function lookupPreparationFile(source:FixedRepository,files:TrackedFile[],args:{path:string;startByte?:number;byteCount?:number;contains?:string}){
+  const {path,startByte,byteCount,contains}=args;
   if(path.length>4096||!readable(path))throw new Error('project_work_file_not_readable');
   const basis={path,H:source.H},file=files.find(row=>row.path===path);
   if(!file||!['100644','100755'].includes(file.mode))return {...basis,unavailable:'not_regular_tracked_file'};
   const identity={...basis,object:file.object,totalBytes:file.bytes};
   if(file.bytes>8*1024*1024)return {...identity,unavailable:'repository_blob_limit'};
+  const start=startByte??0,validStart=Number.isSafeInteger(start)&&start>=0&&start<=file.bytes;
+  if(Object.hasOwn(args,'contains')){
+    if(typeof contains!=='string'||!contains.length||contains.length>128||contains.includes('\0')||Object.hasOwn(args,'byteCount')||!validStart)
+      return {...identity,unavailable:'invalid_text_search'};
+    const raw=await readTrackedBlob(source,file);
+    if(raw.includes(0))return {...identity,unavailable:'not_utf8_text'};
+    const query=Buffer.from(contains),matches:Array<{startByte:number;byteCount:number}>=[];
+    let position=raw.indexOf(query,start);
+    while(position>=0&&matches.length<8){
+      matches.push({startByte:position,byteCount:query.length});
+      position=raw.indexOf(query,position+query.length);
+    }
+    return {...identity,matches,nextByte:position<0?null:position};
+  }
   const ranged=Object.hasOwn(args,'startByte')||Object.hasOwn(args,'byteCount');
   if(!ranged&&file.bytes>wholeFileLimit)return {...identity,unavailable:'range_required',startByte:0,maximumByteCount:sliceLimit};
-  if(ranged&&(typeof startByte!=='number'||!Number.isSafeInteger(startByte)||startByte<0||startByte>file.bytes||
+  if(ranged&&(typeof startByte!=='number'||!validStart||
       typeof byteCount!=='number'||!Number.isSafeInteger(byteCount)||byteCount<1||byteCount>sliceLimit))
     return {...identity,unavailable:'invalid_byte_range',maximumByteCount:sliceLimit};
-  const raw=await readTrackedBlob(source,file),start=startByte??0;
+  const raw=await readTrackedBlob(source,file);
   if(raw.includes(0))return {...identity,unavailable:'not_utf8_text'};
   const continuation=(offset:number)=>offset<raw.length&&(raw[offset]!&0xc0)===0x80;
   if(continuation(start))return {...identity,unavailable:'start_byte_not_character_boundary'};
@@ -87,18 +101,20 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const validationEnvironment=await prepareWorkEnvironment(o.verification,join(o.directory,'environment'),o.source.H,T,{refresh:check,start:effect=>{if(o.stopped())throw new Error('project_work_preparation_stopped');effect();}});
   await check();
   const previous=await previousPreparationContext(o.previous,o.source,o.issue,o.goal);
-  const input={preparationVersion:workflowPrompt?5:4,repositoryFileSlices:true,...(workflowPrompt?{workflowPrompt}:{}),...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
+  const input={preparationVersion:workflowPrompt?5:4,repositoryFileSlices:'search',...(workflowPrompt?{workflowPrompt}:{}),...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
   const bytes=preparationInputBytes(input);
   await writeFile(join(o.directory,'input.json'),bytes,{flag:'wx',mode:0o600});
   const candidate:Candidate={kind:'local-git',repository:'local/project-work-preparation',pr:null,H:o.source.H,B:o.source.H,target:'preparation'},observations:unknown[]=[];let calls=0,total=0,turnStarted:number|null=null;
   const gate={check,call:async(p:{tool:string;arguments:any;callId:string},before?:()=>void)=>{
-    await check();before?.();if(++calls>32)throw new Error('project_work_preparation_tool_limit');let data;
+    await check();before?.();if(++calls>32)throw new Error('project_work_preparation_tool_limit');let data:unknown;
     if(p.tool==='tongxu_repository_files'&&exactKeys(p.arguments,[]))data=files.map(({path,mode,bytes})=>({path,mode,bytes}));
     else if(p.tool==='tongxu_repository_file'&&p.arguments&&typeof p.arguments.path==='string'&&
-      exactKeys(p.arguments,['path',...['startByte','byteCount'].filter(key=>Object.hasOwn(p.arguments,key))]))
+      exactKeys(p.arguments,['path',...['startByte','byteCount','contains'].filter(key=>Object.hasOwn(p.arguments,key))]))
       data=await lookupPreparationFile(o.source,files,p.arguments);
     else throw new Error('project_work_preparation_tool_not_allowed');
-    const base={tool:p.tool,arguments:p.arguments,data};total+=Buffer.byteLength(canonical(base));if(total>768*1024)throw new Error('project_work_preparation_material_limit');
+    const limit=768*1024,base={tool:p.tool,arguments:p.arguments,data},size=Buffer.byteLength(canonical(base));
+    if(total+size<=limit)total+=size;
+    else base.data={unavailable:'preparation_material_budget_remaining',H:o.source.H,remainingDataBytes:limit-total};
     const elapsedMs=turnStarted===null?null:Math.max(0,Math.floor(performance.now()-turnStarted));
     const result={...base,remainingTools:32-calls,materialBudget:{limitBytes:768*1024,usedDataBytes:total,remainingDataBytes:768*1024-total},timeBudget:{limitMs:o.config.timeoutMs,elapsedMs,remainingMs:elapsedMs===null?null:Math.max(0,o.config.timeoutMs-elapsedMs)}};
     observations.push(result);await writeFile(join(o.directory,'observations.json'),canonical(observations),{mode:0o600});await check();before?.();
@@ -107,7 +123,7 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const choice=currentAIChoice('secretary');if(choice&&choice.tool!=='codex')throw new Error('project_work_preparation_codex_required');
   let session:BoundedCodexSession|undefined;
   try{
-    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:'file-slices',system,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
+    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:'file-search',system,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
     await session.turn(bytes,candidate,workPreparationSchema(candidate.H));await session.close();session=undefined;
     return await readWorkProposal(o.directory,o.source);
   }finally{await session?.close();}
@@ -147,7 +163,7 @@ async function readPreparationInput(directory:string,source:FixedRepository){
     if(canonical(input.validationEnvironment)!==canonical(await readWorkEnvironment(join(directory,'environment'),source.H,T)))throw new Error('project_work_environment_binding_changed');
     if(version>=3){const evidence=JSON.parse((await regular(join(directory,'environment/observation.json'))).toString());if(canonical(input.validationInvocation)!==canonical(workValidationInvocation(evidence.configuration.node))||canonical(input.materialBudgets)!==canonical(workPreparationBudgets))throw new Error('project_work_validation_invocation_changed');}
   }
-  if(!isDeepStrictEqual(starts[0].params.dynamicTools,preparationToolsFor(input.repositoryFileSlices===true))||turns[0].params.input?.[0]?.text!==bytes.toString()||!isDeepStrictEqual(turns[0].params.outputSchema,schema))throw new Error('project_work_preparation_capture_changed');
+  if(!isDeepStrictEqual(starts[0].params.dynamicTools,preparationToolsFor(input.repositoryFileSlices??false))||turns[0].params.input?.[0]?.text!==bytes.toString()||!isDeepStrictEqual(turns[0].params.outputSchema,schema))throw new Error('project_work_preparation_capture_changed');
   return {bytes,input,instructions,version,schema,sent,start:starts[0],turn:turns[0]};
 }
 async function checkPreparationBinding(directory:string,source:FixedRepository,bytes:Buffer,instructions:string,schema:unknown,binding:any){
