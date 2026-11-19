@@ -4,8 +4,9 @@ import {promisify} from 'node:util';
 import {join} from 'node:path';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
-import {regular,treeHash,safeEnv,projectPathWritable,orderedProjectTree,projectRepairToolsFor,type Tree,type ProjectFiles} from './repair-workspace.js';
+import {regular,exists,treeHash,safeEnv,projectPathWritable,orderedProjectTree,type Tree,type ProjectFiles} from './repair-workspace.js';
 import {replacementText,implementationEditProfile,type EditProfile} from './repair-edits.js';
+import {implementationTools} from './implementation-ai.js';
 const exec=promisify(execFile);
 
 export function replayImplementationWrite(expected:Tree,p:any,c:any,allowedPaths:string[],profile:EditProfile|undefined,projectFiles?:ProjectFiles){
@@ -28,8 +29,7 @@ export function replayImplementationWrite(expected:Tree,p:any,c:any,allowedPaths
      file.sha256!==expectedSha256||canonical(file)!==canonical(c.beforeFile)||c.status!=='applied'||
      move&&(!projectPathWritable(projectFiles,destination)||Object.hasOwn(expected,destination)))throw new Error('implementation_edit_receipt_changed');
   delete expected[path];
-  if(move)expected[destination]=file;
-  expected=orderedProjectTree(expected);
+  expected=orderedProjectTree(move?{...expected,[destination]:file}:expected);
  }
  return expected;
 }
@@ -40,19 +40,21 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
  const request=state.plan.request,profile=implementationEditProfile(request,plan,manifest);
  const projectFiles=request.workspaceRequest.projectFiles?{protectedPaths:request.workspaceRequest.protectedPaths}:undefined;
  if(!profile&&!projectFiles)return;
+ const tools=projectFiles?implementationTools(request,plan,manifest):null;
  const json=async(path:string)=>JSON.parse((await regular(path,32*1024*1024)).toString());
  let expected:Tree=await json(join(state.plan.operationRoot,'initial-tree.json'));
  const replay=async(directory:string,capture:string)=>{
-  if(projectFiles){
+  if(tools){
    const sent=(await regular(join(capture,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(line=>JSON.parse(line));
    const start=sent.filter(item=>item.method==='thread/start');
    if(start.length!==1||start[0].params.baseInstructions!==request.workflowPrompt?.system||
       canonical(manifest.prompt)!==canonical(request.workflowPrompt)||
-      canonical(start[0].params.dynamicTools)!==canonical(projectRepairToolsFor(profile,true)))throw new Error('implementation_project_file_capture_changed');
+      canonical(start[0].params.dynamicTools)!==canonical(tools))throw new Error('implementation_project_file_capture_changed');
   }
   const pairs=await json(join(capture,'reconciled-tools.json'));
   for(const pair of pairs){const p=pair.request.params,c=await json(join(directory,'calls',p.callId+'.json'));
    if(c.request.tool!==p.tool||c.request.callId!==p.callId||canonical(c.request.arguments)!==canonical(p.arguments)||canonical(c.response)!==canonical(pair.response.result))throw new Error('implementation_edit_receipt_changed');
+   if(tools&&!tools.some(tool=>tool.name===p.tool))throw new Error('implementation_edit_receipt_changed');
    expected=replayImplementationWrite(expected,p,c,request.workspaceRequest.allowedPaths,profile,projectFiles);
    if(c.afterTreeSha256!==treeHash(expected))throw new Error('implementation_edit_receipt_changed');
   }
@@ -62,7 +64,7 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
  if(treeHash(expected)!==(state.result.treeSha256??treeHash(await json(join(state.plan.operationRoot,'initial-tree.json')))))throw new Error('implementation_edit_receipt_changed');
 }
 
-/** Observe registered additions that Git has not staged, without touching the index. */
+/** Observe registered new paths, including retained move targets, without touching the index. */
 export async function retainedProjectAdditions(workspace:string,operation:string,scope:ProjectFiles){
  const calls=join(operation,'calls'),names=await readdir(calls).catch(error=>{
   if(error.code==='ENOENT')return [];
@@ -79,10 +81,13 @@ export async function retainedProjectAdditions(workspace:string,operation:string
  }
  const additions:string[]=[],diffs:string[]=[];
  for(const receipt of receipts){
-  const {request}=receipt,{path}=request.arguments;
-  if(request.tool!=='tongxu_create_file'||receipt.status!=='applied'||!projectPathWritable(scope,path)||Object.hasOwn(initial,path))continue;
+  const {request}=receipt,{path:source,destination}=request.arguments,move=request.tool==='tongxu_rename_file';
+  const path=move?destination:source;
+  if((!move&&request.tool!=='tongxu_create_file')||receipt.status!=='applied'||!projectPathWritable(scope,path)||Object.hasOwn(initial,path)||additions.includes(path))continue;
   try{
-   const created=replayImplementationWrite(initial,request,receipt,[],undefined,scope)[path]!;
+   const sourceAbsent=async()=>!move||!await exists(join(workspace,source));
+   const created=replayImplementationWrite({...initial},request,receipt,[],undefined,scope)[path]!;
+   if(!await sourceAbsent())continue;
    const recorded=new Set([created.sha256,...receipts.filter(r=>r.status==='applied'&&r.request.tool==='tongxu_replace_file'&&r.request.arguments.path===path&&r.afterExecutable===created.executable).map(r=>r.afterSha256)]);
    const full=join(workspace,path);
    const digest=async()=>hash(await regular(full,256*1024));
@@ -96,7 +101,7 @@ export async function retainedProjectAdditions(workspace:string,operation:string
      if(error.code===1&&typeof error.stdout==='string')return {stdout:error.stdout as string};
      throw error;
     });
-   if(diff.stdout&&await digest()===before&&await mode()===created.executable){additions.push(path);diffs.push(diff.stdout);}
+   if(diff.stdout&&await digest()===before&&await mode()===created.executable&&await sourceAbsent()){additions.push(path);diffs.push(diff.stdout);}
   }catch(error:any){
    if(!['ENOENT','ENOTDIR'].includes(error.code)&&!['noncanonical_repair_path','invalid_repair_file','repair_file_changed_during_read','implementation_edit_receipt_changed'].includes(error.message))throw error;
   }
