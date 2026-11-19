@@ -135,7 +135,8 @@ for(const mode of ['fix-clean','fix-late-close','fix-archived-failure','fix-disp
 
 for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
  const publishedLate=mode==='fix-late-published';
- const protocol=publishedLate?await dockerProtocolFixture(t):null;
+ const dockerConfig=process.env.TONGXU_TEST_DOCKER_CONFIG;
+ const protocol=publishedLate&&!dockerConfig?await dockerProtocolFixture(t):null;
  const {f,peer}=await dualPrograms(t,mode,protocol?.config);
  const path=join(f.root,'dual-review-workbench.json'),account={id:7,login:'fixture'},repo={
    id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Dual review fixture',private:true,archived:false,
@@ -151,7 +152,8 @@ for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published
  if(mode==='fix'||late){
    const {repository:_,issue:_issue,kind:_kind,schemaVersion:_schema,...owner}=f.q.authority().configuration().profile;
    const configPath=join(f.root,'work-config.json');
-   await writeFile(configPath,canonical({root:join(f.root,'works'),executor:f.entry.config,verification:protocol?.config??(late?unusedDockerFixture:JSON.parse(await readFile(process.env.TONGXU_TEST_DOCKER_CONFIG!,'utf8'))),owner}));
+   const verification=protocol?.config??(dockerConfig?JSON.parse(await readFile(dockerConfig,'utf8')):unusedDockerFixture);
+   await writeFile(configPath,canonical({root:join(f.root,'works'),executor:f.entry.config,verification,owner}));
    projectControls={
      projectWork:{path:configPath,sha256:hash(await readFile(configPath))},
      projectSecretary:{root:join(f.root,'project-chat'),codexExecutable:f.n.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:30000,billing:'existing_subscription_only',executionKind:'fixture'}
@@ -288,6 +290,8 @@ for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published
      const ready=(await inbox())[0].original;assert.equal(ready.ready,true,JSON.stringify(ready));assert.equal(ready.adopted,false);
      assert.equal((await take()).status,202);assert.equal((await take()).status,202);assert.equal(handoffs.length,1);
      assert.equal(handoffs[0]!.published!.reviewOperation,(await successor()).operation);assert.equal(handoffs[0]!.sessionId,fix.sessionId);
+     t.diagnostic(JSON.stringify({request:groupId,original:old,repair:fix.H1,repairSession:fix.sessionId,
+       successor:(await successor()).operation,docker:protocol?'protocol_fixture':'actual_daemon',ordinaryDispatch:'fixture_boundary'}));
      assert.deepEqual(await readFile(inboxPath),bytes);assert.deepEqual(f.q.formalReviews().state(operation).terminal,original.terminal);return;
    }
    approved=true;
