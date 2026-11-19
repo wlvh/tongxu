@@ -194,8 +194,28 @@ export async function testProject(workspace: string, directory: string, p: Proje
   await selectMaterialView(work,p,setupGit);
   await setupGit(['fetch', '--no-tags', '--no-recurse-submodules', workspace, await git(workspace, ['rev-parse', 'HEAD'])]);
   await setupGit(['checkout', '--detach', 'FETCH_HEAD']);
-  for (const [path, entry] of Object.entries(current)) { const full = join(work, path); await writeFile(full, entry.text, { mode: 0o600 }); await chmod(full, 0o600 | (entry.executable ?? 0)); }
+  const directories=new Set([work]);
+  for(const [path,entry] of Object.entries(current)){
+    const components=path.split('/');
+    const filename=components.pop()!;
+    let parent=work;
+    for(const component of components){
+      parent=join(parent,component);
+      if(directories.has(parent))continue;
+      if(await exists(parent)){
+        if(!(await lstat(parent)).isDirectory())throw new Error('project_test_candidate_path_conflict');
+      }else await mkdir(parent,{mode:0o700});
+      directories.add(parent);
+    }
+    const file=join(parent,filename);
+    if(await exists(file))await regular(file,256*1024);
+    await writeFile(file,entry.text,{mode:0o600});
+    await chmod(file,0o600|(entry.executable??0));
+  }
   await setupGit(['add', '--all']); await setupGit(['-c', 'user.name=Tongxu fixed test input', '-c', 'user.email=tests@localhost', '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-m', 'fixed project test input']);
+  const H=await git(work,['rev-parse','HEAD']),T=await git(work,['rev-parse','HEAD^{tree}']);
+  const tracked=new Set((await git(work,['ls-tree','-r','--name-only',H])).split('\n'));
+  if(Object.keys(current).some(path=>!tracked.has(path)))throw new Error('project_test_worktree_file_missing_from_candidate');
   const generated = [];
   for (const [index, path] of p.generatedDirectories.entries()) {
     const source = join(directory, 'generated-' + index); await mkdir(source, { mode: 0o700 }); await mkdir(join(work, path), { recursive: true, mode: 0o700 }); generated.push({ path, source });
@@ -205,7 +225,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
     // parent bind. This empty directory is a mount target, never a dependency.
     await mkdir(join(work, 'node_modules'), { mode: 0o700 });
   }
-  const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
+  const pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
   // Keep Git metadata in the host fingerprint, outside the candidate mount.
   // Tests see byte-identical selected files and cannot recover omitted blobs.

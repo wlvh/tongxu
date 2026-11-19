@@ -113,6 +113,33 @@ test('fixed project input is repaired and tested in isolated copies, then indepe
   await writeFile(join(f.workspace, 'src/normalize.mjs'), 'changed after completed tests');
   await assert.rejects(bindProjectTestToCandidate(f.workspace, result.after, tests), /project_candidate_test_tree_mismatch/);
 });
+test('registered validation tests a new nested executable source through an existing caller and binds the candidate tree', async t => {
+  const f=await project(t);
+  const added='src/fallbacks/default-label.mjs';
+  const addedPath=join(f.workspace,added);
+  await mkdir(dirname(addedPath));
+  await writeFile(addedPath,"export const defaultLabel = 'Untitled';\n");
+  await chmod(addedPath,0o755);
+  await writeFile(join(f.workspace,'src/index.mjs'),"import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value){return value.trim() || defaultLabel;}\n");
+  const tests=await testProject(f.workspace,join(f.root,'test-nested-addition'),f.projectPlan.project);
+  assert.equal(tests.executionHealthy,true);
+  assert.equal(tests.passed,true);
+  const work=join(f.root,'test-nested-addition','work');
+  assert.match(await git(work,['ls-tree',tests.H,'--',added]),/^100755 blob [0-9a-f]+\t/);
+  await git(f.workspace,['add','--',added,'src/index.mjs']);
+  await git(f.workspace,['-c','user.name=fixture','-c','user.email=fixture@localhost','-c','commit.gpgSign=false','commit','-m','include new candidate source']);
+  const H=await git(f.workspace,['rev-parse','HEAD']);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+  assert.deepEqual(await tree(f.objects,true),f.originalTree);
+});
+test('registered validation refuses a source file missing from the actual candidate Git tree', async t => {
+  const f=await project(t,true);
+  await writeFile(join(f.workspace,'.gitignore'),'local-only.mjs\n');
+  await writeFile(join(f.workspace,'local-only.mjs'),'export const localOnly = true;\n');
+  const directory=join(f.root,'test-untracked-input');
+  await assert.rejects(testProject(f.workspace,directory,f.projectPlan.project),/project_test_worktree_file_missing_from_candidate/);
+  assert.equal(await exists(join(directory,'runtime')),false);
+});
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true);
