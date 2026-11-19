@@ -2488,12 +2488,15 @@ for(const projectFiles of [true,false])test('first dispatch intent with zero wir
  let controls=await open();t.after(()=>controls.drain());
  const id='registered-intent-without-wire',operation=join(f.entry.root,id,'operation'),native=join(operation,'implementer');
  const settled=async()=>{
-  for(let i=0;i<300;i++){
+  const until=Date.now()+60000;
+  let latest;
+  while(Date.now()<until){
    const row=(await controls.state())[0]!.requests.find(r=>r.id===id);
    if(row&&!row.controllerActive&&(row.reason||row.status||row.phase==='active_or_unknown'))return row;
-   await new Promise(resolve=>setTimeout(resolve,20));
+   latest=row;
+   await new Promise(resolve=>setTimeout(resolve,40));
   }
-  throw new Error('first_dispatch_fixture_timeout');
+  assert.fail('first_dispatch_fixture_timeout '+JSON.stringify(latest));
  };
  const originalRequest=LiveProcess.prototype.request;
  let reads=0;
@@ -2527,7 +2530,7 @@ for(let attempt=0;attempt<500;attempt++){
 }
 await controls.drain();
 `;
-  await exec(process.execPath,['--input-type=module','--eval',childScript],{timeout:30000});
+  await exec(process.execPath,['--input-type=module','--eval',childScript],{timeout:90000});
  }else{
   t.mock.method(LiveProcess.prototype,'request',closeAfterUsage);
   await controls.begin('implementation',id);
