@@ -29,6 +29,7 @@ export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:
 export class QueueFormalRoundHost implements FormalRoundHost{
  readonly directory:string;readonly round:number;readonly material:FormalRoundHost['material'];readonly config:FormalRoundHost['config'];readonly systems:FormalRoundHost['systems'];readonly aiSelections:Row;
  readonly dual:{gpt?:BoundedCodexSession;kimi?:ExtraCliSession}={};
+ private dualFixPeerCheck?:()=>void;
  private observations:OwnerObservation[]=[];private active?:FormalStage;private fact:OwnedFormalFact|null=null;private gate?:RepairTools;private plan?:RepairPlan;private initial?:Tree;private readCalls=0;private readBytes=0;private tests=0;private projectPromise?:Promise<RepairTools>;
  constructor(readonly q:QueueStore,readonly operation:string,readonly request:FormalFrozenRequest,private live:()=>Promise<void>,private accepting:()=>void,round=request.round){this.directory=request.directory;this.round=round;this.material=request.material;this.config=request.config;this.systems=request.prompts.prompts;this.aiSelections=request.aiSelections;}
  private records(){return this.q.formalReviews();}
@@ -147,7 +148,17 @@ export class QueueFormalRoundHost implements FormalRoundHost{
   return plan;
  }
  activate(stage:FormalStage){this.active=stage;this.progress(stage.key,{candidate:stage.candidate,role:stage.role});}
- submit<T>(stage:FormalStage,effect:()=>T):T{this.accepting();return this.records().effect(this.operation,stage.key,this.observations,effect,true);}
+ bindDualFixPeer(check:()=>void){this.dualFixPeerCheck=check;}
+ submit<T>(stage:FormalStage,effect:()=>T):T{
+  this.accepting();
+  return this.records().effect(this.operation,stage.key,this.observations,()=>{
+   if(this.request.workflowReview&&stage.role==='fix'){
+    if(!this.dualFixPeerCheck)throw new Error('formal_dual_terminal_capture_missing');
+    this.dualFixPeerCheck();
+   }
+   return effect();
+  },true);
+ }
  record(stage:FormalStage,result:Row,proof:Row,originals:Record<string,Buffer>){this.records().returned(this.operation,stage.key,result,proof,originals);}
  async phaseEnded(phase:'analysis'|'fix',endedDualRound?:number){const intent=this.intent(phase);this.records().completeResourcePhase(this.operation,intent,endedDualRound);for(const b of this.request.budgets.filter(b=>b.phase===phase)){const stage=this.records().state(this.operation).stages.find((s:Row)=>s.stage.budgetIntent===intent)!;const resource=stage.stage.resources.find((r:ResourceRequest)=>r.ledgerId===b.ledgerId&&r.resourceRef===b.resourceRef)!;const id=resourceRequestHash(resource);if(!this.q.resources().settledOutcome(id))await resourceAction(this.q.directory,id,'record-result','background');}}
  /** Reconcile only the original closed, read-only first reviewer. No native

@@ -282,8 +282,9 @@ export class RepairTools {
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool');
     await checkRepairIndex(this.workspace,this.operation,this.grant.projectFiles?this.writableChanges(current):this.grant.allowedPaths,current,this.indexView,false,!!this.grant.projectFiles);return current;
   }
-  async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session') {
+  async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session', beforeHandoff?:()=>void) {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
+    beforeHandoff?.();
     await writeFile(join(this.operation, 'handoff-' + this.lease.generation + '-' + (++this.handoffSerial) + '.json'), JSON.stringify({ from: 'trusted-preparer', to: sessionId, sessionContinuity, grant: this.grant, lease: this.lease, verifiedTreeSha256: treeHash(this.expected), backgroundCommands: 'none-active-in-managed-workspace' }), { flag: 'wx', mode: 0o600 }); this.phase = 'write';
   }
   commitStart(effect:()=>void){

@@ -148,7 +148,7 @@ Git 跟踪源码、测试、角色提示、页面资产、规范和历史设计/
 
 时效恢复沿 `project-work-current` 封存官方零线程／零输入元数据与当前环境、原准备和准确失败前驱。同步门核固定摘要／期限，原实现消费者核权限、来源和占用；不为旧授权增加覆盖器。已知健康失败由原 issued proof 结为原 `failed/H1=null`，先终态／自身claim，后准确lease释放历史，再由 ProjectWork 先核原版本再一次性保存（revision CAS），推进同工作唯一后继；新request／Grant的0轮仅限这次干净H0初始实施，补充仍沿原正常规则。`work-validation-definition` 从受校验 currentCheck 回读同工作原准备，禁止任意路径或跨工作材料。相关改动回归原 ProjectWork/Owner/implementation/Docker fixture、完整结果／补充读取、旧准备与普通repair拒0；活动预览不得调用新的start。
 
-`implementation-first-send` 只在原实施控制器的显式动作内核准一次仅元数据结束的旧请求，原基线与 `implementation-first-input` 重建的完整首条输入一起封存；普通读取只派生资格。原 store 追加关联事件，原锁、claim、批准与资源继续使用。`implementation-owner-feedback` 的报告与负责人证明共同解析被该事件绑定的捕获目录，旧无关联结果保持原目录。新请求沿 Native 的同步 dispatchGate 在写 turn/start 前持久化派发；公共结果解析器不变。
+`implementation-first-send` 沿原实施控制器的显式动作核对旧元数据捕获，或核对已登记派发但完整通信记录证明未发送首条输入的原请求。后者核对原 writer 交接、已结束的原生进程、未变的工作区和索引，再在原操作锁内复核当前批准与准确输入。选定文件模式沿用原基线，项目文件模式沿用原无基线输入。原 store 追加关联事件并沿用原 claim 和资源；报告与负责人证明共同解析该事件绑定的捕获目录。普通读取只派生资格。传播验证见 `tests/project-repair/integration.test.ts`。
 
 共享变动为 selected_files 的完整 Git 稀疏工作树、Docker材料副本与测试树核验、原实施发送前的基线测试、生成目录的当前版本准入以及工作台启动器资源清单。必须回归原 repair/native/authority/resources、project-repair integration、w7 项目切换／秘书／启动器；新增单元／页面测试见 project-work*.test.ts。无第二套执行器或批准账本。能力和部署边界见[首次工作](docs/project_first_use.md)。
 

@@ -1233,7 +1233,7 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,moveTarget?:string,projectFailure=false){
+async function implementationEntry(t:TestContext,resources:boolean,resourceMode:string,selectedLink:boolean,projectFiles:boolean,moveTarget?:string,projectFailure=false){
  const project=await implementationProject(t);
  if(projectFailure){
    const plan=JSON.parse(await readFile(project.request.testPlan,'utf8'));
@@ -1276,11 +1276,16 @@ process.exitCode=child.status??2;`];
  const github:GitHubReaderFactory=async()=>({query:async op=>({status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repository],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:{...repository,...(op==='issue'?{item:{...issue,body:sourceBody}}:op==='issues'||op==='pulls'?{items:{nodes:op==='issues'?[{...issue,body:sourceBody}]:[],pageInfo:{hasNextPage:false,endCursor:null}}}:{})}}})})});
  const resource=ledger?.profile.resources[0],entry={...(selectedLink?{materialView:'selected_files' as const}:{}),id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:projectFiles?[]:project.request.allowedPaths,materialPaths:projectFiles?['README.md']:project.request.materialPaths,...(projectFiles?{projectFiles:true as const}:{}),protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
  const catalogPath=join(project.root,'implementation-catalog.json');await writeFile(catalogPath,JSON.stringify({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}));
+ return {project,messages,owner,scope,grant,body,ledger,entry,catalogPath,github,readIssue:async()=>({...issue,body:sourceBody,url:'https://github.com/fixture/reception/issues/74'}),changeIssue:(value:string)=>{sourceBody=value;}};
+}
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,moveTarget?:string,projectFailure=false){
+ const input=await implementationEntry(t,resources,resourceMode,selectedLink,projectFiles,moveTarget,projectFailure);
+ const {project,catalogPath,github}=input;
  const planPath=join(project.root,'implementation-workbench.json');await writeFile(planPath,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Implementation fixture',goal:'Run one adopted Issue through normal entry',sources:[],githubProjects:true,issueImplementation:{path:catalogPath,sha256:hash(await readFile(catalogPath))},...(withSecretary?{projectSecretary:{root:join(project.root,'project-chats'),codexExecutable:project.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}:{})}));
  const app=await startWorkbench(planPath,undefined,{githubReader:decorateGitHub?decorateGitHub(github):github});const originalClose=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await originalClose();}};t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/implementation')=>{const result=await fetch(url.origin+path,{headers});return {status:result.status,value:await result.json() as any};},post=async(action:string,data:unknown,extra:Record<string,string>={})=>{const result=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:result.status,value:await result.json() as any};};
  await fetch(url.origin+'/api/github/projects',{headers});
  const settled=async(id:string)=>{for(let i=0;i<1000;i++){const state=(await get()).value.entries[0].requests.find((r:any)=>r.id===id);if(state&&!state.controllerActive&&(state.status||state.reason||state.stopped||state.phase==='active_or_unknown'))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('implementation_fixture_timeout');};
- return {project,messages,owner,scope,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
+ return {...input,planPath,app,url,headers,get,post,settled};
 }
 
 for(const legacy of [false,true])test('normal registered workbench starts one project-scoped Issue and returns the tested new-file candidate'+(legacy?' (legacy protocol and cold readback)':''),async t=>{
@@ -2434,6 +2439,104 @@ test('first input metadata proof rejects live controllers, intents, damaged or a
   try{await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent));assert.equal(await exists(join(f.operation,'first-input')),false);assert.deepEqual(await readFile(f.project.trace),trace);}finally{for(const restore of restores)await restore();}
  }
  await f.control().stop('implementation',f.id);assert.equal((await f.control().firstInputContinuation('implementation',f.id)).eligible,false);await f.post('continue-first-input',{requestId:f.id});await f.pageSettled();assert.equal(await exists(join(f.operation,'first-input')),false);assert.deepEqual(await readFile(f.project.trace),trace);
+});
+
+for(const projectFiles of [true,false])test('first dispatch intent with zero wire input recovers the same '+(projectFiles?'projectFiles':'selected_files')+' request',async t=>{
+ const f=await implementationEntry(t,false,'normal',!projectFiles,projectFiles);
+ const open=async()=>IssueImplementationControls.load(f.catalogPath,hash(await readFile(f.catalogPath)),f.entry.repository,f.readIssue,async()=>{});
+ let controls=await open();t.after(()=>controls.drain());
+ const id='registered-intent-without-wire',operation=join(f.entry.root,id,'operation'),native=join(operation,'implementer');
+ const settled=async()=>{
+  for(let i=0;i<300;i++){
+   const row=(await controls.state())[0]!.requests.find(r=>r.id===id);
+   if(row&&!row.controllerActive&&(row.reason||row.status||row.phase==='active_or_unknown'))return row;
+   await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  throw new Error('first_dispatch_fixture_timeout');
+ };
+ const originalRequest=LiveProcess.prototype.request;
+ let reads=0;
+ function closeAfterUsage(this:LiveProcess,...args:Parameters<LiveProcess['request']>){
+  const reply=originalRequest.apply(this,args);
+  if(this.directory!==native||args[0]!=='account/rateLimits/read'||++reads!==2)return reply;
+  // Drain this actual fixture subprocess after the last rate-limit reply.
+  // The real runner persists the intent and dispatch, then rejects before sending.
+  return reply.then(async value=>{await this.close();return value;});
+ }
+ const script=await readFile(f.project.config.codexExecutable,'utf8'),needle="const v=JSON.parse(m.result.contentItems[0].text);";
+ assert.ok(script.includes(needle));
+ await writeFile(f.project.config.codexExecutable,script.replace(needle,needle+
+   "if(stage==='tongxu_read_file'){finish({candidateH:context.candidate.H,decision:'no_change',report:'Explicit fixture only reads after first-input recovery.'});return;}"));
+ await controls.prepare('implementation',{requestId:id,issueNumber:74});
+ if(projectFiles){
+  // Use a separate original controller so recovery also sees an ended lease PID.
+  const childScript=`
+import {LiveProcess} from ${JSON.stringify(new URL('../../src/live-process.js',import.meta.url).href)};
+import {IssueImplementationControls} from ${JSON.stringify(new URL('../../src/issue-implementation-controls.js',import.meta.url).href)};
+const native=${JSON.stringify(native)},originalRequest=LiveProcess.prototype.request;
+let reads=0;
+LiveProcess.prototype.request=${closeAfterUsage.toString()};
+const controls=await IssueImplementationControls.load(${JSON.stringify(f.catalogPath)},${JSON.stringify(hash(await readFile(f.catalogPath)))},
+ ${JSON.stringify(f.entry.repository)},async()=>(${JSON.stringify(await f.readIssue())}),async()=>{});
+await controls.begin('implementation',${JSON.stringify(id)});
+for(let attempt=0;attempt<500;attempt++){
+ const row=(await controls.state())[0].requests[0];
+ if(!row.controllerActive&&row.reason)break;
+ await new Promise(r=>setTimeout(r,20));
+}
+await controls.drain();
+`;
+  await exec(process.execPath,['--input-type=module','--eval',childScript],{timeout:30000});
+ }else{
+  t.mock.method(LiveProcess.prototype,'request',closeAfterUsage);
+  await controls.begin('implementation',id);
+ }
+ const waiting=await settled();assert.equal(waiting.phase,'active_or_unknown',JSON.stringify(waiting));
+ assert.equal(waiting.reason,'executor_closed');
+ const records=f.messages.q.issueImplementations(),before=records.state('implementation',id),candidate=records.firstSendCandidate('implementation',id);
+ const {readFirstSendProof}=await import('../../src/implementation-first-send.js');
+ const wirePath=join(native,'stdin.ndjson'),wire=await readFile(wirePath),originalIntent=await readFile(join(native,'turn-1-intent.json'));
+ const capturePath=join(native,'capture-status.json'),capture=await readFile(capturePath);
+ assert.ok(!wire.toString().includes('turn/start'));assert.ok(!(await readFile(f.project.trace,'utf8')).includes('model-input'));
+ if(!projectFiles)await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent),/controller_active_or_unknown/);
+ const proof=await readFirstSendProof(candidate.plan,candidate.dispatchEvent,!projectFiles);
+ assert.equal(proof.record.dispatchIntentSha256,hash(originalIntent));
+ assert.equal(proof.baseline===null,projectFiles);
+ const attempted=JSON.parse(await readFile(join(native,'expected-requests.json'),'utf8')).at(-1);
+ assert.equal(attempted.method,'turn/start');
+ const withTurn=Buffer.concat([wire,Buffer.from(JSON.stringify(attempted)+'\n')]);
+ await writeFile(wirePath,withTurn);
+ const status=JSON.parse(capture.toString());status.files['stdin.ndjson']=hash(withTurn);await writeFile(capturePath,canonical(status));
+ await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent,true),/metadata_unknown/);
+ await writeFile(wirePath,wire);await writeFile(capturePath,capture);
+ await rm(capturePath);
+ await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent,true),/capture_incomplete/);
+ await writeFile(capturePath,capture);
+ await mkdir(join(operation,'calls'));
+ await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent,true),/not_metadata/);
+ await rm(join(operation,'calls'),{recursive:true});
+ const source=join(before.plan.workspace,'src/normalize.mjs'),sourceBytes=await readFile(source);
+ await writeFile(source,'changed after the ended original');
+ await assert.rejects(readFirstSendProof(candidate.plan,candidate.dispatchEvent,true),/source_changed/);
+ await writeFile(source,sourceBytes);
+ await controls.drain();controls=await open();
+ assert.deepEqual(await controls.firstInputContinuation('implementation',id),{eligible:true});
+ f.changeIssue('Changed Issue during recovery');
+ await controls.continueFirstInput('implementation',id);
+ assert.equal((await settled()).reason,'implementation_issue_source_changed');
+ assert.equal(records.state('implementation',id).firstInputContinuation,null);
+ assert.ok(!(await readFile(f.project.trace,'utf8')).includes('model-input'));
+ f.changeIssue(f.body);
+ await controls.continueFirstInput('implementation',id);
+ const done=await settled();assert.equal(done.status,'no_change',JSON.stringify(done));
+ const result=records.state('implementation',id);
+ assert.equal(result.operation,before.operation);assert.equal(result.requestSha256,before.requestSha256);
+ assert.equal(result.firstInputContinuation.proof.dispatchEvent,candidate.dispatchEvent);
+ assert.deepEqual(await readFile(wirePath),wire);
+ assert.deepEqual(await readFile(join(native,'turn-1-intent.json')),originalIntent);
+ const trace=await readFile(f.project.trace,'utf8');assert.equal(trace.split('model-input').length-1,1);
+ await controls.continueFirstInput('implementation',id);await settled();
+ assert.equal(await readFile(f.project.trace,'utf8'),trace);
 });
 
 test('first input explicit continuation fresh checks original Issue, authority and held resource without a new stage or claim',async t=>{

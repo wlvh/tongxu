@@ -50,7 +50,9 @@ test('dual verification can answer every finding from two valid reports',()=>{
 });
 
 async function dualPrograms(t:test.TestContext,mode:string){
- const f=await formalFixture(t,mode==='fix'||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended'),peer=await additionalFixture(t,'kimi',mode==='late-peer'?'after-terminal-text':mode==='late-close'?'text-during-close':'complete');
+ const f=await formalFixture(t,mode==='fix-clean'?'fix-owner':mode.startsWith('fix')||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended');
+ const peer=await additionalFixture(t,'kimi',mode==='late-peer'?'after-terminal-text':
+  ['late-close','fix-late-close','fix-archived-failure'].includes(mode)?'text-during-close':'complete');
  const codex=await readFile(f.n.config.codexExecutable,'utf8');
  await writeFile(f.n.config.codexExecutable,codex.replace("context.candidate??=context.material.candidate;","context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';"));
  const peerCode=await readFile(peer.binary,'utf8');
@@ -60,6 +62,53 @@ async function dualPrograms(t:test.TestContext,mode:string){
  const catalog=JSON.parse(await readFile(f.catalog,'utf8'));catalog.entries[0].workflowContract='coding-loop-v2';await writeFile(f.catalog,canonical(catalog));
  return {f,peer};
 }
+
+for(const mode of ['fix-clean','fix-late-close','fix-archived-failure','fix-dispatch-late'])test('dual controller '+mode+' checks closed peer evidence at Codex fix admission',async t=>{
+ const {f,peer}=await dualPrograms(t,mode);
+ let handoffs=0,gateOpened=false;
+ const failurePath=(host:QueueFormalRoundHost)=>join(host.directory,'round-1-impact-initial','capture-failure.json');
+ t.mock.method(QueueFormalRoundHost.prototype,'fixAvailable',async function(this:QueueFormalRoundHost){
+  if(mode==='fix-archived-failure'){await this.dual.kimi!.close();delete this.dual.kimi;}
+  return {available:true,reason:null};
+ });
+ t.mock.method(QueueFormalRoundHost.prototype,'factGate',async function(this:QueueFormalRoundHost){
+  gateOpened=true;
+  return {handoff:async(_session:string,_continuity:string,beforeHandoff:()=>void)=>{
+   beforeHandoff();
+   handoffs++;
+   if(mode==='fix-dispatch-late')await writeFile(failurePath(this),canonical({reason:'external_cli_text_outside_prompt'}));
+  }};
+ });
+ const snapshot:AIPreferenceSnapshot={revision:0,scope:{account:{id:7},repository:{id:1,nodeId:'R_1',fullName:'fixture/reception'}},roles:{
+  verifier_impact:{tool:'kimi',executable:peer.binary,model:'fixture/model-next',effort:'future-depth',resolvedModel:null,settingsRevision:0,
+   role:'verifier_impact',project:{account:7,repository:1,nodeId:'R_1'},catalogObservedAt:new Date().toISOString()}
+ }};
+ const controls=await FormalReviewControls.load(f.catalog,hash(await readFile(f.catalog)),f.sources,undefined,async()=>f.live,async()=>{},undefined,()=>snapshot);
+ t.after(()=>controls.drain());
+ const prepared=await controls.prepare(f.entry.id,mode),op=prepared.operation as string;
+ await controls.begin(f.entry.id,op);
+ const report=()=>controls.report(f.entry.id,op);
+ await waitFor(async()=>!(await report()).controllerActive);
+ const state=await report();
+ if(mode==='fix-clean'){
+  assert.equal(state.phase,'owner_decision',JSON.stringify(state.detail));
+  const repair=state.fullStages.find((stage:{key:string})=>stage.key==='round-1/fix');
+  const initial=state.fullStages.find((stage:{key:string})=>stage.key==='round-1/correctness-initial');
+  assert.ok(repair?.proof?.native?.sessionId);
+  assert.equal(repair.proof.native.sessionId,initial.proof.native.sessionId);
+  assert.equal(repair.proof.native.threadId,initial.proof.native.threadId);
+  assert.equal(handoffs,1);assert.equal((await f.calls()).length,5);
+  return;
+ }
+ assert.equal(state.phase,'waiting',JSON.stringify(state.detail));
+ assert.equal(state.detail.reason,'stage_capture_failed');
+ assert.equal(state.result,null);
+ assert.ok(state.fullStages.some((stage:{key:string;proof:unknown})=>stage.key==='round-1/impact-1'&&stage.proof));
+ assert.equal(state.stages.some((stage:{key:string;dispatched:boolean})=>stage.key==='round-1/fix'&&stage.dispatched),false);
+ assert.equal((await f.calls()).length,4);
+ assert.equal(gateOpened,mode==='fix-dispatch-late');
+ assert.equal(handoffs,mode==='fix-dispatch-late'?1:0);
+});
 
 for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
  const {f,peer}=await dualPrograms(t,mode);

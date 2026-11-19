@@ -58,7 +58,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   const selectedAI=implementationChoice(request,plan),editProfile=implementationEditProfile(request,plan);
   const grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
   validateProjectContract(plan.project,grant);await projectTestPlan(plan.project);
-  if(plan.project.projectFiles!==request.workspaceRequest.projectFiles||plan.project.projectFiles&&firstSend)throw new Error('implementation_project_file_scope_changed');
+  if(plan.project.projectFiles!==request.workspaceRequest.projectFiles)throw new Error('implementation_project_file_scope_changed');
   if(plan.workspace!==grant.workspace||grant.H!==plan.candidate.H||grant.H!==request.workspaceRequest.candidate.H||grant.maxRepairRounds!==request.workspaceRequest.authorization.maxRepairRounds||canonical(grant.allowedPaths)!==canonical(request.workspaceRequest.allowedPaths)||canonical(plan.project.materialPaths)!==canonical(request.workspaceRequest.materialPaths)||canonical(plan.project.protectedPaths)!==canonical(request.workspaceRequest.protectedPaths)||plan.project.contract!==request.workspaceRequest.contract||plan.project.testPlanSha256!==request.workspaceRequest.testPlanSha256)throw new Error('implementation_original_scope_changed');
   const billing=plan.billing;
   if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||!Number.isFinite(Date.parse(billing.observedAt))||hash(await regular(billing.evidence))!==billing.evidenceSha256||Date.now()-Date.parse(billing.observedAt)>24*3600000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
