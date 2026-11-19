@@ -685,10 +685,28 @@ function selectedGithubView(){
 }
 async function openGithubItem(kind,item){
   const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;gh.selectedIssue=null;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
-  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(nonce!==reportNonce||epoch!==gh.epoch||!$('report-dialog').open)return;
+  const current=()=>nonce===reportNonce&&epoch===gh.epoch&&gh.selected?.id===repo.id&&$('report-dialog').open;
+  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(!current())return;
     $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
-    if(kind==='issues'&&entryInfo?.projectWork){gh.selectedIssue={epoch,number:item.number};const work=el('button','交给同序准备','outline');work.onclick=()=>{if(epoch===gh.epoch&&gh.selected?.id===repo.id)openProjectWork(item.number);};$('report-meta').append(work);}
-  }catch(error){if(nonce!==reportNonce||epoch!==gh.epoch||gh.selected?.id!==repo.id||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
+    if(kind!=='issues')return;
+    const direct=entryInfo?.issueImplementation?await projectFileIssueChoice(data.item):null;
+    if(!current())return;
+    if(direct){
+      const work=el('button','开始实施','outline'),project=implementationKey();
+      work.disabled=implementationEntryBusy(implementationData(),direct.option);
+      work.onclick=()=>{
+        if(!current()||implementationEntryBusy(implementationData(),direct.option))return;
+        $('report-dialog').close();
+        return startIssueWork(direct.option,direct.issue,project);
+      };
+      $('report-meta').append(work);
+    }else if(entryInfo?.projectWork){
+      gh.selectedIssue={epoch,number:item.number};
+      const work=el('button','交给同序准备','outline');
+      work.onclick=()=>{if(current())openProjectWork(item.number);};
+      $('report-meta').append(work);
+    }
+  }catch(error){if(!current())return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
 }
 function renderGithub(){
   const focused=document.activeElement,filterSelection=view==='projects'&&focused?.id==='github-project-filter'?{start:focused.selectionStart,end:focused.selectionEnd}:null;
