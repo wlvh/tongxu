@@ -40,7 +40,7 @@ async function loadProjectChat(){
     if(data.conversations.some(c=>c.id===data.conversationId)){const requested=data.conversationId,conversation=await api('/api/project-secretary/conversations/'+requested);if(epoch!==gh.epoch||selection!==data.selectionVersion||data.conversationId!==requested)return;data.messages=conversation.messages;data.supplements=conversation.supplements||[];data.workRequests=conversation.workRequests||[];}else{data.messages=[];data.supplements=[];data.workRequests=[];}
     const draft=chatDraft(data);if(data.messages.some(m=>m.id===draft.requestId&&m.question===draft.question)||(data.supplements||[]).some(m=>(m.originalRequestId??m.id)===draft.requestId&&m.text===draft.question)){draft.question='';draft.requestId=crypto.randomUUID();}
     rememberWorkbenchPosition(data.conversations.some(c=>c.id===data.conversationId)?data.conversationId:null);
-  }catch(e){if(epoch===gh.epoch&&selection===data.selectionVersion)data.error=chatError(e);}finally{data.loading=false;if(chatData()===data){renderProjectChat();if(chatRefresh!==null)clearTimeout(chatRefresh);chatRefresh=null;if(data.reloadRequested||epoch!==gh.epoch||selection!==data.selectionVersion){data.reloadRequested=false;void loadProjectChat();}else chatRefresh=(data.busy.length||(data.supplements||[]).some(r=>!r.cancelled&&!r.original?.completeCapture)||(data.workRequests||[]).some(r=>r.original&&!r.original.historical&&(r.original.controllerActive||r.original.phase==='active_or_unknown'&&!r.original.status||r.original.status&&r.original.resourcesSettled===false)))?setTimeout(loadProjectChat,1500):null;}}
+  }catch(e){if(epoch===gh.epoch&&selection===data.selectionVersion)data.error=chatError(e);}finally{data.loading=false;if(chatData()===data){renderProjectChat();if(chatRefresh!==null)clearTimeout(chatRefresh);chatRefresh=null;if(data.reloadRequested||epoch!==gh.epoch||selection!==data.selectionVersion){data.reloadRequested=false;void loadProjectChat();}else chatRefresh=(data.busy.length||data.nextQuestion?.checking||(data.supplements||[]).some(r=>!r.cancelled&&!r.original?.completeCapture)||(data.workRequests||[]).some(r=>r.original&&!r.original.historical&&(r.original.controllerActive||r.original.phase==='active_or_unknown'&&!r.original.status||r.original.status&&r.original.resourcesSettled===false)))?setTimeout(loadProjectChat,1500):null;}}
 }
 async function sendProjectChat(){
   const data=chatData(),draft=data&&chatDraft(data),workTarget=chatWorkTarget(draft),epoch=gh.epoch;if(!data||!draft.question.trim()||data.submitting||data.loading||(data.busy.length||data.nextQuestion)&&workTarget)return;
@@ -62,7 +62,21 @@ async function projectSupplementAction(action,body){
  catch(e){if(epoch===gh.epoch&&conversation===data.conversationId){const problem=chatError(e);await loadProjectChat();if(epoch===gh.epoch&&conversation===data.conversationId)data.error=problem;}}
  finally{data.submitting=false;if(epoch===gh.epoch&&conversation===data.conversationId)renderProjectChat();}
 }
-async function stopProjectChat(id,withdrawQueued=false){const data=chatData(),epoch=gh.epoch;if(!data)return;try{const r=await workspaceFetch('/api/project-secretary/stop',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id,...(withdrawQueued?{withdrawQueued:true}:{})}),cache:'no-store'}),v=await r.json();if(!r.ok)throw new Error(v.error);await loadProjectChat();}catch(e){if(e.message==='project_chat_withdrawal_state_changed')await loadProjectChat();if(epoch===gh.epoch){data.error=chatError(e);renderProjectChat();}}}
+async function stopProjectChat(id,withdrawQueued=false){
+  const data=chatData(),epoch=gh.epoch,selection=data?.selectionVersion;if(!data)return;
+  const current=()=>epoch===gh.epoch&&selection===data.selectionVersion;
+  try{
+    const r=await workspaceFetch('/api/project-secretary/stop',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId:id,...(withdrawQueued?{withdrawQueued:true}:{})}),cache:'no-store'}),v=await r.json();
+    if(!current())return;
+    if(r.ok){await loadProjectChat();return;}
+    if(r.status===409&&v.error==='project_chat_withdrawal_state_changed'){
+      await loadProjectChat();
+      if(current()){data.error='消息已不在待处理队列。这次撤回没有停止本轮，请查看当前状态。';renderProjectChat();}
+      return;
+    }
+    throw new Error(v.error);
+  }catch(e){if(current()){data.error=chatError(e);renderProjectChat();}}
+}
 function appendSupplementReview(row,planning){
   if(!planning)return;
   if(planning.state==='running')row.append(el('p','正在准备验收定义并进行双公司审查。','small'));
@@ -127,7 +141,8 @@ function renderProjectChat(){
   const signature=JSON.stringify([!!data.busy.length,data.nextQuestion?.requestId,data.messages.map(m=>[m.id,m.status,m.problem,m.receipt?.reportSha256,m.active,m.owned])]);const lines=$('project-chat-lines');if(lines.dataset.messages!==signature){const followBottom=lines.scrollHeight-lines.scrollTop-lines.clientHeight<80;lines.replaceChildren();for(const m of data.messages){const user=append(el('article',null,'chat-message chat-user'),el('strong','你'),el('p',m.question,'chat-text'),el('small',date(m.createdAt)));lines.append(user);const answer=append(el('article',null,'chat-message chat-assistant'),el('strong','工作秘书'));
       if(m.status==='completed'){append(answer,el('div',m.answer,'chat-text'));const detail=append(el('details'),el('summary','查看来源与运行记录'),el('pre',JSON.stringify(m.receipt,null,2),'chat-evidence'));answer.append(detail);}
       else if(m.status==='queued'){
-        answer.append(el('p','原话已保存，等待秘书处理。','small'));
+        const awaitingConnection=['github_connection_unavailable','github_service_unavailable'].includes(m.problem);
+        answer.append(el('p',awaitingConnection?'原话已保存。连接恢复后可处理这条待办。':'原话已保存，等待秘书处理。','small'));
         if(!data.busy.length&&data.nextQuestion?.requestId===m.id){const resume=el('button','处理这条待办','outline');resume.type='button';resume.onclick=()=>projectSupplementAction('continue-question',{requestId:m.id});answer.append(resume);}
         const cancel=el('button','撤回待处理消息','outline');cancel.type='button';cancel.onclick=()=>stopProjectChat(m.id,true);answer.append(cancel);
       }

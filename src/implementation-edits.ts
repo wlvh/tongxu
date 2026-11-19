@@ -103,6 +103,14 @@ export async function retainedProjectAdditions(workspace:string,operation:string
    expected=matches[0]!.after;receipts.splice(matches[0]!.index,1);
   }
  }
+ const removed=Object.keys(initial).filter(path=>!Object.hasOwn(expected,path));
+ const checkRemoved=async()=>{
+  for(const path of removed){
+   try{await lstat(join(workspace,path));}catch(error){if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))continue;throw error;}
+   throw new Error('implementation_edit_receipt_changed');
+  }
+ };
+ await checkRemoved();
  const additions:string[]=[],diffs:string[]=[];
  for(const [path,entry] of Object.entries(expected)){
   if(Object.hasOwn(initial,path))continue;
@@ -123,5 +131,6 @@ export async function retainedProjectAdditions(workspace:string,operation:string
    if(!['ENOENT','ENOTDIR'].includes(error.code)&&!['noncanonical_repair_path','invalid_repair_file','repair_file_changed_during_read','implementation_edit_receipt_changed'].includes(error.message))throw error;
   }
  }
+ await checkRemoved();
  return {additions,diff:diffs.join('')};
 }

@@ -64,26 +64,55 @@ test('project-file replay preserves legal root keys and rejects invalid remove o
   assert.throws(()=>replayImplementationWrite({...initial},request,record,[],profile,scope),/implementation_edit_receipt_changed/);
  }
 });
-test('retained project move reports its unstaged target only while the applied receipt matches',async t=>{
- const f=await fixture(t),index=join(f.workspace,'.git/index'),originalIndex=await readFile(index);
- const source='clamp.mjs',destination='__proto__',initial=await tree(f.workspace,true),file=initial[source]!;
- const calls=join(f.operation,'calls');
+for(const scenario of ['single move','two moves','create then move'])test('retained project files replay '+scenario+' through the final applied host receipt',async t=>{
+ const root=await mkdtemp(join(await realpath(tmpdir()),'tongxu-retained-files-'));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const workspace=join(root,'workspace'),operation=join(root,'operation'),source='clamp.mjs',intermediate='intermediate.mjs',destination='__proto__';
+ await mkdir(workspace,{mode:0o700});
+ await git(workspace,['init','--template=','--initial-branch=main']);
+ await writeFile(join(workspace,source),'export const original=1;\n');
+ await git(workspace,['add','--',source]);
+ await git(workspace,['-c','user.name=fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgSign=false','commit','-m','test fixture']);
+ const index=join(workspace,'.git/index'),originalIndex=await readFile(index),initial=await tree(workspace,true),H0=await git(workspace,['rev-parse','HEAD']);
+ const calls=join(operation,'calls');
  await mkdir(calls,{recursive:true,mode:0o700});
- await writeFile(join(f.operation,'initial-tree.json'),JSON.stringify(initial));
- const request={tool:'tongxu_rename_file',callId:'fixture-move',arguments:{path:source,destination,expectedSha256:file.sha256}},receipt={request,status:'applied',beforeFile:file};
- const receiptPath=join(calls,request.callId+'.json'),original=JSON.stringify(receipt);
- await rename(join(f.workspace,source),join(f.workspace,destination));
- await writeFile(receiptPath,original);
- const H0=await git(f.workspace,['rev-parse','HEAD']);
- await writeFile(join(f.workspace,'.git','tongxu-managed.json'),JSON.stringify({kind:'owned-project-workspace',initialH:H0,initialTreeSha256:treeHash(initial)}));
- const read=()=>retainedProjectAdditions(f.workspace,f.operation,H0,{protectedPaths:[]});
+ await writeFile(join(workspace,'.git','tongxu-managed.json'),JSON.stringify({kind:'owned-project-workspace',initialH:H0,initialTreeSha256:treeHash(initial)}));
+ await writeFile(join(operation,'initial-tree.json'),JSON.stringify(initial));
+ const record=async(request:object,callId:string,details:object)=>{
+  await writeFile(join(calls,callId+'.json'),JSON.stringify({request:{...request,callId},status:'applied',response:{success:true},afterTreeSha256:treeHash(await tree(workspace,true)),...details}));
+ };
+ const move=async(path:string,target:string,callId:string)=>{
+  const beforeFile=(await tree(workspace,true))[path]!;
+  await rename(join(workspace,path),join(workspace,target));
+  await record({tool:'tongxu_rename_file',arguments:{path,destination:target,expectedSha256:beforeFile.sha256}},callId,{beforeFile});
+ };
+ // Reversed call IDs distinguish wire order from directory traversal order.
+ if(scenario==='two moves')await move(source,intermediate,'z-first');
+ if(scenario==='create then move'){
+  const text='export const value=1;\n';
+  await writeFile(join(workspace,intermediate),text,{mode:0o700});
+  await record({tool:'tongxu_create_file',arguments:{path:intermediate,text,mode:'100755'}},'z-first',{newFile:(await tree(workspace,true))[intermediate]});
+ }
+ await move(scenario==='single move'?source:intermediate,destination,'a-last');
+ const receiptPath=join(calls,'a-last.json'),original=await readFile(receiptPath,'utf8'),receipt=JSON.parse(original);
+ const read=()=>retainedProjectAdditions(workspace,operation,H0,{protectedPaths:[]});
  const retained=await read();
  assert.deepEqual(retained.additions,[destination]);
  assert.match(retained.diff,/\+\+\+ b\/__proto__/);
+ if(scenario==='create then move')assert.match(retained.diff,/new file mode 100755/);
  assert.deepEqual(await readFile(index),originalIndex);
  assert.equal(await readFile(receiptPath,'utf8'),original);
- await writeFile(receiptPath,JSON.stringify({...receipt,beforeFile:{...file,sha256:'f'.repeat(64)}}));
- assert.deepEqual(await read(),{additions:[],diff:''});
+ assert.equal(await git(workspace,['rev-parse','HEAD']),H0);
+ assert.deepEqual(await read(),retained);
+ for(const damage of [{beforeFile:{...receipt.beforeFile,sha256:'f'.repeat(64)}},{afterTreeSha256:'f'.repeat(64)}]){
+  await writeFile(receiptPath,JSON.stringify({...receipt,...damage}));
+  await assert.rejects(read,/implementation_edit_receipt_changed/);
+ }
+ await writeFile(receiptPath,original);
+ if(scenario!=='create then move'){
+  await writeFile(join(workspace,source),'restored after the recorded move\n');
+  await assert.rejects(read,/implementation_edit_receipt_changed/);
+ }
 });
 test('literal edits address the same original text, preserve bytes and interpret dollar strings literally',()=>{
  const before='\uFEFFα\r\nA😀B\r\nend',p=args([{oldText:'A',newText:'$&$1$`'},{oldText:'B',newText:''},{oldText:'end',newText:'尾'}]);

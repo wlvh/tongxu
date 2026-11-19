@@ -1,4 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
+import {renameSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -36,7 +37,7 @@ export class ProjectChat{
   private active=new Map<string,Active>();private accepting=true;private owner=randomUUID();
   // Only admissions made in this process can start automatically. The row,
   // not this map, is authoritative for whether anything has been sent.
-  private waiting=new Map<string,{scope:ProjectChatScope;preferences:AIPreferenceSnapshot|null}>();
+  private waiting=new Map<string,{scope:ProjectChatScope;preferences:AIPreferenceSnapshot|null;checking?:boolean}>();
   private constructor(private config:ProjectChatConfig,private db:DatabaseSync,private read:Reader,private verify:(scope:ProjectChatScope)=>Promise<void>,private supplements?:SupplementConsumer,private work?:ProjectWorkConsumer){}
   static async open(config:ProjectChatConfig,read:Reader,verify:(scope:ProjectChatScope)=>Promise<void>,supplements?:SupplementConsumer,work?:ProjectWorkConsumer){
     validateProjectChatConfig(config);if(!await exists(config.root))await privateDirectory(config.root,true);else await privateDirectory(config.root,false);
@@ -115,7 +116,7 @@ export class ProjectChat{
     for(const c of conversations)for(const row of this.rows(c.id))await this.recover(row);
     const busy=conversations.flatMap(c=>this.rows(c.id).filter(r=>activePhase(r.phase)).map(r=>({conversationId:c.id,requestId:r.id,status:r.phase})));
     const oldest=this.projectMessages(scope,'queued')[0];
-    const nextQuestion=oldest?{conversationId:oldest.conversation,requestId:oldest.id}:null;
+    const nextQuestion=oldest?{conversationId:oldest.conversation,requestId:oldest.id,checking:this.waiting.get(oldest.id)?.checking===true}:null;
     return {available:true,executionKind:this.config.executionKind,project:scope.repository,supplementTargets:this.supplements?await this.supplements.targets(scope):[],work:await this.workOptions(scope),busy,nextQuestion,conversations:conversations.map(c=>({id:c.id,title:c.title,createdAt:c.created_at})),newModelInputs:0};
   }
   async conversation(scope:ProjectChatScope,id:string){
@@ -159,24 +160,25 @@ export class ProjectChat{
     }
     return result;
   }
-  private start(scope:ProjectChatScope,id:string){
+  private start(scope:ProjectChatScope,id:string,fromQueue=false){
     const active:Active={promise:Promise.resolve(),stop:false};this.active.set(id,active);
-    active.promise=this.execute(scope,id,active).catch(()=>{/* The durable registration stays unresolved if recording the failure also fails. */}).finally(()=>{
-      this.active.delete(id);this.processWaiting(scope);
+    active.promise=this.execute(scope,id,active,fromQueue).catch(()=>{/* The durable registration stays unresolved if recording the failure also fails. */}).finally(()=>{
+      if(this.active.get(id)===active)this.active.delete(id);
+      this.processWaiting(scope);
     });
   }
   private processWaiting(project:ProjectChatIdentity){
     if(!this.accepting||this.projectMessages(project,'active').length)return;
     const next=this.projectMessages(project,'queued')[0];if(!next)return;
-    const waiting=this.waiting.get(next.id);if(!waiting)return;
+    const waiting=this.waiting.get(next.id);if(!waiting||waiting.checking)return;
     const {scope,preferences}=waiting;
-    this.waiting.delete(next.id);
+    waiting.checking=true;
     // Automatic continuation bypasses the HTTP project check. Verify before
     // claiming the row so a failed check leaves the original question queued.
     void this.verify(scope).then(()=>{
       const resume=()=>this.continueQuestion(scope,next.id);
       return preferences?withAIPreferences(preferences,resume):resume();
-    }).catch(()=>{/* The saved question remains available for explicit continuation. */});
+    }).catch(()=>{/* The saved question remains available for explicit continuation. */}).finally(()=>this.waiting.delete(next.id));
   }
   async continueQuestion(scope:ProjectChatScope,id:string){
     if(!this.accepting||!chatId(id))throw new Error('project_chat_id_invalid');
@@ -188,11 +190,11 @@ export class ProjectChat{
       if(!this.accepting)throw new Error('project_chat_closing');
       const current=this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row;
       if(current.phase!=='queued')return {requestId:id,status:current.phase as string,newModelInputs:0,duplicate:true};
-      if(this.projectMessages(scope,'active').length||this.projectMessages(scope,'queued')[0]?.id!==id)return {requestId:id,status:'queued',newModelInputs:0,duplicate:false};
-      this.db.prepare("UPDATE messages SET phase='registered',pid=?,owner=? WHERE id=? AND phase='queued'").run(process.pid,this.owner,id);
+      if(this.active.has(id)||this.projectMessages(scope,'active').length||this.projectMessages(scope,'queued')[0]?.id!==id)return {requestId:id,status:'queued',newModelInputs:0,duplicate:false};
+      this.db.prepare("UPDATE messages SET phase='registered',pid=?,owner=?,problem=NULL WHERE id=? AND phase='queued'").run(process.pid,this.owner,id);
       return {requestId:id,status:'registered',newModelInputs:null,duplicate:false};
     });
-    if(result.status==='registered'&&!result.duplicate){this.waiting.delete(id);this.start(scope,id);}
+    if(result.status==='registered'&&!result.duplicate){this.waiting.delete(id);this.start(scope,id,true);}
     return result;
   }
   private workRow(id:string){return this.db.prepare('SELECT * FROM task_work_requests WHERE id=?').get(id) as Row|undefined;}
@@ -343,10 +345,11 @@ export class ProjectChat{
     }
     return {newModelInputs:null,originalRequestsRetained:true};
   }
-  private async execute(scope:ProjectChatScope,id:string,active:Active){
+  private async execute(scope:ProjectChatScope,id:string,active:Active,fromQueue:boolean){
     const row=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row,directory=this.directory(id),native=join(directory,'native');
     const waitLimitMs=this.config.timeoutMs;let turnStartedAt:number|null=null;
     const timeBudget=()=>{const elapsedMs=turnStartedAt===null?null:Math.max(0,Math.floor(performance.now()-turnStartedAt));return {limitMs:waitLimitMs,elapsedMs,remainingMs:elapsedMs===null?null:Math.max(0,waitLimitMs-elapsedMs)};};
+    let firstInputPreparing=false,preInputOutage:Error|undefined;
     try{
       const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit},timeBudget:timeBudget()},initialId=hash(canonical(initial));
       const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];
@@ -359,22 +362,30 @@ export class ProjectChat{
       if(Buffer.byteLength(canonical(input))>512*1024)throw new Error('project_chat_context_limit');
       const aiSelection=currentAIChoice('secretary');if(aiSelection&&(aiSelection.tool!=='codex'||aiSelection.project.account!==scope.account.id||aiSelection.project.repository!==scope.repository.id||aiSelection.project.nodeId!==scope.repository.nodeId))throw new Error('ai_role_tools_not_supported');
       const runtimeConfig=aiSelection?{...this.config,codexExecutable:aiSelection.executable}:this.config;
-
-      let bytes=0,calls=0;const check=async()=>{if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');await this.verify(scope);if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');};
+      const checkStopped=()=>{if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');};
+      const check=async()=>{
+        checkStopped();
+        try{await this.verify(scope);}catch(e){
+          if(!firstInputPreparing&&e instanceof Error&&['github_connection_unavailable','github_service_unavailable'].includes(e.message))preInputOutage=e;
+          throw e;
+        }
+        checkStopped();
+      };
+      let bytes=0,calls=0;
       const gate={check,call:async(p:{tool:string;arguments:Row;callId:string},before?:()=>void)=>{
         await check();before?.();if(++calls>projectChatToolLimit||!projectChatToolsFor(!!work).some(t=>t.name===p.tool))throw new Error('project_chat_tool_limit');
         const data=p.tool==='tongxu_coordinate_selected_work'?(exactKeys(p.arguments,[])?await this.coordinateWork(scope,id,()=>{before?.();if(active.stop||active.timedOut||!this.accepting)throw new Error('project_chat_stopped');}):(()=>{throw new Error('project_work_empty_arguments_required');})()):await this.read(scope,p.tool,p.arguments),observation={tool:p.tool,arguments:p.arguments,observedAt:now(),data,toolBudget:{limit:projectChatToolLimit,used:calls,remaining:projectChatToolLimit-calls},timeBudget:timeBudget()},raw=canonical(observation);bytes+=Buffer.byteLength(raw);
         if(Buffer.byteLength(raw)>128*1024||bytes>512*1024)throw new Error('project_chat_material_limit');await check();before?.();const observationId=hash(raw);observations.push({id:observationId,tool:p.tool,observation});save(join(directory,'observations.json'),observations);
         return {success:true,contentItems:[{type:'inputText',text:JSON.stringify({observationId,...observation})}]};
       }};
-      await check();
       await privateDirectory(directory,true);
       save(join(directory,'observations.json'),observations);
       save(join(directory,'request.json'),{requestId:id,conversationId:row.conversation,candidate,input,system:prompt.system,config:runtimeConfig,...(aiSelection?{aiSelection}:{}),historyTransfer:'complete_saved_history_new_native_context'});
+      await check();
       // Account/read and ordinary rate-limit observations are captured by the
       // native executor immediately before input. No stale evidence is dated anew.
       const allowedStop=(request:{action:string;id:string})=>request.action==='interrupt'&&(active.stop&&request.id==='stop-'+id||active.timedOut&&request.id==='timeout-'+id);
-      active.session=await BoundedCodexSession.start({executable:runtimeConfig.codexExecutable,...(aiSelection?{aiModel:modelChoice(aiSelection)}:{}),directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,...(work?{projectSecretaryWork:true as const}:{}),system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:work?'Project work secretary; coordinate only this saved user-selected approved work; new native context':'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:waitLimitMs,executionKind:this.config.executionKind,beforeTurn:check,afterTurnStarted:()=>{turnStartedAt=performance.now();},gate,control:{beforeControl:async request=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');send();}}});
+      active.session=await BoundedCodexSession.start({executable:runtimeConfig.codexExecutable,...(aiSelection?{aiModel:modelChoice(aiSelection)}:{}),directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,...(work?{projectSecretaryWork:true as const}:{}),system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:work?'Project work secretary; coordinate only this saved user-selected approved work; new native context':'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:waitLimitMs,executionKind:this.config.executionKind,beforeTurn:check,beforeSendSync:()=>{checkStopped();firstInputPreparing=true;},afterTurnStarted:()=>{turnStartedAt=performance.now();},gate,control:{beforeControl:async request=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');send();}}});
       await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,projectSecretarySchema);await this.closeNative(active);await this.complete(id);
     }catch(e){
       let cleanupRecordProblem:string|null=null;
@@ -384,17 +395,30 @@ export class ProjectChat{
         catch{cleanupRecordProblem='timeout_record_unavailable';}
         finally{await this.stopNative(id,active,'timeout').catch(()=>{});}
       }
-      await this.closeNative(active).catch(()=>{});try{await this.complete(id);return;}catch{}
-      const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
-      const unstarted=rowPhase==='registered'&&!await exists(native);let ended=unstarted;
-      if(unstarted&&!active.stop&&this.accepting&&reason(e)==='github_connection_unavailable'&&!await exists(directory)){
-        this.db.prepare("UPDATE messages SET phase='queued',pid=NULL,owner=NULL,problem=? WHERE id=? AND phase='registered'").run(reason(e),id);
-        return;
-      }
+      const closed=await this.closeNative(active).then(()=>true,()=>false);try{await this.complete(id);return;}catch{}
+      const current=this.db.prepare('SELECT phase,owner FROM messages WHERE id=?').get(id) as Row;
+      const unstarted=current.phase==='registered'&&!await exists(native);let ended=unstarted;
       if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
+      const hasDirectory=await exists(directory);
+      const outcome=(status:string)=>({status,nativeProcessState:unstarted?'not_started':ended?'ended':'unknown',invocationOutcome:active.stop?'stop_requested':active.timedOut?'timeout':'error',reason:reason(e),...(cleanupRecordProblem?{cleanupRecordProblem}:{}),automaticResend:false});
+      if(fromQueue&&preInputOutage&&e===preInputOutage&&closed&&ended&&
+        current.owner===this.owner&&['registered','running'].includes(current.phase)&&
+        !await exists(join(native,'turn-1-intent.json'))&&!active.stop&&this.accepting){
+        let preserved=!hasDirectory;
+        if(hasDirectory)try{
+          // Preserve the unsent attempt before making the same request eligible again.
+          save(join(directory,'outcome.json'),outcome('queued'));
+          renameSync(directory,directory+'.unstarted-'+randomUUID());
+          preserved=true;
+        }catch{/* Keep the original capture and settle as a failure if it cannot be preserved. */}
+        if(preserved){
+          this.db.prepare("UPDATE messages SET phase='queued',pid=NULL,owner=NULL,problem=? WHERE id=? AND owner=? AND phase IN ('registered','running')").run(reason(e),id,this.owner);
+          return;
+        }
+      }
       const phase=!ended?'unknown':active.stop?'interrupted':'failed';
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(phase,reason(e),now(),id);
-      if(await exists(directory))save(join(directory,'outcome.json'),{status:phase,nativeProcessState:unstarted?'not_started':ended?'ended':'unknown',invocationOutcome:active.stop?'stop_requested':active.timedOut?'timeout':'error',reason:reason(e),...(cleanupRecordProblem?{cleanupRecordProblem}:{}),automaticResend:false});
+      if(hasDirectory)save(join(directory,'outcome.json'),outcome(phase));
     }
   }
   private async verified(id:string){
@@ -427,15 +451,17 @@ export class ProjectChat{
     if(!chatId(id)||!Number.isSafeInteger(accountId)||!Number.isSafeInteger(repositoryId))throw new Error('project_chat_id_invalid');
     const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository,conversations.node_id FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
     if(!row||row.account!==accountId||row.repository!==repositoryId)throw new Error('project_chat_outside_project');
-    if(withdrawQueued&&row.phase!=='queued'){
-      if(row.problem==='project_chat_queued_cancelled')return {requestId:id,stopRequested:true,stopRecordSaved:true,newModelInputs:0};
-      throw new Error('project_chat_withdrawal_state_changed');
-    }
-    if(row.phase==='queued'){
+    if(withdrawQueued||row.phase==='queued'){
       const cancelled=this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem='project_chat_queued_cancelled' WHERE id=? AND phase='queued'").run(now(),id).changes===1;
-      if(withdrawQueued&&!cancelled)throw new Error('project_chat_withdrawal_state_changed');
-      this.waiting.delete(id);
-      if(cancelled)this.processWaiting({account:{id:accountId},repository:{id:repositoryId,nodeId:row.node_id}});
+      if(!cancelled&&withdrawQueued){
+        const current=this.db.prepare('SELECT phase,problem FROM messages WHERE id=?').get(id) as Row;
+        if(current.phase==='interrupted'&&current.problem==='project_chat_queued_cancelled')return {requestId:id,stopRequested:true,stopRecordSaved:true,newModelInputs:0};
+        throw new Error('project_chat_withdrawal_state_changed');
+      }
+      if(cancelled){
+        this.waiting.delete(id);
+        this.processWaiting({account:{id:accountId},repository:{id:repositoryId,nodeId:row.node_id}});
+      }
       return {requestId:id,stopRequested:cancelled,stopRecordSaved:cancelled,newModelInputs:0};
     }
     const active=this.active.get(id);if(!active){await this.recover(row);return {requestId:id,stopRequested:false,newModelInputs:0};}

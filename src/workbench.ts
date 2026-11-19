@@ -334,8 +334,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname==='/api/project-secretary/stop'&&req.method==='POST'){
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'project_chat_stop_invalid'});return;}chunks.push(Buffer.from(chunk));}
-        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId',...(body?.withdrawQueued===true?['withdrawQueued']:[])]))throw new Error('project_chat_stop_invalid');
-        const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId,body.withdrawQueued===true));return;
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
+        const withdrawQueued=body?.withdrawQueued===true;
+        if(!exactKeys(body,withdrawQueued?['requestId','withdrawQueued']:['requestId']))throw new Error('project_chat_stop_invalid');
+        const chat=await openProjectChat();
+        try{json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId,withdrawQueued));}
+        catch(e){if(!(e instanceof Error)||e.message!=='project_chat_withdrawal_state_changed')throw e;json(res,409,{error:e.message});}
+        return;
       }
       const formalStop=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/stop$/.exec(url.pathname);
       if(formalStop&&req.method==='POST'){
@@ -458,7 +463,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
         if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
         if(url.pathname.endsWith('/continue-work')||url.pathname.endsWith('/cancel-work')||url.pathname.endsWith('/stop-work')){if(!exactKeys(body,['requestId']))throw new Error('project_work_request_invalid');json(res,200,url.pathname.endsWith('/cancel-work')?await chat.cancelWork(selection,body.requestId):url.pathname.endsWith('/stop-work')?await chat.stopWork(selection,body.requestId):await withAI(()=>chat.coordinateWork(selection,body.requestId)));return;}
-        if(url.pathname.endsWith('/ask'))json(res,202,await withAI(()=>chat.begin(selection,body)));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
+        json(res,202,await withAI(()=>chat.begin(selection,body)));return;
       }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);

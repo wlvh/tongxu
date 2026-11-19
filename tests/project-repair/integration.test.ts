@@ -703,15 +703,17 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual(sharedCold.map((row:any)=>[row.id,row.originalRequestId,row.cancelled]),linked.map((row:any)=>[row.id,shared.requestId,true]));
      const queue=await QueueStore.open(cb.store);
      const resultState=queue.issueImplementations().state(cb.id,finished.draft.requestId);queue.close();
-     const stdoutPath=join(resultState.plan.operationRoot,'tests','tool-'+resultState.result.projectValidationCallId,'tool-0','stdout');
-     const stdout=await readFile(stdoutPath);
-     try{
-       await rm(stdoutPath);
-       const uncertain=await detail(b);
-       assert.equal(uncertain.draft.delivery.H,finished.draft.delivery.H);
-       assert.equal(uncertain.execution.reports.length,0);
-       assert.deepEqual(uncertain.execution.reportGaps,[{requestId:finished.draft.requestId,H1:finished.draft.delivery.H,reason:'implementation_validation_capture_changed'}]);
-     }finally{await writeFile(stdoutPath,stdout);}
+     const tested=join(resultState.plan.operationRoot,'tests','tool-'+resultState.result.projectValidationCallId);
+     for(const file of ['runtime/probe/execution.json','tool-0/execution.json','tool-0/stdout','tool-0/stderr']){
+       const path=join(tested,file),original=await readFile(path);
+       try{
+         await rm(path);
+         const uncertain=await detail(b);
+         assert.equal(uncertain.draft.delivery.H,finished.draft.delivery.H,file);
+         assert.equal(uncertain.execution.reports.length,0,file);
+         assert.deepEqual(uncertain.execution.reportGaps,[{requestId:finished.draft.requestId,H1:finished.draft.delivery.H,reason:'implementation_validation_capture_changed'}],file);
+       }finally{await writeFile(path,original);}
+     }
 
      const originalWire=await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8');
      const reviews=await additionalFixture(t,'kimi');

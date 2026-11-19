@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,realpath,writeFile,readFile,rm,appendFile} from 'node:fs/promises';
+import {mkdtemp,realpath,writeFile,readFile,readdir,rm,appendFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -56,9 +56,16 @@ if(m.method==='turn/interrupt'){
 }
 emit({id:m.id,result});});
 `;
-  await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0,projectChecksBeforeOffline=Infinity;
+  await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0,projectReadsUntilOffline=Infinity;
+  let pauseProjectRead:(()=>Promise<void>)|undefined;
+  const pauseNextProjectRead=()=>{
+    let entered!:()=>void,release!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),paused=new Promise<void>(resolve=>{release=resolve;});
+    pauseProjectRead=async()=>{entered();await paused;};
+    return {started,release};
+  };
   const repo=(id:number)=>({id,nodeId:'R_'+id,full_name:'fixture/project-'+id,description:'Explicit project fixture',private:true,archived:false,defaultBranchRef:id===2?null:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:'2026-10-30T00:00:00Z'});
-  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(offline||op==='project'&&projectChecksBeforeOffline--===0){offline=true;offlineChecks++;throw new Error('github_connection_unavailable');}
+  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(op==='project'&&pauseProjectRead){const pause=pauseProjectRead;pauseProjectRead=undefined;await pause();}if(op==='project'&&--projectReadsUntilOffline===0)offline=true;if(offline){offlineChecks++;throw new Error('github_connection_unavailable');}
     const selected=repo(v.id==='R_2'?2:1),pull=op==='pull_comments',commentId=pull?3:v.before?1:2;
     const comments={number:v.number,comments:{totalCount:pull?1:2,edges:[{cursor:'comment-'+commentId,node:{databaseId:commentId,author:pull?null:{login:'fixture'},createdAt:'2026-10-30T00:00:00Z',updatedAt:'2026-10-31T00:00:00Z',url:'https://github.com/'+selected.full_name+'/'+(pull?'pull':'issues')+'/'+v.number+'#issuecomment-'+commentId,body:pull?'PR ordinary conversation':'Issue comment '+commentId}}],pageInfo:{hasPreviousPage:!pull&&!v.before,startCursor:'comment-'+commentId}}};
     return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{id:account,login:'fixture',projects:{nodes:[repo(1),repo(2)],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account:{id:account,login:'fixture'},repository:{...selected,...(op==='issue_comments'||op==='pull_comments'?{item:comments}:{})}}})};}});
@@ -74,7 +81,7 @@ emit({id:m.id,result});});
     }
     assert.fail('the fixture did not receive the expected model input');
   };
-  return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineChecks:()=>offlineChecks,offlineAfterProjectChecks:(checks:number)=>{projectChecksBeforeOffline=checks;},setAccount:(v:number)=>{account=v;}};
+  return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineOnProjectRead:(number:number)=>{projectReadsUntilOffline=number;},offlineChecks:()=>offlineChecks,pauseNextProjectRead,setAccount:(v:number)=>{account=v;}};
 }
 const question=(text='当前项目有哪些待办？',parent:string|null=null,conversationId=randomUUID())=>({requestId:randomUUID(),conversationId,parent,question:text});
 test('normal project secretary reads both ordinary comment kinds, pages and verified history without opening old queues',async t=>{
@@ -119,33 +126,101 @@ test('stop uses the owned turn, remains available without GitHub, and preserves 
   const f=await fixture(t,'hold'),q=question();await f.post('/api/project-secretary/ask',q);for(let i=0;i<120;i++){if((await f.logs()).some(x=>x.kind==='input'))break;await new Promise(r=>setTimeout(r,25));}
   f.setOffline(true);
   const withdrawal=await f.post('/api/project-secretary/stop',{requestId:q.requestId,withdrawQueued:true});
-  assert.deepEqual([withdrawal.status,withdrawal.data.error],[503,'project_chat_withdrawal_state_changed']);
+  assert.deepEqual([withdrawal.status,withdrawal.data.error],[409,'project_chat_withdrawal_state_changed']);
   assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,0);
   const stopped=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stopped.status,200);f.setOffline(false);
   const state=await f.wait(q.conversationId,m=>m[0]?.status==='interrupted');assert.equal(state.messages[0].answer,null);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
 });
-test('a GitHub outage after claiming a queued question preserves its ID for explicit continuation',async t=>{
+test('a queued withdrawal that loses to automatic claim leaves the running native turn alone',async t=>{
+  const f=await fixture(t,'hold'),first=question('正在处理的第一条'),next=question('后台即将领取的第二条',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  await f.waitForInput(next.question);
+
+  f.setOffline(true);
+  const stale=await f.post('/api/project-secretary/stop',{requestId:next.requestId,withdrawQueued:true});
+  assert.deepEqual([stale.status,stale.data.error],[409,'project_chat_withdrawal_state_changed']);
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
+  await assert.rejects(readFile(join(f.root,'chats',next.requestId,'stop-request.json')),{code:'ENOENT'});
+  f.setOffline(false);
+  const original=await f.wait(first.conversationId,m=>m[1]?.status==='running');
+  assert.equal(original.messages[1].id,next.requestId);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:next.requestId})).status,200);
+  await f.wait(first.conversationId,m=>m[1]?.status==='interrupted');
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,2);
+});
+for(const {check,nativeState,cold} of [
+  {check:2,nativeState:'not_started',cold:true},
+  {check:5,nativeState:'ended',cold:false},
+])test('a queued question can continue with its original ID after a verified pre-input outage ('+nativeState+')',async t=>{
   const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有开发进度');
   assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
   await f.waitForInput(first.question);
   const next=question('继续核对这个项目',first.requestId,first.conversationId);
   assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
-  f.offlineAfterProjectChecks(1);
+  // Checks after the stop are auto-claim, pre-launch, after initialization,
+  // native tool gate, and the native check just before the first input.
+  f.offlineOnProjectRead(check);
   assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
-  const database=new DatabaseSync(join(f.root,'chats','conversations.sqlite'),{readOnly:true});
+  const chats=join(f.root,'chats'),db=new DatabaseSync(join(chats,'conversations.sqlite'),{readOnly:true});
   try{
-    const pending=database.prepare('SELECT id, phase, problem FROM messages WHERE id=?');
-    for(let i=0;i<150&&!pending.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
-    assert.deepEqual({...pending.get(next.requestId)},{id:next.requestId,phase:'queued',problem:'github_connection_unavailable'});
-  }finally{database.close();}
-  assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
-  await assert.rejects(readFile(join(f.root,'chats',next.requestId,'request.json')), {code:'ENOENT'});
+    const row=db.prepare('SELECT phase,problem,owner,pid FROM messages WHERE id=?');
+    for(let i=0;i<150&&!row.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual({...row.get(next.requestId)},{phase:'queued',problem:'github_connection_unavailable',owner:null,pid:null});
+  }finally{db.close();}
+  const attempts=(await readdir(chats)).filter(name=>name.startsWith(next.requestId+'.unstarted-'));
+  assert.equal(attempts.length,1);
+  const attempt=join(chats,attempts[0]!);
+  const proof=JSON.parse(await readFile(join(attempt,'outcome.json'),'utf8'));
+  assert.deepEqual([proof.status,proof.nativeProcessState,proof.automaticResend],['queued',nativeState,false]);
+  if(nativeState==='ended'){
+    const wire=(await readFile(join(attempt,'native','stdin.ndjson'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    assert.ok(wire.some(entry=>entry.method==='thread/start'));
+    assert.ok(!wire.some(entry=>entry.method==='turn/start'));
+  }
+  assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question]);
+
   f.setOffline(false);
-  const restored=await f.get('/api/project-secretary/conversations/'+first.conversationId);
-  assert.equal(restored.data.messages[1].id,next.requestId);
-  assert.equal(restored.data.messages[1].status,'queued');
-  assert.equal((await f.post('/api/project-secretary/continue-question',{requestId:next.requestId})).status,202);
-  await f.wait(first.conversationId,m=>m[1]?.status==='completed');
+  if(cold)await f.close();
+  const resumed=cold?await f.launch():f,conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const saved=(await resumed.get(conversation)).data.messages[1];
+    assert.deepEqual([saved.id,saved.parent,saved.question,saved.status],[next.requestId,first.requestId,next.question,'queued']);
+    const duplicate=await resumed.post('/api/project-secretary/ask',next);
+    assert.deepEqual([duplicate.data.duplicate,duplicate.data.newModelInputs],[true,0]);
+    const results=await Promise.all(Array.from({length:2},()=>resumed.post('/api/project-secretary/continue-question',{requestId:next.requestId})));
+    assert.equal(results.filter(r=>r.data.newModelInputs===null).length,1);
+    await f.waitForInput(next.question);
+    for(let i=0;i<120;i++){
+      if((await resumed.get(conversation)).data.messages[1]?.status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.equal((await resumed.get(conversation)).data.messages[1].status,'completed');
+    assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
+    assert.equal(await readFile(join(attempt,'outcome.json'),'utf8').then(JSON.parse).then(v=>v.nativeProcessState),nativeState);
+  }finally{if(cold)await resumed.close();}
+});
+test('a project outage after a queued question sends its first input does not requeue it',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const next=question('发送后失联的原话',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  // The sixth project check belongs to the first tool call, after turn/start.
+  f.offlineOnProjectRead(6);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  await f.waitForInput(next.question);
+  const db=new DatabaseSync(join(f.root,'chats','conversations.sqlite'),{readOnly:true});
+  try{
+    const row=db.prepare('SELECT phase,problem FROM messages WHERE id=?');
+    for(let i=0;i<150&&!row.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual({...row.get(next.requestId)},{phase:'failed',problem:'github_connection_unavailable'});
+  }finally{db.close();}
+  f.setOffline(false);
+  const original=await f.post('/api/project-secretary/continue-question',{requestId:next.requestId});
+  assert.deepEqual([original.data.status,original.data.duplicate,original.data.newModelInputs],['failed',true,0]);
   assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
 });
 test('busy intake persists the exact words, then sends original pending questions once and in order',async t=>{
@@ -245,7 +320,10 @@ test('cold reopening keeps pending intake readable; explicit continuation or can
     assert.deepEqual(before.data.messages.slice(1).map((m:any)=>[m.question,m.status]),[[cancelled.question,'queued'],[waiting.question,'queued']]);
     assert.equal((await reopened.post('/api/project-secretary/ask',waiting)).data.duplicate,true);
     assert.equal((await reopened.post('/api/project-secretary/continue-question',{requestId:waiting.requestId})).data.status,'queued');
-    assert.equal((await reopened.post('/api/project-secretary/stop',{requestId:cancelled.requestId})).data.stopRequested,true);
+    for(let repeat=0;repeat<2;repeat++){
+      const withdrawal=await reopened.post('/api/project-secretary/stop',{requestId:cancelled.requestId,withdrawQueued:true});
+      assert.deepEqual([withdrawal.status,withdrawal.data.stopRequested,withdrawal.data.newModelInputs],[200,true,0]);
+    }
     assert.equal((await f.logs()).filter(r=>r.kind==='input').length,1);
     const actions=await Promise.all(Array.from({length:2},()=>reopened.post('/api/project-secretary/continue-question',{requestId:waiting.requestId})));
     assert.equal(actions.filter(r=>r.data.newModelInputs===null).length,1);
@@ -285,9 +363,19 @@ for(const offline of [false,true])test(offline?'withdrawing a cold queue head of
     assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
 
     f.setOffline(offline);
-    const receipt=await reopened.post('/api/project-secretary/stop',{requestId:old.requestId});
-    assert.equal(receipt.status,200);
-    assert.equal(receipt.data.stopRecordSaved,true);
+    const preflight=offline?null:f.pauseNextProjectRead();
+    try{
+      const receipt=await reopened.post('/api/project-secretary/stop',{requestId:old.requestId,withdrawQueued:true});
+      assert.equal(receipt.status,200);
+      assert.equal(receipt.data.stopRecordSaved,true);
+      if(preflight){
+        await preflight.started;
+        const duringClaim=(await reopened.get('/api/project-secretary')).data;
+        assert.deepEqual(duringClaim.busy,[]);
+        assert.deepEqual(duringClaim.nextQuestion,{conversationId:first.conversationId,requestId:next.requestId,checking:true});
+        assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
+      }
+    }finally{preflight?.release();}
     if(offline){
       for(let n=0;n<120&&!f.offlineChecks();n++)await new Promise(r=>setTimeout(r,25));
       assert.ok(f.offlineChecks(),'automatic continuation reached the offline GitHub check');
@@ -296,6 +384,7 @@ for(const offline of [false,true])test(offline?'withdrawing a cold queue head of
       f.setOffline(false);
       const queued=(await reopened.get(conversation)).data.messages.slice(2);
       assert.deepEqual(queued.map((m:any)=>[m.id,m.question,m.status]),[next,later].map(q=>[q.requestId,q.question,'queued']));
+      assert.equal((await reopened.get('/api/project-secretary')).data.nextQuestion.checking,false);
       const actions=await Promise.all(Array.from({length:2},()=>reopened.post('/api/project-secretary/continue-question',{requestId:next.requestId})));
       assert.ok(actions.every(r=>r.status===202&&r.data.requestId===next.requestId));
       assert.equal(actions.filter(r=>r.data.newModelInputs===null).length,1);
