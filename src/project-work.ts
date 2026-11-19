@@ -142,6 +142,7 @@ export class ProjectWork{
     return join(this.config.root,'works',d.id,'issue-review-'+hash(canonical([d.issue.bodySha256,head])));
   }
   private async issueReviewState(scope:ProjectChatScope,d:ProjectWorkDraft){
+    if(!d.issueReviewRequired)return null;
     const material=this.issueReviewMaterial(scope,d);if(!material)return null;
     const path=this.issueReviewPath(d);
     return this.issueReviews.has(path)?{state:'running' as const,issueBodySha256:d.issue.bodySha256}:readProjectIssueReview(path,material);
@@ -177,7 +178,7 @@ export class ProjectWork{
   }
   private async requireIssueReview(scope:ProjectChatScope,d:ProjectWorkDraft){
     const review=await this.issueReviewState(scope,d);
-    if((d.issueReviewRequired||review)&&(review?.state!=='returned'||!review.approved))throw new Error('project_issue_review_approval_pending');
+    if(d.issueReviewRequired&&(review?.state!=='returned'||!review.approved))throw new Error('project_issue_review_approval_pending');
   }
   async settings(scope:ProjectChatScope,body:unknown){
     if(!exactKeys(body,['repositoryPath'])||typeof (body as Row).repositoryPath!=='string'||(body as Row).repositoryPath.length>4096||(body as Row).repositoryPath.includes('\0'))throw new Error('project_work_settings_invalid');await this.verify(scope);

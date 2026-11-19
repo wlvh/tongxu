@@ -59,6 +59,8 @@ export const deliveryExplanationSchema={
   type:'object',properties:{candidateH:{type:'string'},report:{type:'string'}},
   required:['candidateH','report'],additionalProperties:false
 };
+export const deliveryExplanationOutputSchema=(candidateH:string)=>({...deliveryExplanationSchema,
+  properties:{...deliveryExplanationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
 export const reviewSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, verdict: { type: 'string', enum: ['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'] }, report: { type: 'string' }, findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, priority: { type: 'integer', enum: [0, 1, 2] }, description: { type: 'string' } }, required: ['id', 'priority', 'description'], additionalProperties: false } } }, required: ['candidateH', 'verdict', 'report', 'findings'], additionalProperties: false
 };
@@ -107,7 +109,7 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
       typeof report.title!=='string'||!report.title.trim()||report.title.length>4096||typeof report.report!=='string'||!report.report.trim())throw new Error('project_issue_draft_invalid');
     return;
   }
-  if(isDeepStrictEqual(schema,deliveryExplanationSchema)){
+  if(isDeepStrictEqual(schema,deliveryExplanationSchema)||isDeepStrictEqual(schema,deliveryExplanationOutputSchema(candidate.H))){
     if(!report||Object.keys(report).sort().join()!=='candidateH,report'||report.candidateH!==candidate.H||typeof report.report!=='string'||!report.report.trim())throw new Error('invalid_delivery_explanation');
     return;
   }
