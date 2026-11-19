@@ -17,7 +17,7 @@ import { regular,exists,processState } from './repair-workspace.js';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { inspectRolePrompt,requireIssuedRolePrompt,type RolePrompt } from './role-prompts.js';
-import {messageControlInput,messageControlDigest,messageReplySchema,type MessageParticipant,type MessagePlan,type MessageNativeControl,type MessageNativeResume} from './message-contract.js';
+import {additionalMessageRole,messageControlInput,messageControlDigest,messageReplySchema,type MessageParticipant,type MessagePlan,type MessageNativeControl,type MessageNativeResume} from './message-contract.js';
 import {BoundedCodexSession,readOwnedCodexSession,type NativeOptions} from './repair-native.js';
 import type {NativeControlPolicy,NativeControlRequest} from './native-control-contract.js';
 type Row=Record<string,any>;
@@ -290,7 +290,7 @@ async function inspectUnstartedOwnedMessage(o:RuntimeSpec){
 class ACPMessageDialog extends ReadonlyDialog{
   private constructor(private spec:RuntimeSpec,private session:ExtraCliSession,route:Row){super(spec,session.rpc,route);}
   static async openExtra(o:RuntimeSpec){
-    if(!isAdditionalProgram(o.participant.tool)||o.nativeControls||o.nativeResume||!o.participant.aiModel||!['issue_owner','acceptance'].includes(o.participant.role))throw Error('additional_cli_message_profile_required');
+    if(!isAdditionalProgram(o.participant.tool)||o.nativeControls||o.nativeResume||!o.participant.aiModel||!additionalMessageRole(o.participant.tool,o.participant.role))throw Error('additional_cli_message_profile_required');
     requireIssuedRolePrompt(o.assembly,o.participant.role);await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
     const session=await ExtraCliSession.open(o.participant.tool,o.participant.executable,o.directory,o.assembly.system+'\n'+messagePolicy,o.executionKind==='fixture',true);
     try{

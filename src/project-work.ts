@@ -1,4 +1,5 @@
 import {captureImplementationAI} from './implementation-ai.js';
+import {readReviewedSupplement,type SupplementReviewInput} from './project-supplement-review.js';
 import {selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
@@ -40,6 +41,7 @@ export class ProjectWork{
     c.verification=parseDockerConfig(c.verification);workAuthorityProfile(c.owner,{account:{id:c.owner.ownerId,login:'configuration'},repository:{id:1,nodeId:'configuration',fullName:'local/configuration'}} as ProjectChatScope,1);
     return new ProjectWork(c,await ProjectWorkStore.open(c.root),readIssue,verify,controls);
   }
+  supplementReview(input:SupplementReviewInput,executionKind:string){return readReviewedSupplement(this.config.root,input,executionKind);}
   private directory(d:ProjectWorkDraft){return join(this.config.root,'works',d.id,'version-'+d.version);}
   private activeDevelopment(scope:ProjectChatScope){
     const grant=this.store.development(scope);
@@ -179,7 +181,7 @@ export class ProjectWork{
       await applyWorkOwnerProposal(store,profile,proposal,requestId!,join(this.directory(d),'validation-material-owner'),beforePost);await controls.recordDefinitionConsent(d.source,d.requestId,payload.proposalSha256);
     }return this.correctValidation(scope,id);
   }
-  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stop(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
+  async stop(scope:ProjectChatScope,id:string){let d=this.store.get(scope,id);d=this.save(scope,{...d,stopRequested:true,problem:'project_work_stopped'},'stop_requested','Stop original work and all later actions; preserve original records');const job=this.active.get(id);if(job){job.stop=true;await job.session?.close();}d=this.store.get(scope,id);if(d.source&&d.catalog)await(await this.controls(scope)).stopWorkFamily(d.source,d.requestId);return {id,stopRequested:true,originalRetained:true};}
   async stopSelected(account:number,repository:number,id:string){return this.stop(this.store.cleanupScope(account,repository,id),id);}
   private async initializeQueue(directory:string,issue:number,scope:ProjectChatScope,seats:number){
     await mkdir(directory,{recursive:true,mode:0o700});

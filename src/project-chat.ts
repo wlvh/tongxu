@@ -23,7 +23,7 @@ const reason=(e:unknown)=>e instanceof Error&&/^[a-z0-9_:,-]+$/.test(e.message)?
 const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){return e.code!=='ESRCH';}};
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
-export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
+export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
 export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
@@ -224,7 +224,7 @@ export class ProjectChat{
   }
   private supplementRows(conversation:string){return this.db.prepare('SELECT * FROM task_supplements WHERE conversation=? ORDER BY rowid').all(conversation) as Row[];}
   private async supplementState(scope:ProjectChatScope,conversation:string){
-    return Promise.all(this.supplementRows(conversation).map(async r=>{let original;try{original=this.supplements?await this.supplements.read(scope,JSON.parse(r.target),r.compiled,r.text):{reason:'project_supplement_consumer_unavailable'};}catch(e){original={reason:reason(e)};}return {id:r.id,text:r.text,target:JSON.parse(r.target),createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};}));
+    return Promise.all(this.supplementRows(conversation).map(async r=>{let original;try{original=this.supplements?await this.supplements.read(scope,JSON.parse(r.target),r.compiled,r.text,r.id):{reason:'project_supplement_consumer_unavailable'};}catch(e){original={reason:reason(e)};}return {id:r.id,text:r.text,target:JSON.parse(r.target),createdAt:r.created_at,cancelled:!!r.cancelled,compiledRequest:r.compiled,original,received:true,receivedIsNotDelivered:true};}));
   }
   async receiveSupplement(scope:ProjectChatScope,body:unknown){
     if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');const b=body as Row;
@@ -250,9 +250,13 @@ export class ProjectChat{
   async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
     if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
     const rows=this.db.prepare('SELECT task_supplements.* FROM task_supplements JOIN conversations ON conversations.id=task_supplements.conversation WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=? AND target=? ORDER BY task_supplements.rowid').all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
-    for(const row of rows){if(row.cancelled)continue;const state=await this.supplements.read(scope,target,row.compiled,row.text);if(row.compiled){if(!state.successful)break;continue;}if(!state.ready)break;
-      const compiled='supplement-'+row.id;
-      this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
+    for(const row of rows){
+      if(row.cancelled)continue;
+      const state=await this.supplements.read(scope,target,row.compiled,row.text,row.id);
+      if(row.compiled&&state.successful)continue;
+      if(row.compiled?!state.resumable:!state.ready)break;
+      const compiled=row.compiled??'supplement-'+row.id;
+      if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
       const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};
       await this.supplements.work(scope,target,compiled,row.text,beforeRegistration);break;
     }

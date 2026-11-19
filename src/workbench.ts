@@ -233,7 +233,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       ]);
       for(const result of results)if(result.status==='rejected')throw result.reason;
     });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
-    const controls=await selected;if(p.projectWork){const work=await openProjectWork();await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
+    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind));await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
   const openProjectWork=()=>{
@@ -269,7 +269,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject,p.issueImplementation||p.projectWork?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
-      read:async(scope,target,compiled,text)=>(await openImplementation(scope)).readSupplement(target,compiled,text),
+      read:async(scope,target,compiled,text,receivedId)=>(await openImplementation(scope)).readSupplement(target,compiled,text,receivedId),
       work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined,p.issueImplementation||p.projectWork?{

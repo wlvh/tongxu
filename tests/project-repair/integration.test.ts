@@ -2,6 +2,7 @@ import fsSync from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import {LiveProcess} from '../../src/live-process.js';
 import {readEndedReadonlyImplementationFailure} from '../../src/implementation-readonly-failure.js';
+import {projectSupplementReviewMessages} from '../../src/project-supplement-review.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {IssueImplementations} from '../../src/issue-implementation-store.js';
 import {assertWorkCurrent} from '../../src/project-work-current.js';
@@ -14,6 +15,7 @@ import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {randomUUID} from 'node:crypto';
 import {messageFixture} from '../w6/message-fixture.js';
+import {additionalFixture} from '../w7/additional-cli-fixture.js';
 import {messageAuthority} from '../w6/message-authority-fixture.js';
 import {fixture as ledgerFixture} from '../resources/provider-fixture.js';
 import {startWorkbench} from '../../src/workbench.js';
@@ -30,7 +32,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile, chmod, readdir, rm, cp,symlink } from 'node:fs/promises';
 import { join, resolve, basename, dirname } from 'node:path';
 import { fixture } from '../w5/repair-fixture.js';
-import { type ProjectRequest,prepareProjectRepair, testProject, reconcileProjectTests, bindProjectTestToCandidate, needsProjectReviewBindingSupplement } from '../../src/project-repair.js';
+import { type ProjectRequest,prepareProjectRepair, testProject, projectModelTestResult, reconcileProjectTests, bindProjectTestToCandidate, needsProjectReviewBindingSupplement } from '../../src/project-repair.js';
 import { runRepair } from '../../src/repair.js';
 import {prepareIssueImplementation,runIssueImplementation,type ImplementationRequest} from '../../src/issue-implementation.js';
 import {prepareTaskOwner} from '../../src/tasks.js';
@@ -255,6 +257,50 @@ test('project-scoped delete and rename preserve the validated Git candidate and 
   await releaseWorkspace(f.workspace,lease,'completed');
   assert.deepEqual(await tree(f.objects,true),f.originalTree);
 });
+test('two real validations of the same project tree keep the later failure when the old success is replayed',async t=>{
+  const f=await project(t);
+  const original=JSON.parse(await readFile(f.projectPlan.grant,'utf8')) as Grant;
+  const grant={...original,allowedPaths:[],projectFiles:{protectedPaths:f.projectPlan.project.protectedPaths}};
+  const {candidate}=f.projectPlan,initial=await tree(f.workspace,true);
+  await mkdir(f.operation,{mode:0o700});
+  const lease=await acquireWorkspace(f.workspace,f.operation,false,grant);
+  const deadline=Date.now()+15000;
+  const testPlan=join(f.root,'same-tree-clock-test.json');
+  const bytes=canonical({schemaVersion:2,executor:docker,tools:[{
+    id:'retention-clock',argv:[docker.node,'--input-type=module','--eval','if (Date.now() >= '+deadline+') process.exitCode=1;'],timeoutMs:10000
+  }]});
+  await writeFile(testPlan,bytes);
+  const p={...f.projectPlan.project,projectFiles:true as const,testPlan,testPlanSha256:hash(bytes)};
+  const plan={...f.projectPlan,project:p};
+  let realRuns=0;
+  const gate=new RepairTools(f.workspace,f.operation,grant,lease,docker.node,initial,candidate.H,
+    async directory=>{realRuns++;return projectModelTestResult(await testProject(f.workspace,directory,p));});
+  try{
+    await gate.handoff('fixture-same-tree-clock','new_implementer_context');
+    const a={tool:'tongxu_run_tests',callId:'clock-pass',arguments:{}},b={...a,callId:'clock-fail'};
+    const passed=await gate.call(a);
+    assert.equal(JSON.parse(passed.contentItems[0]!.text).passed,true);
+    await new Promise(resolve=>setTimeout(resolve,Math.max(0,deadline-Date.now()+25)));
+    const failed=await gate.call(b);
+    assert.equal(JSON.parse(failed.contentItems[0]!.text).passed,false);
+    assert.deepEqual(await gate.call(a),passed);
+    assert.equal(realRuns,2);
+    const originals=await readdir(join(f.operation,'tests'));
+    assert.deepEqual(originals.sort(),['tool-clock-fail','tool-clock-pass']);
+    const pass=JSON.parse((await readFile(join(f.operation,'tests/tool-clock-pass/result.json'))).toString());
+    const fail=JSON.parse((await readFile(join(f.operation,'tests/tool-clock-fail/result.json'))).toString());
+    assert.equal(pass.T,fail.T);
+    assert.equal(pass.candidateTreeSha256,fail.candidateTreeSha256);
+    const capture=join(f.operation,'test-transport-replay');
+    await mkdir(capture);
+    const frame=(id:string,params:object,result:object)=>({request:{id,params},response:{result}});
+    await writeFile(join(capture,'reconciled-tools.json'),canonical([frame('first',a,passed),frame('second',b,failed),frame('replayed',a,passed)]));
+    const latest=await readLatestProjectToolValidation(f.operation,capture,plan);
+    assert.equal(latest.callId,'clock-fail');
+    assert.equal(latest.result.passed,false);
+    t.diagnostic(JSON.stringify({tree:pass.T,actualDockerExecutions:realRuns,replayCall:a.callId,selectedCall:latest.callId,passed:latest.result.passed}));
+  }finally{await releaseWorkspace(f.workspace,lease,'completed');}
+});
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
   assert.equal(result.status, 'completed'); assert.equal(result.actualRepairPerformed, true);
@@ -439,6 +485,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  if(validationFault)code=code.replace('stage=name;const serial=',`if(context.originalReport&&!context.validationDefinition?.readOnly)throw Error('fixture_readable_definition_required');if(name==='tongxu_replace_file'&&!context.request?.continuation&&((!context.originalReport&&context.request?.workspaceRequest?.authorization?.maxRepairRounds!==0)||${JSON.stringify(fault==='validation-failed'||fault==='validation-restart-failed')}))args.text=${JSON.stringify("export function normalizeLabel(value){return value.trim() || 'Untitled';}\n// retained failed registered edit\n")};stage=name;const serial=`);
  if(fault==='validation-large')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&args.text.length<200000)args.text+='\\n// '+ 'g'.repeat(202000);stage=name;const serial=");
  code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation)args.text+='\\n// clarification from original supplement\\n';stage=name;const serial=");
+ if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement||context.request.continuation.supplement.text!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt<86400000;}\\n';}stage=name;const serial=");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
  if(readonlyFault){
   code=code.replace("import fs from 'node:fs';", "import fs from 'node:fs';import{createHash}from'node:crypto';import{dirname}from'node:path';");
@@ -478,11 +525,16 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    const reached=new Map<string,string>();
    const release=new Map<string,()=>void>();
    const gates=new Map([a,b].map(id=>[id,new Promise<void>(resolve=>release.set(id,resolve))]));
+   let releaseSupplement=()=>{};
+   const waitForSupplement=new Promise<void>(resolve=>{releaseSupplement=resolve;});
    const call=RepairTools.prototype.call;
    t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
      const result=await call.apply(this,args);
      const id=[a,b].find(id=>this.workspace.includes('/works/'+id+'/'));
-     if(id&&args[0].tool==='tongxu_run_tests'){reached.set(id,this.workspace);await gates.get(id);}
+     if(id&&args[0].tool==='tongxu_run_tests'){
+       if(this.workspace.includes('/executions/supplement-'))await waitForSupplement;
+       else{reached.set(id,this.workspace);await gates.get(id);}
+     }
      return result;
    });
    const until=async<T>(read:()=>Promise<T>,done:(value:T)=>boolean)=>{
@@ -529,7 +581,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const pending=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
      assert.equal(pending.receivedIsNotDelivered,true);
      assert.equal(pending.compiledRequest,null);
-     assert.equal(pending.original.reason,'project_file_scope_continuation_not_supported');
+     assert.equal(pending.original.reason,'project_supplement_review_required');
      assert.equal(pending.original.H1,finished.draft.delivery.H);
      assert.deepEqual([pending.original.issue,pending.original.delivered,pending.original.adopted,pending.original.coveringCandidate],[202,false,false,null]);
      assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
@@ -551,8 +603,83 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
        assert.deepEqual(uncertain.execution.reportGaps,[{requestId:finished.draft.requestId,H1:finished.draft.delivery.H,reason:'implementation_validation_capture_changed'}]);
      }finally{await writeFile(stdoutPath,stdout);}
 
-     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,ownerDecisionRecords:2,A:{issue:201,stopped:true,checkout:reached.get(a)},B:{issue:202,H1:finished.draft.delivery.H,checkout:reached.get(b)},supplement:{issue:202,saved:true,delivered:false,adopted:false,coveredByH1:false}}));
-   }finally{for(const open of release.values())open();}
+     const originalWire=await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8');
+     const reviews=await additionalFixture(t,'kimi');
+     const compiled='supplement-'+requestId,material='project-supplement-requirement.json';
+     const text='Also add a retention deadline for the download.';
+     const validation={description:'Downloads expire at exactly 24 hours',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);assert.equal(downloadAvailableAt(0,86400001),false);"};
+     const amendment=canonical({kind:'tongxu-project-supplement-requirement-v1',input:{repository:'fixture/reception',target,H1:finished.draft.delivery.H,requestId:compiled,text},requirement:'Permit downloads for 24 hours from creation, with the deadline exclusive.',acceptance:['The file is available immediately before 24 hours and unavailable at and after the deadline.'],validation});
+     const materialPath=join(f.root,material);
+     await writeFile(materialPath,amendment);
+     const verdict=canonical({candidateH:finished.draft.delivery.H,reviewedInputSha256:hash(amendment),verdict:'PASS',report:'Explicit protocol fixture reviewer; 24-hour boundary is fixed for this test.',findings:[],coverageGaps:[],ownerQuestions:[]});
+     const codex=await readFile(reviews.codex,'utf8'),kimi=await readFile(reviews.binary,'utf8');
+     const completionProgram=codex.replace(/report:'明确标记的进程夹具[^\n]+\+x.messageId/, 'report:'+JSON.stringify(verdict));
+     const minimalityProgram=kimi.replace("report:'Explicit '+tool+' fixture complete material report '+turn",'report:'+JSON.stringify(verdict));
+     assert.notEqual(codex,completionProgram);assert.notEqual(kimi,minimalityProgram);
+     await writeFile(reviews.codex,completionProgram);
+     await writeFile(reviews.binary,minimalityProgram);
+     const [reviewer]=reviews.plan.participants;
+     const {aiModel:_,...reviewerDefaults}=reviewer!;
+     const completion={...reviewerDefaults,id:'review-completion',role:'reviewer' as const,tool:'codex' as const,executable:reviews.codex,executableSha256:hash(completionProgram)};
+     const minimality={...reviewer!,id:'review-minimality',role:'verifier_impact' as const,executableSha256:hash(minimalityProgram)};
+     const completedReview={...reviews.plan,participants:[completion,minimality],messages:await projectSupplementReviewMessages(completion.id,minimality.id),material:[{name:material,path:materialPath,sha256:hash(amendment)}],consumeMaterial:[material]};
+     const reviewPath=join(f.root,'supplement-message-plan.json');
+     await writeFile(reviewPath,canonical(completedReview));
+     const reviewed=await runMessages(reviews.store,reviewPath);
+     assert.equal(reviewed.completed,true,JSON.stringify(reviewed.problems));
+     await mkdir(join(config.root,'supplement-reviews'),{mode:0o700});
+     const reference={store:reviews.store,path:reviewPath,sha256:hash(await readFile(reviewPath))};
+     const locator=join(config.root,'supplement-reviews',compiled+'.json');
+     await writeFile(locator,canonical({...reference,sha256:'0'.repeat(64)}));
+     const rejected=await get('/api/project-secretary/conversations/'+conversationId);
+     assert.equal(rejected.value.supplements[0].original.reason,'project_supplement_review_binding_changed');
+     assert.equal(rejected.value.supplements[0].compiledRequest,null);
+     await writeFile(locator,canonical(reference));
+     const priorInputs=(await readFile(f.trace,'utf8')).split('model-input').length-1;
+     assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
+     const activeSupplement=await until(
+       async()=>(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0],
+       row=>row.original.dispatchRecorded
+     );
+     assert.equal(activeSupplement.id,requestId);
+     assert.equal(activeSupplement.original.adopted,true);
+     assert.equal(activeSupplement.original.coveringCandidate,null);
+     assert.equal((await detail(b)).draft.delivery.H,finished.draft.delivery.H);
+     releaseSupplement();
+     const updated=await until(()=>detail(b),r=>r.draft.delivery?.status==='received'&&r.draft.delivery.H!==finished.draft.delivery.H);
+     const delivered=(await get('/api/project-secretary/conversations/'+conversationId)).value.supplements[0];
+     assert.equal(delivered.id,requestId);
+     assert.equal(delivered.compiledRequest,compiled);
+     assert.equal(delivered.original.delivered,true);
+     assert.equal(delivered.original.adopted,true);
+     assert.equal(delivered.original.recipient.work,cb.id);
+     assert.equal(delivered.original.coveringCandidate,updated.draft.delivery.H);
+     assert.equal(delivered.original.requirementSha256,hash(amendment));
+     assert.equal(delivered.original.H0,finished.draft.delivery.H);
+     const result=updated.execution.reports.find((report:any)=>report.id===compiled);
+     assert.equal(result.tests.passed,true);
+     assert.deepEqual(result.tests.tools.map((tool:any)=>[tool.id,tool.exitCode]),[['work-acceptance',0],['supplement-'+hash(amendment).slice(0,20),0]]);
+     const q=await QueueStore.open(cb.store);
+     let successor;
+     try{successor=q.issueImplementations().state(cb.id,compiled);}finally{q.close();}
+     const successorWire=(await readFile(join(successor.plan.operationRoot,'implementer','stdin.ndjson'),'utf8')).trim().split('\n').map((line:string)=>JSON.parse(line));
+     const input=JSON.parse(successorWire.find((message:any)=>message.method==='turn/start').params.input[0].text);
+     assert.equal(input.request.continuation.supplement.text,text);
+     assert.equal(input.request.continuation.logicalOwner,target.task);
+     assert.deepEqual(successor.plan.authorization,resultState.plan.authorization);
+     assert.equal(input.request.workflowPrompt,undefined);
+     assert.equal(successor.plan.request.workflowPrompt.sha256,resultState.plan.request.workflowPrompt.sha256);
+     assert.equal(delivered.original.recipient.sessionId,result.sessionId);
+     assert.notEqual(result.sessionId,resultState.result.sessionId);
+     assert.equal(await git(successor.plan.workspace,['rev-parse','HEAD^']),finished.draft.delivery.H);
+     const before=await readFile(f.trace);
+     assert.equal(before.toString().split('model-input').length-1,priorInputs+1);
+     assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
+     assert.deepEqual(await readFile(f.trace),before);
+     assert.equal(JSON.parse(await readFile(originals,'utf8')).length,2);
+     assert.equal(await readFile(join(resultState.plan.operationRoot,'implementer','stdin.ndjson'),'utf8'),originalWire);
+     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
+   }finally{for(const open of release.values())open();releaseSupplement();}
    return;
  }
  if(fault==='preparation-typed-retry'){
@@ -762,7 +889,7 @@ test('first use normal HTTP explicit V4 preparation reuses only the immediately 
 test('first use normal HTTP receives the pending original result before its completed supplement',t=>firstUseProjectWork(t,'receipt-pending'));
 
 test('first use normal HTTP prepares two unconfigured works, preserves a missing-location draft, returns real branches and cold reads without duplicate inputs',t=>firstUseProjectWork(t));
-test('ordinary project work reuses one Owner grant across independent A and B, stops only A, and saves a supplement for B',t=>firstUseProjectWork(t,'project-development'));
+test('ordinary project work reuses one Owner grant across independent A and B, stops only A, and implements a reviewed supplement after reopening',t=>firstUseProjectWork(t,'project-development'));
 for(const fault of ['stop-adopt-comments','stop-adopt-user','stop-delegate-comments','drain','lost-adopt','lost-delegate','unknown-adopt'])test('first use normal HTTP original authorization fault: '+fault,t=>firstUseProjectWork(t,fault));
 
 for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTINEL'])test(`new implementation consumer uses no finding, writes twice, tests the actual tree and commits H1 without touching its fixed source${secret?' and keeps unselected test output private':''}`,async t=>{
@@ -970,7 +1097,14 @@ for(const outcome of ['stop','failed','stop-after-move','failed-after-move'] as 
    const original=RepairTools.prototype.call,paused=new Promise<void>(resolve=>{resume=resolve;});
    t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
      const response=await original.apply(this,args);
-     if(args[0].tool===(moved?'tongxu_delete_file':'tongxu_create_file'))await paused;
+     if(moved&&args[0].tool==='tongxu_delete_file'){
+       const mid='src/intermediate/normalize.mjs',originalBytes=await readFile(join(this.workspace,path));
+       const edited=originalBytes.toString()+'\n// retained after successive moves\n';
+       await original.call(this,{tool:'tongxu_rename_file',callId:'retained-first-move',arguments:{path,destination:mid,expectedSha256:hash(originalBytes)}});
+       await original.call(this,{tool:'tongxu_replace_file',callId:'retained-edit',arguments:{path:mid,text:edited,expectedSha256:hash(originalBytes)}});
+       await original.call(this,{tool:'tongxu_rename_file',callId:'retained-final-move',arguments:{path:mid,destination:path,expectedSha256:hash(edited)}});
+       await paused;
+     }else if(!moved&&args[0].tool==='tongxu_create_file')await paused;
      return response;
    });
  }
@@ -984,6 +1118,9 @@ for(const outcome of ['stop','failed','stop-after-move','failed-after-move'] as 
      if(moved){
        for(let i=0;i<500&&await exists(join(workspace,'README.md'));i++)await new Promise(r=>setTimeout(r,10));
        assert.equal(await exists(join(workspace,'README.md')),false);
+       const receipt=join(operation,'calls','retained-final-move.json');
+       for(let i=0;i<500&&!await exists(receipt);i++)await new Promise(r=>setTimeout(r,10));
+       assert.equal(JSON.parse(await readFile(receipt,'utf8')).status,'applied');
      }
      assert.equal((await f.post('stop',{requestId:id})).value.stopped,true);
    }
@@ -1008,7 +1145,10 @@ for(const outcome of ['stop','failed','stop-after-move','failed-after-move'] as 
  if(!failed){
    assert.equal(result.value.status,'partial_or_unknown');
    assert.equal(result.value.completeCapture,false);
-   if(moved)assert.deepEqual(result.value.retainedAdditions,[path]);
+   if(moved){
+     assert.deepEqual(result.value.retainedAdditions,[path]);
+     assert.match(result.value.diff,/\+\/\/ retained after successive moves/);
+   }
    else assert.match(result.value.diff,/\+export const defaultLabel='Untitled';/);
  }else{
    assert.equal(result.value.status,'validation_failed',JSON.stringify(result.value));
