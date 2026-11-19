@@ -20,7 +20,7 @@ import {runFormalReviewRound} from './formal-review.js';
 import {QueueFormalRoundHost,type FormalFrozenRequest} from './formal-review-host.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import type {ProjectRequest} from './project-repair.js';
-import {readRepairInbox,repairSupplementTest,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
+import {adoptedRepairRevisions,readRepairInbox,repairSupplementTest,verifiedRepairSupplementTests,type AdoptedRepairRevision,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
 import type {SupplementTarget} from './project-chat.js';
 import {readFailedValidationTests} from './implementation-validation.js';
 import {projectModelTestResult} from './project-repair.js';
@@ -63,7 +63,14 @@ export class FormalReviewControls{
  private entry(id:string){const f=this.entries.find(f=>f.entry.id===id);if(!f)throw new Error('formal_entry_not_selected');return f;}
  private async catalog(){if(hash(await regular(this.path,128*1024))!==this.sha256)throw new Error('formal_catalog_changed');await this.verify();}
  private public(s:Row){const r=s.terminal?.result,used=this.automaticChecks.get(s.operation)??0;return {id:s.request.id,operation:s.operation,entry:s.request.entry,round:s.request.round,executionRound:s.executionRound,previousOperation:s.request.previousOperation,item:s.item,candidate:s.request.candidate,phase:r?.status??s.phase,detail:s.detail,stopped:s.stopped,controllerActive:this.active.has(s.operation),ownsOriginalSessions:this.hosts.get(s.operation)?.ownsDual()===true,automaticContinuation:{used,limit:automaticCheckLimit,exhausted:used>=automaticCheckLimit},resourcesSettled:s.resourcesSettled,executionKind:s.request.executionKind,demonstrationFixture:s.request.project.demonstrationFixture,...(s.request.workflowReview?{workflowRevision:s.request.workflowReview.correctness.revision}:{}),stages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,dispatched:s.dispatched,returned:!!s.returned,...(s.returned?.proof?.native?.company?{company:s.returned.proof.native.company,sessionId:s.returned.proof.native.sessionId}:{})})),newModelInputs:0};}
- async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,...(entry.workflowContract?{workflowContract:entry.workflowContract}:{}),requests:q.formalReviews().forEntry(entry.id).map(s=>this.public(s))};}finally{q.close();}}));}
+ private async currentView(s:Row){
+  if(s.terminal?.result.status==='pass'&&s.request.supplementVerification){
+   try{await verifiedRepairSupplementTests(s.request.supplementVerification,s.request.candidate.H);}
+   catch{return {...s,terminal:{result:{...s.terminal.result,status:'needs_evidence',recordedStatus:'pass',reason:'formal_fixed_supplement_test_capture_changed'}}};}
+  }
+  return s;
+ }
+ async state(){return Promise.all(this.entries.map(async({entry,source})=>{const q=await QueueStore.open(source.store);try{return {id:entry.id,source:source.id,issue:entry.issue,...(entry.workflowContract?{workflowContract:entry.workflowContract}:{}),requests:await Promise.all(q.formalReviews().forEntry(entry.id).map(async s=>this.public(await this.currentView(s))))};}finally{q.close();}}));}
  async forWork(issue:{number:number;bodySha256:string},H:string){
   const matched:Array<{entry:string;source:string;candidate:FormalSource['candidate']}>=[];
   for(const {entry,source} of this.entries){
@@ -96,10 +103,10 @@ export class FormalReviewControls{
      const stages=s.stages as Array<ReturnType<typeof records.stage>>;
      const owned=stages.some(stage=>stage.stage.role==='fix'&&stage.dispatched&&!stage.returned)||this.active.has(s.operation)||
        !s.stopped&&(!s.terminal||s.terminal.result.status==='awaiting_publication'&&!requests.some(r=>r.request.previousOperation===s.operation));
-     const rounds=[...new Set(stages.filter(stage=>stage.stage.role==='fix').map(stage=>Number(stage.stage.key.split('/')[0]!.slice(6))))].reverse();
-     for(const round of rounds){
-      const key='round-'+round+'/fix',stage=stages.find(stage=>stage.stage.key===key)!;
-      const items=await readRepairInbox(s.request.directory,round,work);
+     const fixes=stages.filter(stage=>stage.stage.role==='fix').reverse();
+     for(const stage of fixes){
+      const key=stage.stage.key,round=Number(key.split('/')[0]!.slice(6));
+      const items=await readRepairInbox(s.request.directory,round,work,key.endsWith('/fix-supplement')?'after-repair':'before-repair');
       const item=items?.find(item=>item.requestId===receivedId&&item.text===text);
       if(!item)continue;
       const proof=stage.returned?.proof?.native;
@@ -117,7 +124,7 @@ export class FormalReviewControls{
         if(result.passed&&result.tools.some((tool:Row)=>tool.id===repairSupplementTest(revision)&&tool.exitCode===0))coveringCandidate=fix.H1;
        }catch{verificationMissing=true;}
       }
-      return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
+      return {owned,formalRepair:true,ready:false,successful:!!coveringCandidate,issue:entry.issue.number,H1:s.request.candidate.H,
         reason:verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
           (s.detail?.reason==='formal_fixed_supplement_tests_failed'?s.detail.reason:'formal_repair_supplement_coverage_pending'):
           delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending',
@@ -127,7 +134,7 @@ export class FormalReviewControls{
         report:delivered?stage.returned.result:null};
      }
      if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
-      reason:rounds.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
+      reason:fixes.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
       operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
     }
    }finally{q.close();}
@@ -177,15 +184,21 @@ export class FormalReviewControls{
    const fixed=published?.terminal?.result.fix,previousWork=published?.request.projectWork;
    const supplementVerification=fixed?.reviewFixRecord?.supplementVerification;
    let sourceEvidence=live.evidence;
+   const previousRevisions=(published?.request.material.sourceEvidence as Row)?.adoptedProjectSupplements as AdoptedRepairRevision[]|undefined;
+   if(previousRevisions?.length&&!supplementVerification)throw new Error('formal_fixed_supplement_test_capture_changed');
    if(supplementVerification&&previousWork){
-    const rounds=published!.executionRound,originalInbox=await readRepairInbox(published!.request.directory,rounds,previousWork);
-    if(!originalInbox?.some(item=>item.revision)||!records.originalStageInputIncludes(published!.operation,'round-'+rounds+'/fix',
-      input=>canonical(input.projectSupplements?.items)===canonical(originalInbox)))throw new Error('formal_repair_inbox_binding_changed');
-    const proof=await readFailedValidationTests(supplementVerification.directory,supplementVerification.plan,false);
-    if(!proof.result.passed||hash(canonical(proof.result))!==supplementVerification.binding.testResultCanonicalSha256)
+    const rounds=published!.executionRound,prior=published!,originalInbox=[];
+    for(const [checkpoint,name] of [['before-repair','fix'],['after-repair','fix-supplement']] as const){
+     const items=await readRepairInbox(prior.request.directory,rounds,previousWork,checkpoint);
+     if(!items&&checkpoint==='before-repair'||items?.length&&!records.originalStageInputIncludes(prior.operation,'round-'+rounds+'/'+name,
+       input=>canonical(input.projectSupplements?.items)===canonical(items)))throw new Error('formal_repair_inbox_binding_changed');
+     if(items)originalInbox.push(...items);
+    }
+    const proof=await verifiedRepairSupplementTests(supplementVerification,fixed.H1);
+    const adopted=[...new Map([...(previousRevisions??[]),...adoptedRepairRevisions(originalInbox)].map(item=>[item.requestId,item])).values()];
+    if(!adopted.length||canonical(proof.tools.map((tool:Row)=>tool.id))!==canonical(adopted.map(item=>repairSupplementTest(item.revision))))
       throw new Error('formal_fixed_supplement_test_capture_changed');
-    sourceEvidence={...(live.evidence as Row),adoptedProjectSupplements:originalInbox.flatMap(item=>item.revision?
-      [{requestId:item.requestId,originalRequestId:item.originalRequestId,revision:item.revision}]:[]),
+    sourceEvidence={...(live.evidence as Row),adoptedProjectSupplements:adopted,
       supplementTests:{candidate:fixed.H1,tests:supplementVerification.tests,binding:supplementVerification.binding}};
    }
    const policies={reviewer:(await regular(config.prompts.reviewer)).toString(),fact:(await regular(config.prompts.fact)).toString(),impact:(await regular(config.prompts.impact)).toString()},prompts=await assemblePromptSet(policies,{reviewer:'reviewer',fact:'verifier_fact',impact:'verifier_impact'}),objects=fixed?.workspace??entry.objects,material=await formalReviewMaterial({objects,candidate,issue:live.issue,adoptedScope,requiredPaths:entry.requiredPaths,contextPaths:[...new Set([...entry.contextPaths,...entry.repair.materialPaths])],sourceEvidence}),round=published?published.request.round+1:1;
@@ -198,7 +211,7 @@ export class FormalReviewControls{
       fact:workflow.prompt('finding_verification_fact'),verificationImpact:workflow.prompt('finding_verification_impact')};
    }
    const project:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:join(directory,'project'),objects,candidate:{kind:'github-pr',repository:candidate.repository,pr:candidate.pr,H:candidate.H,B:candidate.B,target:candidate.target},...entry.repair,findings:[],authorization:{source:entry.issue.adjudication,allowRepair:true,allowReconcileEnded:false,maxRepairRounds:1}},workSha256=hash(canonical({materialSha256:material.sha256,configSha256:entry.config.sha256,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(projectWork?{projectWork}:{})}));
-   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:published?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{}),...(projectWork?{projectWork}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
+   const request:FormalFrozenRequest={kind:'tongxu-formal-pr-review',id:requestId,entry:id,item:selected.id,round,previousOperation:published?.operation??null,candidate,executionKind:config.executionKind??'native_capture',workSha256,directory,material,config,configRef:entry.config,prompts,project,authorization:entry.authorization,budgets:entry.budgets,aiSelections,...(workflowReview?{workflowReview}:{}),...(this.workbenchProject?{workbenchProject:this.workbenchProject}:{}),...(projectWork?{projectWork}:{}),...(supplementVerification?{supplementVerification}:{})};const registered=records.register('fr-'+hash(canonical([id,requestId,round])).slice(0,60),selected.id,request);return this.public(registered);
   }finally{q.close();}
  }
  async begin(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);let state:Row;try{state=q.formalReviews().state(operation);if(state.request.entry!==id)throw new Error('formal_entry_not_selected');if(state.terminal||state.stopped)return this.public(state);}finally{q.close();}if(this.active.has(operation))return {...this.public(state),duplicate:true};if(!this.accepting)throw new Error('formal_controller_closing');const run=this.execute(id,operation);this.active.set(operation,run);run.catch(()=>{}).finally(()=>this.active.delete(operation));return {...this.public(state),controllerActive:true};}
@@ -209,6 +222,7 @@ export class FormalReviewControls{
     const live=await this.read(entry,source);
     const expected={repository:request.candidate.repository,pr:request.candidate.pr,H:request.candidate.H,B:request.candidate.B,target:request.candidate.target};
     if(canonical(live.candidate)!==canonical(expected)||hash(live.issue.body)!==entry.issue.bodySha256||(live.evidence as Row)?.materialSha256!==(request.material.sourceEvidence as Row)?.materialSha256)throw new Error('formal_candidate_or_requirements_changed');
+    if(request.supplementVerification)await verifiedRepairSupplementTests(request.supplementVerification,request.candidate.H);
    },()=>{if(!this.accepting)throw new Error('formal_controller_closing');},state.executionRound);
  }
  async replaceEndedDual(id:string,operation:string,round:number){
@@ -252,7 +266,7 @@ export class FormalReviewControls{
    }
   }
  }
- async report(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');return {...this.public(s),material:s.request.material,prompts:s.request.prompts,...(s.request.workflowReview?{workflowReview:s.request.workflowReview}:{}),fullStages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,result:s.returned?.result??null,proof:s.returned?.proof??null})),result:s.terminal?.result??null,...(s.replacement?{replacement:s.replacement}:{}),originalsRetained:true};}finally{q.close();}}
+ async report(id:string,operation:string){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=await this.currentView(q.formalReviews().state(operation));if(s.request.entry!==id)throw new Error('formal_entry_not_selected');return {...this.public(s),material:s.request.material,prompts:s.request.prompts,...(s.request.workflowReview?{workflowReview:s.request.workflowReview}:{}),fullStages:s.stages.map((s:Row)=>({key:s.stage.key,role:s.stage.role,result:s.returned?.result??null,proof:s.returned?.proof??null})),result:s.terminal?.result??null,...(s.replacement?{replacement:s.replacement}:{}),originalsRetained:true};}finally{q.close();}}
  async stop(id:string,operation:string,project:Pick<FormalWorkbenchProject,'account'|'repository'>|undefined=this.workbenchProject,legacyProject?:FormalWorkbenchProject){const {source}=this.entry(id),q=await QueueStore.open(source.store);try{const s=q.formalReviews().state(operation);if(s.request.entry!==id)throw new Error('formal_entry_not_selected');
   // New project requests retain their verified identity in the original blob,
   // so cleanup survives a cold/offline page. Old inputs stay immutable and need

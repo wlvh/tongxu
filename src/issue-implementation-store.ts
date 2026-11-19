@@ -112,14 +112,19 @@ export class IssueImplementations {
   });}
   firstSendCandidate(source:string,id:string){
     const f=this.fixed(source,id),dispatches=f.events.filter(e=>e.kind==='issue_implementation_dispatched');
-    if(f.terminal||f.events.some(e=>e.kind==='issue_implementation_stopped')||!f.selected||dispatches.length!==1||f.events.some(e=>e.kind==='issue_implementation_first_input'))throw new Error('implementation_first_send_not_available');
-    return {dispatchEvent:dispatches[0]!.id,plan:f.selected.plan};
+    if(f.terminal||f.events.some(e=>e.kind==='issue_implementation_stopped')||!f.selected||dispatches.length!==1)throw new Error('implementation_first_send_not_available');
+    const checkpoint=f.events.find(e=>e.kind==='issue_implementation_first_input')?.data;
+    return {dispatchEvent:dispatches[0]!.id,plan:f.selected.plan,checkpoint};
   }
   firstInput(source:string,id:string,proof:FirstSendProof,observations:OwnerObservation[]){return this.transaction(()=>{
     const record=requireFirstSendProof(proof),candidate=this.firstSendCandidate(source,id),f=this.fixed(source,id);
     if(candidate.dispatchEvent!==record.dispatchEvent||f.registered.requestSha256!==record.requestSha256||candidate.plan.sha256!==record.planSha256||candidate.plan.operationRoot!==record.operationRoot)throw new Error('implementation_first_send_binding_changed');
     this.checkValue(source,id,observations);
     const ref={nativeDirectory:record.nativeDirectory,requestSha256:record.requestSha256,planSha256:record.planSha256,firstInputSha256:record.firstInputSha256,proofSha256:hash(canonical(record)),proof:record};
+    if(candidate.checkpoint){
+      if(canonical(candidate.checkpoint)!==canonical(ref))throw new Error('implementation_first_send_checkpoint_changed');
+      return candidate.checkpoint;
+    }
     this.event('first_input',this.key(source,id),ref);return ref;
   });}
   recordValidationFailure(source:string,id:string,proof:ValidationFailureProof){return this.transaction(()=>{

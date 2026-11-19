@@ -16,6 +16,7 @@ import {QueueFormalRoundHost} from '../../src/formal-review-host.js';
 import type {AIPreferenceSnapshot} from '../../src/ai-settings.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
+import {BoundedCodexSession} from '../../src/repair-native.js';
 async function page(t:test.TestContext){const f=await formalFixture(t),path=join(f.root,'formal-workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Explicit formal review fixture',goal:'Protocol fixture; no real remote or model',sources:f.sources.map(s=>({...s,title:'Explicit PR #1'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path,undefined,{formalSourceReader:async()=>f.live});let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};t.after(close);const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1)},get=(p:string)=>fetch(url.origin+p,{headers}),post=(p:string,body:unknown,origin=url.origin)=>fetch(url.origin+p,{method:'POST',headers:{...headers,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {...f,path,app,url,get,post,close};}
 test('a project work candidate can open its exact registered PR review and refuses a different base or requirement',async t=>{
  const f=await page(t),{H}=f.live.candidate,route='/api/formal-review/'+f.entry.id+'/prepare';
@@ -193,10 +194,11 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
    let entered=()=>{};
    reached=new Promise<void>(resolve=>{entered=resolve;});
    const hold=new Promise<void>(resolve=>{release=resolve;});t.after(release);
-   const original=QueueFormalRoundHost.prototype.fixAvailable;
-   t.mock.method(QueueFormalRoundHost.prototype,'fixAvailable',async function(this:QueueFormalRoundHost){
-     if(this.operation===operation){entered();await hold;}
-     return original.call(this);
+   const original=BoundedCodexSession.prototype.snapshotCompletedTurn;
+   t.mock.method(BoundedCodexSession.prototype,'snapshotCompletedTurn',async function(this:BoundedCodexSession){
+     const capture=await original.call(this),input=JSON.parse(capture.input.input);
+     if(input.stage==='authorized-repair'&&!input.checkpoint){entered();await hold;}
+     return capture;
    });
  }
  assert.equal((await http(route+'/start',{operation})).status,202);
@@ -212,7 +214,7 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
      assert.equal(saved.length,2);
      const held=saved.find((item:any)=>item.target.source===a.source);
      assert.equal(held.originalRequestId,groupId);
-     assert.equal(held.original.reason,'formal_repair_supplement_waiting_checkpoint');
+     assert.equal(held.original.reason,'formal_repair_supplement_next_checkpoint');
      assert.equal(held.original.delivered,false);
      const before=await f.calls();
      assert.equal((await http(projectChat+'/continue-supplements',{target:a})).status,202);
@@ -234,6 +236,7 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
  assert.ok(second.proof.originals['prompt-boundaries.ndjson']);
  if(mode==='fix'){
   assert.equal(stage('fix').proof.native.sessionId,first.proof.native.sessionId);
+  assert.equal(stage('fix-supplement').proof.native.sessionId,first.proof.native.sessionId);
   assert.equal(stage('fact-1').proof.native.sessionId,first.proof.native.sessionId);
   assert.equal(stage('impact-1').proof.native.sessionId,second.proof.native.sessionId);
   assert.equal(complete.result.fix.tested.passed,true);
@@ -247,9 +250,10 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
   assert.equal(arrived.original.coveringCandidate,complete.result.fix.H1);
   assert.equal(saved.find((item:any)=>item.target.source===b.source).original?.recipient,undefined);
   assert.equal((await http(projectChat+'/cancel-supplement',{requestId:arrived.id})).data.error,'formal_repair_supplement_already_reserved');
-  const q=f.q.formalReviews(),key='round-1/fix';
+  const q=f.q.formalReviews(),key='round-1/fix-supplement';
   assert.equal(q.originalStageInputIncludes(operation,key,input=>input.projectSupplements.items[0].text===text&&input.projectSupplements.items[0].originalRequestId===groupId&&input.projectSupplements.items[0].revision.acceptance.length===1&&input.projectSupplements.items.length===1),true);
   assert.equal(q.originalStageInputIncludes(operation,'round-1/correctness-initial',input=>Object.hasOwn(input,'projectSupplements')),false);
+  assert.equal(q.originalStageInputIncludes(operation,'round-1/fix',input=>Object.hasOwn(input,'projectSupplements')),false);
   t.diagnostic(JSON.stringify({requirement:groupId,work:a.source,recipient:arrived.original.recipient.sessionId,
     baseline:complete.candidate.H,repairCandidate:complete.result.fix.H1,adopted:arrived.original.adopted,coveringCandidate:arrived.original.coveringCandidate}));
  }
@@ -288,6 +292,9 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
    assert.equal(damaged.adopted,true);
    assert.equal(damaged.coveringCandidate,null);
    assert.equal(damaged.reason,'formal_repair_supplement_evidence_missing');
+   const derived=(await http('/api/formal-review-report/'+f.entry.id+'/'+checked.operation)).data;
+   assert.equal(derived.phase,'needs_evidence');
+   assert.equal(derived.result.recordedStatus,'pass');
   }finally{await rename(raw+'.fixture',raw);}
   for(const [name,old] of [['correctness-initial',first],['impact-initial',second]] as const){
     const fresh=followup.fullStages.find((s:any)=>s.key.endsWith('/'+name));

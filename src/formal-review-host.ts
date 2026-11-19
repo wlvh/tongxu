@@ -16,13 +16,13 @@ import type {ActionRequest} from './authority-contract.js';
 import type {FormalReviews,FormalStage} from './formal-review-store.js';
 import type {DualReviewPrompts} from './formal-dual-review.js';
 import type {FormalRoundHost,OwnedFormalFact} from './formal-review.js';
-import {readRepairInbox,freezeRepairInbox,formalRepairSupplementPlan,type FormalProjectWork,type ReadRepairInbox,type FormalRepairInboxItem} from './formal-repair-inbox.js';
+import {readRepairInbox,freezeRepairInbox,formalRepairSupplementPlan,adoptedRepairRevisions,type AdoptedRepairRevision,type FormalProjectWork,type ReadRepairInbox,type FormalRepairInboxItem,type RepairCheckpoint} from './formal-repair-inbox.js';
 import type {RepairPlan} from './repair.js';
 import {regular,exists,tree,treeHash,git,checkRepairIndex,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,processState,type Grant,type Tree,type Lease} from './repair-workspace.js';
 import {prepareProjectRepair,testProject,projectModelTestResult,bindProjectTestToCandidate,reconcileProjectTests,type ProjectRequest,type ProjectContract} from './project-repair.js';
 import {readFailedValidationTests} from './implementation-validation.js';
 type Row=Record<string,any>;
-export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:string;item:string;round:number;previousOperation:string|null;candidate:FormalStage['candidate'];executionKind:'fixture'|'native_capture';workSha256:string;directory:string;material:FormalRoundHost['material'];config:FormalRoundHost['config'];configRef:{path:string;sha256:string};prompts:{prompts:FormalRoundHost['systems'];promptAssemblies:Row};project:ProjectRequest;authorization:{receive:string;implement:string;test:string};budgets:Array<{phase:'analysis'|'fix'|'candidate';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;aiSelections:Row;workflowReview?:DualReviewPrompts;workbenchProject?:{account:number;repository:number;fullName:string};projectWork?:FormalProjectWork};
+export type FormalFrozenRequest={kind:'tongxu-formal-pr-review';id:string;entry:string;item:string;round:number;previousOperation:string|null;candidate:FormalStage['candidate'];executionKind:'fixture'|'native_capture';workSha256:string;directory:string;material:FormalRoundHost['material'];config:FormalRoundHost['config'];configRef:{path:string;sha256:string};prompts:{prompts:FormalRoundHost['systems'];promptAssemblies:Row};project:ProjectRequest;authorization:{receive:string;implement:string;test:string};budgets:Array<{phase:'analysis'|'fix'|'candidate';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;aiSelections:Row;workflowReview?:DualReviewPrompts;workbenchProject?:{account:number;repository:number;fullName:string};projectWork?:FormalProjectWork;supplementVerification?:Row};
 
 /** A host for one original operation. Every native turn, registered test and
  * atomic write passes the same authority/claim/source/stop consumers. */
@@ -131,19 +131,23 @@ export class QueueFormalRoundHost implements FormalRoundHost{
   return stage;
  }
  activeStage(){if(!this.active)throw new Error('formal_active_stage_required');return this.active;}
- async repairInbox(read?:ReadRepairInbox){
+ async repairInbox(read?:ReadRepairInbox,checkpoint:RepairCheckpoint='before-repair',previous:FormalRepairInboxItem[]=[]){
   const work=this.request.projectWork;if(!work)return [];
-  const prior=await readRepairInbox(this.directory,this.round,work);
+  const prior=await readRepairInbox(this.directory,this.round,work,checkpoint);
   if(prior)return prior;
   if(!read)throw new Error('formal_repair_inbox_unavailable');
-  return freezeRepairInbox(this.directory,this.round,work,await read(work,this.operation,this.round,this.request.candidate.H,this.request.executionKind));
+  const recheck=previous.filter(item=>!item.revision).map(item=>item.requestId),suffix=checkpoint==='after-repair'?'/after-repair':'';
+  const current=await read(work,this.operation+suffix,this.round,this.request.candidate.H,this.request.executionKind,recheck);
+  return freezeRepairInbox(this.directory,this.round,work,current.filter(item=>!recheck.includes(item.requestId)||item.revision),checkpoint);
  }
  async admitRepairRevisions(inbox:FormalRepairInboxItem[]){
-  if(!inbox.some(item=>item.revision))return null;
+  const prior=(this.material.sourceEvidence as Row)?.adoptedProjectSupplements as AdoptedRepairRevision[]|undefined;
+  const revisions=[...new Map([...(prior??[]),...adoptedRepairRevisions(inbox)].map(item=>[item.requestId,item])).values()];
+  if(!revisions.length)return null;
   await this.refresh();
-  const plan=await formalRepairSupplementPlan(this.plan!.project!,join(this.projectRoot(),'supplement-tests.json'),inbox);
+  const plan=await formalRepairSupplementPlan(this.plan!.project!,join(this.projectRoot(),'supplement-tests-'+hash(canonical(revisions)).slice(0,24)+'.json'),revisions);
   if(!plan)throw new Error('formal_repair_supplement_plan_required');
-  this.q.authority().reserveAction(this.intent('supplement-validation'),this.action('fix',true,plan.testPlanSha256),
+  this.q.authority().reserveAction(this.intent('supplement-validation-'+plan.testPlanSha256),this.action('fix',true,plan.testPlanSha256),
     'background',this.request.authorization.test,this.observations);
   return plan;
  }
@@ -218,7 +222,7 @@ export class QueueFormalRoundHost implements FormalRoundHost{
   const refresh=async()=>{if(!this.active)throw new Error('formal_active_stage_required');await this.refresh(this.active);},effect=(run?:()=>void)=>{if(!this.active)throw new Error('formal_active_stage_required');this.accepting();return this.records().effect(this.operation,this.active.key,this.observations,run??(()=>{}));};
   this.gate=new RepairTools(plan.workspace,join(root,'operation'),grant,lease,plan.nodeExecutable,current,grant.H,async(directory,checkNative)=>projectModelTestResult(await this.test(directory,checkNative)),effect,refresh);return this.gate;
  }
- private async test(directory:string,beforeRegistration?:()=>void,supplement?:ProjectContract){if(!this.plan||!this.active)throw new Error('formal_project_not_prepared');await this.refresh(this.active);const test=this.action(this.active.action.action==='receive'?'analysis':'fix',true,supplement?.testPlanSha256),intent=supplement?this.intent('supplement-validation'):this.intent('test-'+this.active.key+'-'+(++this.tests));this.q.authority().reserveAction(intent,test,'background',this.request.authorization.test,this.observations);
+ private async test(directory:string,beforeRegistration?:()=>void,supplement?:ProjectContract){if(!this.plan||!this.active)throw new Error('formal_project_not_prepared');await this.refresh(this.active);const test=this.action(this.active.action.action==='receive'?'analysis':'fix',true,supplement?.testPlanSha256),intent=supplement?this.intent('supplement-validation-'+supplement.testPlanSha256):this.intent('test-'+this.active.key+'-'+(++this.tests));this.q.authority().reserveAction(intent,test,'background',this.request.authorization.test,this.observations);
   const start={refresh:async()=>{await this.refresh(this.active);this.q.authority().refreshReservedAction(intent,this.observations);beforeRegistration?.();},start:(effect:()=>void)=>{this.accepting();beforeRegistration?.();this.q.authority().refreshReservedAction(intent,this.observations);this.records().effect(this.operation,this.active!.key,this.observations,effect);}};
   const result=await testProject(this.plan.workspace,directory,supplement??this.plan.project!,start);if(!result.executionHealthy)throw new Error('project_test_environment_or_capture_failed');this.progress('registered_test',{stage:this.active.key,testPlanSha256:result.testPlanSha256,passed:result.passed,H:result.H,T:result.T});return result;
  }

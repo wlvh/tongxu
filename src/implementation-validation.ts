@@ -231,8 +231,10 @@ export async function checkCorrectionBootstraps(operation:string){
  return originals.length>0;
 }
 /** Final synchronous proof consumption before releasing the queue claim. */
-export function assertFixedWorkspaceSnapshot(workspace:string,H:string,current:Tree,index:string,lease:Row){
- if(!index||existsSync(join(workspace,'.git/index.lock'))||hash(readFileSync(join(workspace,'.git/index')))!==index||canonical(JSON.parse(readFileSync(join(workspace,'.git/tongxu-writer.json'),'utf8')))!==canonical(lease))throw new Error('implementation_failure_close_proof_required');
+export function assertFixedWorkspaceSnapshot(workspace:string,H:string,current:Tree,index:string,lease:Row|null){
+ const lock=join(workspace,'.git/tongxu-writer.json');
+ if(!index||existsSync(join(workspace,'.git/index.lock'))||hash(readFileSync(join(workspace,'.git/index')))!==index||
+    (lease===null?existsSync(lock):canonical(JSON.parse(readFileSync(lock,'utf8')))!==canonical(lease)))throw new Error('implementation_failure_close_proof_required');
  const seen:string[]=[];const walk=(sub:string)=>{for(const name of readdirSync(join(workspace,sub)).sort()){if(!sub&&name==='.git')continue;const path=sub?sub+'/'+name:name,full=join(workspace,path),s=lstatSync(full);if(s.isSymbolicLink())throw new Error('implementation_validation_tree_changed');if(s.isDirectory())walk(path);else{const expected=current[path];if(!s.isFile()||s.nlink!==1||!expected||s.size!==expected.bytes||(s.mode&0o111)!==expected.executable||hash(readFileSync(full))!==expected.sha256)throw new Error('implementation_validation_tree_changed');seen.push(path);}}};walk('');
  if(canonical(seen.sort())!==canonical(Object.keys(current).sort())||execFileSync('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,'rev-parse','HEAD'],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:65536,encoding:'utf8'}).trim()!==H)throw new Error('implementation_validation_tree_changed');
 }

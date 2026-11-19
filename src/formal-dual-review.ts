@@ -10,7 +10,7 @@ import {exists,processState,regular} from './repair-workspace.js';
 import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 import type {OwnedFormalFact} from './formal-review.js';
 import type {QueueFormalRoundHost} from './formal-review-host.js';
-import type {ReadRepairInbox} from './formal-repair-inbox.js';
+import type {FormalRepairInboxItem,ReadRepairInbox} from './formal-repair-inbox.js';
 import type {FormalReviews} from './formal-review-store.js';
 import {formalBatch,formalDisagreements,formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerification,type FormalReview} from './formal-review-contract.js';
 
@@ -132,8 +132,9 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     const directory=laneDirectory('impact');
     await checkCapture(directory);
     const parts=await capture(directory,[...captureFiles,'prompt-boundaries.ndjson','process.json']);
-    const status=JSON.parse(parts['capture-status.json']!.toString()),process=JSON.parse(parts['process.json']!.toString());
-    if(status.status!=='complete'||status.failure!==null||process.status!=='spawn_attempted'||processState(process.pid)!=='ended'||
+    const status=JSON.parse(parts['capture-status.json']!.toString()),process=JSON.parse(parts['process.json']!.toString()),
+      exit=JSON.parse(parts['exit.json']!.toString());
+    if(exit.code!==0||exit.signal!==null||status.status!=='complete'||status.failure!==null||process.status!=='spawn_attempted'||processState(process.pid)!=='ended'||
        captureFiles.slice(0,3).some(name=>hash(parts[name]!)!==status.files?.[name]))
       throw new Error('formal_original_impact_capture_unbound');
     checkAcpSessionEvents(frames(parts['stdout.ndjson']!),peerFinal.sessionId);
@@ -163,7 +164,7 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     return {openai:{sessionId:completed.binding.sessionId,files:refs(a)},moonshot:{sessionId:peerFinal.sessionId,files:refs(b)}};
   };
   const finish=async(status:string,extra:Record<string,unknown>={})=>{
-    const originalClosure=status==='pass'?await closedLanes(extra):undefined;
+    const originalClosure=status==='pass'||status==='owner_decision'?await closedLanes(extra):undefined;
     await host.phaseEnded('analysis');
     return host.finish({status,candidate:source,...extra,...(originalClosure?{originalClosure}:{})});
   };
@@ -235,16 +236,32 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     };
     const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
     const inbox=await host.repairInbox(readInbox);
-    const revisions=await host.admitRepairRevisions(inbox);
+    let revisions=await host.admitRepairRevisions(inbox);
+    const supplements=(items:FormalRepairInboxItem[])=>({policy:'Acknowledge each related request by requestId and explain its impact or dependency. Only entries with a reviewed revision are adopted in this turn. Implement those within the authorized files and preserve the original findings and requirements. If the approved scope cannot cover a revision, report the blocker. The host verifies the registered acceptance against the resulting candidate separately.',items});
     const input=jsonInput({instructions:prompts.fact.system,stage:'authorized-repair',material,batch,fact,assessed,
-      ...(inbox.length?{projectSupplements:{policy:'Acknowledge each related request by requestId and explain its impact or dependency. Only entries with a reviewed revision are adopted in this turn. Implement those within the authorized files and preserve the original findings and requirements. If the approved scope cannot cover a revision, report the blocker. The host verifies the registered acceptance against the resulting candidate separately.',items:inbox}}:{}),
+      ...(inbox.length?{projectSupplements:supplements(inbox)}:{}),
       responseShape:findingSchema});
     const stage=await host.prepare(key('fix'),'fix',input,prompts.correctness.system,'fix');
     host.activate(stage);await host.refresh(stage);
     host.bindDualFixPeer(checkFixPeer);
     await original.gate.handoff(original.firstSessionId,'same_fact_verifier_session',checkFixPeer);
-    const result=await capturePrompt('fix',input,findingSchema,original);
+    let result=await capturePrompt('fix',input,findingSchema,original);
+    if(result.report.decision==='repaired'){
+      const latest=await host.repairInbox(readInbox,'after-repair',inbox);
+      if(latest.length){
+        revisions=await host.admitRepairRevisions([...inbox,...latest]);
+        const followup=jsonInput({instructions:prompts.fact.system,stage:'authorized-repair',checkpoint:'after-original-repair',
+          material,batch,previousRepair:result.report,projectSupplements:supplements(latest),responseShape:findingSchema});
+        const next=await capturePrompt('fix-supplement',followup,findingSchema,original);
+        if(next.report.decision!=='no_change')result=next;
+      }
+    }
     if(result.report.decision!=='repaired'){
+      if(result.report.decision==='needs_owner'){
+        await host.closeDual();checkFixPeer();
+        const original=await readRepairSession(laneDirectory('correctness')),final=original.turns.at(-1)?.final;
+        if(!final||canonical(JSON.parse(final.text))!==canonical(result.report))throw new Error('formal_dual_terminal_capture_changed');
+      }
       await host.phaseEnded('fix');
       return await host.finish({status:result.report.decision==='needs_owner'?'owner_decision':'needs_evidence',candidate:source,...batchResult,report:result.report});
     }

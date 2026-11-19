@@ -24,9 +24,9 @@ import {implementationFirstInput} from './implementation-first-input.js';
 import {assertFixedWorkspaceSnapshot} from './implementation-validation.js';
 import type {RepairPlan} from './repair.js';
 type Row=Record<string,any>;
-export type FirstSendProof={record:Row;input:string;baseline:Row|null;manifest:Row;lease:Lease};
+export type FirstSendProof={record:Row;input:string;baseline:Row|null;manifest:Row;lease:Lease;released:boolean};
 const issued=new WeakMap<object,string>();
-const intentSnapshots=new WeakMap<FirstSendProof,{plan:RepairPlan;initial:Tree;index:string;nativePid:number;ownController:boolean;allowed:string[];nativeNames:string[]}>();
+const intentSnapshots=new WeakMap<FirstSendProof,{plan:RepairPlan;initial:Tree;index:string;nativePid:number;ownController:boolean;allowed:string[];nativeNames:string[];cleanupFiles:Record<string,string>}>();
 const exec=promisify(execFile),readGit=async(workspace:string,args:string[])=>(await exec('/usr/bin/git',['--literal-pathspecs','--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',workspace,...args],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:8*1024*1024})).stdout.trim();
 export function requireFirstSendProof(proof:FirstSendProof){if(issued.get(proof)!==hash(canonical(proof.record))||hash(proof.input)!==proof.record.firstInputSha256||hash(canonical(proof.baseline))!==proof.record.baselineCanonicalSha256||hash(canonical(proof.manifest))!==proof.record.manifestCanonicalSha256)throw new Error('implementation_first_send_proof_required');return proof.record;}
 const json=async(path:string)=>JSON.parse((await regular(path,24*1024*1024)).toString());
@@ -72,25 +72,46 @@ function controllerEnded(lease:Lease,ownController:boolean){
 
 /** Verify metadata and the complete transported prefix, then bind the exact
  * original dispatch. A prepared request in the contract is not a wire frame. */
-export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownController=false):Promise<FirstSendProof>{
+export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownController=false,checkpoint?:Row):Promise<FirstSendProof>{
   const op=fixed.operationRoot,native=join(op,'implementer'),root=fixed.request.workspaceRequest.executionRoot;
   const hasIntent=await exists(join(native,'turn-1-intent.json'));
   const data=fixed.request.workspaceRequest.projectFiles
     ? {...await readFirstSendMaterial(fixed),baseline:null,directory:null,controllerPid:null,input:null}
     : await readFirstSendBaseline(fixed);
-  const {plan,initial,manifest,grant}=data,lease=await json(join(plan.workspace,'.git/tongxu-writer.json')) as Lease;
+  const {plan,initial,manifest,grant}=data,lock=join(plan.workspace,'.git/tongxu-writer.json');
+  const released=!!checkpoint&&!await exists(lock);
+  const lease=(released?checkpoint!.proof?.lease:await json(lock)) as Lease,cleanupFiles:Record<string,string>={};
   if(!exactKeys(lease,['operation','controllerPid','generation','status'])||lease.operation!==op||lease.status!=='held'||
      typeof lease.generation!=='string'||!/^[a-f0-9-]{36}$/.test(lease.generation)||
      data.controllerPid!==null&&lease.controllerPid!==data.controllerPid||
      !controllerEnded(lease,hasIntent&&ownController))throw new Error('implementation_original_controller_active_or_unknown');
   const handoffName='handoff-'+lease.generation+'-1.json',failure=await exists(join(op,'failure.json'));
-  const allowed=['attempt-1','implementer','initial-tree.json','input-manifest.json',...(failure?['failure.json']:[]),...(hasIntent?[handoffName]:[])].sort();
+  const followup=join(op,'first-input'),history=join(op,'ownership-history');
+  if(checkpoint){
+    if(checkpoint.proofSha256!==hash(canonical(checkpoint.proof))||canonical(checkpoint.proof.lease)!==canonical(lease)||
+       checkpoint.nativeDirectory!==join(followup,'native')||await exists(followup)&&(await readdir(followup)).length)
+      throw new Error('implementation_first_send_checkpoint_changed');
+    const releaseName=lease.generation+'-released.json',lockName=lease.generation+'-lock.json';
+    const outcome=hasIntent?'verified_unstarted_dispatch':'verified_unstarted_metadata';
+    const names=await exists(history)?(await readdir(history)).sort():[];
+    if(released&&canonical(names)!==canonical([lockName,releaseName].sort())||
+       !released&&names.length&&canonical(names)!==canonical([releaseName]))throw new Error('implementation_first_send_checkpoint_changed');
+    for(const name of names){
+      const bytes=await regular(join(history,name)),value=JSON.parse(bytes.toString());
+      if(name===lockName?canonical(value)!==canonical(lease):
+         canonical(value.lease)!==canonical(lease)||value.outcome!==outcome||!Number.isFinite(Date.parse(value.at)))
+        throw new Error('implementation_first_send_checkpoint_changed');
+      cleanupFiles[join(history,name)]=hash(bytes);
+    }
+  }
+  const allowed=['attempt-1','implementer','initial-tree.json','input-manifest.json',...(failure?['failure.json']:[]),...(hasIntent?[handoffName]:[]),
+    ...(checkpoint&&await exists(history)?['ownership-history']:[]),...(checkpoint&&await exists(followup)?['first-input']:[])].sort();
   if(!hasIntent&&(!failure||!data.baseline)||canonical((await readdir(op)).sort())!==canonical(allowed)||
      (await readdir(join(op,'attempt-1'))).length||!data.baseline&&(await readdir(root)).some(n=>n.startsWith('preflight-tests-')))
     throw new Error('implementation_first_send_operation_not_metadata');
-  const index=hasIntent?hash(await regular(join(plan.workspace,'.git/index'),8*1024*1024)):'';
+  const index=hasIntent||checkpoint?hash(await regular(join(plan.workspace,'.git/index'),8*1024*1024)):'';
   const files:Record<string,string>={};let total=0;
-  const seal=async(dir:string)=>{for(const e of await readdir(dir,{withFileTypes:true})){if(dir===root&&e.name==='workspace')continue;const path=join(dir,e.name);if(e.isSymbolicLink())throw new Error('implementation_first_send_unsafe_evidence');if(e.isDirectory())await seal(path);else{const b=await regular(path,24*1024*1024);total+=b.length;if(total>48*1024*1024)throw new Error('implementation_first_send_evidence_limit');files[path.slice(root.length+1)]=hash(b);}}};await seal(root);
+  const seal=async(dir:string)=>{for(const e of await readdir(dir,{withFileTypes:true})){if(dir===root&&e.name==='workspace')continue;const path=join(dir,e.name);if(e.isSymbolicLink())throw new Error('implementation_first_send_unsafe_evidence');if(checkpoint&&(path===history||path===followup))continue;if(e.isDirectory())await seal(path);else{const b=await regular(path,24*1024*1024);total+=b.length;if(total>48*1024*1024)throw new Error('implementation_first_send_evidence_limit');files[path.slice(root.length+1)]=hash(b);}}};await seal(root);
   if(hasIntent&&!await exists(join(native,'capture-status.json')))throw new Error('implementation_first_send_capture_incomplete');
   await checkCapture(native);
   const read=(n:string)=>json(join(native,n)),binding=await read('binding.json'),exit=await read('exit.json'),processRecord=await read('process.json'),identity=await read('executable.json'),launch=await read('launch.json'),thread=await read('thread.json'),configuration=await read('effective-config.json');
@@ -163,9 +184,10 @@ export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownContr
   }
   if(input===null)throw new Error('implementation_first_send_input_possible');
   const record={schemaVersion:1,dispatchEvent,operationRoot:op,requestSha256:hash(canonical(fixed.request)),planSha256:fixed.sha256,inputManifestSha256:manifest.inputManifestSha256,baselineDirectory:data.directory,baselineResultSha256:data.directory?hash(await regular(join(data.directory,'result.json'))):null,baselineCanonicalSha256:hash(canonical(data.baseline)),manifestCanonicalSha256:hash(canonical(manifest)),firstInputSha256:hash(input),nativeDirectory:join(op,'first-input','native'),lease,files,...(hasIntent?{dispatchIntentSha256:files['operation/implementer/turn-1-intent.json']}: {})};
-  const proof={record,input,baseline:data.baseline,manifest,lease};
+  if(checkpoint&&canonical(checkpoint.proof)!==canonical(record))throw new Error('implementation_first_send_checkpoint_changed');
+  const proof={record,input,baseline:data.baseline,manifest,lease,released};
   issued.set(proof,hash(canonical(record)));
-  if(hasIntent)intentSnapshots.set(proof,{plan,initial,index,nativePid:processRecord.pid,ownController,allowed,nativeNames:nativeNames.sort()});
+  if(hasIntent||checkpoint)intentSnapshots.set(proof,{plan,initial,index,nativePid:processRecord.pid,ownController,allowed,nativeNames:nativeNames.sort(),cleanupFiles});
   await checkFirstSendFiles(proof,root);
   assertFirstSendCurrent(proof,root);
   if(!controllerEnded(lease,hasIntent&&ownController))throw new Error('implementation_original_controller_active_or_unknown');
@@ -176,16 +198,20 @@ export async function readFirstSendProof(fixed:Row,dispatchEvent:number,ownContr
 export function assertFirstSendCurrent(proof:FirstSendProof,root:string,expectedInput?:{validationDefinition:unknown}){
   const record=requireFirstSendProof(proof),snapshot=intentSnapshots.get(proof);
   if(!snapshot)return;
-  const {plan,initial,index,nativePid,ownController,allowed,nativeNames}=snapshot;
+  const {plan,initial,index,nativePid,ownController,allowed,nativeNames,cleanupFiles}=snapshot;
   if(!controllerEnded(proof.lease,ownController)||processState(nativePid)!=='ended')
     throw new Error('implementation_original_controller_active_or_unknown');
-  if(expectedInput&&proof.input!==implementationFirstInput(proof.manifest.request,plan,initial,proof.baseline,expectedInput.validationDefinition))
+  if(record.dispatchIntentSha256&&expectedInput&&proof.input!==implementationFirstInput(proof.manifest.request,plan,initial,proof.baseline,expectedInput.validationDefinition))
     throw new Error('implementation_first_send_intent_changed');
   const op=record.operationRoot,native=join(op,'implementer');
   if(canonical(readdirSync(op).sort())!==canonical(allowed)||readdirSync(join(op,'attempt-1')).length||
      canonical(readdirSync(native).sort())!==canonical(nativeNames)||readdirSync(join(native,'workspace')).length)
     throw new Error('implementation_first_send_original_changed');
-  assertFixedWorkspaceSnapshot(plan.workspace,plan.candidate.H,initial,index,proof.lease);
+  if(allowed.includes('first-input')&&readdirSync(join(op,'first-input')).length)throw new Error('implementation_first_send_checkpoint_changed');
+  if(allowed.includes('ownership-history')&&canonical(readdirSync(join(op,'ownership-history')).sort())!==
+     canonical(Object.keys(cleanupFiles).map(path=>path.split('/').at(-1)).sort()))throw new Error('implementation_first_send_checkpoint_changed');
+  for(const [path,sha] of Object.entries(cleanupFiles))if(hash(readFileSync(path))!==sha)throw new Error('implementation_first_send_checkpoint_changed');
+  assertFixedWorkspaceSnapshot(plan.workspace,plan.candidate.H,initial,index,proof.released?null:proof.lease);
   const gitRefs=execFileSync('/usr/bin/git',['--no-replace-objects','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',
     '-C',plan.workspace,'rev-parse','--symbolic-full-name','HEAD'],{env:{...safeEnv,GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1'},timeout:15000,maxBuffer:4096,encoding:'utf8'}).trim();
   const base=execFileSync('/usr/bin/git',['--no-replace-objects','-C',plan.workspace,'rev-parse','refs/heads/project-base'],

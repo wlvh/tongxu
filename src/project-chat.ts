@@ -268,7 +268,7 @@ export class ProjectChat{
       WHERE s.conversation=? ORDER BY s.rowid`).all(conversation) as Row[];
   }
   private supplementText(row:Row){return (row.original_text??row.text) as string;}
-  repairInbox(scope:ProjectChatScope,target:SupplementTarget,operation:string,round:number):RepairInboxItem[]{
+  repairInbox(scope:ProjectChatScope,target:SupplementTarget,operation:string,round:number,recheck:string[]=[]):RepairInboxItem[]{
     return this.transaction(()=>{
       const selection=canonical({account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId,target});
       const previous=this.db.prepare('SELECT target,requests FROM task_supplement_repair_inboxes WHERE operation=? AND round=?').get(operation,round) as Row|undefined;
@@ -278,7 +278,7 @@ export class ProjectChat{
         const row=rows.find(r=>r.id===id);
         if(!row||row.cancelled)throw new Error('formal_repair_inbox_binding_changed');
         return row;
-      }):rows.filter(row=>!row.cancelled&&!row.compiled&&!this.inRepairInbox(row.id));
+      }):rows.filter(row=>!row.cancelled&&!row.compiled&&(recheck.includes(row.id)||!this.inRepairInbox(row.id)));
       const inbox=selected.map(row=>({requestId:row.id,originalRequestId:row.original_id??row.id,text:this.supplementText(row),receivedAt:row.created_at}));
       if(inbox.length>32||Buffer.byteLength(canonical(inbox))>192*1024)throw new Error('project_supplement_context_limit');
       if(!previous)this.db.prepare('INSERT INTO task_supplement_repair_inboxes VALUES (?,?,?,?)').run(operation,round,selection,canonical(inbox.map(item=>item.requestId)));
@@ -369,7 +369,7 @@ export class ProjectChat{
     for(const earlier of this.targetSupplements(scope,target)){
       if(earlier.id===id)break;
       if(earlier.cancelled)continue;
-      if(!earlier.compiled||!(await this.supplements.read(scope,target,earlier.compiled,this.supplementText(earlier),earlier.id)).successful)
+      if(!(await this.supplements.read(scope,target,earlier.compiled,this.supplementText(earlier),earlier.id)).successful)
         throw new Error('project_supplement_earlier_request_pending');
     }
     check();
@@ -392,7 +392,7 @@ export class ProjectChat{
     for(const row of this.targetSupplements(scope,target)){
       if(row.cancelled)continue;
       const state=await this.supplements.read(scope,target,row.compiled,this.supplementText(row),row.id);
-      if(row.compiled&&state.successful)continue;
+      if(state.successful)continue;
       if(row.compiled?!state.resumable:!state.ready)break;
       const compiled=row.compiled??'supplement-'+row.id;
       if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');if(this.inRepairInbox(row.id))throw new Error('formal_repair_supplement_already_reserved');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});

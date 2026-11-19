@@ -987,6 +987,21 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(clean.value.state,'clean',JSON.stringify(clean.value));
      assert.match(clean.value.tree,/^[a-f0-9]{40}$/);
      assert.deepEqual((await detail(b)).integrationPreview,clean.value);
+     const testRoute='/api/project-work/'+b+'/integration-verify';
+     const combined=await post(testRoute,{H:latestReport.H1,B:nextBase});
+     assert.equal(combined.value.state,'tested',JSON.stringify(combined.value));
+     assert.notEqual(combined.value.H,latestReport.H1);
+     assert.equal(combined.value.T,clean.value.tree);
+     assert.deepEqual(combined.value.tests.tools.map((tool:any)=>tool.id),latestReport.tests.tools.map((tool:any)=>tool.id));
+     assert.equal(combined.value.formalReview,'not_run');
+     assert.deepEqual((await detail(b)).integrationValidation,combined.value);
+     const badBase=await advanceBase('src/index.mjs','export function normalizeLabel(){ return "changed by upstream"; }\n');
+     assert.equal((await post(previewRoute,{H:latestReport.H1,B:badBase})).value.state,'clean');
+     const failedCombination=await post(testRoute,{H:latestReport.H1,B:badBase});
+     assert.equal(failedCombination.value.state,'failed',JSON.stringify(failedCombination.value));
+     assert.equal(failedCombination.value.tests.executionHealthy,true);
+     assert.notEqual(failedCombination.value.H,combined.value.H);
+     assert.equal((await detail(b)).integrationValidation.state,'failed');
      const conflictingBase=await advanceBase('src/normalize.mjs','export function normalizeLabel(){return "upstream conflict";}\n');
      const conflict=await post(previewRoute,{H:latestReport.H1,B:conflictingBase});
      assert.equal(conflict.value.state,'conflicts',JSON.stringify(conflict.value));
@@ -995,6 +1010,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(await git(f.objects,['rev-parse','HEAD']),conflictingBase);
      assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),latestReport.H1);
      assert.deepEqual(await readFile(f.trace),beforePreview);
+     t.diagnostic(JSON.stringify({integrationTested:combined.value.H,base:nextBase,tree:combined.value.T,
+       testTools:combined.value.tests.tools.map((tool:any)=>tool.id),integrationFailed:failedCombination.value.H,failedBase:badBase}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;
@@ -2527,6 +2544,28 @@ await controls.drain();
  assert.equal(records.state('implementation',id).firstInputContinuation,null);
  assert.ok(!(await readFile(f.project.trace,'utf8')).includes('model-input'));
  f.changeIssue(f.body);
+ const prototype=Object.getPrototypeOf(records) as typeof records,firstInput=prototype.firstInput;
+ let interruptCheckpoint=true;
+ t.mock.method(prototype,'firstInput',function(this:typeof records,...args:Parameters<typeof firstInput>){
+   const saved=firstInput.apply(this,args);
+   if(interruptCheckpoint){interruptCheckpoint=false;throw new Error('fixture_after_first_input_checkpoint');}
+   return saved;
+ });
+ await controls.continueFirstInput('implementation',id);
+ assert.equal((await settled()).reason,'fixture_after_first_input_checkpoint');
+ assert.ok(records.state('implementation',id).firstInputContinuation);
+ assert.ok(!(await readFile(f.project.trace,'utf8')).includes('model-input'));
+ if(!projectFiles){
+   const {releaseWorkspace}=await import('../../src/repair-workspace.js');
+   await releaseWorkspace(before.plan.workspace,proof.lease,'verified_unstarted_dispatch',true);
+   await mkdir(join(operation,'first-input'),{mode:0o700});
+   const lock=join(operation,'ownership-history',proof.lease.generation+'-lock.json'),owned=await readFile(lock);
+   await writeFile(lock,canonical({...proof.lease,controllerPid:1}));
+   assert.equal((await controls.firstInputContinuation('implementation',id)).eligible,false);
+   await writeFile(lock,owned);
+ }
+ await controls.drain();controls=await open();
+ assert.deepEqual(await controls.firstInputContinuation('implementation',id),{eligible:true});
  await controls.continueFirstInput('implementation',id);
  const done=await settled();assert.equal(done.status,'no_change',JSON.stringify(done));
  const result=records.state('implementation',id);

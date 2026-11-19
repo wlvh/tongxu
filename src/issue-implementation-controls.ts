@@ -21,12 +21,13 @@ import {messageId} from './message-contract.js';
 import {exactKeys,isAuthorityDigest,type ActionRequest} from './authority-contract.js';
 import {parseDevelopmentTask,developmentTaskId} from './task-contract.js';
 import {parseQueueContext,type QueueContext} from './queue-evidence.js';
-import {observeTaskWorkspace} from './task-source.js';
+import {assertTaskObservationCurrentSync,observeTaskWorkspace} from './task-source.js';
 import {readOwnerSource,type OwnerObservation} from './authority-source.js';
 import {prepareResourceRequest,resourceAction} from './resource-claims.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,runValidationCorrection,validationCorrectionInput,type ImplementationRequest} from './issue-implementation.js';
-import type {ProjectRequest} from './project-repair.js';
+import type {ProjectContract,ProjectRequest} from './project-repair.js';
+import type {DockerStartGate} from './docker-sandbox.js';
 import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
 import {assertFirstSendCurrent,readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
@@ -241,7 +242,7 @@ export class IssueImplementationControls{
   private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,workflow:s.workflow,lastRecordedAt:s.lastRecordedAt,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,hostEvidenceComplete:s.result?.hostEvidenceComplete===true,failureKind:s.result?.failureKind??null,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
-  async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{if(this.active.has(id+':'+requestId))throw new Error('implementation_original_controller_active_or_unknown');const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
+  async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{if(this.active.has(id+':'+requestId))throw new Error('implementation_original_controller_active_or_unknown');const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true,candidate.checkpoint);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
   async continueFirstInput(id:string,requestId:string){return this.beginSelected(id,requestId,true);}
   async begin(id:string,requestId:string){return this.beginSelected(id,requestId,false);}
   private async beginSelected(id:string,requestId:string,firstSend:boolean){
@@ -269,7 +270,7 @@ export class IssueImplementationControls{
           for(const ref of refs.values())observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,ref.proposalSha256)));
           for(const resource of fixed.resourceRequests as string[]){let state:Row;try{state=q.resources().status(resource);}catch(error){if((error as Error).message==='original_resource_request_required')continue;throw error;}if(!['prepared_not_sent','refused'].includes(state.state))await resourceAction(entry.store,resource,'lookup','implementer');}
         };
-        const candidate=firstSend?q.issueImplementations().firstSendCandidate(id,requestId):null,proof=candidate?await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true):null;
+        const candidate=firstSend?q.issueImplementations().firstSendCandidate(id,requestId):null,proof=candidate?await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true,candidate.checkpoint):null;
         await refresh();const authority=q.authority();
         if(!firstSend){
         authority.reserveAction(fixed.implementIntent,fixed.actions.implement,'implementer',fixed.authorization.implement,observations);authority.reserveAction(fixed.testIntent,fixed.actions.test,'implementer',fixed.authorization.test,observations);
@@ -280,8 +281,9 @@ export class IssueImplementationControls{
         if(proof)assertFirstSendCurrent(proof,fixed.request.workspaceRequest.executionRoot,{validationDefinition});
         const firstInput=proof?q.issueImplementations().firstInput(id,requestId,proof,observations):null;
         if(proof){
-          await releaseWorkspace(fixed.workspace,proof.lease,proof.record.dispatchIntentSha256?'verified_unstarted_dispatch':'verified_unstarted_metadata',!!proof.record.dispatchIntentSha256);
-          await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});
+          if(!proof.released)await releaseWorkspace(fixed.workspace,proof.lease,proof.record.dispatchIntentSha256?'verified_unstarted_dispatch':'verified_unstarted_metadata',true);
+          const directory=join(fixed.operationRoot,'first-input');
+          if(!await exists(directory))await mkdir(directory,{mode:0o700});
         }
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
@@ -501,6 +503,43 @@ export class IssueImplementationControls{
     try{
       const records=q.issueImplementations(),original=records.state(id,requestId);
       for(const request of records.requests(id))if(request.logicalOwner===original.task)records.stop(id,request.id);
+    }finally{q.close();}
+  }
+  async testIntegration<T>(source:string,requestId:string,input:{H:string;B:string;target:string},
+    check:()=>Promise<void>,admit:()=>void,
+    run:(project:ProjectContract,authorize:(workspace:string,H:string)=>Promise<DockerStartGate>)=>Promise<T>){
+    const entry=this.entry(source),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),state=records.state(source,requestId),fixed=state.plan;
+      if(!this.generated.has(source)||!entry.projectFiles||state.stopped||state.result?.status!=='completed'||
+         state.result.H1!==input.H||fixed.resourceRequests.length)throw new Error('project_work_integration_test_authority_required');
+      const report=await readImplementationResult(state),bytes=await regular(fixed.path);
+      if(report.tests?.passed!==true||hash(bytes)!==fixed.sha256)throw new Error('project_work_integration_preview_evidence_required');
+      const project=JSON.parse(bytes.toString()).project as ProjectContract,base=q.tasks().definition(state.task);
+      const authority=q.authority(),authorization=fixed.authorization.test,profile=authority.configuration().profile;
+      const authorize=async(workspace:string,H:string):Promise<DockerStartGate>=>{
+        const definition=parseDevelopmentTask(Buffer.from(canonical({...base,id:'integration-'+H,workspace,base:input.B,target:input.target})));
+        const observed=await observeTaskWorkspace(definition);
+        if(observed.head!==H)throw new Error('project_work_integration_commit_unverified');
+        const {item}=q.tasks().observe(definition,observed),action:ActionRequest={...fixed.actions.test,
+          item,target:input.target,candidate:{H,B:input.B,subjectSha256:null}};
+        let observations:OwnerObservation[]=[];
+        const refresh=async()=>{
+          await check();
+          const root=join(entry.store,'integration-authority',randomUUID());
+          await mkdir(root,{recursive:true,mode:0o700});observations=[];
+          for(const ref of authority.sourceRequests(authorization))observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,ref.proposalSha256)));
+          admit();authority.checkAction(action,'implementer',authorization,observations);
+        };
+        return {refresh,start:effect=>{
+          const latest=records.requests(source).findLast(row=>row.result?.status!=='cancelled_unstarted');
+          admit();if(!this.accepting||this.retired.has(source)||latest?.id!==requestId||latest.stopped)
+            throw new Error('project_work_integration_test_authority_required');
+          assertTaskObservationCurrentSync(definition,observed);
+          authority.checkAction(action,'implementer',authorization,observations);effect();
+        }};
+      };
+      return await run(project,authorize);
     }finally{q.close();}
   }
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{

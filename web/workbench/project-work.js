@@ -114,7 +114,7 @@ function renderProjectWork(){
     if(current?.execution?.reason&&!active)section.append(el('p',projectWorkError(current.execution.reason),'github-error'));
     if(d.detail.validationFailure){const failure=d.detail.validationFailure;section.append(el('h3','验证明确失败，原改动和完整报告保留'),el('pre',failure.report.report),el('p','原始测试输出保持私有；同范围修正只读取准确同意的冻结验收定义。失败不产生成功提交。','small'));if(failure.reason)section.append(el('p',projectWorkError(failure.reason),'github-error'));if(failure.eligible&&!active&&!item.stopRequested){const fix=el('button','按原范围修正验证');fix.disabled=d.pending;fix.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/correct-validation',failure.requestId?{requestId:failure.requestId}:{}));section.append(fix);if(!item.projectDevelopment){const restart=el('button','结清原失败，从原代码起点重做一次','outline');restart.disabled=d.pending;restart.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(restart);}}}
     if(item.catalog&&!item.stopRequested&&!active&&current?.execution?.reason==='executor_wait_timeout'){const ended=el('button',item.restart?'核对并结清已结束的只读超时':'核对只读超时，结清后从原起点重做一次','outline');ended.disabled=d.pending;ended.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(ended,el('p','先严格核对完整原件、所有受控进程与只读效果；条件不足时保留原未知，不释放或重发。','small'));}
-    if(item.catalog&&!item.stopRequested&&!active&&d.detail.firstInputContinuation?.eligible){const first=el('button','继续原工作的首次输入');first.disabled=d.pending;first.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/continue-first-input',{}));section.append(first);}
+    if(item.catalog&&!item.stopRequested&&!active&&d.detail.firstInputContinuation?.eligible){const first=el('button','继续原工作的首次输入');first.disabled=d.pending;first.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/continue-first-input',{requestId:d.detail.firstInputContinuation.requestId}));section.append(first);}
     if(d.detail.validationRecovery&&!active&&!item.stopRequested){
       const recovery=el('button','核对并记录原验证修正','outline');recovery.disabled=d.pending;
       recovery.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/reconcile-validation',{requestId:d.detail.validationRecovery.requestId}));
@@ -137,10 +137,20 @@ function renderProjectWork(){
     }
     const formalWork=d.detail.formalWork;
     if(currentDelivery&&formalWork)section.append(formalReviewPanel(formalWork.source,formalWork));
-    const integration=d.detail.integrationSource,preview=d.detail.integrationPreview;
+    const integration=d.detail.integrationSource,preview=d.detail.integrationPreview,validation=d.detail.integrationValidation;
     if(currentDelivery&&integration){
       section.append(el('h3','与当前默认分支整合'),el('p','原工作起点 '+integration.H0+' · 当前 '+integration.target+' '+integration.B,'small'));
-      if(preview?.state==='clean')section.append(el('p','Git 已在隔离目录生成组合文件树 '+preview.tree+'。此组合仍待测试与审查。','small'));
+      if(preview?.state==='clean'){
+        section.append(el('p','Git 已在隔离目录生成组合文件树 '+preview.tree,'small'));
+        if(validation?.state==='tested')section.append(el('p','组合提交 '+validation.H+' 通过本工作登记的测试，仍待两家公司审查。','small'));
+        else if(validation?.state==='failed')section.append(el('p','组合提交 '+validation.H+' 的登记测试失败。','github-error'));
+        else if(validation)section.append(el('p','本次组合验证的原始结果待核。','small'));
+        else if(current?.projectDevelopment&&!item.stopRequested){
+          const test=el('button','生成组合提交并运行登记测试','outline');test.disabled=d.pending;
+          test.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-verify',{H:integration.H,B:integration.B}));
+          section.append(test);
+        }
+      }
       else if(preview?.state==='conflicts')section.append(el('p','Git 在这些文件检测到冲突','github-error'),el('pre',preview.paths.join('\n')));
       else if(preview)section.append(el('p',preview.state==='git_failed'?'本次 Git 整合检查没有得到可用结果。':'整合检查原件待核。','small'));
       else if(!item.stopRequested&&!reportGaps.some(gap=>gap.H1===delivery?.H)){

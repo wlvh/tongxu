@@ -4,7 +4,7 @@ import {planAndReviewSupplement,readPlannedSupplement,supplementPlanningDirector
 import {readProjectIssueReview,runProjectIssueReview} from './project-issue-review.js';
 import {readProjectIssueDraft,runProjectIssueDraft} from './project-issue-draft.js';
 import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
-import {previewWorkIntegration,readWorkIntegrationPreview,type WorkIntegrationPreviewInput} from './project-work-integration-preview.js';
+import {previewWorkIntegration,readWorkIntegrationPreview,readWorkIntegrationValidation,validateWorkIntegration,type WorkIntegrationPreviewInput} from './project-work-integration-preview.js';
 import {readReviewedSupplement,type SupplementReviewInput} from './project-supplement-review.js';
 import {currentAIChoice,selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
@@ -240,11 +240,14 @@ export class ProjectWork{
     const resultStatus=this.resultStatus(draft,result),preview=resultStatus.current?this.integrationInput(scope,draft):null;
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
       resultStatus,
-      ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview)}:{}),
+      ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview),
+        integrationValidation:await readWorkIntegrationValidation(this.integrationDirectory(draft,preview),preview)}:{}),
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
-      preparationDiagnostic:await diagnostic(draft),validationFailure,validationRecovery,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
+      preparationDiagnostic:await diagnostic(draft),validationFailure,validationRecovery,
+      firstInputContinuation:draft.source&&resultStatus.latest?{requestId:resultStatus.latest.requestId,
+        ...await(await this.controls(scope)).firstInputContinuation(draft.source,resultStatus.latest.requestId)}:null,newModelInputs:0};
   }
   private integrationInput(scope:ProjectChatScope,d:ProjectWorkDraft):WorkIntegrationPreviewInput|null{
     const H0=d.preparation?.H,H=d.delivery?.H,B=scope.repository.defaultHead,target=scope.repository.defaultBranch;
@@ -254,7 +257,7 @@ export class ProjectWork{
   private integrationDirectory(d:ProjectWorkDraft,input:WorkIntegrationPreviewInput){
     return join(this.directory(d),'integration-preview-'+hash(canonical(input)).slice(0,32));
   }
-  async integrationPreview(scope:ProjectChatScope,id:string,b:unknown){
+  async integrationPreview(scope:ProjectChatScope,id:string,b:unknown,validate=false){
     const d=this.store.get(scope,id),input=this.integrationInput(scope,d),body=b as Row;
     if(!exactKeys(b,['H','B'])||!input||body.H!==input.H||body.B!==input.B||!d.catalog||d.stopRequested)
       throw new Error('project_work_integration_preview_changed');
@@ -275,9 +278,17 @@ export class ProjectWork{
       stillCurrent();
     };
     await check();
+    const directory=this.integrationDirectory(d,input);
+    if(validate){
+      if(!d.projectDevelopment||!d.source)throw new Error('project_work_integration_test_authority_required');
+      const latest=this.resultStatus(d,results).latest;
+      if(!latest)throw new Error('project_work_integration_preview_evidence_required');
+      return (await this.controls(scope)).testIntegration(d.source,latest.requestId,input,check,stillCurrent,
+        (project,authorize)=>validateWorkIntegration(directory,input,project,check,authorize));
+    }
     const repositoryPath=d.preparation!.repositoryPath;
     await ensureWorkCommit({path:repositoryPath,H:input.B,repository:input.repository},workAuthorityProfile(this.config.owner,scope,d.issue.number));
-    return previewWorkIntegration(this.integrationDirectory(d,input),input,repositoryPath,check);
+    return previewWorkIntegration(directory,input,repositoryPath,check);
   }
   private job(scope:ProjectChatScope,id:string,action:(job:Job)=>Promise<void>){
     if(!this.accepting)throw new Error('project_work_closing');if(this.active.has(id))return {id,active:true,duplicate:true};
@@ -320,7 +331,13 @@ export class ProjectWork{
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
     });
   }
-  async continueFirstInput(scope:ProjectChatScope,id:string){const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');await this.verify(scope);return(await this.controls(scope)).continueFirstInput(d.source,d.requestId);}
+  async continueFirstInput(scope:ProjectChatScope,id:string,requestId?:string){
+    const d=this.store.get(scope,id);if(!d.catalog||!d.source||d.stopRequested)throw new Error('project_work_original_not_registered');
+    await this.verify(scope);
+    const current=this.resultStatus(d,await this.implementationState(scope,d)).latest?.requestId;
+    if(!current||current!==(requestId??d.requestId))throw new Error('project_work_first_input_request_changed');
+    return (await this.controls(scope)).continueFirstInput(d.source,current);
+  }
   private currentBinding(d:ProjectWorkDraft){
     const restart=d.restart&&d.version===d.restart.successor.version&&d.requestId===d.restart.successor.requestId?d.restart:undefined;
     return {work:d.id,version:d.version,requestId:d.requestId,proposalSha256:hash(canonical(d.preparation!.proposal)),preparationDirectory:d.preparation!.directory,preparationCaptureSha256:d.preparation!.captureSha256,preparationInputSha256:d.preparation!.inputSha256,issueBodySha256:d.issue.bodySha256,H:d.preparation!.H,configurationSha256:hash(canonical(this.config.verification)),executorSha256:this.config.executor.sha256,implementationAI:d.checking?.implementationAI??null,queueDirectory:join(this.directory(d),'queue'),restartSha256:restart?hash(canonical(restart)):null,predecessor:restart?{...restart.predecessor,store:join(this.config.root,'works',d.id,'version-'+restart.predecessor.version,'queue')}:null,metadataDirectory:join(d.checking!.directory,'billing')};

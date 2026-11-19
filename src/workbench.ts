@@ -183,10 +183,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
     const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources,readPreferences):null;
     const scope=contactContext?.scope;
-    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round,H,executionKind)=>{
+    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round,H,executionKind,recheck)=>{
       if(work.account!==scope.account.id||work.repository!==scope.repository.id||work.nodeId!==scope.repository.nodeId)
         throw new Error('formal_original_project_work_changed');
-      const receipts=(await openProjectChat()).repairInbox(scope,work.target,operation,round);
+      const receipts=(await openProjectChat()).repairInbox(scope,work.target,operation,round,recheck);
       const projectWork=await openProjectWork();
       return Promise.all(receipts.map(async receipt=>{
         const approved=await projectWork.supplementReview({repository:scope.repository.fullName,target:work.target,H1:H,
@@ -407,7 +407,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           }else json(res,404,{error:'route_not_found'});
           return;
         }
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|reconcile-validation|recheck|restart-failure|explain|review-issue|integration-preview)$/.exec(url.pathname);
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|reconcile-validation|recheck|restart-failure|explain|review-issue|integration-preview|integration-verify)$/.exec(url.pathname);
         if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create','/api/project-work/draft-issue'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
@@ -419,7 +419,10 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(action?.[2]==='start'){try{const preview=await withAI(()=>work.confirmation(selection,action[1]!,body)),payload={...body,...(preview.currentCheckSha256?{currentCheckSha256:preview.currentCheckSha256}:{})},result=preview.active?{id:action[1]!,active:true,originalRetained:true}:preview.alreadyAuthorized?await withAI(()=>work.start(selection,action[1]!,payload)):await workOwner.request(selection,action[1]!,payload,preview);if(!preview.active&&!preview.alreadyAuthorized)work.recordActionProblem(selection,action[1]!,body.version,null);json(res,202,result);}catch(e){work.recordActionProblem(selection,action[1]!,body.version,safeError(e));throw e;}}
         else if(action?.[2]==='recheck'||action?.[2]==='restart-failure'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,action[2]==='recheck'?await withAI(()=>work.recheck(selection,action[1]!)):await withAI(()=>work.restartFailure(selection,action[1]!)));}
         else if(action?.[2]==='correct-validation'){if(!exactKeys(body,body?.requestId===undefined?[]:['requestId'])||body?.requestId!==undefined&&typeof body.requestId!=='string')throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!,body.requestId);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!,preview.requestId):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
-        else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
+        else if(action?.[2]==='continue-first-input'){
+          if(!exactKeys(body,[])&&(!exactKeys(body,['requestId'])||typeof body.requestId!=='string'))throw new Error('project_work_request_invalid');
+          json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!,body.requestId)));
+        }
         else if(action?.[2]==='review-issue')json(res,202,await withAI(()=>work.reviewIssue(selection,action[1]!,body)));
         else if(action?.[2]==='reconcile-validation'){
           if(!exactKeys(body,['requestId'])||typeof body.requestId!=='string')throw new Error('project_work_request_invalid');
@@ -428,7 +431,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           const controls=await openImplementation(selection),request=await controls.validationRequest(draft.source,draft.requestId,body.requestId);
           json(res,200,await controls.reconcileValidation(draft.source,request));
         }
-        else if(action?.[2]==='integration-preview')json(res,200,await work.integrationPreview(selection,action[1]!,body));
+        else if(action?.[2]==='integration-preview'||action?.[2]==='integration-verify')json(res,200,await work.integrationPreview(selection,action[1]!,body,action[2]==='integration-verify'));
         else if(action?.[2]==='explain')json(res,202,await work.explain(selection,action[1]!,body));
         else if(action?.[2]==='receive'){
           const exact=exactKeys(body,['H','requestId'])&&typeof body.H==='string'&&/^[a-f0-9]{40}$/.test(body.H)&&typeof body.requestId==='string';
