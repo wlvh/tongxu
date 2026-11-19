@@ -2,6 +2,7 @@ import {captureImplementationAI} from './implementation-ai.js';
 import {firstCodingWorkflowRevision,readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
 import {planAndReviewSupplement,readPlannedSupplement,supplementPlanningDirectory,supplementPlanningStatus,type SupplementPlanningSource} from './project-supplement-planning.js';
 import {readProjectIssueReview,runProjectIssueReview} from './project-issue-review.js';
+import {readFormalSource} from './formal-review-material.js';
 import {readProjectIssueDraft,runProjectIssueDraft} from './project-issue-draft.js';
 import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
 import {previewWorkIntegration,readWorkIntegrationPreview,readWorkIntegrationValidation,validateWorkIntegration,type WorkIntegrationPreviewInput} from './project-work-integration-preview.js';
@@ -11,7 +12,7 @@ import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkC
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
 import {projectValidationConstraint,readableValidationConstraint} from './work-validation-definition.js';
 import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
-import {join,resolve} from 'node:path';
+import {join,resolve,posix} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {assertWorkEnvironmentEnded} from './project-work-environment.js';
 import {ProjectWorkStore,workProjectKey,type ProjectWorkDraft,type ProjectDevelopment} from './project-work-store.js';
@@ -265,13 +266,25 @@ export class ProjectWork{
     tested:NonNullable<Awaited<ReturnType<typeof readWorkIntegrationValidation>>>){
     if(tested.state!=='tested')throw new Error('project_work_integration_review_evidence_required');
     const directory=this.integrationDirectory(d,input),workspace=join(directory,'validation','worktree');
-    const diff=await gitReadOnly(workspace,['diff','--no-ext-diff','--no-textconv',input.B,tested.H,'--']);
-    const projectRules=[];
-    for(const path of ['AGENTS.md','SOP.md'])if(await exists(join(workspace,path)))
-      projectRules.push({path,text:(await regular(join(workspace,path),128*1024)).toString()});
+    const [diff,baseChanges,workPaths,basePaths]=await Promise.all([
+      gitReadOnly(workspace,['diff','--no-ext-diff','--no-textconv',input.B,tested.H,'--']),
+      gitReadOnly(workspace,['diff','--no-ext-diff','--no-textconv',input.H0,input.B,'--']),
+      gitReadOnly(workspace,['diff','--no-renames','--name-only','-z',input.B,tested.H,'--']),
+      gitReadOnly(workspace,['diff','--no-renames','--name-only','-z',input.H0,input.B,'--'])
+    ]);
+    const paths=[...new Set((workPaths+'\0'+basePaths).split('\0').filter(Boolean))].sort(),rules=new Set(['AGENTS.md','SOP.md']);
+    if(paths.length>256)throw new Error('formal_complete_material_limit');
+    for(const path of paths){
+      for(let parent=posix.dirname(path);parent!=='.'&&parent!=='/';parent=posix.dirname(parent))
+        rules.add(parent+'/AGENTS.md');
+    }
+    const listing=await gitReadOnly(workspace,['ls-tree','-r','-z',tested.H,'--',...new Set([...rules,...paths])]);
+    const present=new Set(listing.split('\0').filter(Boolean).map(line=>line.slice(line.indexOf('\t')+1)));
+    const readFiles=(files:Iterable<string>)=>Promise.all([...files].filter(path=>present.has(path)).map(path=>readFormalSource(workspace,tested.H,path)));
+    const [projectRules,affectedFiles]=await Promise.all([readFiles(rules),readFiles(paths)]);
     const material={work:d.id,repository:input.repository,issue:{number:d.issue.number,body:d.issue.body,
       bodySha256:d.issue.bodySha256,url:d.issue.url},goal:d.goal,head:tested.H,
-      integration:{previousWorkHead:input.H,base:input.B,tree:tested.T,target:input.target,diff,registeredTests:tested.tests,projectRules}};
+      integration:{previousWorkHead:input.H,originalBase:input.H0,base:input.B,tree:tested.T,target:input.target,diff,baseChanges,registeredTests:tested.tests,projectRules,affectedFiles}};
     if(Buffer.byteLength(canonical(material))>2*1024*1024)throw new Error('formal_complete_material_limit');
     return material;
   }

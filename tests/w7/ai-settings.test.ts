@@ -53,7 +53,7 @@ test('a verified workflow adoption sets the scoped default atomically and surviv
     await settings.checkWorkflow(selected,{requestId,mode:'first-adoption'},current,async()=>({main:'1234'.repeat(10),firstMerged:true}));
     await assert.rejects(settings.activateWorkflow(selected,input,current,missing),/activation_evidence_required/);
     assert.equal(settings.workflowRevision(selected),before);
-    const evidence={runtimeHead:'b'.repeat(40),operation:randomUUID(),materialSha256:'a'.repeat(64),testReport:'fixture accepted report reference'};
+    const evidence={runtimeHead:'b'.repeat(40),runtimeFilesSha256:'c'.repeat(64),operation:randomUUID(),materialSha256:'a'.repeat(64),testReport:'fixture accepted report reference'};
     const adopted=await settings.activateWorkflow(selected,input,current,async revision=>{assert.equal(revision,input.revision);return evidence;});
     assert.deepEqual(adopted.evidence,evidence);
     assert.equal(settings.workflowRevision(selected),firstCodingWorkflowRevision);

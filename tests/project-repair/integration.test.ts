@@ -466,6 +466,11 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
   proposal.materialPaths.push(editorPath);
   proposal.protectedPaths.push(editorPath);
  }
+ if(fault==='project-development'){
+  await writeFile(join(f.objects,'src/AGENTS.md'),'Preserve the exact download boundary. This rule applies to this folder.\n');
+  await git(f.objects,['add','--','src/AGENTS.md']);
+  await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','add scoped original rules']);
+ }
  const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
  const prepareOwner=AuthorityRecords.prototype.prepare;
@@ -1034,6 +1039,12 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(combinedReview.integrationReview.approved,true);
      assert.equal(combinedReview.integrationReview.correctness.exchanged.candidateH,combined.value.H);
      assert.equal(combinedReview.integrationReview.minimality.exchanged.candidateH,combined.value.H);
+     const reviewInput=JSON.parse(await readFile(join(config.root,'works',b,'version-1','integration-preview-'+hash(canonical(combinedReview.integrationSource)).slice(0,32),'dual-review','request.json'),'utf8')).material;
+     assert.match(reviewInput.integration.baseChanges,/Unrelated upstream change/);
+     assert.equal(reviewInput.integration.originalBase,H);
+     assert.equal(reviewInput.integration.base,nextBase);
+     assert.match(reviewInput.integration.projectRules.find((rule:any)=>rule.path==='src/AGENTS.md').text,/Preserve the exact download boundary/);
+     assert.ok(reviewInput.integration.affectedFiles.some((file:any)=>file.path==='src/normalize.mjs'));
      const openInputs=await readFile(f.trace);
      assert.equal((await post(reviewCombination,{H:combined.value.H,B:nextBase})).value.state,'returned');
      assert.deepEqual(await readFile(f.trace),openInputs);

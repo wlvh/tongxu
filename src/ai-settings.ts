@@ -41,7 +41,7 @@ export type AIRuntimeChoice=AIModelChoice&{tool:AIProgram;executable:string;reso
 export type AISettingsConfig=AICatalogConfig&{disabledMcpServers:string[]};
 export type AISettingsScope={account:{id:number};repository:{id:number;nodeId:string;fullName:string}};
 export type AIPreferenceSnapshot={revision:number;scope:AISettingsScope;roles:Partial<Record<AIRole,AIRuntimeChoice>>;errors?:Partial<Record<AIRole,string>>};
-export type WorkflowActivationEvidence={runtimeHead:string;operation:string;materialSha256:string;testReport:string};
+export type WorkflowActivationEvidence={runtimeHead:string;runtimeFilesSha256:string;operation:string;materialSha256:string;testReport:string};
 const context=new AsyncLocalStorage<AIPreferenceSnapshot>();
 export const withAIPreferences=<T>(snapshot:AIPreferenceSnapshot,fn:()=>T):T=>context.run(structuredClone(snapshot),fn);
 export const currentAIPreferences=(roles?:AIRole[])=>{const snapshot=context.getStore();if(!snapshot)return null;const copy=structuredClone(snapshot);if(roles){copy.roles=Object.fromEntries(Object.entries(copy.roles).filter(([role])=>roles.includes(role as AIRole)));copy.errors=Object.fromEntries(Object.entries(copy.errors??{}).filter(([role])=>roles.includes(role as AIRole)));}return copy;};
@@ -169,7 +169,7 @@ export class AISettings{
     if(original?.revision===b.revision)return original;
     await verify();
     const evidence=await proof(b.revision);
-    if(!evidence||!/^[a-f0-9]{40}$/.test(evidence.runtimeHead)||!chatId(evidence.operation)||
+    if(!evidence||!/^[a-f0-9]{40}$/.test(evidence.runtimeHead)||!/^[a-f0-9]{64}$/.test(evidence.runtimeFilesSha256)||!chatId(evidence.operation)||
        !/^[a-f0-9]{64}$/.test(evidence.materialSha256)||typeof evidence.testReport!=='string'||!evidence.testReport)
       throw new Error('coding_workflow_activation_evidence_required');
     await verify();

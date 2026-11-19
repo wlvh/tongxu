@@ -321,8 +321,12 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           const pending=compiledState??await original();
           return pending.H1&&pending.H1!==repair.H1?pending:{...repair,resumable:false};
         }
-        if(compiled&&!repair.delivered)return compiledState??original();
+        if(compiled&&!repair.delivered&&!repair.endedRepair?.published)return compiledState??original();
         if(repair.adopted)return repair;
+        if(repair.endedRepair?.published&&!repair.delivered&&!compiled){
+          const latest=await original().catch(()=>null);
+          if(latest?.H1&&latest.H1!==repair.H1)return latest;
+        }
         const pending=repair.endedRepair?.published&&(!compiledState||compiledState.unregistered)
           ?await (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId,repair.endedRepair).catch(error=>({reason:(error as Error).message}) as Row)
           :compiledState??await original().catch(()=>null);
@@ -352,7 +356,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           const H=(await controls.readSupplement(target,null,text,id)).H1;
           if('supersededBase' in repair?H===repair.H1:H!==repair.H1)throw new Error('formal_repair_supplement_current_base_required');
         }
-        const published=ended?.published?ended:undefined;
+        const latest=ended?.published&&!repair?.delivered?await controls.readSupplement(target,null,text,id).catch(()=>null):null;
+        const published=ended?.published&&(!latest?.H1||latest.H1===repair?.H1)?ended:undefined;
         const prepared=await controls.supplementPlanningInput(target,id,text,published);
         return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent,published?async()=>{
           const proof=(await formalForSupplement(scope,target,id,text,published.operation))?.endedRepair;
@@ -550,12 +555,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(url.pathname.endsWith('/workflow/check')){json(res,200,await ai.checkWorkflow(selection,body,()=>verifyProject(selection),dependencies?.workflowUpstream));return;}
         if(url.pathname.endsWith('/workflow/activate')){
           const activation=await ai.activateWorkflow(selection,body,()=>verifyProject(selection),async revision=>{
-            if(!runtimeIdentity||!p.projectWork||!p.projectSecretary||!p.formalReview)return null;
+            if(!runtimeIdentity||runtimeIdentity.reproducedRuntimeFilesSha256!==runtimeIdentity.runtimeFilesSha256||
+               !p.projectWork||!p.projectSecretary||!p.formalReview)return null;
             const context=await projectPlan(selection);
             if(context.selectedSourcesUnknown)return null;
             const ref=context.plan.formalReview;if(!ref)return null;
             const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed,dependencies?.formalSourceReader,()=>verifyProject(selection));
-            return formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead);
+            return formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead,runtimeIdentity.runtimeFilesSha256);
           });
           json(res,200,activation);return;
         }

@@ -1,10 +1,11 @@
-import {readdir,realpath,open} from 'node:fs/promises';
+import {readdir,realpath,open,mkdtemp,rm,mkdir,symlink,writeFile} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {join,isAbsolute,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {tmpdir} from 'node:os';
 // The trusted launch bootstrap uses only Node built-ins. Importing application
 // helpers here would execute their module bodies before checking their bytes.
 const hash=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
@@ -17,8 +18,11 @@ async function regular(path:string,limit:number){
   try{const before=await file.stat();if(!before.isFile()||before.nlink!==1||before.size>limit)throw new Error('workbench_runtime_file_invalid');const bytes=await file.readFile(),after=await file.stat();if(bytes.length!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs)throw new Error('workbench_runtime_file_changed_during_read');return bytes;}finally{await file.close();}
 }
 const exec=promisify(execFile);
-export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:Array<{path:string;sha256:string}>};
-export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;verifiedAt:string};
+type RuntimeFile={path:string;sha256:string};
+type RuntimeBuildProof={kind:'tsc-reproduction-v1';sourceHead:string;runtimeFilesSha256:string;compilerSha256:string;tsconfigSha256:string};
+export type WorkbenchRuntime={schemaVersion:1;kind:'tongxu-current-workbench';sourceDirectory:string;sourceHead:string;nodeVersion:string;plan:{path:string;sha256:string};files:RuntimeFile[];buildProof?:RuntimeBuildProof};
+export type WorkbenchRuntimeIdentity={sourceHead:string;nodeVersion:string;nodeExecutable:string;minimumNodeVersion:string;buildNodeVersion:string;planSha256:string;runtimeFilesSha256:string;reproducedRuntimeFilesSha256?:string;verifiedAt:string};
+const runtimeFilesHash=(files:RuntimeFile[])=>hash(canonical(files.slice().sort((a,b)=>a.path.localeCompare(b.path))));
 async function runtimeFiles(root:string){
   const result:string[]=[];async function visit(relative:string,suffix:string){for(const entry of await readdir(join(root,relative),{withFileTypes:true})){const name=relative+'/'+entry.name;if(entry.isSymbolicLink())throw new Error('workbench_runtime_link_not_supported');if(entry.isDirectory())await visit(name,suffix);else if(entry.isFile()&&name.endsWith(suffix))result.push(name);}}
   await visit('dist/src','.js');await visit('prompts','.md');result.push('package.json','web/workbench/index.html','web/workbench/app.js','web/workbench/project-chat.js','web/workbench/project-work.js','web/workbench/project-owner.js','web/workbench/ai-settings.js','web/workbench/implementation.js','web/workbench/reception.js','web/workbench/formal-review.js','web/workbench/app.css','web/workbench/favicon.svg');return result.sort();
@@ -26,10 +30,15 @@ async function runtimeFiles(root:string){
 /** One explicit local composition, not an updater or a parallel store. */
 export async function inspectWorkbenchRuntime(raw:Buffer){
   const p=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(raw)) as WorkbenchRuntime;
-  if(raw.length>256*1024||!exactKeys(p,['schemaVersion','kind','sourceDirectory','sourceHead','nodeVersion','plan','files'])||p.schemaVersion!==1||p.kind!=='tongxu-current-workbench'||typeof p.sourceDirectory!=='string'||!isAbsolute(p.sourceDirectory)||resolve(p.sourceDirectory)!==p.sourceDirectory||!(/^[a-f0-9]{40}$/).test(p.sourceHead)||typeof p.nodeVersion!=='string'||!/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$/.test(p.nodeVersion)||!exactKeys(p.plan,['path','sha256'])||typeof p.plan.path!=='string'||!isAbsolute(p.plan.path)||resolve(p.plan.path)!==p.plan.path||!isAuthorityDigest(p.plan.sha256)||!Array.isArray(p.files)||p.files.length>1024||p.files.some(f=>!exactKeys(f,['path','sha256'])||!safeRelativePath(f.path)||!isAuthorityDigest(f.sha256)))throw new Error('workbench_runtime_manifest_invalid');
+  if(raw.length>256*1024||!exactKeys(p,['schemaVersion','kind','sourceDirectory','sourceHead','nodeVersion','plan','files',...(p?.buildProof?['buildProof']:[])])||p.schemaVersion!==1||p.kind!=='tongxu-current-workbench'||typeof p.sourceDirectory!=='string'||!isAbsolute(p.sourceDirectory)||resolve(p.sourceDirectory)!==p.sourceDirectory||!(/^[a-f0-9]{40}$/).test(p.sourceHead)||typeof p.nodeVersion!=='string'||!/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$/.test(p.nodeVersion)||!exactKeys(p.plan,['path','sha256'])||typeof p.plan.path!=='string'||!isAbsolute(p.plan.path)||resolve(p.plan.path)!==p.plan.path||!isAuthorityDigest(p.plan.sha256)||!Array.isArray(p.files)||p.files.length>1024||p.files.some(f=>!exactKeys(f,['path','sha256'])||!safeRelativePath(f.path)||!isAuthorityDigest(f.sha256)))throw new Error('workbench_runtime_manifest_invalid');
   if(await realpath(p.sourceDirectory)!==p.sourceDirectory)throw new Error('workbench_runtime_directory_changed');
   const files=await runtimeFiles(p.sourceDirectory);if(canonical(p.files.map(f=>f.path).sort())!==canonical(files))throw new Error('workbench_runtime_file_set_changed');
   for(const f of p.files)if(hash(await regular(join(p.sourceDirectory,f.path),4*1024*1024))!==f.sha256)throw new Error('workbench_runtime_build_changed');
+  const runtimeFilesSha256=runtimeFilesHash(p.files),proof=p.buildProof;
+  if(proof&&(!exactKeys(proof,['kind','sourceHead','runtimeFilesSha256','compilerSha256','tsconfigSha256'])||
+     proof.kind!=='tsc-reproduction-v1'||proof.sourceHead!==p.sourceHead||proof.runtimeFilesSha256!==runtimeFilesSha256||
+     !isAuthorityDigest(proof.compilerSha256)||proof.tsconfigSha256!==hash(await regular(join(p.sourceDirectory,'tsconfig.json'),128*1024))))
+    throw new Error('workbench_runtime_build_proof_changed');
   const plan=await regular(p.plan.path,256*1024);if(hash(plan)!==p.plan.sha256)throw new Error('workbench_runtime_plan_changed');
   const options={timeout:5000,maxBuffer:1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}};
   const head=await exec('/usr/bin/git',['-C',p.sourceDirectory,'rev-parse','--verify','HEAD'],options),status=await exec('/usr/bin/git',['-C',p.sourceDirectory,'status','--porcelain','--untracked-files=normal','--','src','web','prompts','package.json','tsconfig.json'],options);
@@ -39,14 +48,44 @@ export async function inspectWorkbenchRuntime(raw:Buffer){
   const helper=new URL('./node-runtime.js',import.meta.url),expected=p.files.find(f=>f.path==='dist/src/node-runtime.js');
   if(!expected||hash(await regular(fileURLToPath(helper),256*1024))!==expected.sha256)throw new Error('workbench_node_helper_changed');
   const node=await (await import(helper.href)).requireNodeRuntime();
-  const identity:WorkbenchRuntimeIdentity={sourceHead:p.sourceHead,...node,buildNodeVersion:p.nodeVersion,planSha256:p.plan.sha256,runtimeFilesSha256:hash(canonical(p.files.slice().sort((a,b)=>a.path.localeCompare(b.path)))),verifiedAt:new Date().toISOString()};return {manifest:p,identity};
+  const identity:WorkbenchRuntimeIdentity={sourceHead:p.sourceHead,...node,buildNodeVersion:p.nodeVersion,planSha256:p.plan.sha256,runtimeFilesSha256,
+    ...(proof?{reproducedRuntimeFilesSha256:proof.runtimeFilesSha256}:{}),verifiedAt:new Date().toISOString()};return {manifest:p,identity};
 }
-/** Installation helper: freeze one already built and tested composition. This
- * does not build, approve or activate it, and writes no files itself. */
+async function reproduceWorkbenchBuild(p:WorkbenchRuntime):Promise<RuntimeBuildProof|undefined>{
+  const tsconfig=join(p.sourceDirectory,'tsconfig.json');
+  let compiler:string,tsconfigSha256:string;
+  try{
+    compiler=await realpath(join(p.sourceDirectory,'node_modules','typescript','lib','tsc.js'));
+    tsconfigSha256=hash(await regular(tsconfig,128*1024));
+  }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
+  const compilerSha256=hash(await regular(compiler,24*1024*1024)),directory=await realpath(await mkdtemp(join(tmpdir(),'tongxu-build-check-')));
+  try{
+    const snapshot=join(directory,'source'),output=join(directory,'output'),archive=join(directory,'source.tar');
+    await mkdir(snapshot,{mode:0o700});
+    const packed=await exec('/usr/bin/git',['--no-replace-objects','-C',p.sourceDirectory,'archive',p.sourceHead,'src','tests','package.json','tsconfig.json'],
+      {encoding:'buffer',timeout:120000,maxBuffer:32*1024*1024});
+    await writeFile(archive,packed.stdout,{flag:'wx',mode:0o600});
+    await exec('/usr/bin/tar',['-xf',archive,'-C',snapshot],{timeout:120000,maxBuffer:2*1024*1024});
+    if(hash(await regular(join(snapshot,'tsconfig.json'),128*1024))!==tsconfigSha256)throw new Error('workbench_runtime_source_changed');
+    await symlink(await realpath(join(p.sourceDirectory,'node_modules')),join(snapshot,'node_modules'),'dir');
+    await exec(process.execPath,[compiler,'--project',join(snapshot,'tsconfig.json'),'--outDir',output],{cwd:snapshot,timeout:120000,maxBuffer:2*1024*1024});
+    for(const file of p.files.filter(file=>file.path.startsWith('dist/src/'))){
+      const compiled=await regular(join(output,file.path.slice('dist/'.length)),4*1024*1024).catch(()=>null);
+      if(!compiled||hash(compiled)!==file.sha256)
+        throw new Error('workbench_runtime_build_not_reproducible');
+    }
+    return {kind:'tsc-reproduction-v1',sourceHead:p.sourceHead,runtimeFilesSha256:runtimeFilesHash(p.files),compilerSha256,tsconfigSha256};
+  }finally{await rm(directory,{recursive:true,force:true});}
+}
+/** Freeze an existing build. The optional compiler check writes only to a
+ * private temporary directory before comparing the supplied artifacts. */
 export async function prepareWorkbenchRuntime(sourceDirectory:string,planPath:string):Promise<WorkbenchRuntime>{
   const head=await exec('/usr/bin/git',['-C',sourceDirectory,'rev-parse','--verify','HEAD'],{timeout:5000});
   const files=await Promise.all((await runtimeFiles(sourceDirectory)).map(async path=>({path,sha256:hash(await regular(join(sourceDirectory,path),4*1024*1024))})));
   const p:WorkbenchRuntime={schemaVersion:1,kind:'tongxu-current-workbench',sourceDirectory,sourceHead:head.stdout.trim(),nodeVersion:process.version,plan:{path:planPath,sha256:hash(await regular(planPath,256*1024))},files};
+  await inspectWorkbenchRuntime(Buffer.from(canonical(p)));
+  const buildProof=await reproduceWorkbenchBuild(p);
+  if(buildProof)p.buildProof=buildProof;
   await inspectWorkbenchRuntime(Buffer.from(canonical(p)));return p;
 }
 /** Install a normal Mac entry without freezing a dependency executable. The

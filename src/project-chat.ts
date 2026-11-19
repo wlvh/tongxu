@@ -424,7 +424,7 @@ export class ProjectChat{
           const reserved=this.db.prepare(`SELECT 1 FROM task_supplement_repair_inboxes,json_each(requests)
             WHERE target=? AND round=? AND operation IN (?,?) AND json_each.value=?`).get(binding,endedRepair.round,operations[0]!,operations[1]!,row.id);
           if(!reserved)throw new Error('formal_repair_inbox_binding_changed');
-        }else if(endedRepair)throw new Error('formal_repair_inbox_binding_changed');
+        }else if(endedRepair&&!endedRepair.published)throw new Error('formal_repair_inbox_binding_changed');
         this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);
       });
       const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};

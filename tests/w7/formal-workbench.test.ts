@@ -133,11 +133,11 @@ for(const mode of ['fix-clean','fix-late-close','fix-archived-failure','fix-disp
  assert.equal(handoffs,mode==='fix-dispatch-late'?1:0);
 });
 
-for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
- const publishedLate=mode==='fix-late-published';
+for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published','fix-new-after-published',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
+ const newAfter=mode==='fix-new-after-published',publishedLate=mode==='fix-late-published'||newAfter;
  const dockerConfig=process.env.TONGXU_TEST_DOCKER_CONFIG;
  const protocol=publishedLate&&!dockerConfig?await dockerProtocolFixture(t):null;
- const {f,peer}=await dualPrograms(t,mode,protocol?.config);
+ const {f,peer}=await dualPrograms(t,newAfter?'fix-late-published':mode,protocol?.config);
  const path=join(f.root,'dual-review-workbench.json'),account={id:7,login:'fixture'},repo={
    id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Dual review fixture',private:true,archived:false,
    defaultBranchRef:{name:'fixture',target:{oid:f.live.candidate.B}},updated_at:new Date().toISOString()
@@ -257,24 +257,28 @@ for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published
  if(late){
    try{
      await Promise.race([reached,waitFor(async()=>!(await report()).controllerActive).then(()=>assert.fail('repair checkpoint was not reached'))]);
-     assert.equal((await http(projectChat+'/supplement',{requestId:groupId,conversationId,target:a,text})).status,202);
+     if(!newAfter)assert.equal((await http(projectChat+'/supplement',{requestId:groupId,conversationId,target:a,text})).status,202);
    }finally{release();}
    await waitFor(async()=>!(await report()).controllerActive);
    const original=f.q.formalReviews().state(operation);
    assert.equal(original.terminal?.result.status,publishedLate?'awaiting_publication':'needs_evidence',JSON.stringify(original.detail));
    const inboxPath=join(original.request.directory,'repair-inbox-1.json'),bytes=await readFile(inboxPath),originalInput=JSON.parse(bytes.toString());
-   assert.equal(originalInput.items[0].requestId,groupId);assert.equal(originalInput.items[0].revision,undefined);
-   assert.equal((await inbox())[0].original.adopted,false);
+   if(newAfter)assert.deepEqual(originalInput.items,[]);
+   else{
+     assert.equal(originalInput.items[0].requestId,groupId);assert.equal(originalInput.items[0].revision,undefined);
+     assert.equal((await inbox())[0].original.adopted,false);
+   }
    if(publishedLate){
      const fix=original.terminal!.result.fix,old=f.live.candidate.H,take=()=>http(projectChat+'/continue-supplements',{target:a});
      assert.notEqual(fix.H1,old);
-     assert.equal((await inbox())[0].original.reason,'formal_repair_supplement_publication_required');
+     if(!newAfter)assert.equal((await inbox())[0].original.reason,'formal_repair_supplement_publication_required');
      assert.equal((await take()).status,202);assert.equal(handoffs.length,0);
      await publishFixtureRepair(t,f,fix);
      assert.equal((await take()).status,202);assert.equal(handoffs.length,0);
      assert.equal((await http(route+'/check',{})).status,200);
      const successor=async()=>(await http('/api/formal-review')).data.entries[0].requests.find((row:any)=>row.previousOperation===operation);
      await waitFor(async()=>{const next=await successor();return next?.phase==='pass'&&!next.controllerActive;});
+     if(newAfter)assert.equal((await http(projectChat+'/supplement',{requestId:groupId,conversationId,target:a,text})).status,202);
      const priorApproval=(await inbox())[0];assert.equal(priorApproval.original.ready,false);assert.equal(priorApproval.original.continuationBase,fix.H1);
      approved=true;
      const releaseDir=join(fix.workspace,'..','operation','ownership-history');
@@ -288,6 +292,7 @@ for(const mode of ['pass','missing-peer','fix-late-approved','fix-late-published
      assert.equal((await inbox())[0].original.reason,'formal_repair_supplement_current_base_required');
      assert.equal((await take()).status,202);assert.equal(handoffs.length,0);f.live.candidate.H=fix.H1;
      const ready=(await inbox())[0].original;assert.equal(ready.ready,true,JSON.stringify(ready));assert.equal(ready.adopted,false);
+     assert.equal(ready.delivered,!newAfter);
      assert.equal((await take()).status,202);assert.equal((await take()).status,202);assert.equal(handoffs.length,1);
      assert.equal(handoffs[0]!.published!.reviewOperation,(await successor()).operation);assert.equal(handoffs[0]!.sessionId,fix.sessionId);
      t.diagnostic(JSON.stringify({request:groupId,original:old,repair:fix.H1,repairSession:fix.sessionId,

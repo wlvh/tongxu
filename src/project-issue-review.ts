@@ -12,7 +12,8 @@ import type {AIRuntimeChoice} from './ai-settings.js';
 import type {RepairConfig} from './repair.js';
 
 type ReviewMaterial={work:string;repository:string;issue:{number:number;body:string;bodySha256:string;url:string};goal:string;head:string;
-  integration?:{previousWorkHead:string;base:string;tree:string;target:string;diff:string;registeredTests:unknown;projectRules:Array<{path:string;text:string}>}};
+  integration?:{previousWorkHead:string;originalBase:string;base:string;tree:string;target:string;diff:string;baseChanges:string;
+    registeredTests:unknown;projectRules:Array<{path:string;text:string}>;affectedFiles:Array<{path:string;text:string}>}};
 type ReviewRequest={material:ReviewMaterial;correctness:CodingWorkflowPrompt;minimality:CodingWorkflowPrompt;peer:AIRuntimeChoice;executionKind:'fixture'|'native_capture';verdictProtocol?:1};
 const subject=(m:ReviewMaterial)=>({kind:'local-git' as const,repository:m.integration?'local/project-integration-review':'local/project-issue-review',pr:null,
   H:m.head,B:m.integration?.base??m.head,target:m.integration?.target??'issue-review'});
