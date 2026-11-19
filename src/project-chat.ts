@@ -12,7 +12,7 @@ import {chatId,validateProjectChatConfig,projectChatInstructionsFor,projectChatT
 import {exactKeys} from './authority-contract.js';
 import type {GitHubProjects} from './github-projects.js';
 import type {Candidate} from './live-codex.js';
-import {currentAIChoice,type AIRuntimeChoice} from './ai-settings.js';
+import {currentAIChoice,currentAIPreferences,withAIPreferences,type AIPreferenceSnapshot,type AIRuntimeChoice} from './ai-settings.js';
 import {modelChoice,checkCodexSelected,capturedCodexModels,codexTurnChoice} from './ai-execution.js';
 
 export type ProjectChatScope=ReturnType<GitHubProjects['selection']>;
@@ -33,6 +33,9 @@ type Active={promise:Promise<void>;session?:BoundedCodexSession;stop:boolean;tim
  * contracts remain authoritative; opening or replaying a chat never sends. */
 export class ProjectChat{
   private active=new Map<string,Active>();private accepting=true;private owner=randomUUID();
+  // Only admissions made in this process can start automatically. The row,
+  // not this map, is authoritative for whether anything has been sent.
+  private waiting=new Map<string,AIPreferenceSnapshot|null>();
   private constructor(private config:ProjectChatConfig,private db:DatabaseSync,private read:Reader,private verify:(scope:ProjectChatScope)=>Promise<void>,private supplements?:SupplementConsumer,private work?:ProjectWorkConsumer){}
   static async open(config:ProjectChatConfig,read:Reader,verify:(scope:ProjectChatScope)=>Promise<void>,supplements?:SupplementConsumer,work?:ProjectWorkConsumer){
     validateProjectChatConfig(config);if(!await exists(config.root))await privateDirectory(config.root,true);else await privateDirectory(config.root,false);
@@ -51,15 +54,35 @@ export class ProjectChat{
     if(!c||c.account!==scope.account.id||c.repository!==scope.repository.id||c.node_id!==scope.repository.nodeId)throw new Error('project_chat_outside_project');return c;
   }
   private rows(id:string){return this.db.prepare('SELECT * FROM messages WHERE conversation=? ORDER BY rowid').all(id) as Row[];}
+  private preceding(conversation:string,id:string){
+    return this.db.prepare('SELECT * FROM messages WHERE conversation=? AND rowid < (SELECT rowid FROM messages WHERE id=?) ORDER BY rowid').all(conversation,id) as Row[];
+  }
+  private projectMessages(scope:ProjectChatScope,phase:'active'|'queued'){
+    const phases=phase==='active'?"('registered','running','unknown')":"('queued')";
+    return this.db.prepare(`SELECT messages.* FROM messages JOIN conversations ON conversations.id=messages.conversation
+      WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=?
+      AND messages.phase IN ${phases} ORDER BY messages.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId) as Row[];
+  }
+  private async verifyHistory(history:Row[]){
+    for(const row of history)if(row.phase==='completed'){
+      const original=await this.verified(row.id);
+      if(original.report!==row.report)throw new Error('project_chat_saved_answer_changed');
+    }
+  }
   /** A preparation page may create the same conversation without inventing
    * a secretary question, answer or model execution. */
   ensureWorkConversation(scope:ProjectChatScope,id:string,title:string){
     if(!chatId(id))throw new Error('project_chat_id_invalid');
-    return this.transaction(()=>{const old=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(id);
-      if(old){this.conversationRow(scope,id);return {id,duplicate:true};}
-      const count=this.db.prepare('SELECT COUNT(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;
-      if(count.n>=128)throw new Error('project_chat_history_limit');
-      this.db.prepare('INSERT INTO conversations VALUES(?,?,?,?,?,?,?)').run(id,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,title.slice(0,80),now());return {id,newModelInputs:0};});
+    return this.transaction(()=>this.ensureConversation(scope,id,title));
+  }
+  private ensureConversation(scope:ProjectChatScope,id:string,title:string){
+    if(this.db.prepare('SELECT id FROM conversations WHERE id=?').get(id)){
+      this.conversationRow(scope,id);return {id,duplicate:true};
+    }
+    const count=this.db.prepare('SELECT COUNT(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;
+    if(count.n>=128)throw new Error('project_chat_history_limit');
+    this.db.prepare('INSERT INTO conversations VALUES(?,?,?,?,?,?,?)').run(id,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,title.slice(0,80),now());
+    return {id,newModelInputs:0};
   }
   private directory(id:string){if(!chatId(id))throw new Error('project_chat_id_invalid');return join(this.config.root,id);}
   private async recover(row:Row){
@@ -82,7 +105,9 @@ export class ProjectChat{
     const conversations=this.db.prepare('SELECT * FROM conversations WHERE account=? AND repository=? AND node_id=? ORDER BY created_at DESC,id DESC LIMIT 128').all(scope.account.id,scope.repository.id,scope.repository.nodeId) as Row[];
     for(const c of conversations)for(const row of this.rows(c.id))await this.recover(row);
     const busy=conversations.flatMap(c=>this.rows(c.id).filter(r=>activePhase(r.phase)).map(r=>({conversationId:c.id,requestId:r.id,status:r.phase})));
-    return {available:true,executionKind:this.config.executionKind,project:scope.repository,supplementTargets:this.supplements?await this.supplements.targets(scope):[],work:await this.workOptions(scope),busy,conversations:conversations.map(c=>({id:c.id,title:c.title,createdAt:c.created_at})),newModelInputs:0};
+    const oldest=this.projectMessages(scope,'queued')[0];
+    const nextQuestion=oldest?{conversationId:oldest.conversation,requestId:oldest.id}:null;
+    return {available:true,executionKind:this.config.executionKind,project:scope.repository,supplementTargets:this.supplements?await this.supplements.targets(scope):[],work:await this.workOptions(scope),busy,nextQuestion,conversations:conversations.map(c=>({id:c.id,title:c.title,createdAt:c.created_at})),newModelInputs:0};
   }
   async conversation(scope:ProjectChatScope,id:string){
     const c=this.conversationRow(scope,id);for(const row of this.rows(id))await this.recover(row);
@@ -92,28 +117,66 @@ export class ProjectChat{
   async begin(scope:ProjectChatScope,body:unknown){
     if(!this.accepting)throw new Error('project_chat_closing');const b=structuredClone(body) as Row;
     if(!exactKeys(b,['conversationId','requestId','parent','question',...(b&&Object.hasOwn(b,'workTarget')?['workTarget']:[])])||!chatId(b.conversationId)||!chatId(b.requestId)||!(b.parent===null||chatId(b.parent))||typeof b.question!=='string'||!b.question.trim()||b.question.length>8192||b.question.includes('\0')||Object.hasOwn(b,'workTarget')&&!projectWorkTarget(b.workTarget))throw new Error('project_chat_question_invalid');
-    if(this.db.prepare('SELECT id FROM task_supplements WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
-    const old=this.db.prepare('SELECT * FROM messages WHERE id=?').get(b.requestId) as Row|undefined;
-    if(old){this.conversationRow(scope,old.conversation);if(old.conversation!==b.conversationId||old.question!==b.question||old.parent!==b.parent||(this.workRow(b.requestId)?.target??null)!==(b.workTarget?canonical(b.workTarget):null))throw new Error('project_chat_request_changed');return {conversationId:b.conversationId,requestId:b.requestId,duplicate:true,newModelInputs:0};}
+    const duplicate=()=>{
+      if(this.db.prepare('SELECT id FROM task_supplements WHERE id=?').get(b.requestId))throw new Error('project_chat_request_changed');
+      const old=this.db.prepare('SELECT * FROM messages WHERE id=?').get(b.requestId) as Row|undefined;
+      if(!old)return null;
+      this.conversationRow(scope,old.conversation);
+      if(old.conversation!==b.conversationId||old.question!==b.question||old.parent!==b.parent||(this.workRow(b.requestId)?.target??null)!==(b.workTarget?canonical(b.workTarget):null))throw new Error('project_chat_request_changed');
+      return {conversationId:b.conversationId,requestId:b.requestId,duplicate:true,status:old.phase as string,newModelInputs:0};
+    };
+    const previous=duplicate();if(previous)return previous;
     if(b.workTarget){await this.verify(scope);const options=await this.workOptions(scope);if(!options.options.some(t=>t.source===b.workTarget.source&&t.issueNumber===b.workTarget.issueNumber))throw new Error('project_work_target_not_supported');}
-    const c=this.db.prepare('SELECT id FROM conversations WHERE id=?').get(b.conversationId);
-    if(c){this.conversationRow(scope,b.conversationId);for(const row of this.rows(b.conversationId))await this.recover(row);}
-    const projectRows=this.db.prepare("SELECT messages.* FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE conversations.account=? AND conversations.repository=? AND messages.phase IN ('registered','running','unknown')").all(scope.account.id,scope.repository.id) as Row[];for(const row of projectRows)await this.recover(row);
-    const busy=this.db.prepare("SELECT messages.id FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE conversations.account=? AND conversations.repository=? AND messages.phase IN ('registered','running','unknown') LIMIT 1").get(scope.account.id,scope.repository.id);if(busy)throw new Error('project_chat_reply_pending');
-    const history=this.rows(b.conversationId),last=history.at(-1);
-    for(const row of history)if(row.phase==='completed'){const original=await this.verified(row.id);if(original.report!==row.report)throw new Error('project_chat_saved_answer_changed');}
-    if((last?.id??null)!==b.parent)throw new Error('project_chat_parent_changed');if(last&&activePhase(last.phase))throw new Error('project_chat_reply_pending');
-    if(history.length>=64||Buffer.byteLength(canonical(history.map(r=>({question:r.question,answer:r.report,status:r.phase}))))>192*1024)throw new Error('project_chat_context_limit');
-    this.transaction(()=>{
-      if(this.db.prepare("SELECT messages.id FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE conversations.account=? AND conversations.repository=? AND messages.phase IN ('registered','running','unknown') LIMIT 1").get(scope.account.id,scope.repository.id))throw new Error('project_chat_reply_pending');
-      if(!c){const n=this.db.prepare('SELECT count(*) n FROM conversations WHERE account=? AND repository=?').get(scope.account.id,scope.repository.id) as Row;if(n.n>=128)throw new Error('project_chat_history_limit');this.db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)').run(b.conversationId,scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName,b.question.slice(0,80),now());}
-      const latest=this.rows(b.conversationId).at(-1);if((latest?.id??null)!==b.parent||latest&&activePhase(latest.phase))throw new Error('project_chat_parent_changed');
-      this.db.prepare("INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,?,?,'registered',?,?,?)").run(b.requestId,b.conversationId,b.parent,b.question,now(),process.pid,this.owner);
+    const result=this.transaction(()=>{
+      if(!this.accepting)throw new Error('project_chat_closing');
+      const same=duplicate();if(same)return same;
+      const queued=!!(this.projectMessages(scope,'active').length||this.projectMessages(scope,'queued').length);
+      if(queued&&b.workTarget)throw new Error('project_chat_reply_pending');
+      this.ensureConversation(scope,b.conversationId,b.question);
+      const history=this.rows(b.conversationId);
+      if((history.at(-1)?.id??null)!==b.parent)throw new Error('project_chat_parent_changed');
+      if(history.length>=64||Buffer.byteLength(canonical(history.map(r=>({question:r.question,answer:r.report,status:r.phase}))))>192*1024)throw new Error('project_chat_context_limit');
+      const status=queued?'queued':'registered';
+      this.db.prepare('INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,?,?,?,?,?,?)').run(b.requestId,b.conversationId,b.parent,b.question,status,now(),queued?null:process.pid,queued?null:this.owner);
       if(b.workTarget)this.db.prepare('INSERT INTO task_work_requests(id,target) VALUES(?,?)').run(b.requestId,canonical(b.workTarget));
+      return {conversationId:b.conversationId,requestId:b.requestId,duplicate:false,status,registered:!queued,newModelInputs:queued?0:null};
     });
-    const active:Active={promise:Promise.resolve(),stop:false};this.active.set(b.requestId,active);
-    active.promise=this.execute(scope,b.requestId,active).catch(()=>{/* The durable registration stays unresolved if recording the failure also fails. */}).finally(()=>this.active.delete(b.requestId));
-    return {conversationId:b.conversationId,requestId:b.requestId,duplicate:false,registered:true,newModelInputs:null};
+    if(!result.duplicate){
+      if(result.status==='queued'){this.waiting.set(b.requestId,currentAIPreferences(['secretary']));this.processWaiting(scope);}
+      else this.start(scope,b.requestId);
+    }
+    return result;
+  }
+  private start(scope:ProjectChatScope,id:string){
+    const active:Active={promise:Promise.resolve(),stop:false};this.active.set(id,active);
+    active.promise=this.execute(scope,id,active).catch(()=>{/* The durable registration stays unresolved if recording the failure also fails. */}).finally(()=>{
+      this.active.delete(id);this.processWaiting(scope);
+    });
+  }
+  private processWaiting(scope:ProjectChatScope){
+    if(!this.accepting||this.projectMessages(scope,'active').length)return;
+    const next=this.projectMessages(scope,'queued')[0];if(!next||!this.waiting.has(next.id))return;
+    const preferences=this.waiting.get(next.id)!;
+    this.waiting.delete(next.id);
+    const resume=()=>this.continueQuestion(scope,next.id);
+    void (preferences?withAIPreferences(preferences,resume):resume()).catch(()=>{/* The saved question remains available for explicit continuation. */});
+  }
+  async continueQuestion(scope:ProjectChatScope,id:string){
+    if(!this.accepting||!chatId(id))throw new Error('project_chat_id_invalid');
+    const original=this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as Row|undefined;
+    if(!original)throw new Error('project_chat_outside_project');
+    this.conversationRow(scope,original.conversation);
+    for(const row of this.projectMessages(scope,'active'))await this.recover(row);
+    const result=this.transaction(()=>{
+      if(!this.accepting)throw new Error('project_chat_closing');
+      const current=this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row;
+      if(current.phase!=='queued')return {requestId:id,status:current.phase as string,newModelInputs:0,duplicate:true};
+      if(this.projectMessages(scope,'active').length||this.projectMessages(scope,'queued')[0]?.id!==id)return {requestId:id,status:'queued',newModelInputs:0,duplicate:false};
+      this.db.prepare("UPDATE messages SET phase='registered',pid=?,owner=? WHERE id=? AND phase='queued'").run(process.pid,this.owner,id);
+      return {requestId:id,status:'registered',newModelInputs:null,duplicate:false};
+    });
+    if(result.status==='registered'&&!result.duplicate){this.waiting.delete(id);this.start(scope,id);}
+    return result;
   }
   private workRow(id:string){return this.db.prepare('SELECT * FROM task_work_requests WHERE id=?').get(id) as Row|undefined;}
   private workRequest(row:Row,intent:Row):ProjectWorkRequest{return {origin:{kind:'project_secretary_work_request',conversationId:row.conversation,requestId:row.id,text:row.question},original:intent.original_request?{requestId:intent.original_request,linked:!!intent.linked}:null};}
@@ -187,7 +250,8 @@ export class ProjectChat{
     try{
       await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit},timeBudget:timeBudget()},initialId=hash(canonical(initial));
       const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];save(join(directory,'observations.json'),observations);
-      const history=this.rows(row.conversation).filter(r=>r.id!==id).map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report})),taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
+      const preceding=this.preceding(row.conversation,id);await this.verifyHistory(preceding);
+      const history=preceding.map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report})),taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
       const candidate:Candidate={kind:'project-conversation',repository:scope.repository.fullName,pr:null,projectId:scope.repository.id,accountId:scope.account.id,conversationId:row.conversation,H:scope.repository.defaultHead??'',B:scope.repository.defaultHead??'',target:scope.repository.defaultHead?scope.repository.defaultBranch??'':'',sourceSha256:initialId};
       const prompt=await assembleRolePrompt('secretary',projectChatInstructionsFor(!!work)),input={kind:'project_secretary_question',candidate,initialObservation:{observationId:initialId,...initial},conversation:history,taskSupplements,taskWork,...(work?{workTarget:JSON.parse(work.target)}:{}),question:row.question};
       if(Buffer.byteLength(canonical(input))>512*1024)throw new Error('project_chat_context_limit');
@@ -250,6 +314,11 @@ export class ProjectChat{
     if(!chatId(id)||!Number.isSafeInteger(accountId)||!Number.isSafeInteger(repositoryId))throw new Error('project_chat_id_invalid');
     const row=this.db.prepare('SELECT messages.*,conversations.account,conversations.repository FROM messages JOIN conversations ON conversations.id=messages.conversation WHERE messages.id=?').get(id) as Row|undefined;
     if(!row||row.account!==accountId||row.repository!==repositoryId)throw new Error('project_chat_outside_project');
+    if(row.phase==='queued'){
+      const cancelled=this.db.prepare("UPDATE messages SET phase='interrupted',finished_at=?,problem='project_chat_queued_cancelled' WHERE id=? AND phase='queued'").run(now(),id).changes===1;
+      this.waiting.delete(id);
+      return {requestId:id,stopRequested:cancelled,stopRecordSaved:cancelled,newModelInputs:0};
+    }
     const active=this.active.get(id);if(!active){await this.recover(row);return {requestId:id,stopRequested:false,newModelInputs:0};}
     active.stop=true;let stopRecordSaved=false;
     try{this.db.prepare("UPDATE messages SET problem='project_chat_user_stop_requested' WHERE id=?").run(id);if(await exists(this.directory(id))){save(join(this.directory(id),'stop-request.json'),{at:now(),requestId:id,source:'explicit_user_stop'});stopRecordSaved=true;}}
