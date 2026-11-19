@@ -28,14 +28,18 @@ const counts={'citation-one':1,'citation-empty':0,'citation-nine':9};
 const references=mode.startsWith('citation-')?observationIds.slice(0,counts[mode]??8):[observation.observationId];
 if(mode==='citation-invalid-hex')references[0]='invalid-hex';
 if(mode==='citation-unobserved')references[0]='f'.repeat(64);
-const report={candidateH:mode==='citation-wrong-candidate'?'wrong-candidate':context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无')+(mode==='comments'?'；评论原文：'+commentBodies.join(' | '):''),observationIds:references},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
+const report={candidateH:mode==='citation-wrong-candidate'?'wrong-candidate':context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无')+(mode==='comments'?'；评论原文：'+commentBodies.join(' | '):'')+(mode==='grow-history'&&!context.conversation.length?'x'.repeat(195*1024):''),observationIds:references},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
 readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode==='comments'){log({kind:'comment-result',observation});commentBodies.push(...observation.data.comments.map(c=>c.body));toolReplies++;if(toolReplies===1){queryComments(2,{kind:'issues',number:9,page:2,cursor:observation.data.nextCursor});return;}if(toolReplies===2){queryComments(3,{kind:'pulls',number:65});return;}finish(observation);return;}if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode==='time-budget'){log({kind:'time-result',observation});toolReplies++;if(toolReplies<3){const gate=trace+'.time-'+toolReplies,waiting=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(waiting);query(toolReplies+1);}},5);return;}finish(observation);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
 if(m.method==='model/list')result={data:[{model:'fixture-astra',displayName:'Fixture Astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,reasoningEffort:m.params.config?.model_reasoning_effort??'xhigh',source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name),instructions:m.params.developerInstructions});emit({id:m.id,result:{thread,model:mode==='wrong-selected-model'?'wrong':m.params.model??'fixture-default',reasoningEffort:thread.reasoningEffort,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout'||mode==='hold-first'&&context.question==='查看已有开发进度')return;if(mode==='comments'){queryComments(1,{kind:'issues',number:9});return;}if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')||mode==='time-budget'){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
+if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout'||mode==='hold-first'&&context.question==='查看已有开发进度')return;if(mode==='grow-history'&&!context.conversation.length){
+  const waiting=setInterval(()=>{if(fs.existsSync(trace+'.release-answer')){clearInterval(waiting);finish(context.initialObservation);}},5);
+  return;
+}
+if(mode==='comments'){queryComments(1,{kind:'issues',number:9});return;}if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')||mode==='time-budget'){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
 if(m.method==='turn/interrupt'){log({kind:'interrupt'});emit({id:m.id,result:{}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});return;}
 emit({id:m.id,result});});
 `;
@@ -117,6 +121,54 @@ test('busy intake persists the exact words, then sends original pending question
   assert.deepEqual(inputs.map(r=>r.question),[first.question,second.question,third.question]);
   assert.deepEqual(inputs[1].conversation.map((r:any)=>r.requestId),[first.requestId]);
   assert.deepEqual(inputs[2].conversation.map((r:any)=>r.requestId),[first.requestId,second.requestId]);
+});
+for(const cold of [false,true])test('queued history growth blocks model input on '+(cold?'manual continuation after reopening':'automatic claim'),async t=>{
+  const f=await fixture(t,'grow-history');
+  const first=question('请给出完整记录');
+  const followup=question('请继续解释',first.requestId,first.conversationId);
+  const conversation='/api/project-secretary/conversations/'+first.conversationId;
+  const historyBytes=(message:any)=>Buffer.byteLength(canonical([{question:message.question,answer:message.answer,status:message.status}]));
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  const running=await f.wait(first.conversationId,m=>m[0]?.status==='running');
+  assert.ok(historyBytes(running.messages[0])<=192*1024);
+
+  // A different controller can save the pending row while the first still
+  // owns the running turn. Closing that receiver leaves a cold pending row.
+  const receiver=cold?await f.launch():f;
+  try{
+    const receipt=await receiver.post('/api/project-secretary/ask',followup);
+    assert.equal(receipt.status,202);
+    assert.equal(receipt.data.status,'queued');
+  }finally{if(cold)await receiver.close();}
+  await writeFile(join(f.root,'trace.ndjson.release-answer'),'');
+  const answered=await f.wait(first.conversationId,m=>m[0]?.status==='completed');
+  assert.ok(historyBytes(answered.messages[0])>192*1024);
+  assert.ok(historyBytes(answered.messages[0])<256*1024);
+
+  if(cold)await f.close();
+  const active=cold?await f.launch():f;
+  try{
+    if(cold){
+      assert.equal((await active.get(conversation)).data.messages[1].status,'queued');
+      assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+      assert.equal((await active.post('/api/project-secretary/continue-question',{requestId:followup.requestId})).data.status,'registered');
+    }
+    let message;
+    for(let n=0;n<150;n++){
+      message=(await active.get(conversation)).data.messages[1];
+      if(message?.status==='failed'||message?.status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.equal(message?.status,'failed');
+    assert.equal(message.problem,'project_chat_context_limit');
+    assert.equal(message.id,followup.requestId);
+    assert.equal(message.question,followup.question);
+    assert.equal(message.answer,null);
+    const duplicate=await active.post('/api/project-secretary/ask',followup);
+    assert.equal(duplicate.data.duplicate,true);
+    assert.equal(duplicate.data.newModelInputs,0);
+    assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question]);
+  }finally{if(cold)await active.close();}
 });
 test('cold reopening keeps pending intake readable; explicit continuation or cancellation acts on the saved row',async t=>{
   const f=await fixture(t,'hold-first'), first=question('查看已有开发进度');
