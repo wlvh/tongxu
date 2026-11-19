@@ -8,6 +8,7 @@ import {assertWorkCurrent} from '../../src/project-work-current.js';
 import {runValidationCorrection} from '../../src/issue-implementation.js';
 import {observeValidationFailure,checkValidationWorkspace} from '../../src/implementation-validation.js';
 import {AuthorityRecords} from '../../src/authority-store.js';
+import {fixtureOwnerObservation} from '../../src/authority-source.js';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {randomUUID} from 'node:crypto';
@@ -37,7 +38,7 @@ import {TaskControls} from '../../src/task-controls.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {QueueStore} from '../../src/queue-store.js';
 import {TaskRecords} from '../../src/task-store.js';
-import { git, tree, treeHash, exists } from '../../src/repair-workspace.js';
+import { git, tree, treeHash, exists, acquireWorkspace, releaseWorkspace, RepairTools, commitScopedCandidate, type Grant } from '../../src/repair-workspace.js';
 import { hash } from '../../src/snapshot.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -171,6 +172,37 @@ test('registered sparse validation preserves BOM bytes through Docker and candid
   assert.deepEqual(await readFile(join(directory,'work',path)),bytes);
   assert.deepEqual(await readFile(join(directory,'material-work',path)),bytes);
   assert.equal((await bindProjectTestToCandidate(f.workspace,{...f.request.candidate,H},tests)).candidateTree,tests.T);
+});
+test('the project file gate reads another caller, creates one new file and commits the exact tested project tree', async t => {
+  const f=await project(t);
+  await mkdir(f.operation,{mode:0o700});
+  await mkdir(join(f.operation,'attempt-1'),{mode:0o700});
+  const existing=JSON.parse(await readFile(f.projectPlan.grant,'utf8')) as Grant;
+  const grant:Grant={...existing,allowedPaths:[],materialPaths:['src/normalize.mjs'],projectFiles:{protectedPaths:['test/normalize.test.mjs']}};
+  const lease=await acquireWorkspace(f.workspace,f.operation,false,grant);
+  let stopped=false;
+  const candidate=f.projectPlan.candidate;
+  const gate=new RepairTools(f.workspace,f.operation,grant,lease,docker.node,await tree(f.workspace,true),candidate.H,
+    directory=>testProject(f.workspace,directory,f.projectPlan.project),effect=>{if(stopped)throw new Error('fixture_stopped');effect?.();});
+  await gate.handoff('fixture-engineer','new_implementer_context');
+  const invoke=(tool:string,args:object,callId:string)=>gate.call({tool,arguments:args,callId});
+  const caller=JSON.parse((await invoke('tongxu_read_file',{path:'src/index.mjs'},'caller')).contentItems[0]!.text);
+  const added={path:'src/fallbacks/default-label.mjs',text:"export const label='Untitled';\n",mode:'100755'};
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'../escape.mjs'},'escape'),/create_denied/);
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'test/normalize.test.mjs'},'protected'),/create_denied/);
+  await invoke('tongxu_create_file',added,'new-source');
+  await assert.rejects(invoke('tongxu_create_file',added,'existing'),/create_denied/);
+  await invoke('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:caller.sha256,text:"import {label} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value){return value.trim() || label;}\n"},'replace-caller');
+  const tests=JSON.parse((await invoke('tongxu_run_tests',{},'test-candidate')).contentItems[0]!.text);
+  assert.equal(tests.passed,true);
+  const result=await commitScopedCandidate(f.workspace,f.operation,'attempt-1',1,candidate,await gate.check(),grant,gate,'include project addition');
+  assert.match(result.diff,/new file mode 100755/);assert.match(result.diff,/src\/fallbacks\/default-label.mjs/);
+  assert.equal((await bindProjectTestToCandidate(f.workspace,result.candidate,tests)).candidateTree,tests.T);
+  stopped=true;
+  await assert.rejects(invoke('tongxu_create_file',{...added,path:'never-created.mjs'},'stopped'),/fixture_stopped/);
+  assert.equal(await exists(join(f.workspace,'never-created.mjs')),false);
+  await releaseWorkspace(f.workspace,lease,'completed');
+  assert.deepEqual(await tree(f.objects,true),f.originalTree);
 });
 test('green existing tests cannot automatically refute a finding outside their coverage', async t => {
   const f = await project(t, true), result = await runRepair(f.plan, f.operation);
@@ -615,23 +647,183 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false){
- const project=await implementationProject(t);if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,projectFailure=false){
+ const project=await implementationProject(t);
+ if(projectFailure){
+   const plan=JSON.parse(await readFile(project.request.testPlan,'utf8'));
+   plan.tools.push({...plan.tools[0],id:'after-failure'});
+   plan.tools[0].argv=[docker.node,'--input-type=module','-e',String.raw`import {spawnSync} from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+writeFileSync(1,'project test progress '.repeat(900)+'\n');
+writeFileSync(2,'project test diagnostics '.repeat(900)+'\n'+'stderr original tail\n');
+const child=spawnSync(process.execPath,['--test','test/normalize.test.mjs'],{stdio:'inherit'});
+if(child.error)throw child.error;
+process.exitCode=child.status??2;`];
+   const bytes=JSON.stringify(plan);await writeFile(project.request.testPlan,bytes);project.request.testPlanSha256=hash(bytes);
+ }
+ if(projectFiles){
+   const script=await readFile(project.config.codexExecutable,'utf8');
+   const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
+   assert.ok(script.includes(needle));
+   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify(`export const defaultLabel='${projectFailure?'Wrong':'Untitled'}';\n`)+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
+   await writeFile(project.config.codexExecutable,script.replace(needle,fixture).replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})"));
+ }
+ if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
  const context=messages.q.status().items.find((item:any)=>item.id===messages.item).context;
- const scope=await owner.adopt({kind:'adopt_scope',scopeId:context.scope.id,scopeVersion:'implementation-scope',body:{goals:['Implement optional label fallback'],nonGoals:['No publication or merge'],preserve:['Untitled and all original evidence'],acceptance:['Registered tests and committed exact tree'],constraints:['Only explicit existing source file']},previousAdoption:owner.scope.sha});
+ const scope=await owner.adopt({kind:'adopt_scope',scopeId:context.scope.id,scopeVersion:'implementation-scope',body:{goals:['Implement optional label fallback'],nonGoals:['No publication or merge'],preserve:['Untitled and all original evidence'],acceptance:['Registered tests and committed exact tree'],constraints:[projectFiles?'Protected verification sources; one private project checkout':'Only explicit existing source file']},previousAdoption:owner.scope.sha});
  const ledger=resources?await ledgerFixture(t,resourceMode):null;if(ledger)messages.q.resources().configure(Buffer.from(canonical(ledger.profile)));
- const grant=await owner.adopt({kind:'delegate',adoption:scope.sha,roles:['implementer'],targets:['main'],actions:['implement','test'],paths:project.request.materialPaths,resourceRefs:ledger?[ledger.profile.resources[0]!.ref]:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const grant=await owner.adopt({kind:'delegate',adoption:scope.sha,roles:['implementer'],targets:projectFiles?[]:['main'],actions:['implement','test'],paths:projectFiles?[]:project.request.materialPaths,...(projectFiles?{projectFiles:true as const}:{}),resourceRefs:ledger?[ledger.profile.resources[0]!.ref]:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
  const body='Trim labels and keep Untitled by default. An explicit optional fallback Draft must be returned for a blank label.',issue={id:174,number:74,title:'Optional label fallback',body,state:'OPEN',updated_at:new Date().toISOString(),author:{login:'fixture'},labels:{nodes:[]},comments:{totalCount:0}},repository={id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Explicit implementation fixture',private:true,archived:false,defaultBranchRef:{name:'main',target:{oid:project.request.candidate.H}},updated_at:new Date().toISOString()},account={id:7,login:'fixture'};
  let sourceBody=body;
  const github:GitHubReaderFactory=async()=>({query:async op=>({status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{...account,projects:{nodes:[repository],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account,repository:{...repository,...(op==='issue'?{item:{...issue,body:sourceBody}}:op==='issues'||op==='pulls'?{items:{nodes:op==='issues'?[{...issue,body:sourceBody}]:[],pageInfo:{hasNextPage:false,endCursor:null}}}:{})}}})})});
- const resource=ledger?.profile.resources[0],entry={...(selectedLink?{materialView:'selected_files' as const}:{}),id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:project.request.allowedPaths,materialPaths:project.request.materialPaths,protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
+ const resource=ledger?.profile.resources[0],entry={...(selectedLink?{materialView:'selected_files' as const}:{}),id:'implementation',repository:'fixture/reception',store:messages.store,root:join(project.root,'normal-entry'),objects:project.objects,H0:project.request.candidate.H,base:project.request.candidate.B,target:'main',context:{...context,scope:{...context.scope,version:'implementation-scope',source:'explicit fixture adoption'}},config:{path:project.configPath,sha256:hash(await readFile(project.configPath))},allowedPaths:projectFiles?[]:project.request.allowedPaths,materialPaths:projectFiles?['README.md']:project.request.materialPaths,...(projectFiles?{projectFiles:true as const}:{}),protectedPaths:project.request.protectedPaths,testPlan:project.request.testPlan,testPlanSha256:project.request.testPlanSha256,approvedIssues:[{number:74,bodySha256:hash(body),adjudication:'Explicit fixture pre-coding adoption, no real user acceptance',goal:body,acceptance:['Preserve defaults','Support optional fallback']}],authorization:{implement:grant.sha,test:grant.sha},budgets:ledger?[{action:'implement',ledgerId:ledger.profile.ledgerId,resourceRef:resource!.ref,unit:resource!.unit,quantity:1}]:[],executionKind:'fixture',demonstrationFixture:true};
  const catalogPath=join(project.root,'implementation-catalog.json');await writeFile(catalogPath,JSON.stringify({schemaVersion:1,kind:'tongxu-issue-implementation-catalog',entries:[entry]}));
  const planPath=join(project.root,'implementation-workbench.json');await writeFile(planPath,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Implementation fixture',goal:'Run one adopted Issue through normal entry',sources:[],githubProjects:true,issueImplementation:{path:catalogPath,sha256:hash(await readFile(catalogPath))},...(withSecretary?{projectSecretary:{root:join(project.root,'project-chats'),codexExecutable:project.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:120000,billing:'existing_subscription_only',executionKind:'fixture'}}:{})}));
  const app=await startWorkbench(planPath,undefined,{githubReader:decorateGitHub?decorateGitHub(github):github});const originalClose=app.close;let closed=false;app.close=async()=>{if(!closed){closed=true;await originalClose();}};t.after(()=>app.close());const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1),'X-Tongxu-Account':'7','X-Tongxu-Project':'1'},get=async(path='/api/implementation')=>{const result=await fetch(url.origin+path,{headers});return {status:result.status,value:await result.json() as any};},post=async(action:string,data:unknown,extra:Record<string,string>={})=>{const result=await fetch(url.origin+'/api/implementation/implementation/'+action,{method:'POST',headers:{...headers,Origin:url.origin,'Content-Type':'application/json',...extra},body:JSON.stringify(data)});return {status:result.status,value:await result.json() as any};};
  await fetch(url.origin+'/api/github/projects',{headers});
  const settled=async(id:string)=>{for(let i=0;i<1000;i++){const state=(await get()).value.entries[0].requests.find((r:any)=>r.id===id);if(state&&!state.controllerActive&&(state.status||state.reason||state.stopped||state.phase==='active_or_unknown'))return state;await new Promise(r=>setTimeout(r,20));}throw new Error('implementation_fixture_timeout');};
- return {project,messages,owner,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
+ return {project,messages,owner,scope,grant,body,ledger,entry,planPath,github,app,url,headers,get,post,settled,changeIssue:(value:string)=>{sourceBody=value;}};
 }
+
+test('normal registered workbench starts one project-scoped Issue and returns the tested new-file candidate',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true),id='project-files-original';
+ const prepared=await f.post('prepare',{requestId:id,issueNumber:74});
+ assert.equal(prepared.status,200,JSON.stringify(prepared.value));
+ assert.equal((await f.post('start',{requestId:id})).status,202);
+ const done=await f.settled(id);
+ assert.equal(done.status,'completed',JSON.stringify(done));
+ const report=await f.get('/api/implementation-report/implementation/'+id);
+ assert.equal(report.status,200,JSON.stringify(report.value));
+ assert.equal(report.value.tests.passed,true);
+ assert.deepEqual(report.value.changed,['src/fallbacks/default-label.mjs','src/index.mjs']);
+ assert.match(report.value.diff,/new file mode 100755/);
+ const state=f.messages.q.issueImplementations().state('implementation',id);
+ const manifest=JSON.parse(await readFile(join(state.plan.operationRoot,'input-manifest.json'),'utf8'));
+ assert.equal(manifest.request.workflowPrompt.use,'engineering_owner');
+ assert.equal(manifest.request.workflowPrompt.revision,'11cf57b34698e6f7b38ee73468e84103cde8f963');
+ assert.deepEqual(manifest.request.workspaceRequest.allowedPaths,[]);
+ assert.deepEqual(manifest.request.workspaceRequest.materialPaths,['README.md']);
+ assert.equal(await git(f.project.objects,['rev-parse','HEAD']),state.H0);
+ const oldGrant=await f.owner.adopt({kind:'delegate',adoption:f.scope.sha,roles:['implementer'],targets:['main'],actions:['implement','test'],paths:['README.md'],resourceRefs:[],expiresAt:new Date(Date.now()+3600000).toISOString()});
+ const source=f.owner.records[f.scope.id],profile=f.owner.a.configuration().profile;
+ const freshScope=fixtureOwnerObservation(profile,f.scope.sha,f.scope.id,Buffer.from(JSON.stringify(source.graph)),Buffer.from(JSON.stringify(source.comment)),new Date().toISOString());
+ assert.throws(()=>f.owner.a.checkAction(state.plan.actions.implement,'implementer',oldGrant.sha,[freshScope,oldGrant.observation]),/owner_delegation_boundary_mismatch/);
+ assert.equal((await f.post('start',{requestId:id})).status,202);
+ assert.equal((await f.get('/api/implementation-report/implementation/'+id)).value.H1,report.value.H1);
+});
+
+for(const outcome of ['stop','failed'] as const)test('project file workbench reads back '+outcome+' without another execution',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true,outcome==='failed');
+ const id='project-files-'+outcome,path='src/fallbacks/default-label.mjs';
+ let resume=()=>{};
+ if(outcome==='stop'){
+   const original=RepairTools.prototype.call,paused=new Promise<void>(resolve=>{resume=resolve;});
+   t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
+     const response=await original.apply(this,args);
+     if(args[0].tool==='tongxu_create_file')await paused;
+     return response;
+   });
+ }
+ assert.equal((await f.post('prepare',{requestId:id,issueNumber:74})).status,200);
+ const state=f.messages.q.issueImplementations().state('implementation',id),workspace=state.plan.workspace,operation=state.plan.operationRoot;
+ try{
+   assert.equal((await f.post('start',{requestId:id})).status,202);
+   if(outcome==='stop'){
+     for(let i=0;i<500&&!await exists(join(workspace,path));i++)await new Promise(r=>setTimeout(r,10));
+     assert.equal(await exists(join(workspace,path)),true);
+     assert.equal((await f.post('stop',{requestId:id})).value.stopped,true);
+   }
+ }finally{resume();}
+ await f.settled(id);
+ assert.equal(await git(workspace,['diff','--cached','--name-only']),'');
+ const index=await readFile(join(workspace,'.git/index'));
+ const reportPath='/api/implementation-report/implementation/'+id;
+ const result=await f.get(reportPath);
+ assert.equal(result.status,200,JSON.stringify(result.value));
+ assert.equal(result.value.H1,null);
+ assert.match(result.value.diff,/new file mode 100755/);
+ assert.ok(result.value.diff.includes(path));
+ assert.equal(await git(workspace,['rev-parse','HEAD']),state.H0);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
+ if(outcome==='stop'){
+   assert.equal(result.value.status,'partial_or_unknown');
+   assert.equal(result.value.completeCapture,false);
+   assert.match(result.value.diff,/\+export const defaultLabel='Untitled';/);
+ }else{
+   assert.equal(result.value.status,'validation_failed',JSON.stringify(result.value));
+   assert.equal(result.value.report.decision,'implemented');
+   assert.equal(result.value.tests.executionHealthy,true);
+   assert.equal(result.value.tests.passed,false);
+   assert.deepEqual(result.value.changed,[path,'src/index.mjs']);
+   const tool=result.value.tests.tools[0];
+   assert.equal(tool.exitCode,1);
+   assert.match(tool.stdout,/project test progress/);
+   assert.doesNotMatch(tool.stdout,/empty labels need the fixed fallback/);
+   assert.doesNotMatch(tool.stderr,/stderr original tail/);
+   assert.equal(tool.stdoutOriginal.previewTruncated,true);
+   assert.equal(tool.stderrOriginal.previewTruncated,true);
+   assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
+   assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+   const pairs=JSON.parse(await readFile(join(operation,'implementer/reconciled-tools.json'),'utf8'));
+   const toolReply=pairs.find((pair:any)=>pair.request.params.tool==='tongxu_run_tests').response.result;
+   const modelTool=JSON.parse(toolReply.contentItems[0].text).tools[0];
+   for(const field of ['stdout','stderr','stdoutOriginal','stderrOriginal'])assert.equal(modelTool[field],undefined);
+ }
+ const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
+ assert.deepEqual(await f.get(reportPath),result);
+ await f.app.close();
+ const reopened=await startWorkbench(f.planPath,undefined,{githubReader:f.github});
+ try{
+   const url=new URL(reopened.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+   await fetch(url.origin+'/api/github/projects',{headers});
+   const response=await fetch(url.origin+reportPath,{headers});
+   assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
+   if(outcome==='failed'){
+     const tool=result.value.tests.tools[0],toolPath=url.origin+reportPath+'/logs/'+tool.id;
+     const logs=join(operation,'attempt-1/post-repair-1/tool-0');
+     for(const stream of ['stdout','stderr'] as const){
+       const original=await readFile(join(logs,stream));
+       const download=await fetch(toolPath+'/'+stream,{headers});
+       assert.equal(download.status,200);assert.equal(download.headers.get('content-type'),'application/octet-stream');
+       const bytes=Buffer.from(await download.arrayBuffer());
+       assert.deepEqual(bytes,original);
+       assert.equal(bytes.length,tool[stream+'Original'].bytes);assert.equal(hash(bytes),tool[stream+'Original'].sha256);
+       if(stream==='stdout'){assert.match(bytes.toString(),/empty labels need the fixed fallback/);assert.match(bytes.toString(),/'Wrong'/);}
+       else assert.match(bytes.toString(),/stderr original tail/);
+     }
+     assert.equal((await fetch(toolPath+'/stdout')).status,401);
+     assert.equal((await fetch(url.origin+reportPath+'/logs/after-failure/stdout',{headers})).status,404);
+     const stdoutPath=join(logs,'stdout'),stdout=await readFile(stdoutPath);
+     await writeFile(stdoutPath,'incomplete original');
+     const fallback=await fetch(url.origin+reportPath,{headers});
+     assert.equal(fallback.status,200);
+     const unknown=await fallback.json() as any;
+     assert.equal(unknown.status,'partial_or_unknown');
+     assert.equal(unknown.tests,undefined);
+     assert.equal(unknown.H1,null);
+     assert.ok(unknown.diff.includes(path));
+     assert.equal((await fetch(toolPath+'/stdout',{headers})).status,503);
+     await writeFile(stdoutPath,stdout);
+     const initialPath=join(operation,'initial-tree.json'),initial=await readFile(initialPath);
+     try{
+       await rm(initialPath);
+       for(const damaged of [null,'{','{}']){
+         if(damaged!==null)await writeFile(initialPath,damaged);
+         const observed=await fetch(url.origin+reportPath,{headers});
+         assert.equal(observed.status,200);
+         const retained=await observed.json() as any;
+         assert.equal(retained.status,'partial_or_unknown');assert.equal(retained.H1,null);
+         assert.equal(retained.evidenceGap,'retained_additions_unverified');assert.equal(retained.retainedAdditions,undefined);
+         assert.equal(retained.tests,undefined);
+         assert.match(retained.diff,/^diff --git a\/src\/index\.mjs b\/src\/index\.mjs/m);
+         assert.doesNotMatch(retained.diff,/^diff --git .*default-label\.mjs/m);
+       }
+     }finally{await writeFile(initialPath,initial);}
+   }
+ }finally{await reopened.close();}
+ assert.deepEqual(await readFile(sent),before);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
+});
 
 async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){
  const r=await fetch(f.url.origin+'/api/project-secretary/'+action,{method:'POST',headers:{...f.headers,Origin:f.url.origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,value:await r.json() as any};

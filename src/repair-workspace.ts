@@ -3,7 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID,createHash } from 'node:crypto';
 import { readFile, writeFile, readdir, lstat, realpath, mkdir, rename } from 'node:fs/promises';
-import { readFileSync, writeFileSync, renameSync, lstatSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, lstatSync, realpathSync, mkdirSync, linkSync, unlinkSync } from 'node:fs';
 import { join, resolve, isAbsolute, dirname } from 'node:path';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
@@ -55,6 +55,35 @@ export async function tree(workspace: string, project = false): Promise<Tree> {
   await walk(''); if (Buffer.byteLength(JSON.stringify(result)) > (project ? 16 : 1) * 1024 * 1024) throw new Error('repair_workspace_limit'); return result;
 }
 export const treeHash = (t: Tree) => hash(JSON.stringify(t));
+export type ProjectFiles = {protectedPaths: string[]};
+export function projectFilePath(path:unknown):path is string {
+  return typeof path==='string'&&path.length<=512&&/^[A-Za-z0-9_.\/-]+$/.test(path)&&
+    path.split('/').every(part=>part&&part!=='.'&&part!=='..'&&!['.git','node_modules'].includes(part.toLowerCase()));
+}
+export function projectPathWritable(scope:ProjectFiles,path:unknown):path is string {
+  return projectFilePath(path)&&!scope.protectedPaths.some(protectedPath=>{
+    const a=path.toLowerCase(),b=protectedPath.toLowerCase();
+    return a===b||a.startsWith(b+'/')||b.startsWith(a+'/');
+  });
+}
+export function changedWorkspacePaths(before:Tree,after:Tree,grant:Grant){
+  if(!grant.projectFiles)return scopeChanges(before,after,grant.allowedPaths);
+  if(Object.keys(before).some(path=>!Object.hasOwn(after,path)))throw new Error('workspace_file_deletion_not_supported');
+  const changed=Object.keys(after).filter(path=>before[path]?.sha256!==after[path]!.sha256||before[path]?.executable!==after[path]!.executable);
+  if(changed.some(path=>!projectPathWritable(grant.projectFiles!,path)))throw new Error('out_of_scope_workspace_change');
+  return changed;
+}
+// Match the directory-by-directory ordering of tree(), including directories
+// whose names are also prefixes of sibling filenames.
+export function orderedProjectTree(files:Tree):Tree {
+  return Object.fromEntries(Object.entries(files).sort(([left],[right])=>{
+    const a=left.split('/'),b=right.split('/');
+    const first=a.findIndex((part,index)=>part!==b[index]);
+    if(first<0)return a.length-b.length;
+    if(b[first]===undefined)return 1;
+    return a[first]!<b[first]!?-1:1;
+  }));
+}
 export function scopeChanges(before: Tree, after: Tree, allowed: string[]) {
   if (Object.keys(before).join('\0') !== Object.keys(after).join('\0')) throw new Error('workspace_file_set_changed');
   const changed = Object.keys(before).filter(p => before[p]!.sha256 !== after[p]!.sha256 || before[p]!.executable !== after[p]!.executable);
@@ -98,7 +127,7 @@ export async function checkRepairIndex(workspace:string,operation:string,allowed
   if(changed.length){const b=Buffer.from(JSON.stringify({H,indexBase64:index.toString('base64'),headRaw:headRaw.toString(),indexRaw:indexRaw.toString(),blobs,changes,matched,policy:'preserve_original_index; only registered allowed-path bytes may be committed'})),folder=join(operation,'index-observations'),path=join(folder,hash(b)+'.json');await mkdir(folder,{recursive:true,mode:0o700});try{await writeFile(path,b,{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST'||!(await regular(path,32*1024*1024)).equals(b))throw e;}}
   if(!matched)throw new Error('repair_preserved_index_requires_explicit_reconciliation');
 }
-export type Grant = { id: string; source: string; workspace: string; H: string; treeSha256: string; allowedPaths: string[]; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number; profile?: 'project-v1'; materialPaths?: string[] };
+export type Grant = { id: string; source: string; workspace: string; H: string; treeSha256: string; allowedPaths: string[]; allowRepair: boolean; allowReconcileEnded: boolean; maxRepairRounds: number; profile?: 'project-v1'; materialPaths?: string[]; projectFiles?:ProjectFiles };
 export type Lease = { operation: string; controllerPid: number; generation: string; status: 'held' };
 export function projectTestNamespace(operation: string, directory: string) {
   return directory.startsWith(operation + '/') && /^(?:attempt-[1-3]\/(?:baseline|post-repair-[1-3])|tests\/tool-[A-Za-z0-9_-]{1,128})$/.test(directory.slice(operation.length + 1));
@@ -235,7 +264,12 @@ export class RepairTools {
   private serial = 0;
   private handoffSerial = 0;
   private expectedHead: string;
-  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView,readonly editProfile?:EditProfile) { parseEditProfile(editProfile);this.expectedHead = initialHead; }
+  private initial:Tree;
+  constructor(readonly workspace: string, readonly operation: string, readonly grant: Grant, readonly lease: Lease, readonly node: string, private expected: Tree, initialHead = grant.H, private projectTest?: (directory: string,beforeRegistration?:()=>void) => Promise<unknown>, private externalGate?: (effect?: () => void) => void,private refreshExternal?:()=>Promise<void>,private indexView?:SelectedGitView,readonly editProfile?:EditProfile) {
+    parseEditProfile(editProfile);this.expectedHead=initialHead;this.initial={...expected};
+    if(grant.projectFiles&&(grant.profile!=='project-v1'||indexView||grant.allowedPaths.length))throw new Error('project_file_scope_conflicts_with_selected_paths');
+  }
+  writableChanges(current:Tree){return changedWorkspacePaths(this.initial,current,this.grant);}
   adoptCommittedHead(head: string) { this.expectedHead = head; }
   async check() {
     await this.refreshExternal?.();
@@ -247,7 +281,7 @@ export class RepairTools {
     if (await git(this.workspace, ['rev-parse', project ? 'refs/heads/project-base' : 'refs/heads/fixture-base']) !== this.grant.H || await git(this.workspace, ['branch', '--show-current']) !== (project ? 'repair-project' : 'repair-fixture')) throw new Error('candidate_base_or_branch_changed');
     const current = await tree(this.workspace, project);
     if (treeHash(current) !== treeHash(this.expected)) throw new Error('workspace_changed_outside_registered_tool');
-    await checkRepairIndex(this.workspace,this.operation,this.grant.allowedPaths,current,this.indexView);return current;
+    await checkRepairIndex(this.workspace,this.operation,this.grant.projectFiles?this.writableChanges(current):this.grant.allowedPaths,current,this.indexView);return current;
   }
   async handoff(sessionId: string, sessionContinuity:'same_fact_verifier_session'|'new_implementer_context'='same_fact_verifier_session') {
     await this.check(); if (!this.grant.allowRepair) throw new Error('repair_not_authorized');
@@ -272,9 +306,9 @@ export class RepairTools {
     if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('invalid_tool_arguments');
     let output: unknown;
     if (p.tool === 'tongxu_read_file') {
-      if (Object.keys(a).join() !== 'path' || !Object.hasOwn(current, a.path) || this.grant.profile && !this.grant.materialPaths?.includes(a.path)) throw new Error('read_path_outside_material'); output = current[a.path];
+      if (Object.keys(a).join() !== 'path' || !projectFilePath(a.path) || !Object.hasOwn(current, a.path) || this.grant.profile && !this.grant.projectFiles && !this.grant.materialPaths?.includes(a.path)) throw new Error('read_path_outside_material'); output = current[a.path];
     } else if (p.tool === 'tongxu_replace_file') {
-      if (this.phase !== 'write' || !this.grant.allowRepair || !this.grant.allowedPaths.includes(a.path) || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
+      if (this.phase !== 'write' || !this.grant.allowRepair || !Object.hasOwn(current,a.path) || !(this.grant.projectFiles?projectPathWritable(this.grant.projectFiles,a.path):this.grant.allowedPaths.includes(a.path)) || a.expectedSha256 !== current[a.path]?.sha256) throw new Error('write_outside_grant_or_stale_input');
       const target = join(this.workspace, a.path), before = readFileSync(target), text=replacementText(a,before,this.editProfile), after = Buffer.from(text), temporary = join(calls, p.callId + '.pending');
       const receipt = { request: p, beforeSha256: hash(before), afterSha256: hash(after), beforeText: before.toString(), afterText: text, ...(current[a.path]!.executable !== undefined ? { beforeExecutable: current[a.path]!.executable, afterExecutable: current[a.path]!.executable } : {}), status: 'write_registered' };
       save(path, receipt); writeFileSync(temporary, after, { flag: 'wx', mode: lstatSync(target).mode & 0o777 });
@@ -289,6 +323,33 @@ export class RepairTools {
       this.expected[a.path] = { ...current[a.path], sha256: hash(after), bytes: after.length, text:this.editProfile?new TextDecoder('utf8',{fatal:true}).decode(after):text }; output = { path: a.path, beforeSha256: receipt.beforeSha256, afterSha256: hash(after) };
       const response = { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
       save(path, { ...receipt, status: 'applied', response, afterTreeSha256: treeHash(this.expected) }); return response;
+    } else if (p.tool === 'tongxu_create_file') {
+      if(this.phase!=='write'||!this.grant.projectFiles||!projectPathWritable(this.grant.projectFiles,a.path)||
+         Object.keys(a).sort().join()!=='mode,path,text'||!['100644','100755'].includes(a.mode)||
+         typeof a.text!=='string'||a.text.includes('\0')||Buffer.byteLength(a.text)>256*1024||Buffer.from(a.text).toString('utf8')!==a.text||
+         Object.hasOwn(current,a.path))throw new Error('project_file_create_denied');
+      const executable=a.mode==='100755'?0o100:0,bytes=Buffer.from(a.text);
+      const file={sha256:hash(bytes),bytes:bytes.length,text:new TextDecoder('utf8',{fatal:true}).decode(bytes),executable};
+      const receipt={request:p,newFile:file,status:'write_registered'};
+      const temporary=join(calls,p.callId+'.pending');
+      save(path,receipt);
+      writeFileSync(temporary,bytes,{flag:'wx',mode:0o600|executable});
+      this.commitStart(()=>{
+        beforeRegistration?.();
+        let parent=this.workspace;
+        const parts=a.path.split('/'),name=parts.pop()!;
+        for(const component of parts){
+          parent=join(parent,component);
+          try{mkdirSync(parent,{mode:0o700});}catch(error:any){if(error.code!=='EEXIST')throw error;}
+          if(!lstatSync(parent).isDirectory()||realpathSync(parent)!==parent)throw new Error('project_file_parent_conflict');
+        }
+        linkSync(temporary,join(parent,name));
+        unlinkSync(temporary);
+      });
+      this.expected=orderedProjectTree({...current,[a.path]:file});
+      output={path:a.path,afterSha256:file.sha256,mode:a.mode};
+      const response={success:true,contentItems:[{type:'inputText',text:JSON.stringify(output)}]};
+      save(path,{...receipt,status:'applied',response,afterTreeSha256:treeHash(this.expected)});return response;
     } else if (p.tool === 'tongxu_run_tests') {
       if (Object.keys(a).length) throw new Error('test_arguments_not_allowed');
       await mkdir(join(this.operation, 'tests'), { recursive: true, mode: 0o700 });
@@ -316,6 +377,18 @@ export const projectRepairToolSpecs = repairToolSpecs.map(t => t.name === 'tongx
 export async function commitScopedCandidate(workspace:string,operation:string,attempt:string,round:number,candidate:Candidate,current:Tree,grant:Grant,gate:RepairTools,message:string,author='tongxu controlled repair runner'){
   await gate.check();
   if(await git(workspace,['rev-parse','HEAD'])!==candidate.H)throw new Error('candidate_changed_before_commit');
+  if(grant.projectFiles){
+    const changed=gate.writableChanges(current);
+    if(!changed.length)return {candidate,diff:''};
+    await mutateGit(workspace,['add','--',...changed],join(operation,attempt,'git-add-'+round),effect=>gate.commitStart(effect));
+    await gate.check();
+    const diff=await git(workspace,['diff','--cached','--binary',grant.H,'--',...changed]);
+    if(!diff)throw new Error('project_changes_missing_from_git_index');
+    save(join(operation,attempt,'commit-intent-'+round+'.json'),{parent:candidate.H,treeSha256:treeHash(current),changed,diffSha256:hash(diff)});
+    await mutateGit(workspace,['-c','user.name='+author,'-c','user.email=runner@localhost','-c','commit.gpgSign=false','commit','-m',message],join(operation,attempt,'git-commit-'+round),effect=>gate.commitStart(effect));
+    const after=await localCandidate(workspace,candidate.B,true);gate.adoptCommittedHead(after.H);
+    return {candidate:after,diff};
+  }
   const diff=await git(workspace,['diff','--binary',grant.H,'--',...grant.allowedPaths]);
   const uncommitted=await git(workspace,['diff','HEAD','--',...grant.allowedPaths]);
   save(join(operation,attempt,'commit-intent-'+round+'.json'),{parent:candidate.H,treeSha256:treeHash(current),allowedPaths:grant.allowedPaths,diffSha256:hash(diff)});
@@ -335,7 +408,10 @@ export async function assertUnselectedGitUnchanged(workspace:string,H0:string,H1
 }
 
 /** The legacy array above remains byte-for-byte the default protocol. */
-export function projectRepairToolsFor(profile?:EditProfile){
- parseEditProfile(profile);if(!profile)return projectRepairToolSpecs;
- return projectRepairToolSpecs.map(tool=>tool.name!=='tongxu_replace_file'?tool:{...tool,description:tool.description+' Send either full text or 1–16 literal edits against the same original text. Each nonempty oldText must occur exactly once, including overlapping matches; edit ranges cannot overlap. Preserve BOM and UTF-8. Each old/new text is at most 16 KiB; combined 32 KiB; edits arguments 64 KiB; full-text arguments 2 MiB; result 256 KiB.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'},text:{type:'string'},edits:{type:'array',minItems:1,maxItems:16,items:{type:'object',properties:{oldText:{type:'string',minLength:1},newText:{type:'string'}},required:['oldText','newText'],additionalProperties:false}}},required:['path','expectedSha256'],oneOf:[{required:['text'],not:{required:['edits']}},{required:['edits'],not:{required:['text']}}],additionalProperties:false}});
+export function projectRepairToolsFor(profile?:EditProfile,projectFiles?:true){
+ parseEditProfile(profile);
+ const tools=profile?projectRepairToolSpecs.map(tool=>tool.name!=='tongxu_replace_file'?tool:{...tool,description:tool.description+' Send either full text or 1–16 literal edits against the same original text. Each nonempty oldText must occur exactly once, including overlapping matches; edit ranges cannot overlap. Preserve BOM and UTF-8. Each old/new text is at most 16 KiB; combined 32 KiB; edits arguments 64 KiB; full-text arguments 2 MiB; result 256 KiB.',inputSchema:{type:'object',properties:{path:{type:'string'},expectedSha256:{type:'string'},text:{type:'string'},edits:{type:'array',minItems:1,maxItems:16,items:{type:'object',properties:{oldText:{type:'string',minLength:1},newText:{type:'string'}},required:['oldText','newText'],additionalProperties:false}}},required:['path','expectedSha256'],oneOf:[{required:['text'],not:{required:['edits']}},{required:['edits'],not:{required:['text']}}],additionalProperties:false}}):projectRepairToolSpecs;
+ if(!projectFiles)return tools;
+ return [...tools.map(tool=>tool.name==='tongxu_read_file'?{...tool,description:'Read a regular source file and its digest from the private project checkout.'}:tool.name==='tongxu_replace_file'?{...tool,description:'Update an existing writable project source file after checking its exact digest. Use text or bounded literal edits.'}:tool),
+  {type:'function',name:'tongxu_create_file',description:'Create a UTF-8 source file at a new path in the private project checkout. Never overwrites existing files.',inputSchema:{type:'object',properties:{path:{type:'string'},text:{type:'string'},mode:{type:'string',enum:['100644','100755']}},required:['path','text','mode'],additionalProperties:false}}];
 }

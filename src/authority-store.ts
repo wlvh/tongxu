@@ -136,7 +136,8 @@ export class AuthorityRecords {
       const scope=selected.kind==='adopt_scope'?selected.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:null;
       if(scope!==scopeId)return [];
       const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
-      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo:selected.kind==='delegate'?'selected_target':selected.kind==='confirm_action'?'selected_task':'whole_scope',createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
+      const appliesTo=selected.kind==='delegate'?(selected.projectFiles===true?'project_files':'selected_target'):selected.kind==='confirm_action'?'selected_task':'whole_scope';
+      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo,createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
     });
     const controls=(['implementation','investment','merge'] as const).map(control=>{
       const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;
@@ -216,8 +217,8 @@ export class AuthorityRecords {
     const a=this.adoption(p.adoption),scope=a.proposal;this.freshDecision(p.adoption,observations);
     if(request.scopeId!==scope.scopeId||request.scopeVersion!==scope.scopeVersion||request.scopeBodySha256!==scopeBodyHash(scope.body))throw new Error('owner_request_scope_mismatch');
     if(p.kind==='confirm_action'&&(role!==p.performerRole||actionHash(request)!==actionHash(p.request)))throw new Error('owner_confirmation_exact_action_mismatch');
-    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.targets.includes(request.target)||!p.actions.includes(request.action)||request.paths.some(x=>!p.paths.includes(x))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
-    if(request.action==='implement'&&!request.paths.length)throw new Error('implementation_paths_required');
+    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.actions.includes(request.action)||p.projectFiles!==request.projectFiles||!p.projectFiles&&(!p.targets.includes(request.target)||request.paths.some(x=>!p.paths.includes(x)))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
+    if(request.action==='implement'&&!request.projectFiles&&!request.paths.length)throw new Error('implementation_paths_required');
     const stops=this.db.prepare('SELECT kind FROM controls WHERE scope=? AND stopped=1').all(scope.scopeId) as Row[];
     if(stops.some(s=>s.kind==='investment'||s.kind==='implementation'&&request.action==='implement'||s.kind==='merge'&&request.action==='merge'))throw new Error('owner_action_stopped');
     let binding:Row|null=null;

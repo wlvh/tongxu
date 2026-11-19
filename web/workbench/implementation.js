@@ -29,14 +29,45 @@ async function continueIssueWork(entry,request,action,expectedProject=implementa
   const selected=implementationKey(),epoch=gh.epoch,current=()=>selected===implementationKey()&&epoch===gh.epoch;
   try{if(action==='prepare'){const prepared=await implementationAction(entry,'prepare',{requestId:request.id,issueNumber:request.issue});if(!current()||prepared.phase!=='prepared'||prepared.stopped)return;await implementationAction(entry,'start',{requestId:request.id});}else await implementationAction(entry,action,{requestId:request.id});}catch(error){if(current())data.actionError=implementationReason(error.message);}finally{data.pending=false;if(current())await loadImplementations();}
 }
+async function downloadImplementationLog(path,name,nonce,project){
+  const current=()=>nonce===reportNonce&&project===implementationKey()&&$('report-dialog').open;
+  if(!current())return;
+  try{
+    const response=await workspaceFetch(path,{headers:{Authorization:'Bearer '+key},cache:'no-store'});
+    if(!response.ok)throw new Error((await response.json()).error||'读取失败');
+    const blob=await response.blob();if(!current())return;
+    const url=URL.createObjectURL(blob),link=el('a');
+    link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){if(current())$('implementation-log-error').textContent='原始日志读取失败。'+readableReason(error.message);}
+}
 async function openImplementationReport(entry,request,expectedProject=implementationKey()){
   if(expectedProject!==implementationKey())return;
   const nonce=++reportNonce,project=implementationKey();$('report-title').textContent='Issue #'+request.issue+' · 实施成果';$('report-meta').textContent='读取原执行和完整成果…';$('report-body').textContent='';$('report-original').hidden=true;showWorkbenchReport();
-  try{const result=await api('/api/implementation-report/'+encodeURIComponent(entry)+'/'+encodeURIComponent(request.id));if(nonce!==reportNonce||project!==implementationKey())return;
-    $('report-meta').textContent=(result.status==='completed'?'实现与注册测试完成；尚未正式审核、发布或本人验收。':'原执行结果：'+(result.status==='no_change'?'核对完成，无需修改':result.status==='owner_decision_required'?'需要本人决定':result.status))+' 原提交 '+result.H0.slice(0,12)+(result.H1?' → 成果提交 '+result.H1.slice(0,12):'');
+  const reportPath='/api/implementation-report/'+encodeURIComponent(entry)+'/'+encodeURIComponent(request.id);
+  try{const result=await api(reportPath);if(nonce!==reportNonce||project!==implementationKey())return;
+    $('report-meta').textContent=(result.status==='completed'?'实现与注册测试完成；尚未正式审核、发布或本人验收。':'原执行结果：'+(result.status==='validation_failed'?'注册测试未通过':result.status==='no_change'?'核对完成，无需修改':result.status==='owner_decision_required'?'需要本人决定':result.status))+' 原提交 '+result.H0.slice(0,12)+(result.H1?' → 成果提交 '+result.H1.slice(0,12):'');
     $('report-body').textContent=result.report?.report||(result.observationOnly?'尚无可核对的完整报告；以下是保留工作区的只读差异观察，不表示原执行已结束。':'本请求在发送前撤回，未产生模型报告。');
-    if(result.diff)$('report-body').textContent+='\n\n本次代码差异\n'+result.diff;
-    if(result.tests){$('report-body').textContent+='\n\n注册测试：'+(result.tests.passed?'通过':'未通过')+'。'+(result.testCandidateBinding?'运行测试的文件内容及可执行标记已与成果提交核对；未推定不同提交的元信息等价。':'尚无成果提交与测试的完整绑定。');for(const tool of result.tests.tools||[])$('report-body').textContent+='\n\n'+tool.id+'\n'+(tool.stdout||'')+(tool.stderr?'\n错误输出\n'+tool.stderr:'');}
+    if(result.diff){const label=result.validationFailed?'受测失败树差异':result.observationOnly?'保留工作区差异（只读观察）':'本次代码差异';$('report-body').textContent+='\n\n'+label+'\n'+result.diff;}
+    if(result.evidenceGap==='retained_additions_unverified')$('report-body').textContent+='\n\n新增文件证据待核。已显示可读取的 Git 差异。';
+    const logs=[];
+    if(result.tests){
+      $('report-body').textContent+='\n\n注册测试：'+(result.tests.passed?'通过':'未通过')+'。'+(result.testCandidateBinding?'运行测试的文件内容及可执行标记已与成果提交核对；未推定不同提交的元信息等价。':'尚无成果提交与测试的完整绑定。');
+      for(const tool of result.tests.tools||[]){
+        $('report-body').textContent+='\n\n'+tool.id+'\n'+(tool.stdout||'')+(tool.stderr?'\n错误输出\n'+tool.stderr:'');
+        for(const stream of ['stdout','stderr']){
+          const original=tool[stream+'Original'];if(!original?.bytes)continue;
+          if(original.previewTruncated)$('report-body').textContent+='\n'+stream+' 预览已截断，请下载原始日志。';
+          const button=el('button','下载 '+tool.id+' '+stream+' 原件','outline');button.type='button';
+          button.onclick=()=>{ $('implementation-log-error').textContent='';return downloadImplementationLog(reportPath+'/logs/'+encodeURIComponent(tool.id)+'/'+stream,tool.id+'-'+stream+'.log',nonce,project);};
+          logs.push(append(el('div'),button,el('p',original.bytes+' 字节 · SHA-256 '+original.sha256,'small mono wrap')));
+        }
+      }
+    }
+    if(logs.length){
+      const section=$('implementation-report-logs'),error=el('p');error.id='implementation-log-error';error.setAttribute('role','status');
+      section.replaceChildren(...logs,error);section.hidden=false;
+    }
+    if(result.tests?.unexecutedTools?.length)$('report-body').textContent+='\n\n注册测试遇到失败后未执行：'+result.tests.unexecutedTools.join('、');
     $('report-raw').textContent=JSON.stringify(result,null,2);document.querySelector('#report-original summary').textContent='核对本次原结果、测试与提交绑定';$('report-original').hidden=false;
   }catch(error){if(nonce===reportNonce)$('report-body').textContent=readableReason(error.message);}
 }
@@ -49,7 +80,7 @@ function implementationPanel(){
   if(data.actionError||data.error)panel.append(el('p',data.actionError||data.error,'github-error'));
   for(const option of data.options){
     const entries=data.entries.find(e=>e.id===option.id)?.requests||[],unfinished=entries.some(r=>r.phase!=='returned');
-    for(const issue of option.issues){const row=append(el('div',null,'report-row'),append(el('div'),el('strong','Issue #'+issue.number+' · '+issue.goal),el('p','从 '+option.H0.slice(0,12)+' 开始 · 获准修改：'+option.allowedPaths.join('、')+(option.executionKind==='fixture'?' · 明确模型协议样例':option.demonstrationFixture?' · Codex 实施，演练源项目':' · Codex 实施'),'small'))),button=el('button','新建本次工作');
+    for(const issue of option.issues){const scope=option.projectFiles?'项目级读写委托 · 受保护文件 '+option.protectedPaths.join('、'):'获准修改 '+option.allowedPaths.join('、');const row=append(el('div',null,'report-row'),append(el('div'),el('strong','Issue #'+issue.number+' · '+issue.goal),el('p','从 '+option.H0.slice(0,12)+' 开始 · '+scope+(option.executionKind==='fixture'?' · 明确模型协议样例':option.demonstrationFixture?' · Codex 实施，演练源项目':' · Codex 实施'),'small'))),button=el('button','新建本次工作');
       button.disabled=data.pending||unfinished;button.onclick=()=>startIssueWork(option,issue,project);row.append(button);panel.append(row);
     }
     for(const request of entries){const label=request.status==='completed'?'实现完成，待正式审核':request.status==='no_change'?'核对完成，无需修改':request.status==='owner_decision_required'?'需要本人决定':request.status==='cancelled_unstarted'?'已撤回，未发送':request.stopped?'已请求停止，沿原执行核对':request.controllerActive?'正在处理':request.phase==='active_or_unknown'?'原执行待核，不自动重发':request.phase==='prepared'?'已准备，待执行':'已登记，待补准备';

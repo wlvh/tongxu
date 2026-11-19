@@ -12,6 +12,7 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {save} from './live-process.js';
 import {assembleRolePrompt} from './role-prompts.js';
+import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 import {BoundedCodexSession,implementationOutputSchema,readRepairSession} from './repair-native.js';
 import {prepareProjectRepair,validateProjectContract,projectTestPlan,projectMaterial,projectModelTestResult,testProject,bindProjectTestToCandidate,type ProjectRequest} from './project-repair.js';
 import {regular,exists,git,tree,treeHash,scopeChanges,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,assertUnselectedGitUnchanged,type Grant} from './repair-workspace.js';
@@ -19,13 +20,14 @@ import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
-export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;editProfile?:EditProfile;implementationAI?:ImplementationAI;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
+export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;workflowPrompt?:CodingWorkflowPrompt;editProfile?:EditProfile;implementationAI?:ImplementationAI;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
 export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void;validationDefinition?:unknown};
 
 /** The existing fixed-project preparer is used with an empty finding list.
  * Execution below is a new implementer consumer, never the repair/fact loop. */
 export async function prepareIssueImplementation(config:string,request:ImplementationRequest,root:string){
   if(request.schemaVersion!==1||request.kind!=='tongxu-issue-implementation'||!request.id||!/^[a-f0-9]{64}$/.test(request.task)||!Number.isSafeInteger(request.issue?.number)||request.issue.number<1||typeof request.issue.body!=='string'||hash(request.issue.body)!==request.issue.bodySha256||!request.issue.adjudication?.trim()||!request.adoptedScope||hash(canonical(request.adoptedScope.body))!==request.adoptedScope.bodySha256||!request.adoptedScope.source||request.workspaceRequest.findings.length||request.workspaceRequest.executionRoot!==root||request.origin!==undefined&&!projectWorkOrigin(request.origin,request.id))throw new Error('issue_implementation_request_invalid');
+  if(Boolean(request.workflowPrompt)!==Boolean(request.workspaceRequest.projectFiles))throw new Error('implementation_workflow_prompt_missing');
   const requestPath=join(root+'-request.json');
   const bytes=Buffer.from(canonical(request.workspaceRequest));
   if(await exists(requestPath)){if(hash(await regular(requestPath))!==hash(bytes))throw new Error('issue_implementation_original_changed');}
@@ -40,7 +42,7 @@ export async function prepareIssueImplementation(config:string,request:Implement
   // Re-read its original files; never bind a modified plan merely because the
   // preparer found an existing directory. Config and request are fixed inputs.
   const r=request.workspaceRequest,plan=JSON.parse((await regular(prepared.plan)).toString()) as RepairPlan;
-  const expected={...JSON.parse((await regular(effectiveConfig)).toString()),schemaVersion:1,kind:'tongxu-controlled-repair',workspace:join(root,'workspace'),candidate:{kind:'local-git',repository:'local/project-repair',pr:null,H:r.candidate.H,B:r.candidate.H,target:'project-base'},grant:join(root,'grant.json'),findings:[],test:'registered-project-tests-v1',demonstrationFixture:r.demonstrationFixture,project:{sourceCandidate:r.candidate,materialPaths:r.materialPaths,protectedPaths:r.protectedPaths,contract:r.contract,testPlan:join(root,'test-plan.json'),testPlanSha256:r.testPlanSha256,dependencyHash:plan.project?.dependencyHash,generatedDirectories:r.generatedDirectories,...(r.materialView?{materialView:r.materialView}:{})}};
+  const expected={...JSON.parse((await regular(effectiveConfig)).toString()),schemaVersion:1,kind:'tongxu-controlled-repair',workspace:join(root,'workspace'),candidate:{kind:'local-git',repository:'local/project-repair',pr:null,H:r.candidate.H,B:r.candidate.H,target:'project-base'},grant:join(root,'grant.json'),findings:[],test:'registered-project-tests-v1',demonstrationFixture:r.demonstrationFixture,project:{sourceCandidate:r.candidate,materialPaths:r.materialPaths,protectedPaths:r.protectedPaths,contract:r.contract,testPlan:join(root,'test-plan.json'),testPlanSha256:r.testPlanSha256,dependencyHash:plan.project?.dependencyHash,generatedDirectories:r.generatedDirectories,...(r.materialView?{materialView:r.materialView}:{}),...(r.projectFiles?{projectFiles:true}:{})}};
   if(canonical(plan)!==canonical(expected))throw new Error('implementation_original_plan_changed');
   await projectTestPlan(plan.project!);
   return {...prepared,request,kind:'tongxu-issue-implementation' as const};
@@ -55,13 +57,14 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
   const selectedAI=implementationChoice(request,plan),editProfile=implementationEditProfile(request,plan);
   const grant=JSON.parse((await regular(plan.grant)).toString()) as Grant;
   validateProjectContract(plan.project,grant);await projectTestPlan(plan.project);
+  if(plan.project.projectFiles!==request.workspaceRequest.projectFiles||plan.project.projectFiles&&firstSend)throw new Error('implementation_project_file_scope_changed');
   if(plan.workspace!==grant.workspace||grant.H!==plan.candidate.H||grant.H!==request.workspaceRequest.candidate.H||grant.maxRepairRounds!==request.workspaceRequest.authorization.maxRepairRounds||canonical(grant.allowedPaths)!==canonical(request.workspaceRequest.allowedPaths)||canonical(plan.project.materialPaths)!==canonical(request.workspaceRequest.materialPaths)||canonical(plan.project.protectedPaths)!==canonical(request.workspaceRequest.protectedPaths)||plan.project.contract!==request.workspaceRequest.contract||plan.project.testPlanSha256!==request.workspaceRequest.testPlanSha256)throw new Error('implementation_original_scope_changed');
   const billing=plan.billing;
   if(billing?.mode!=='existing_subscription_only'||billing.usageCreditsEnabled!==false||!Number.isFinite(Date.parse(billing.observedAt))||hash(await regular(billing.evidence))!==billing.evidenceSha256||Date.now()-Date.parse(billing.observedAt)>24*3600000||Date.parse(billing.observedAt)>Date.now()+60000)throw new Error('implementation_billing_unavailable');
   external.unsent();
   if(operation!==join(request.workspaceRequest.executionRoot,'operation'))throw new Error('implementation_original_operation_changed');
   const initial=await tree(plan.workspace,true);if(treeHash(initial)!==grant.treeSha256||await git(plan.workspace,['rev-parse','HEAD'])!==grant.H||await git(plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('implementation_initial_tree_changed');
-  const prompt=firstSend?firstSend.proof.manifest.prompt:await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{})}));
+  const prompt=firstSend?firstSend.proof.manifest.prompt:request.workflowPrompt??await assembleRolePrompt('implementer'),inputManifestSha256=hash(canonical({request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{})}));
   const manifest={request,planSha256:expectedPlanSha256,prompt,...(request.implementationAI?{implementationAI:request.implementationAI}:{}),...(editProfile?{editProfile}:{}),inputManifestSha256};
   const readPreparation=async()=>{
     await privateDirectory(operation,false);await privateDirectory(join(operation,'attempt-1'),false);
@@ -91,7 +94,7 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     effect=>external.check(effect),()=>external.refresh(),plan.project.materialView?{materialView:'selected_files',materialPaths:[...plan.project.materialPaths,...plan.project.protectedPaths]}:undefined,editProfile);
   try{
     const nativeDirectory=firstSend?.reference.nativeDirectory??join(operation,'implementer');
-    session=await BoundedCodexSession.start({...selectedProviderOptions(selectedAI,'codex',plan.codexExecutable),directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,editProfile:implementationEditProfile(request,plan),gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
+    session=await BoundedCodexSession.start({...selectedProviderOptions(selectedAI,'codex',plan.codexExecutable),directory:nativeDirectory,operation,candidate:plan.candidate,role:'implementer',system:prompt.system,inputManifestSha256,scopeSource:plan.scopeSource,arrangementSource:'Explicit Issue implementation; one new bounded implementer context; no finding or native resume',disabledMcpServers:plan.disabledMcpServers,allowedInstructionSources:plan.allowedInstructionSources,timeoutMs:plan.timeoutMs,executionKind:plan.executionKind??'native_capture',projectRepair:true,projectFiles:plan.project.projectFiles,editProfile:implementationEditProfile(request,plan),gate,beforeTurn:()=>external.refresh(),beforeSendSync:()=>external.check(),dispatchGate:send=>{external.dispatch();return send();}});
     await gate.handoff(session.sessionId,'new_implementer_context');
     // This report belongs to its original H0. A test tool may also identify a
     // temporary tested commit; only the host can form the final H1 afterwards.
@@ -101,14 +104,14 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     const sessionId=session.sessionId,exercised=session.exercisedTools;await session.close();session=undefined;
     const capture=await readRepairSession(nativeDirectory);await verifyImplementationModel(request,plan,manifest,nativeDirectory);
     if(capture.binding.role!=='implementer'||capture.binding.inputManifestSha256!==inputManifestSha256||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_complete_capture_required');
-    const current=await gate.check(),changed=scopeChanges(initial,current,grant.allowedPaths);
+    const current=await gate.check(),changed=gate.writableChanges(current);
     if(report.decision!=='implemented'){
       if(changed.length)throw new Error('implementation_report_change_mismatch');
       const status:'no_change'|'owner_decision_required'=report.decision==='no_change'?'no_change':'owner_decision_required';
       const result={status,requestId:request.id,task:request.task,H0:plan.project.sourceCandidate.H,H1:null,report,sessionId,completeCapture:true,newNativeContext:true,...(firstSend?{firstInputContinuation:firstSend.reference}:{})};
       save(join(operation,'result.json'),result);gate.phase='closed';await releaseWorkspace(plan.workspace,lease,result.status);return result;
     }
-    if(!changed.length||!['tongxu_read_file','tongxu_replace_file','tongxu_run_tests'].every(name=>exercised.includes(name)))throw new Error('implementation_actual_change_and_tests_required');
+    if(!changed.length||!['tongxu_read_file','tongxu_run_tests'].every(name=>exercised.includes(name))||!exercised.includes('tongxu_replace_file')&&!(grant.projectFiles&&exercised.includes('tongxu_create_file')))throw new Error('implementation_actual_change_and_tests_required');
     const tests=await testProject(plan.workspace,join(operation,'attempt-1','post-repair-1'),plan.project,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});
     if(!tests.passed||!tests.executionHealthy)throw new Error('implementation_registered_tests_failed');
     const calls=await Promise.all((await readdir(join(operation,'calls'))).filter(name=>name.endsWith('.json')).map(async name=>JSON.parse((await regular(join(operation,'calls',name))).toString())));
