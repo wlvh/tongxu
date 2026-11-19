@@ -15,6 +15,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { QueueStore } from './queue-store.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
+import {canonical} from './comparison.js';
 import type {OriginalImplementationContactHost} from './task-contact-choice.js';
 import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
@@ -369,8 +370,8 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
               const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
               return formal.forWork(result.draft.issue,delivery!.H);
             };
-            const review=p.formalReview&&delivery?.status==='received'?await formalWork().catch(()=>null):null;
-            json(res,200,{...result,formalWork:review});
+            const review=p.formalReview&&result.resultStatus.current?await formalWork().catch(()=>null):null;
+            json(res,200,{...result,formalWork:review?{...review,projectWorkId:result.draft.id}:null});
           }else json(res,404,{error:'route_not_found'});
           return;
         }
@@ -390,7 +391,11 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         else if(action?.[2]==='review-issue')json(res,202,await withAI(()=>work.reviewIssue(selection,action[1]!,body)));
         else if(action?.[2]==='integration-preview')json(res,200,await work.integrationPreview(selection,action[1]!,body));
         else if(action?.[2]==='explain')json(res,202,await work.explain(selection,action[1]!,body));
-        else if(action?.[2]==='receive'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,200,await work.receive(selection,action[1]!));}
+        else if(action?.[2]==='receive'){
+          const exact=exactKeys(body,['H','requestId'])&&typeof body.H==='string'&&/^[a-f0-9]{40}$/.test(body.H)&&typeof body.requestId==='string';
+          if(!exact&&!exactKeys(body,[]))throw new Error('project_work_request_invalid');
+          json(res,200,await work.receive(selection,action[1]!,exact?body:undefined));
+        }
         return;
       }
       if(url.pathname.startsWith('/api/implementation')){
@@ -482,10 +487,17 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
         if(action[2]==='prepare'){
           const expected=body?.expectedCandidate;
-          if(!exactKeys(body,['requestId',...(Object.hasOwn(body??{},'expectedCandidate')?['expectedCandidate']:[])])||
+          const workId=body?.projectWorkId;
+          if(!exactKeys(body,['requestId',...(Object.hasOwn(body??{},'expectedCandidate')?['expectedCandidate']:[]),...(Object.hasOwn(body??{},'projectWorkId')?['projectWorkId']:[])])||
              Object.hasOwn(body,'expectedCandidate')&&(!exactKeys(expected,['repository','pr','H','B','target'])||
                 !Number.isSafeInteger(expected.pr)||expected.pr<1||!['repository','H','B','target'].every(key=>typeof expected[key]==='string')))
             throw new Error('formal_request_invalid');
+          if(Object.hasOwn(body,'projectWorkId')){
+            if(!selection||!expected||typeof workId!=='string'||!p.projectWork)throw new Error('formal_request_invalid');
+            const work=await(await openProjectWork()).detail(selection,workId);
+            const binding=work.resultStatus.current&&work.draft.delivery?.H===expected.H?await formal.forWork(work.draft.issue,expected.H):null;
+            if(!binding||binding.entry!==action[1]||canonical(binding.candidate)!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
+          }
           json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected)));return;
         }
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}

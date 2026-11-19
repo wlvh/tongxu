@@ -115,6 +115,12 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     const capture=await readRepairSession(nativeDirectory);await verifyImplementationModel(request,plan,manifest,nativeDirectory);
     if(capture.binding.role!=='implementer'||capture.binding.inputManifestSha256!==inputManifestSha256||capture.turns.length!==1||canonical(JSON.parse(capture.turns[0]!.final!.text))!==canonical(report))throw new Error('implementation_complete_capture_required');
     const current=await gate.check(),changed=gate.writableChanges(current);
+    const validation=grant.projectFiles&&exercised.includes('tongxu_run_tests')?await readLatestProjectToolValidation(operation,nativeDirectory,plan):null;
+    if(validation){
+      if(treeHash(current)!==treeHash(validation.tested))throw new Error('implementation_agent_did_not_test_current_tree');
+      projectValidationCallId=validation.callId;
+      if(report.decision!=='needs_owner'&&!validation.result.passed)throw new Error('implementation_registered_tests_failed');
+    }
     if(report.decision!=='implemented'){
       if(changed.length)throw new Error('implementation_report_change_mismatch');
       const status:'no_change'|'owner_decision_required'=report.decision==='no_change'?'no_change':'owner_decision_required';
@@ -125,10 +131,8 @@ export async function runIssueImplementation(planPath:string,expectedPlanSha256:
     if(!changed.length||!['tongxu_read_file','tongxu_run_tests'].every(name=>exercised.includes(name))||!writes.some(name=>exercised.includes(name)))throw new Error('implementation_actual_change_and_tests_required');
     let tests;
     if(grant.projectFiles){
-      const original=await readLatestProjectToolValidation(operation,nativeDirectory,plan);
-      if(treeHash(current)!==treeHash(original.tested))throw new Error('implementation_agent_did_not_test_current_tree');
-      projectValidationCallId=original.callId;
-      tests=original.result;
+      if(!validation)throw new Error('implementation_actual_change_and_tests_required');
+      tests=validation.result;
     }else tests=await testProject(plan.workspace,join(operation,'attempt-1','post-repair-1'),plan.project,{refresh:()=>external.refresh(),start:effect=>external.check(effect)});
     if(!tests.passed||!tests.executionHealthy)throw new Error('implementation_registered_tests_failed');
     if(!grant.projectFiles){

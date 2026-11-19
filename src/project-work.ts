@@ -233,8 +233,9 @@ export class ProjectWork{
       const controls=await this.controls(scope),request=await controls.validationRequest(draft.source,draft.requestId);
       validationFailure=await controls.validationState(draft.source,request);
     }
-    const preview=this.integrationInput(scope,draft);
+    const resultStatus=this.resultStatus(draft,result),preview=resultStatus.current?this.integrationInput(scope,draft):null;
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
+      resultStatus,
       ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview)}:{}),
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
@@ -254,7 +255,7 @@ export class ProjectWork{
     if(!exactKeys(b,['H','B'])||!input||body.H!==input.H||body.B!==input.B||!d.catalog||d.stopRequested)
       throw new Error('project_work_integration_preview_changed');
     const results=await this.implementationState(scope,d);
-    if(!results.reports.some(r=>r.H1===input.H&&r.status==='completed'&&r.tests?.passed===true))
+    if(!this.resultStatus(d,results).current)
       throw new Error('project_work_integration_preview_evidence_required');
     const stillCurrent=()=>{
       const current=this.store.get(scope,id);
@@ -266,6 +267,7 @@ export class ProjectWork{
       const issue=await this.readIssue(scope,d.issue.number);
       if((issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead)!==input.B||hash(issue.body)!==d.issue.bodySha256)
         throw new Error('project_work_integration_preview_changed');
+      if(!this.resultStatus(d,await this.implementationState(scope,d)).current)throw new Error('project_work_integration_preview_evidence_required');
       stillCurrent();
     };
     await check();
@@ -457,13 +459,22 @@ export class ProjectWork{
     }
     return {requests,reports,...(reportGaps.length?{reportGaps}:{})};
   }
+  private resultStatus(d:ProjectWorkDraft,actual:Awaited<ReturnType<ProjectWork['implementationState']>>|null){
+    const latest=actual?.requests?.findLast(r=>r.status!=='cancelled_unstarted'),delivery=d.delivery;
+    const verified=latest?.status==='completed'&&latest.H1&&actual?.reports.some(r=>r.id===latest.id&&r.H1===latest.H1&&r.tests?.passed===true)?latest:null;
+    const current=verified!==null&&delivery?.status==='received'&&delivery.H===verified.H1;
+    const receipt=verified&&!current&&(delivery?.status!=='pending'||delivery.H===verified.H1)?{H:verified.H1!,requestId:verified.id}:null;
+    return {current:!!current,receipt,latest:latest?{requestId:latest.id,phase:latest.phase,status:latest.status,H:latest.H1}:null};
+  }
   async explain(scope:ProjectChatScope,id:string,b:unknown){
     const d=this.store.get(scope,id),H=d.delivery?.H;
     if(!exactKeys(b,['H'])||!H||(b as Row).H!==H||d.delivery?.status!=='received')throw new Error('project_delivery_explanation_candidate_required');
     const path=join(this.directory(d),'explanation-'+H),key=d.id+':'+H;
     if(this.explanations.has(key))return {state:'running',H};
     if(await exists(path))return readProjectExplanation(path,d.id,H);
-    const actual=await this.implementationState(scope,d),report=actual.reports.find(r=>r.H1===H&&r.status==='completed'&&r.tests?.passed===true);
+    const actual=await this.implementationState(scope,d);
+    if(!this.resultStatus(d,actual).current)throw new Error('project_delivery_explanation_candidate_changed');
+    const report=actual.reports.find(r=>r.H1===H&&r.status==='completed'&&r.tests?.passed===true);
     const workflow=actual.requests.find((r:Row)=>r.id===report?.requestId)?.workflow;
     if(!report?.candidate||!workflow)throw new Error('project_delivery_explanation_workflow_unavailable');
     const job:Job={stop:false,promise:Promise.resolve()};
@@ -471,7 +482,11 @@ export class ProjectWork{
       const current=this.store.get(scope,id);
       if(!this.accepting||job.stop||current.stopRequested||current.version!==d.version||current.delivery?.H!==H)throw new Error('project_delivery_explanation_candidate_changed');
     };
-    const check=async()=>{allowed();await this.verify(scope);allowed();};
+    const check=async()=>{
+      allowed();await this.verify(scope);
+      if(!this.resultStatus(d,await this.implementationState(scope,d)).current)throw new Error('project_delivery_explanation_candidate_changed');
+      allowed();
+    };
     const material={work:d.id,issue:{number:d.issue.number,title:d.issue.title,url:d.issue.url,body:d.issue.body,bodySha256:d.issue.bodySha256},
       candidate:report.candidate,goal:d.goal,workflowRevision:workflow.revision,
       technicalEvidence:{H0:report.H0,H1:H,diff:report.diff,implementation:report.report,tested:report.modelTests,
@@ -483,11 +498,17 @@ export class ProjectWork{
       .catch(()=>{/* The registered capture remains readable or explicitly unknown. */}).finally(()=>this.explanations.delete(key));
     return {state:'registered',H};
   }
-  async receive(scope:ProjectChatScope,id:string){
-    this.store.get(scope,id);const prior=this.receiving.get(id);if(prior)return prior;
-    const operation=this.receiveOriginal(scope,id);this.receiving.set(id,operation);try{return await operation;}finally{this.receiving.delete(id);}
+  async receive(scope:ProjectChatScope,id:string,expected?:{H:string;requestId:string}){
+    const draft=this.store.get(scope,id);
+    if(expected){
+      const status=this.resultStatus(draft,await this.implementationState(scope,draft));
+      const selected=status.receipt??(status.current?{H:status.latest!.H,requestId:status.latest!.requestId}:null);
+      if(canonical(selected)!==canonical(expected))throw new Error('project_work_result_receipt_changed');
+    }
+    const prior=this.receiving.get(id);if(prior)return prior;
+    const operation=this.receiveOriginal(scope,id,expected);this.receiving.set(id,operation);try{return await operation;}finally{this.receiving.delete(id);}
   }
-  private async receiveOriginal(scope:ProjectChatScope,id:string){
+  private async receiveOriginal(scope:ProjectChatScope,id:string,expected?:{H:string;requestId:string}){
     let d=this.store.get(scope,id);if(!d.catalog||!d.source)throw new Error('project_work_original_not_registered');await this.verify(scope);
     const source=d.source,catalog=JSON.parse((await regular(d.catalog.path)).toString()),entry=catalog.entries[0] as ImplementationEntry;
     if(hash(canonical(catalog))!==d.catalog.sha256)throw new Error('project_work_fixed_input_changed');
@@ -500,17 +521,29 @@ export class ProjectWork{
         const matches=q.issueImplementations().requests(source).filter(r=>r.result?.status==='completed'&&r.result.completeCapture&&r.result.H1===pending.H);
         if(matches.length!==1)throw new Error('project_work_pending_result_not_unique');
         original=matches[0]!;
+        if(expected&&(expected.H!==pending.H||expected.requestId!==original.id))throw new Error('project_work_result_receipt_changed');
         for(const resource of original.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
       }finally{q.close();}
       const controls=await this.controls(scope);await controls.report(source,original.id);
       try{
-        await receiveWorkResult({repositoryPath:entry.objects,executionWorkspace:original.plan.workspace,H:pending.H,previous:pending.previous,branch:pending.branch,workspace:pending.workspace,evidence:join(this.directory(d),'receipt-'+pending.H)});
+        const received=await receiveWorkResult({repositoryPath:entry.objects,executionWorkspace:original.plan.workspace,H:pending.H,previous:pending.previous,branch:pending.branch,workspace:pending.workspace,evidence:join(this.directory(d),'receipt-'+pending.H)});
         d=this.store.get(scope,id);d=this.save(scope,{...d,stage:'delivered',problem:null,delivery:{...pending,status:'received',problem:null}},'result_received',pending.H+' returned to the real project branch and result workspace');
+        if(expected)return received;
       }catch(e){d=this.store.get(scope,id);this.save(scope,{...d,stage:'waiting_return',problem:problem(e),delivery:{...pending,problem:problem(e)}},'result_receipt_waiting',problem(e));throw e;}
     }
     const q=await QueueStore.open(entry.store);let latest:Row;
-    try{const rows=q.issueImplementations().requests(source);latest=rows.at(-1)!;if(latest?.result?.status==='no_change'&&latest.result.completeCapture){this.save(scope,{...d,stage:d.delivery?.status==='received'?'delivered':'no_change',problem:null},'no_change','Original complete no-change result retained; no new commit claimed');return {status:'no_change',newCommit:false};}if(!latest||latest.result?.status!=='completed'||!latest.result.completeCapture||!latest.result.H1){this.save(scope,{...d,stage:'waiting_return',problem:'project_work_result_not_complete'},'result_waiting','Latest original request has no complete committed result');throw new Error('project_work_result_not_complete');}for(const resource of latest.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');}finally{q.close();}
+    try{const rows=q.issueImplementations().requests(source);latest=rows.findLast(r=>r.result?.status!=='cancelled_unstarted')!;
+      if(expected&&(latest?.id!==expected.requestId||latest.result?.H1!==expected.H))throw new Error('project_work_result_receipt_changed');
+      const validNoChange=latest?.result?.status==='no_change'&&latest.result.completeCapture;
+      const validChange=latest?.result?.status==='completed'&&latest.result.completeCapture&&latest.result.H1;
+      if(!validNoChange&&!validChange){this.save(scope,{...d,stage:'waiting_return',problem:'project_work_result_not_complete'},'result_waiting','Latest original request has no complete committed result');throw new Error('project_work_result_not_complete');}
+      for(const resource of latest.plan.resourceRequests)if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
+    }finally{q.close();}
     const controls=await this.controls(scope);await controls.report(source,latest.id);
+    if(latest.result.status==='no_change'){
+      this.save(scope,{...d,stage:d.delivery?.status==='received'?'delivered':'no_change',problem:null},'no_change','Original complete no-change result retained; no new commit claimed');
+      return {status:'no_change',newCommit:false};
+    }
     const H=latest.result.H1;
     if(d.delivery?.status==='received'&&d.delivery.H===H){
       try{return await receiveWorkResult({repositoryPath:entry.objects,executionWorkspace:latest.plan.workspace,H,previous:d.delivery.previous,branch:entry.target,workspace:d.delivery.workspace,evidence:join(this.directory(d),'receipt-'+H)});}

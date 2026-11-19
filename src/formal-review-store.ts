@@ -72,7 +72,30 @@ export class FormalReviews{
   forEntry(entry:string){const rows=this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' ORDER BY id").all() as Row[];if(rows.length>512)throw new Error('formal_history_bound');return rows.map(e=>this.state(e.object)).filter(s=>s.request.entry===entry);}
   requests(item:string){return (this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' AND json_extract(data,'$.value.item')=? ORDER BY id").all(item) as Row[]).map(e=>this.state(e.object));}
   currentSource(item:string){return this.source(item);}
-  state(id:string){const f=this.fixed(id),op=this.operation(id),last=f.events.filter(e=>e.kind==='formal_review_progress').at(-1)?.data,stages=f.events.filter(e=>e.kind==='formal_review_stage_prepared').map(e=>this.stage(id,e.data.stage.key));return {operation:id,...f.registration,request:f.request,executionRound:this.executionRound(f),workSha256:this.workSha256(f),replacement:this.replacement(f)??null,phase:last?.phase??op.result.formalReview.phase,detail:last?.detail??null,stopped:f.events.some(e=>e.kind==='formal_review_stopped')||this.ancestorsStopped(f.request),stages,terminal:f.events.findLast(e=>e.kind==='formal_review_terminal')?.data??null,resourcesSettled:stages.every(s=>s.stage.resources.every((r:ResourceRequest)=>{try{return !!this.resources().settledOutcome(resourceRequestHash(r));}catch(error){if((error as Error).message==='original_resource_request_required')return false;throw error;}}))};}
+  private closedReviewEvidence(result:Row,stages:Row[]){
+    try{
+      const closure=result.originalClosure;
+      if(!exactKeys(closure,['openai','moonshot']))return false;
+      for(const [seat,key] of [['openai',result.reviewKey],['moonshot',result.peerReviewKey]] as const){
+        const lane=closure[seat],stage=stages.find(item=>item.stage.key===key)?.returned;
+        const streams=['stdin.ndjson','stdout.ndjson','stderr.txt'];
+        if(!stage||!exactKeys(lane,['sessionId','files'])||lane.sessionId!==stage.proof.native.sessionId||
+           !exactKeys(lane.files,[...streams,'exit.json','capture-status.json',...(seat==='moonshot'?['prompt-boundaries.ndjson']:[])]))return false;
+        for(const digest of Object.values(lane.files)){if(!isAuthorityDigest(digest))return false;this.bytes(digest);}
+        const exit=JSON.parse(this.bytes(lane.files['exit.json']).toString()),capture=JSON.parse(this.bytes(lane.files['capture-status.json']).toString());
+        if(exit.code!==0||exit.signal!==null||capture.status!=='complete'||capture.failure!==null||streams.some(name=>capture.files?.[name]!==lane.files[name]))return false;
+        for(const name of streams.slice(0,2)){
+          const previous=this.bytes(stage.proof.originals[name].sha256),closed=this.bytes(lane.files[name]);
+          if(!closed.subarray(0,previous.length).equals(previous))return false;
+        }
+      }
+      return true;
+    }catch{return false;}
+  }
+  state(id:string){const f=this.fixed(id),op=this.operation(id),last=f.events.filter(e=>e.kind==='formal_review_progress').at(-1)?.data,stages=f.events.filter(e=>e.kind==='formal_review_stage_prepared').map(e=>this.stage(id,e.data.stage.key));const stored=f.events.findLast(e=>e.kind==='formal_review_terminal')?.data??null;
+    const terminal=stored?.result.status==='pass'&&f.request.workflowReview&&!this.closedReviewEvidence(stored.result,stages)?
+      {result:{...stored.result,status:'needs_evidence',recordedStatus:'pass',reason:'formal_dual_terminal_capture_missing'}}:stored;
+    return {operation:id,...f.registration,request:f.request,executionRound:this.executionRound(f),workSha256:this.workSha256(f),replacement:this.replacement(f)??null,phase:last?.phase??op.result.formalReview.phase,detail:last?.detail??null,stopped:f.events.some(e=>e.kind==='formal_review_stopped')||this.ancestorsStopped(f.request),stages,terminal,resourcesSettled:stages.every(s=>s.stage.resources.every((r:ResourceRequest)=>{try{return !!this.resources().settledOutcome(resourceRequestHash(r));}catch(error){if((error as Error).message==='original_resource_request_required')return false;throw error;}}))};}
   replaceEndedDual(id:string,round:number,keys:string[],ended:Row[],workspace:Row|null,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.check(id,observations),state=this.state(id),prefix='round-'+round+'/';
     const stages=(state.stages as ReturnType<FormalReviews['stage']>[]).filter(s=>s.stage.key.startsWith(prefix));
@@ -119,6 +142,7 @@ export class FormalReviews{
   stop(id:string){return this.transaction(()=>{this.fixed(id);this.event('stopped',id,{source:'explicit_user_stop',originalsRetained:true});return this.state(id);});}
   finish(id:string,result:Row){return this.transaction(()=>{const f=this.fixed(id);if(result.status==='pass'){this.check(id);const review=this.stage(id,result.reviewKey);if(review.stage.role!=='reviewer'||!review.returned||!sameFormalCandidate(review.stage.candidate,result.candidate)||validateFormalReview(review.returned.result,review.stage.candidate.H,review.stage.materialSha256).verdict!=='PASS')throw new Error('formal_pass_requires_its_complete_reviewer');
     if(f.request.workflowReview){
+      if(!this.closedReviewEvidence(result,[this.stage(id,result.reviewKey),this.stage(id,result.peerReviewKey)]))throw new Error('formal_dual_terminal_capture_missing');
       const prefix='round-'+this.executionRound(f)+'/',a=this.stage(id,prefix+'correctness-initial'),b=this.stage(id,prefix+'impact-initial');
       const peer=this.stage(id,result.peerReviewKey),suffix=result.reviewKey===prefix+'correctness-exchange'?'exchange':result.reviewKey===prefix+'correctness-final'?'final':null;
       if(!suffix||result.peerReviewKey!==prefix+'impact-'+suffix||peer.stage.role!=='verifier_impact'||!peer.returned||

@@ -196,14 +196,23 @@ for(const latest of ['no_change','incomplete','unknown'])for(const blocked of [f
   if(blocked)await writeFile(join(f.workspace,'external.txt'),'retain external work');
   if(blocked)await assert.rejects(f.work.receive(scope,f.id),/workspace_changed/);else if(latest==='no_change')assert.deepEqual(await f.work.receive(scope,f.id),{status:'no_change',newCommit:false});else await assert.rejects(f.work.receive(scope,f.id),/result_not_complete/);
   const d=f.state();assert.equal(d.delivery!.H,f.H1);assert.equal(d.delivery!.status,blocked?'pending':'received');assert.equal(d.stage,blocked||latest!=='no_change'?'waiting_return':'delivered');assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);if(!blocked)assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H1);
-  assert.deepEqual(f.reports,['original']);assert.deepEqual(f.resources,['resource-original']);assert.deepEqual(await readFile(join(f.evidence,'receipt-'+f.H1+'.json')),intent);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
+  const verifiedNoChange=!blocked&&latest==='no_change';
+  assert.deepEqual(f.reports,verifiedNoChange?['original','latest']:['original']);assert.deepEqual(f.resources,verifiedNoChange?['resource-original','resource-latest']:['resource-original']);assert.deepEqual(await readFile(join(f.evidence,'receipt-'+f.H1+'.json')),intent);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
 });
 for(const match of ['missing','ambiguous'])test('pending receipt refuses '+match+' original result sample',async t=>{
   const f=await pendingWork(t,'completed');f.setRows(match==='missing'?[f.latest]:[f.original,{...f.original,id:'other'},f.latest]);await assert.rejects(f.work.receive(scope,f.id),/pending_result_not_unique/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,'pending');assert.deepEqual(f.reports,[]);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
 });
-for(const target of ['original','latest'])for(const gate of ['report','resources'])test('pending receipt retains exact result at explicit '+target+' '+gate+' refusal',async t=>{
-  const f=await pendingWork(t,'completed');if(gate==='report')f.setBadReport(target);else f.setUnsettled('resource-'+target);
+for(const target of ['original','latest'])for(const gate of ['report','resources'])for(const latest of target==='latest'?['completed','no_change']:['completed'])test('pending receipt retains exact result at explicit '+target+' '+gate+' refusal ('+latest+')',async t=>{
+  const f=await pendingWork(t,latest);if(gate==='report')f.setBadReport(target);else f.setUnsettled('resource-'+target);
   await assert.rejects(f.work.receive(scope,f.id),gate==='report'?/report_changed/:/resources_unresolved/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,target==='original'?'pending':'received');assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);
+});
+test('a canceled newest supplement leaves the earlier complete result eligible after its predecessor receipt',async t=>{
+  const f=await pendingWork(t,'completed');
+  f.setRows([f.original,f.latest,{id:'withdrawn',result:{status:'cancelled_unstarted'}}]);
+  assert.equal((await f.work.receive(scope,f.id) as any).H,f.H2);
+  assert.deepEqual(f.reports,['original','latest']);
+  assert.deepEqual(f.resources,['resource-original','resource-latest']);
+  assert.equal(f.state().delivery?.status,'received');
 });
 test('a failed latest receipt retains H2 pending with the truly received H1 predecessor',async t=>{
   const f=await pendingWork(t,'completed'),spawn=childProcess.spawn;

@@ -497,6 +497,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.technicalEvidence&&context.work){finish({candidateH:context.candidate.H,report:'Explicit fixture Tech Lead explanation: tested download retention, with review and publication still unobserved.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.material?.issue&&context.reviewedInputSha256){finish({candidateH:context.material.head,reviewedInputSha256:context.reviewedInputSha256,verdict:'PASS',report:'Explicit fixture Issue review of the published acceptance plan.',findings:[],coverageGaps:[],ownerQuestions:[]});return;}if(m.params.outputSchema.properties.title){finish({candidateH:context.head,title:'Add download expiry',report:'Track the specified availability deadline for completed downloads.'});return;}if(context.draft&&context.issue){finish({candidateH:context.draft.head,report:'From Downloads, open a result before the deadline, at the deadline and afterward. Check that expired results are refused.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement)throw Error('fixture_original_supplement_required');const amend=context.request.continuation.supplement.text,second=amend==='Also mark corrected downloads.';if(!second&&amend!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt'+(second||context.request.issue.number!==202||context.originalReport?'<':'<=')+'86400000;}\\n';if(second)args.text+='export const correctedDownload=true;\\n';}stage=name;const serial=");
+ if(fault==='project-development')code=code.replace("if(stage==='tongxu_read_file'){", "const initialB=context.request?.issue?.number===202&&context.request.continuation?.supplement.text==='Also add a retention deadline for the download.'&&!context.originalReport;if(initialB&&stage==='tongxu_read_file'){tool('tongxu_run_tests',{});return;}if(initialB&&stage==='tongxu_run_tests'){finish({candidateH:context.candidate.H,decision:'no_change',report:'The unchanged candidate failed the new download requirement.'});return;}if(stage==='tongxu_read_file'){");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
  if(readonlyFault){
   code=code.replace("import fs from 'node:fs';", "import fs from 'node:fs';import{createHash}from'node:crypto';import{dirname}from'node:path';");
@@ -681,7 +682,18 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.deepEqual([received.id,received.target.source,received.compiledRequest,received.receivedIsNotDelivered],[requestId,cb.id,null,true]);
      assert.match(title,/Issue #202/);
      assert.equal((await detail(b)).draft.stopRequested,false);
+     const receive=ProjectWork.prototype.receive;
+     let loseFirstReceipt=true;
+     t.mock.method(ProjectWork.prototype,'receive',async function(this:ProjectWork,...args:Parameters<ProjectWork['receive']>){
+       if(args[1]===b&&!args[2]&&loseFirstReceipt){loseFirstReceipt=false;throw Error('github_connection_unavailable');}
+       return receive.apply(this,args);
+     });
      release.get(b)!();
+     const awaitingReceipt=await until(()=>detail(b),r=>!loseFirstReceipt&&r.resultStatus.receipt);
+     assert.equal(awaitingReceipt.draft.stage,'execution');
+     assert.equal(awaitingReceipt.draft.delivery,null);
+     assert.equal((await post('/api/project-work/'+b+'/receive',{...awaitingReceipt.resultStatus.receipt,H:'0'.repeat(40)})).status,503);
+     assert.equal((await post('/api/project-work/'+b+'/receive',awaitingReceipt.resultStatus.receipt)).status,200);
      const finished=await until(()=>detail(b),r=>r.draft.delivery?.status==='received');
      assert.equal(finished.execution.reports.at(-1).tests.passed,true);
      assert.equal(await git(f.objects,['rev-parse','HEAD']),H);
@@ -774,11 +786,16 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(activeSupplement.id,requestId);
      assert.equal(activeSupplement.original.adopted,true);
      assert.equal(activeSupplement.original.coveringCandidate,null);
-     assert.equal((await detail(b)).draft.delivery.H,finished.draft.delivery.H);
+     const underway=await detail(b);
+     assert.equal(underway.draft.delivery.H,finished.draft.delivery.H);
+     assert.equal(underway.resultStatus.current,false);
+     assert.equal((await post('/api/project-work/'+b+'/explain',{H:finished.draft.delivery.H})).status,503);
      releaseSupplement();
      const failedSupplement=await until(()=>detail(b),r=>r.validationFailure?.eligible);
      assert.equal(failedSupplement.validationFailure.requestId,compiled);
      assert.equal(failedSupplement.validationFailure.tests.passed,false);
+     assert.equal(failedSupplement.validationFailure.report.decision,'no_change');
+     assert.equal(failedSupplement.resultStatus.current,false);
      assert.equal(failedSupplement.draft.delivery.H,finished.draft.delivery.H);
      assert.equal((await post('/api/project-work/'+b+'/correct-validation',{requestId:finished.draft.requestId})).status,503);
      assert.equal((await post('/api/project-work/'+b+'/correct-validation',{requestId:compiled})).status,202);

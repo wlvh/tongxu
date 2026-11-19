@@ -1,7 +1,8 @@
 import {join} from 'node:path';
 import {selectedProviderOptions} from './ai-settings.js';
 import {ExtraCliSession,extraProfileFiles,parseAcpPrompt} from './additional-cli.js';
-import {BoundedCodexSession,findingSchema} from './repair-native.js';
+import {BoundedCodexSession,findingSchema,readRepairSession} from './repair-native.js';
+import {checkCapture} from './live-process.js';
 import {canonical} from './comparison.js';
 import {hash} from './snapshot.js';
 import {exists,regular} from './repair-workspace.js';
@@ -53,6 +54,7 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     return {status:'waiting',reason};
   }
   let {gpt,kimi}=host.dual,retain=false;
+  let peerFinal:{input:string;sessionId:string;requestId:number;final:string}|undefined;
   const stageProof=(role:string,inputSha256:string,systemSha256:string,native:unknown)=>({
     role,inputSha256,systemSha256,candidate:source,completeCapture:true,executionKind:kind,native
   });
@@ -87,7 +89,10 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
   };
   const captureImpact=async(name:string,input:string,parse:(value:unknown)=>unknown)=>{
     const system=prompts.impact.system,old=await host.original(key(name),input,system);
-    if(old)return {report:parse(jsonReport(old.finalText)),sessionId:old.sessionId as string};
+    if(old){
+      peerFinal={input,sessionId:old.sessionId,requestId:old.requestId,final:old.finalText};
+      return {report:parse(jsonReport(old.finalText)),sessionId:old.sessionId as string};
+    }
     const stage=await host.prepare(key(name),'verifier_impact',input,system,'analysis');host.activate(stage);
     if(!kimi){
       if(name!=='impact-initial'||await exists(stage.directory))throw new Error('formal_original_impact_context_not_owned');
@@ -111,13 +116,34 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
     verifyImpactBoundary(originals,input,sessionId,requestId,final);
     const native={company:'Moonshot',sessionId,requestId,model:selected.model,promptBoundaryVerified:true};
     host.record(stage,{finalText:final,report},stageProof('verifier_impact',stage.inputSha256,stage.systemSha256,native),originals);
+    peerFinal={input,sessionId,requestId,final};
     return {report,sessionId};
   };
   const parseReview=(value:unknown)=>validateFormalReview(value,candidate.H,material.sha256);
   const reviewFor=(phase:string,context:unknown)=>jsonInput({phase,material,context,responseShape:formalReviewSchema});
+  const closedLanes=async(extra:Record<string,unknown>)=>{
+    if(!peerFinal)throw new Error('formal_dual_terminal_capture_missing');
+    await host.closeDual();
+    const paths=[key('correctness-initial'),key('impact-initial')].map(stage=>join(host.directory,stage.replace('/','-')));
+    const [openai,moonshot]=paths as [string,string];
+    const completed=await readRepairSession(openai),conclusion=completed.turns.at(-1)?.final;
+    if(!conclusion||canonical(parseReview(JSON.parse(conclusion.text)))!==canonical(extra.review))throw new Error('formal_dual_terminal_capture_changed');
+    await checkCapture(moonshot);
+    const files=['stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json'];
+    const capture=async(directory:string)=>Object.fromEntries(await Promise.all(files.map(async name=>[name,await regular(join(directory,name),16*1024*1024)] as const)));
+    const [a,b]=await Promise.all([capture(openai),capture(moonshot)]);
+    b['prompt-boundaries.ndjson']=await regular(join(moonshot,'prompt-boundaries.ndjson'),16*1024*1024);
+    verifyImpactBoundary(b,peerFinal.input,peerFinal.sessionId,peerFinal.requestId,peerFinal.final);
+    const refs=(parts:Record<string,Buffer>)=>Object.fromEntries(Object.entries(parts).map(([name,bytes])=>[name,hash(bytes)]));
+    const originals=[...Object.values(a),...Object.values(b)];
+    if(originals.reduce((bytes,value)=>bytes+value.length,0)>32*1024*1024)throw new Error('native_original_turn_capture_limit');
+    host.q.formalReviews().retainEvidence(host.operation,new Map(originals.map(bytes=>[hash(bytes),bytes])));
+    return {openai:{sessionId:completed.binding.sessionId,files:refs(a)},moonshot:{sessionId:peerFinal.sessionId,files:refs(b)}};
+  };
   const finish=async(status:string,extra:Record<string,unknown>={})=>{
+    const originalClosure=status==='pass'?await closedLanes(extra):undefined;
     await host.phaseEnded('analysis');
-    return host.finish({status,candidate:source,...extra});
+    return host.finish({status,candidate:source,...extra,...(originalClosure?{originalClosure}:{})});
   };
   try{
     const firstInput=reviewFor('independent-initial',null);

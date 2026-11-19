@@ -47,7 +47,7 @@ test('dual verification can answer every finding from two valid reports',()=>{
 });
 
 async function dualPrograms(t:test.TestContext,mode:string){
- const f=await formalFixture(t,mode==='fix'||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended'),peer=await additionalFixture(t,'kimi',mode==='late-peer'?'after-terminal-text':'complete');
+ const f=await formalFixture(t,mode==='fix'||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended'),peer=await additionalFixture(t,'kimi',mode==='late-peer'?'after-terminal-text':mode==='late-close'?'text-during-close':'complete');
  const codex=await readFile(f.n.config.codexExecutable,'utf8');
  await writeFile(f.n.config.codexExecutable,codex.replace("context.candidate??=context.material.candidate;","context.candidate??=context.material.candidate;repairing||=context.stage==='authorized-repair';"));
  const peerCode=await readFile(peer.binary,'utf8');
@@ -157,7 +157,7 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
     sameOpenAIFixSession:first.proof.native.sessionId,retainedOriginalKimiSession:second.proof.native.sessionId}));
  }
 });
-for(const mode of ['missing-peer','late-peer','resume-live','replace-ended','replace-fix-wait'])test('dual controller '+mode+' verifies original capture and admission',async t=>{
+for(const mode of ['missing-peer','late-peer','late-close','resume-live','replace-ended','replace-fix-wait'])test('dual controller '+mode+' verifies original capture and admission',async t=>{
  const {f,peer}=await dualPrograms(t,mode);
  if(mode==='replace-fix-wait')t.mock.method(QueueFormalRoundHost.prototype,'fixAvailable',async()=>({available:false,reason:'explicit_fixture_waiting_for_fix_authority'}));
  let unavailable=mode==='resume-live'||mode==='replace-ended',operation:string|undefined;
@@ -203,6 +203,15 @@ for(const mode of ['missing-peer','late-peer','resume-live','replace-ended','rep
   await assert.rejects(control.replaceEndedDual(id,op,1),/formal_dual_replacement_not_verified/);
   await control.begin(id,op);await waitFor(async()=>!(await report()).controllerActive);
   assert.equal((await peer.calls()).length,1);return;
+ }
+ if(mode==='late-close'){
+  assert.equal(original.phase,'waiting');assert.equal(original.result,null);
+  assert.equal(original.detail.reason,'stage_capture_failed');
+  assert.equal(original.fullStages.length,4);assert.ok(original.fullStages.every((s:{proof:unknown})=>s.proof));
+  await control.drain();control=await open();await control.begin(id,op);
+  await waitFor(async()=>!(await report()).controllerActive);
+  const reopened=await report();assert.equal(reopened.phase,'waiting');assert.equal(reopened.result,null);
+  assert.equal((await peer.calls()).length,2);return;
  }
  if(unavailable){
   assert.equal(original.detail.reason,'explicit_fixture_source_unavailable');assert.equal(original.ownsOriginalSessions,true);

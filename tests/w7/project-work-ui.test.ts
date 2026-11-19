@@ -103,3 +103,24 @@ test('readonly host failure is visibly incomplete and has no success or suppleme
  p.run('projectWorkData().selected='+JSON.stringify(summary.id)+';projectWorkData().detail='+JSON.stringify({draft:item,execution:{reports:[report]},history:[{version:0,execution:{reports:[report]}}]})+';projectWorkData().works='+JSON.stringify([{...summary,stage:'execution',execution:{phase:'returned',status:'failed',failureKind:'ended_readonly_timeout',controllerActive:false}}])+";view='project-work';renderProjectWork();render=()=>{};");
  const texts=(n:any):string=>[n.textContent,...(n.children??[]).map(texts)].join('\n'),shown=texts(p.nodes.get('content'));assert.match(shown,/宿主失败证据（无完整模型报告）/);assert.match(shown,/原结果没有成功提交/);assert.equal(find(p.nodes.get('content'),'对原任务补充说明'),undefined);assert.equal(find(p.nodes.get('content'),'接收本次改动'),undefined);assert.equal(p.fetchCalls.length,0);
 });
+
+test('newer unfinished execution leaves the old result as history and an exact ended result can be received after reopening',async()=>{
+ const p=await workPage(),oldH='a'.repeat(40),newH='b'.repeat(40),receipt={H:newH,requestId:'same-original-supplement'};
+ const delivery={status:'received',H:oldH,branch:'candidate',workspace:'/private/fixture-result'};
+ const item={...detail.draft,version:1,stage:'delivered',delivery,catalog:{path:'fixture'},source:'fixture'};
+ const show=(latest:object,receivable:object|null)=>p.run('projectWorkData().selected='+JSON.stringify(summary.id)+';projectWorkData().works='+JSON.stringify([{...summary,stage:item.stage,delivery}])+
+   ';projectWorkData().detail='+JSON.stringify({draft:item,execution:{requests:[{H1:oldH,workflow:{revision:'fixed'}}]},resultStatus:{current:false,receipt:receivable,latest},
+     integrationSource:{H0:'c'.repeat(40),H:oldH,B:newH,target:'main'},formalWork:{source:'registered'}})+";view='project-work';renderProjectWork();render=()=>{};");
+ const texts=(node:any):string=>[node?.textContent,...(node?.children??[]).map(texts)].join('\n');
+ for(const phase of ['validation_failed','active_or_unknown']){
+  show({phase,requestId:receipt.requestId},null);
+  const root=p.nodes.get('content');assert.match(texts(root),/已接回的历史候选/);assert.doesNotMatch(texts(root),/完整成果已接回项目/);
+  assert.equal(find(root,'生成交付解读'),undefined);
+  assert.equal(find(root,'检查与当前默认分支能否整合'),undefined);
+  assert.equal(find(root,'继续接回原成果'),undefined);
+ }
+ show({phase:'returned',status:'completed',requestId:receipt.requestId,H:newH},receipt);
+ const action=find(p.nodes.get('content'),'继续接回原成果').onclick();
+ assert.ok(p.fetchCalls[0]!.path.endsWith('/receive'));assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),receipt);
+ p.fetchCalls[0]!.resolve({ok:false,status:503,json:async()=>({error:'project_work_result_receipt_changed'})});await action;
+});

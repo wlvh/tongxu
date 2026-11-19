@@ -8,6 +8,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {mkdir} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {startWorkbench} from '../../src/workbench.js';
+import {ProjectChat} from '../../src/project-chat.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
@@ -222,6 +223,43 @@ test('a project outage after a queued question sends its first input does not re
   const original=await f.post('/api/project-secretary/continue-question',{requestId:next.requestId});
   assert.deepEqual([original.data.status,original.data.duplicate,original.data.newModelInputs],['failed',true,0]);
   assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
+});
+
+test('cold recovery completes a recorded zero-input archive move before returning the same request to the queue',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有进度'),next=question('按原请求继续核对',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  const prototype=ProjectChat.prototype as unknown as {requeue(id:string,owner:string,problem:string):boolean};
+  const requeue=prototype.requeue;let cut=false;
+  t.mock.method(prototype,'requeue',function(this:ProjectChat,id:string,owner:string,problem:string){
+    if(id===next.requestId&&!cut){cut=true;throw Error('fixture_controller_lost_after_archive_move');}
+    return requeue.call(this as unknown as typeof prototype,id,owner,problem);
+  });
+  f.offlineOnProjectRead(5);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  for(let i=0;i<150&&!cut;i++)await new Promise(r=>setTimeout(r,25));
+  assert.equal(cut,true);
+  await f.close();
+  const chats=join(f.root,'chats'),database=new DatabaseSync(join(chats,'conversations.sqlite'));
+  try{
+    const transfer=database.prepare('SELECT body FROM unstarted_attempt_moves WHERE id=?').get(next.requestId) as {body:string};
+    const {archive}=JSON.parse(transfer.body),attempt=join(chats,next.requestId+'.unstarted-'+archive);
+    const {pid}=JSON.parse(await readFile(join(attempt,'native','process.json'),'utf8'));
+    assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
+    // Represent the ended prior controller using a real ended process identity.
+    database.prepare('UPDATE messages SET pid=? WHERE id=?').run(pid,next.requestId);
+  }finally{database.close();}
+  f.setOffline(false);
+  const reopened=await f.launch(),conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const pending=(await reopened.get(conversation)).data.messages[1];
+    assert.deepEqual([pending.id,pending.status,pending.problem],[next.requestId,'queued','github_connection_unavailable']);
+    assert.deepEqual((await f.logs()).filter(row=>row.kind==='input').map(row=>row.context.question),[first.question]);
+    assert.equal((await reopened.post('/api/project-secretary/continue-question',{requestId:next.requestId})).status,202);
+    await f.waitForInput(next.question);
+    assert.deepEqual((await f.logs()).filter(row=>row.kind==='input').map(row=>row.context.question),[first.question,next.question]);
+  }finally{await reopened.close();}
 });
 test('busy intake persists the exact words, then sends original pending questions once and in order',async t=>{
   const f=await fixture(t,'hold-first-slow-close'), first=question('查看已有开发进度');

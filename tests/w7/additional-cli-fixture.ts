@@ -44,6 +44,7 @@ if(m.method==='session/prompt'){
  if(!(mode==='unsolicited-between-inputs'&&turn===2))emit(chunk(outputText));
  result={stopReason:mode==='cancelled'?'cancelled':'end_turn'};
  }emit({id:m.id,result});
+ if(m.method==='session/close'&&mode==='text-during-close'&&turn>0)emit({method:'session/update',params:{sessionId:session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Unexpected text during shutdown'}}}});
  if(m.method==='session/prompt'&&mode==='duplicate-response')emit({id:m.id,error:{code:-1,message:'conflicting response'}});
  if(m.method==='session/prompt'&&mode==='late-duplicate')setTimeout(()=>emit({id:m.id,error:{code:-1,message:'late conflicting response'}}),100);
  if(m.method==='session/prompt'&&turn===1&&mode==='gated-late-duplicate'){

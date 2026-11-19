@@ -127,7 +127,8 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false,
  if(grant.H!==plan.candidate.H||treeHash(initial)!==grant.treeSha256)throw new Error('implementation_validation_original_changed');
  const native=await implementationCaptureDirectory({...s,result:s.firstInputContinuation?{firstInputContinuation:s.firstInputContinuation}:null}),capture=await readRepairSession(native),report=JSON.parse(capture.turns[0]?.final?.text??'null'),nativeProcess=await json(join(native,'process.json'));
  const tools=await verifyImplementationModel(fixed.request,plan,manifest,native);
- if(capture.turns.length!==1||capture.binding.role!=='implementer'||capture.binding.run!==op||capture.binding.inputManifestSha256!==inputManifestSha256||report?.decision!=='implemented'||report.candidateH!==plan.candidate.H||processState(nativeProcess.pid)!=='ended')throw new Error('implementation_validation_capture_unknown');
+ const unchanged=projectFiles&&report?.decision==='no_change';
+ if(capture.turns.length!==1||capture.binding.role!=='implementer'||capture.binding.run!==op||capture.binding.inputManifestSha256!==inputManifestSha256||!unchanged&&report?.decision!=='implemented'||report.candidateH!==plan.candidate.H||processState(nativeProcess.pid)!=='ended')throw new Error('implementation_validation_capture_unknown');
  const inputs=await json(join(native,'inputs.json')),sent=(await regular(join(native,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(x=>JSON.parse(x)),start=sent.filter(x=>x.method==='thread/start');
  if(inputs.length!==1||canonical(inputs[0].subjectCandidate)!==canonical(plan.candidate)||canonical(inputs[0].schema)!==canonical(implementationOutputSchema(plan.candidate.H))||start.length!==1||start[0].params.baseInstructions!==manifest.prompt.system||canonical(start[0].params.dynamicTools)!==canonical(tools))throw new Error('implementation_validation_capture_unknown');
  if(projectFiles){
@@ -147,7 +148,7 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false,
  const testsDirectory=originalTest?.directory??join(op,'attempt-1/post-repair-1');
  const tests=originalTest??await readFailedValidationTests(testsDirectory,plan,true,logSelection);
  const changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
- if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
+ if((unchanged?changed.length!==0||!originalTest:!changed.length)||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
  const calls:Row[]=[];for(const n of await readdir(join(op,'calls'))){if(!n.endsWith('.json'))throw new Error('implementation_validation_calls_unknown');const path=join(op,'calls',n),c=await json(path);if(!c.response||c.status==='write_registered')throw new Error('implementation_validation_calls_unknown');calls.push(c);}
  const pairs=await json(join(native,'reconciled-tools.json'));let expected=structuredClone(initial) as Tree;
  const inspected=new Set<string>(),testDirectories=new Set<string>();

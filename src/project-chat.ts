@@ -45,6 +45,7 @@ export class ProjectChat{
     const db=new DatabaseSync(path);db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,account INTEGER NOT NULL,repository INTEGER NOT NULL,node_id TEXT NOT NULL,name TEXT NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),parent TEXT,question TEXT NOT NULL,phase TEXT NOT NULL,created_at TEXT NOT NULL,finished_at TEXT,pid INTEGER,owner TEXT,problem TEXT,report TEXT,receipt TEXT);
+      CREATE TABLE IF NOT EXISTS unstarted_attempt_moves(id TEXT PRIMARY KEY REFERENCES messages(id),body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_supplements(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),target TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL,cancelled INTEGER NOT NULL DEFAULT 0,compiled TEXT);
       CREATE TABLE IF NOT EXISTS task_supplement_groups(id TEXT PRIMARY KEY,conversation TEXT NOT NULL REFERENCES conversations(id),text TEXT NOT NULL,created_at TEXT NOT NULL,targets TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_supplement_members(member TEXT PRIMARY KEY REFERENCES task_supplements(id),group_id TEXT NOT NULL REFERENCES task_supplement_groups(id));
@@ -95,8 +96,41 @@ export class ProjectChat{
     return {id,newModelInputs:0};
   }
   private directory(id:string){if(!chatId(id))throw new Error('project_chat_id_invalid');return join(this.config.root,id);}
+  private requeue(id:string,owner:string,problem:string){
+    return this.transaction(()=>{
+      const value=this.db.prepare("UPDATE messages SET phase='queued',pid=NULL,owner=NULL,problem=? WHERE id=? AND owner=? AND phase IN ('registered','running','unknown')").run(problem,id,owner);
+      if(value.changes===1)this.db.prepare('DELETE FROM unstarted_attempt_moves WHERE id=?').run(id);
+      return value.changes===1;
+    });
+  }
+  private async unstartedAttempt(directory:string,ended:boolean){
+    const files=['request.json','outcome.json'];
+    if(ended)files.push('native/process.json','native/exit.json','native/stdin.ndjson');
+    const originals=Object.fromEntries(await Promise.all(files.map(async name=>[name,await regular(join(directory,name),16*1024*1024)] as const)));
+    if(await exists(join(directory,'native','turn-1-intent.json'))||!ended&&await exists(join(directory,'native')))throw new Error('project_chat_original_process_unknown');
+    if(ended){
+      const wire=originals['native/stdin.ndjson']!.toString();
+      if(!wire.endsWith('\n')||wire.trim().split('\n').some(line=>JSON.parse(line).method==='turn/start'))throw new Error('project_chat_original_process_unknown');
+    }
+    return Object.fromEntries(Object.entries(originals).map(([name,bytes])=>[name,hash(bytes)]));
+  }
+  private async resumeUnstartedMove(row:Row,raw:string){
+    const intent=JSON.parse(raw),{archive,owner,problem,ended,files}=intent;
+    if(!exactKeys(intent,['archive','owner','problem','ended','files'])||!chatId(archive)||owner!==row.owner||typeof ended!=='boolean'||
+       !['github_connection_unavailable','github_service_unavailable'].includes(problem))throw new Error('project_chat_original_process_unknown');
+    const original=this.directory(row.id),destination=original+'.unstarted-'+archive,source=await exists(original),moved=await exists(destination);
+    if(source===moved||canonical(await this.unstartedAttempt(source?original:destination,ended))!==canonical(files))throw new Error('project_chat_original_process_unknown');
+    if(source)renameSync(original,destination);
+    this.requeue(row.id,owner,problem);
+  }
   private async recover(row:Row){
     if(!activePhase(row.phase)||this.active.has(row.id)||row.owner!==this.owner&&row.pid&&alive(row.pid))return;
+    const transfer=this.db.prepare('SELECT body FROM unstarted_attempt_moves WHERE id=?').get(row.id) as {body:string}|undefined;
+    if(transfer){
+      try{await this.resumeUnstartedMove(row,transfer.body);}
+      catch{this.db.prepare("UPDATE messages SET phase='unknown',problem='project_chat_process_unknown' WHERE id=? AND owner=? AND phase IN ('registered','running','unknown')").run(row.id,row.owner);}
+      return;
+    }
     try{await this.complete(row.id);return;}catch{}
     const native=join(this.directory(row.id),'native');let ended=false,unstarted=false;
     try{
@@ -404,17 +438,22 @@ export class ProjectChat{
       if(fromQueue&&preInputOutage&&e===preInputOutage&&closed&&ended&&
         current.owner===this.owner&&['registered','running'].includes(current.phase)&&
         !await exists(join(native,'turn-1-intent.json'))&&!active.stop&&this.accepting){
-        let preserved=!hasDirectory;
+        let preserved=!hasDirectory,moveRegistered=false;
         if(hasDirectory)try{
           // Preserve the unsent attempt before making the same request eligible again.
           save(join(directory,'outcome.json'),outcome('queued'));
-          renameSync(directory,directory+'.unstarted-'+randomUUID());
+          const archive=randomUUID(),files=await this.unstartedAttempt(directory,!unstarted);
+          const move={archive,owner:this.owner,problem:reason(e),ended:!unstarted,files};
+          this.db.prepare('INSERT INTO unstarted_attempt_moves VALUES(?,?)').run(id,canonical(move));
+          moveRegistered=true;
+          renameSync(directory,directory+'.unstarted-'+archive);
           preserved=true;
         }catch{/* Keep the original capture and settle as a failure if it cannot be preserved. */}
         if(preserved){
-          this.db.prepare("UPDATE messages SET phase='queued',pid=NULL,owner=NULL,problem=? WHERE id=? AND owner=? AND phase IN ('registered','running')").run(reason(e),id,this.owner);
+          this.requeue(id,this.owner,reason(e));
           return;
         }
+        if(moveRegistered)return;
       }
       const phase=!ended?'unknown':active.stop?'interrupted':'failed';
       this.db.prepare('UPDATE messages SET phase=?,problem=?,finished_at=? WHERE id=?').run(phase,reason(e),now(),id);
