@@ -390,8 +390,18 @@ test('selected material implementation preserves full Git history and unselected
 });
 
 async function firstUseProjectWork(t:TestContext,fault?:string){
- const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);const H=await git(f.objects,['rev-parse','HEAD']);
+ const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);
  const proposal={goal:'Preserve trim/default and implement the optional fallback',acceptance:['Blank with Draft returns Draft','Default remains Untitled'],allowedPaths:['validation-large','literal-large'].includes(fault!)?['src/normalize.mjs','src/index.mjs','README.md']:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md','policy-a.md','policy-b.md','policy-c.md'],protectedPaths:['test/normalize.test.mjs','policy-a.md','policy-b.md','policy-c.md'],validation:{description:'Actual normalized optional fallback',script:"import assert from 'node:assert/strict';import fs from 'node:fs';import{normalizeLabel}from './src/index.mjs';assert.equal(fs.existsSync('.git'),false);assert.equal(normalizeLabel('  Alpha  '),'Alpha');assert.equal(normalizeLabel(' '),'Untitled');assert.equal(normalizeLabel(' ','Draft'),'Draft');"},questions:[],report:'Protocol preparation read actual source; this is not real model acceptance.'};
+ if(fault==='validation-legacy'){
+  const editorPath='.vscode/launch.json';
+  await mkdir(join(f.objects,'.vscode'));
+  await writeFile(join(f.objects,editorPath),'{"configurations":[]}');
+  await git(f.objects,['add','--',editorPath]);
+  await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','ordinary editor configuration']);
+  proposal.materialPaths.push(editorPath);
+  proposal.protectedPaths.push(editorPath);
+ }
+ const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
  const prepareOwner=AuthorityRecords.prototype.prepare;
  if(validationFault&&!futureValidation){
@@ -549,6 +559,13 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      if(fault?.startsWith('validation-restart')){await restartAndAssert(failed,old,q,store);return;}
      if(fault==='validation-legacy'){
        for(const [relative,transform] of [['workspace/src/normalize.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign edit\n')])],['workspace/test/normalize.test.mjs',(b:Buffer)=>Buffer.concat([b,Buffer.from('// foreign protected change\n')])],['operation/implementer/completed.json',()=>Buffer.from('{}')],['operation/attempt-1/post-repair-1/result.json',()=>Buffer.from('{}')],['plan.json',()=>Buffer.from('{}')]] as Array<[string,(b:Buffer)=>Buffer]>){const path=join(old.plan.request.workspaceRequest.executionRoot,relative),b=await readFile(path);await writeFile(path,transform(b));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);assert.deepEqual(await readFile(f.trace),before);await writeFile(path,b);}
+       const checkout=join(old.plan.operationRoot,'attempt-1','post-repair-1','candidate-checkout');
+       assert.equal(await readFile(join(checkout,'.vscode','launch.json'),'utf8'),'{"configurations":[]}');
+       const unbound=join(old.plan.operationRoot,'attempt-1','unregistered','candidate-checkout');
+       await mkdir(unbound,{recursive:true});await writeFile(join(unbound,'launch.json'),'{}');
+       const unknownChild=await post('/api/project-work/'+id+'/correct-validation',{});
+       assert.equal(unknownChild.status,503);assert.match(unknownChild.value.error,/child_active_or_unknown/);
+       await rm(dirname(unbound),{recursive:true});
        const child=join(old.plan.operationRoot,'implementer','tool-host-'+process.pid);await mkdir(child);await writeFile(join(child,'launch.json'),'{}');await writeFile(join(child,'process.json'),canonical({pid:process.pid}));const activeChild=await post('/api/project-work/'+id+'/correct-validation',{});assert.equal(activeChild.status,503);assert.match(activeChild.value.error,/child_active_or_unknown/);await rm(child,{recursive:true});
        const indexPath=join(old.plan.workspace,'.git/index'),index=await readFile(indexPath);await git(old.plan.workspace,['update-index','--force-remove','README.md']);assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(indexPath,index);
        const definitionBytes=await readFile(join(versionRoot,'tests.json'));await writeFile(join(versionRoot,'tests.json'),canonical({schemaVersion:2,executor:docker,tools:[]}));assert.equal((await post('/api/project-work/'+id+'/correct-validation',{})).status,503);await writeFile(join(versionRoot,'tests.json'),definitionBytes);
@@ -662,13 +679,18 @@ for(const secret of [undefined,'EXPLICIT_IMPLEMENTATION_UNSELECTED_SOURCE_SENTIN
 });
 
 
-async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,projectFileMoves=false){
+async function implementationPage(t:TestContext,resources=true,resourceMode='normal',withSecretary=false,decorateGitHub?:(original:GitHubReaderFactory)=>GitHubReaderFactory,selectedLink=false,projectFiles=false,projectFileMoves=false,projectFailure=false){
  const project=await implementationProject(t);
+ if(projectFailure){
+   const plan=JSON.parse(await readFile(project.request.testPlan,'utf8'));
+   plan.tools.push({...plan.tools[0],id:'after-failure'});
+   const bytes=JSON.stringify(plan);await writeFile(project.request.testPlan,bytes);project.request.testPlanSha256=hash(bytes);
+ }
  if(projectFiles){
    const script=await readFile(project.config.codexExecutable,'utf8');
    const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
    assert.ok(script.includes(needle));
-   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify("export const defaultLabel='Untitled';\n")+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
+   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify(`export const defaultLabel='${projectFailure?'Wrong':'Untitled'}';\n`)+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
    const moves="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'&&!globalThis.callerDigest){globalThis.callerDigest=v.sha256;tool('tongxu_read_file',{path:'src/normalize.mjs'});}else if(stage==='tongxu_read_file'&&!globalThis.movedSource){globalThis.movedSource=true;tool('tongxu_rename_file',{path:'src/normalize.mjs',destination:'src/shared/normalize.mjs',expectedSha256:v.sha256});}else if(stage==='tongxu_rename_file'){tool('tongxu_read_file',{path:'README.md'});}else if(stage==='tongxu_read_file'){tool('tongxu_delete_file',{path:'README.md',expectedSha256:v.sha256});}else if(stage==='tongxu_delete_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {normalizeLabel as trimWithDefault} from './shared/normalize.mjs';\nexport function normalizeLabel(value,fallback='Untitled'){return value.trim()?trimWithDefault(value):fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-scoped move and delete; original pending work preserved.'});return;}if(stage==='tongxu_read_file'){";
    await writeFile(project.config.codexExecutable,script.replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})").replace(needle,projectFileMoves?moves:fixture));
  }
@@ -727,6 +749,77 @@ test('normal project file implementation reports the exact deletion and rename o
  assert.match(result.value.diff,/rename from src\/normalize\.mjs/);
  assert.match(result.value.diff,/deleted file mode 100644/);
  assert.deepEqual(result.value.changed,['README.md','src/index.mjs','src/normalize.mjs','src/shared/normalize.mjs']);
+});
+
+for(const outcome of ['stop','failed'] as const)test('project file workbench reads back '+outcome+' without another execution',async t=>{
+ const f=await implementationPage(t,false,'normal',false,undefined,false,true,false,outcome==='failed');
+ const id='project-files-'+outcome,path='src/fallbacks/default-label.mjs';
+ let resume=()=>{};
+ if(outcome==='stop'){
+   const original=RepairTools.prototype.call,paused=new Promise<void>(resolve=>{resume=resolve;});
+   t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
+     const response=await original.apply(this,args);
+     if(args[0].tool==='tongxu_create_file')await paused;
+     return response;
+   });
+ }
+ assert.equal((await f.post('prepare',{requestId:id,issueNumber:74})).status,200);
+ const state=f.messages.q.issueImplementations().state('implementation',id),workspace=state.plan.workspace,operation=state.plan.operationRoot;
+ try{
+   assert.equal((await f.post('start',{requestId:id})).status,202);
+   if(outcome==='stop'){
+     for(let i=0;i<500&&!await exists(join(workspace,path));i++)await new Promise(r=>setTimeout(r,10));
+     assert.equal(await exists(join(workspace,path)),true);
+     assert.equal((await f.post('stop',{requestId:id})).value.stopped,true);
+   }
+ }finally{resume();}
+ await f.settled(id);
+ assert.equal(await git(workspace,['diff','--cached','--name-only']),'');
+ const index=await readFile(join(workspace,'.git/index'));
+ const reportPath='/api/implementation-report/implementation/'+id;
+ const result=await f.get(reportPath);
+ assert.equal(result.status,200,JSON.stringify(result.value));
+ assert.equal(result.value.H1,null);
+ assert.match(result.value.diff,/new file mode 100755/);
+ assert.ok(result.value.diff.includes(path));
+ assert.equal(await git(workspace,['rev-parse','HEAD']),state.H0);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
+ if(outcome==='stop'){
+   assert.equal(result.value.status,'partial_or_unknown');
+   assert.equal(result.value.completeCapture,false);
+   assert.match(result.value.diff,/\+export const defaultLabel='Untitled';/);
+ }else{
+   assert.equal(result.value.status,'validation_failed',JSON.stringify(result.value));
+   assert.equal(result.value.report.decision,'implemented');
+   assert.equal(result.value.tests.executionHealthy,true);
+   assert.equal(result.value.tests.passed,false);
+   assert.deepEqual(result.value.changed,[path,'src/index.mjs']);
+   assert.equal(result.value.tests.tools[0].exitCode,1);
+   assert.match(result.value.tests.tools[0].stdout,/empty labels need the fixed fallback/);
+   assert.match(result.value.tests.tools[0].stdout,/'Wrong'/);
+   assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
+   assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+ }
+ const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
+ assert.deepEqual(await f.get(reportPath),result);
+ await f.app.close();
+ const reopened=await startWorkbench(f.planPath,undefined,{githubReader:f.github});
+ try{
+   const url=new URL(reopened.url),headers={...f.headers,Authorization:'Bearer '+url.hash.slice(1)};
+   await fetch(url.origin+'/api/github/projects',{headers});
+   const response=await fetch(url.origin+reportPath,{headers});
+   assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
+   if(outcome==='failed'){
+     await writeFile(join(operation,'attempt-1/post-repair-1/tool-0/stdout'),'incomplete original');
+     const unknown=await fetch(url.origin+reportPath,{headers}).then(r=>r.json()) as any;
+     assert.equal(unknown.status,'partial_or_unknown');
+     assert.equal(unknown.tests,undefined);
+     assert.equal(unknown.H1,null);
+     assert.ok(unknown.diff.includes(path));
+   }
+ }finally{await reopened.close();}
+ assert.deepEqual(await readFile(sent),before);
+ assert.deepEqual(await readFile(join(workspace,'.git/index')),index);
 });
 
 async function supplementPost(f:Awaited<ReturnType<typeof implementationPage>>,action:string,body:unknown){
