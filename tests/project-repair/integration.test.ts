@@ -690,12 +690,20 @@ async function implementationPage(t:TestContext,resources=true,resourceMode='nor
    const script=await readFile(project.config.codexExecutable,'utf8');
    const needle="const v=JSON.parse(m.result.contentItems[0].text);if(stage==='tongxu_read_file'){";
    assert.ok(script.includes(needle));
-   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify(`export const defaultLabel='${projectFailure?'Wrong':'Untitled'}';\n`)+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
+   const fixture="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'){globalThis.callerDigest=v.sha256;tool('tongxu_create_file',{path:'src/fallbacks/default-label.mjs',mode:'100755',text:"+JSON.stringify("export const defaultLabel='Untitled';\n")+"});}else if(stage==='tongxu_create_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify("import {defaultLabel} from './fallbacks/default-label.mjs';\nexport function normalizeLabel(value,fallback=defaultLabel){return value.trim() || fallback;}\n")+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-wide tools in the original bounded implementation context.'});return;}if(stage==='tongxu_read_file'){";
    const importPath=moveTarget==='__proto__'?'../__proto__':'./shared/normalize.mjs';
    const fallback=projectFailure?'Wrong':'Untitled';
    const movedCaller=`import {normalizeLabel as trimWithDefault} from '${importPath}';\nexport function normalizeLabel(value,fallback='${fallback}'){return value.trim()?trimWithDefault(value):fallback;}\n`;
    const moves="const v=JSON.parse(m.result.contentItems[0].text);if(context.request?.workspaceRequest?.projectFiles){if(stage==='tongxu_read_file'&&!globalThis.callerDigest){globalThis.callerDigest=v.sha256;tool('tongxu_read_file',{path:'src/normalize.mjs'});}else if(stage==='tongxu_read_file'&&!globalThis.movedSource){globalThis.movedSource=true;tool('tongxu_rename_file',{path:'src/normalize.mjs',destination:"+JSON.stringify(moveTarget)+",expectedSha256:v.sha256});}else if(stage==='tongxu_rename_file'){tool('tongxu_read_file',{path:'README.md'});}else if(stage==='tongxu_read_file'){tool('tongxu_delete_file',{path:'README.md',expectedSha256:v.sha256});}else if(stage==='tongxu_delete_file'){tool('tongxu_replace_file',{path:'src/index.mjs',expectedSha256:globalThis.callerDigest,text:"+JSON.stringify(movedCaller)+"});}else if(stage==='tongxu_replace_file'){tool('tongxu_run_tests',{});}else finish({candidateH:context.candidate.H,decision:'implemented',report:'Applied project-scoped move and delete; original pending work preserved.'});return;}if(stage==='tongxu_read_file'){";
-   await writeFile(project.config.codexExecutable,script.replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})").replace(needle,moveTarget?moves:fixture));
+   const replayFailedValidation=projectFailure?fixture.replace("if(stage==='tongxu_read_file'){",[
+     "if(stage==='tongxu_run_tests'&&!globalThis.checkedBaseline){",
+     "if(!v.passed)throw Error('fixture_first_validation_must_pass');",
+     "globalThis.checkedBaseline=true;tool('tongxu_read_file',{path:'src/fallbacks/default-label.mjs'});return;}",
+     "if(stage==='tongxu_read_file'&&globalThis.checkedBaseline){",
+     "tool('tongxu_replace_file',{path:'src/fallbacks/default-label.mjs',expectedSha256:v.sha256,text:",
+     JSON.stringify("export const defaultLabel='Wrong';\n"),"});return;}if(stage==='tongxu_read_file'){"
+   ].join('')):fixture;
+   await writeFile(project.config.codexExecutable,script.replace("tool('tongxu_read_file',{path:'src/normalize.mjs'})","tool('tongxu_read_file',{path:'src/index.mjs'})").replace(needle,moveTarget?moves:replayFailedValidation));
  }
  if(selectedLink){await symlink('unselected-synthetic-target',join(project.objects,'omitted-link'));await git(project.objects,['add','omitted-link']);await git(project.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic unselected link']);const H=await git(project.objects,['rev-parse','HEAD']);project.request.candidate.H=H;project.request.candidate.B=H;}const messages=await messageFixture(t),owner=await messageAuthority(messages);messages.q.enableTasks();
  const context=messages.q.status().items.find((item:any)=>item.id===messages.item).context;
@@ -740,10 +748,15 @@ for(const legacy of [false,true])test('normal registered workbench starts one pr
  assert.deepEqual(report.value.changed,['src/fallbacks/default-label.mjs','src/index.mjs']);
  assert.match(report.value.diff,/new file mode 100755/);
  const state=f.messages.q.issueImplementations().state('implementation',id);
+ assert.deepEqual(await readdir(join(state.plan.operationRoot,'tests')),['tool-'+report.value.projectValidationCallId]);
+ assert.equal(await exists(join(state.plan.operationRoot,'attempt-1/post-repair-1')),false);
  const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
  assert.equal(manifest.projectFileToolsVersion,legacy?undefined:projectFileMovesVersion);
  assert.equal(manifest.request.workflowPrompt.use,'engineering_owner');
  assert.equal(manifest.request.workflowPrompt.revision,'11cf57b34698e6f7b38ee73468e84103cde8f963');
+ assert.deepEqual(prepared.value.workflow,{revision:manifest.request.workflowPrompt.revision,executionContract:manifest.request.workflowPrompt.executionContract,promptSha256:manifest.request.workflowPrompt.sha256});
+ assert.deepEqual(done.workflow,prepared.value.workflow);
+ assert.ok(Date.parse(prepared.value.lastRecordedAt)<=Date.parse(done.lastRecordedAt));
  assert.deepEqual(manifest.request.workspaceRequest.allowedPaths,[]);
  assert.deepEqual(manifest.request.workspaceRequest.materialPaths,['README.md']);
  assert.equal(await git(f.project.objects,['rev-parse','HEAD']),state.H0);
@@ -877,7 +890,7 @@ for(const outcome of ['stop','failed','stop-after-move','failed-after-move'] as 
    assert.match(result.value.tests.tools[0].stdout,/empty labels need the fixed fallback/);
    assert.match(result.value.tests.tools[0].stdout,/'Wrong'/);
    assert.deepEqual(result.value.tests.unexecutedTools,['after-failure']);
-   assert.equal(await exists(join(operation,'attempt-1/post-repair-1/tool-1')),false);
+   assert.equal(await exists(join(operation,'attempt-1/post-repair-1')),false);
  }
  const sent=join(operation,'implementer/stdin.ndjson'),before=await readFile(sent);
  assert.deepEqual(await f.get(reportPath),result);
@@ -889,7 +902,19 @@ for(const outcome of ['stop','failed','stop-after-move','failed-after-move'] as 
    const response=await fetch(url.origin+reportPath,{headers});
    assert.equal(response.status,200);assert.deepEqual(await response.json(),result.value);
    if(failed){
-     await writeFile(join(operation,'attempt-1/post-repair-1/tool-0/stdout'),'incomplete original');
+     const actualTests=await readdir(join(operation,'tests'));
+     assert.equal(actualTests.length, moved ? 1 : 2);
+     const failure=JSON.parse(await readFile(join(operation,'failure.json'),'utf8'));
+     const selected='tool-'+failure.projectValidationCallId;
+     const earlier=actualTests.find(entry=>entry!==selected);
+     assert.ok(actualTests.includes(selected));
+     if(!moved){
+       assert.ok(earlier);
+       assert.equal(JSON.parse(await readFile(join(operation,'tests',earlier,'result.json'),'utf8')).passed,true);
+     }
+     assert.equal(JSON.parse(await readFile(join(operation,'tests',selected,'result.json'),'utf8')).passed,false);
+     assert.equal(await exists(join(operation,'tests',selected,'tool-1')),false);
+     await writeFile(join(operation,'tests',selected,'tool-0/stdout'),'incomplete original');
      const unknown=await fetch(url.origin+reportPath,{headers}).then(r=>r.json()) as any;
      assert.equal(unknown.status,'partial_or_unknown');
      assert.equal(unknown.tests,undefined);

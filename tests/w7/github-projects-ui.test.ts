@@ -240,8 +240,14 @@ for(const supplement of [false,true])for(const [status,label] of [['no_change','
 
 for(const supplement of [false,true])for(const switchProject of [false,true])test(`registered ${supplement?'supplement':'implementation'} UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
  const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false,supplement};
+ const workflow={revision:'b'.repeat(40),executionContract:'coding-loop-v2',promptSha256:'c'.repeat(64)};
+ Object.assign(request,{workflow:supplement?null:workflow,lastRecordedAt:'2026-11-19T06:05:00.000Z'});
  p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);
  const buttons:any[]=[],labels:string[]=[];const collect=(n:any)=>{if(n.tag==='button')buttons.push(n);if(n.tag==='strong')labels.push(n.textContent);for(const child of n.children??[])collect(child);};collect(p.run('implementationPanel()'));assert.ok(labels.some(text=>text.startsWith((supplement?'原任务补充 · Issue #':'Issue #')+'74 · 已登记，待补准备')));
+ const rendered=p.run('implementationPanel()'),links:string[]=[],text=(n:any):string=>{if(n.tag==='a')links.push(n.href);return n.textContent+(n.children??[]).map(text).join('');};
+ const visible=text(rendered);assert.match(visible,/最近记录/);
+ if(supplement)assert.doesNotMatch(visible,/本次请求固定的工作流/);
+ else{assert.match(visible,/本次请求固定的工作流 bbbbbbbbbbbb · coding-loop-v2/);assert.ok(links.includes('https://github.com/wlvh/coding-workflow/commit/'+workflow.revision));}
  const button=buttons.find(b=>b.textContent==='继续原请求'),pending=button.onclick();button.onclick();assert.equal(p.fetchCalls.length,1);assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),{requestId:request.id,issueNumber:74});
  if(switchProject)p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");
  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared',id:request.id})});await flush();

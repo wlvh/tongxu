@@ -51,6 +51,27 @@ export async function readFailedValidationTests(directory:string,plan:Row,requir
  for(let i=result.tools.length;i<fixed.plan.tools.length;i++)if(await exists(join(directory,'tool-'+i))||await exists(join(directory,'output',String(i))))throw new Error('implementation_validation_test_unknown');
  return {result,tested,controllerPid:intent.controllerPid,unexecutedTools};
 }
+
+/** Read after validating the native capture. Its tool order determines which
+ * execution is current, even if an earlier execution of the same tree passed. */
+export async function readLatestProjectToolValidation(operation:string,native:string,plan:Row){
+ const pairs:Row[]=await json(join(native,'reconciled-tools.json'));
+ const pair=pairs.findLast(item=>item.request.params.tool==='tongxu_run_tests');
+ if(!pair)throw new Error('implementation_actual_change_and_tests_required');
+ const callId=pair.request.params.callId;
+ if(typeof callId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(callId))throw new Error('implementation_validation_calls_unknown');
+ const receipt=await json(join(operation,'calls',callId+'.json'));
+ const observed=JSON.parse(receipt.response.contentItems[0].text);
+ const directory=join(operation,'tests','tool-'+callId);
+ const validation=await readFailedValidationTests(directory,plan,false);
+ if(receipt.request.callId!==callId||receipt.request.tool!=='tongxu_run_tests'||
+    canonical(receipt.request.arguments)!==canonical(pair.request.params.arguments)||
+    canonical(receipt.response)!==canonical(pair.response.result)||
+    receipt.afterTreeSha256!==treeHash(validation.tested)||
+    canonical(observed)!==canonical(projectModelTestResult(validation.result)))throw new Error('implementation_validation_calls_unknown');
+ return {...validation,callId,directory};
+}
+
 async function registeredChildrenEnded(directory:string,operation:string,workspace:string,testPlanSha256:string){
  const launch=await exists(join(directory,'launch.json')),processFile=join(directory,'process.json');
  if(launch){if(await exists(processFile)){if(processState((await json(processFile)).pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}else if(!await exists(join(directory,'blocked-before-spawn.json')))throw new Error('implementation_validation_child_active_or_unknown');}
@@ -95,8 +116,14 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false)
  if(await exists(join(native,'native-tool-transports.json'))){for(const t of await json(join(native,'native-tool-transports.json'))){if(t.appServerPid!==nativeProcess.pid||!Array.isArray(t.observedHelperPids))throw new Error('implementation_validation_child_active_or_unknown');for(const pid of t.observedHelperPids){if(!Number.isSafeInteger(pid)||pid<=0||(await json(join(native,'tool-host-'+pid,'process.json'))).pid!==pid||processState(pid)!=='ended')throw new Error('implementation_validation_child_active_or_unknown');}}}
  await registeredChildrenEnded(native,op,plan.workspace,plan.project.testPlanSha256);
  await registeredChildrenEnded(join(op,'attempt-1'),op,plan.workspace,plan.project.testPlanSha256);
- const testsDirectory=join(op,'attempt-1/post-repair-1');
- const tests=await readFailedValidationTests(testsDirectory,plan),changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
+ const failurePath=s.firstInputContinuation?join(op,'first-input/failure.json'):join(op,'failure.json');
+ const failure=await json(failurePath);
+ if(failure.reason!=='implementation_registered_tests_failed')throw new Error('implementation_validation_failure_reason_unknown');
+ const originalTest=projectFiles&&failure.projectValidationCallId!==undefined?await readLatestProjectToolValidation(op,native,plan):null;
+ if(originalTest&&(originalTest.callId!==failure.projectValidationCallId||originalTest.result.passed))throw new Error('implementation_validation_test_unknown');
+ const testsDirectory=originalTest?.directory??join(op,'attempt-1/post-repair-1');
+ const tests=originalTest??await readFailedValidationTests(testsDirectory,plan);
+ const changed=projectFiles?changedWorkspacePaths(initial,tests.tested,grant):scopeChanges(initial,tests.tested,fixed.request.workspaceRequest.allowedPaths);
  if(!changed.length||plan.project.protectedPaths.some((p:string)=>initial[p]?.sha256!==tests.tested[p]?.sha256))throw new Error('implementation_validation_tree_changed');
  const calls:Row[]=[];for(const n of await readdir(join(op,'calls'))){if(!n.endsWith('.json'))throw new Error('implementation_validation_calls_unknown');const path=join(op,'calls',n),c=await json(path);if(!c.response||c.status==='write_registered')throw new Error('implementation_validation_calls_unknown');calls.push(c);}
  const pairs=await json(join(native,'reconciled-tools.json'));let expected=structuredClone(initial) as Tree;
@@ -114,10 +141,10 @@ export async function observeValidationFailure(s:Row,projectFilesReadback=false)
  if((await readdir(join(op,'attempt-1'))).some(n=>n!=='post-repair-1')||await exists(join(op,'result.json')))throw new Error('implementation_validation_commit_or_result_exists');
  const files:Record<string,string>={};let total=0;async function seal(p:string){for(const e of await readdir(p,{withFileTypes:true})){const path=join(p,e.name);if(e.isSymbolicLink())throw new Error('implementation_validation_unsafe_original');if(e.isDirectory())await seal(path);else{const b=await regular(path,32*1024*1024);if((total+=b.length)>128*1024*1024)throw new Error('implementation_validation_evidence_limit');files[path]=hash(b);}}}
  for(const p of [native,join(op,'calls'),join(op,'attempt-1')])await seal(p);
- const failurePath=s.firstInputContinuation?join(op,'first-input/failure.json'):join(op,'failure.json');if((await json(failurePath)).reason!=='implementation_registered_tests_failed')throw new Error('implementation_validation_failure_reason_unknown');
+ if(originalTest)await seal(originalTest.directory);
  for(const p of [failurePath,fixed.path,plan.grant,plan.project.testPlan,join(op,'input-manifest.json'),join(op,'initial-tree.json')])files[p]=hash(await regular(p,32*1024*1024));
  const lease=await exists(join(plan.workspace,'.git/tongxu-writer.json'))?await json(join(plan.workspace,'.git/tongxu-writer.json')):null;
- const record={schemaVersion:1,operationRoot:op,requestSha256:s.requestSha256,planSha256:fixed.sha256,inputManifestSha256,nativeDirectory:native,sessionId:capture.binding.sessionId,report,tests:projectModelTestResult(tests.result),testsDirectory:join(op,'attempt-1/post-repair-1'),initialTreeSha256:treeHash(initial),treeSha256:treeHash(tests.tested),changed,controllerPid:tests.controllerPid,files};
+ const record={schemaVersion:1,operationRoot:op,requestSha256:s.requestSha256,planSha256:fixed.sha256,inputManifestSha256,nativeDirectory:native,sessionId:capture.binding.sessionId,report,tests:projectModelTestResult(tests.result),testsDirectory,initialTreeSha256:treeHash(initial),treeSha256:treeHash(tests.tested),changed,controllerPid:tests.controllerPid,files};
  if(s.validationFailure&&canonical(s.validationFailure)!==canonical(record))throw new Error('implementation_validation_original_changed');
  const proof={record,initial,current:tests.tested,plan,manifest,lease};
  // Display-only proof never enters the set accepted by correction or closure.
