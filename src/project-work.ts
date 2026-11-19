@@ -57,7 +57,7 @@ export class ProjectWork{
   }
   supplementReviewState(input:SupplementReviewInput){
     return this.issueReviews.has(supplementPlanningDirectory(this.config.root,input.requestId))
-      ?Promise.resolve({state:'running'}):supplementPlanningStatus(this.config.root,input);
+      ?Promise.resolve({state:'running'}):supplementPlanningStatus(this.config.root,input,this.config.verification);
   }
   async reviewSupplement(scope:ProjectChatScope,source:SupplementPlanningSource,checkReceived:()=>void){
     const {input}=source,work=this.store.list(scope).find(d=>d.source===input.target.source);
@@ -66,7 +66,10 @@ export class ProjectWork{
     if(this.issueReviews.has(path))return {state:'running',requestId:input.requestId};
     const config=await this.executor(true),mode=config.executionKind??'native_capture';
     if(await this.supplementReview(input,mode))return {state:'returned',requestId:input.requestId};
-    if(await exists(path))return {state:'pending_or_unknown',requestId:input.requestId};
+    if(await exists(path)){
+      const previous=await this.supplementReviewState(input);
+      if(previous?.state!=='ready_to_retry')return {state:previous?.state??'pending_or_unknown',requestId:input.requestId};
+    }
     const peer=currentAIChoice('verifier_impact');
     if(peer?.tool!=='kimi'||peer.project.repository!==scope.repository.id||peer.project.account!==scope.account.id||peer.project.nodeId!==scope.repository.nodeId)
       throw new Error('project_issue_review_second_company_required');
@@ -228,10 +231,11 @@ export class ProjectWork{
     const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
     let validationProblem:string|null=null;if(draft.preparation?.proposal&&!draft.catalog){try{validationProblem=(await readWorkProposal(draft.preparation.directory,sourceFor(scope,draft))).validationProblem??null;}catch{}}
     const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
-    let validationFailure=null;
+    let validationFailure=null,validationRecovery=null;
     if(draft.catalog&&draft.source&&result?.requests.length){
       const controls=await this.controls(scope),request=await controls.validationRequest(draft.source,draft.requestId);
       validationFailure=await controls.validationState(draft.source,request);
+      if(!validationFailure)validationRecovery=await controls.validationRecovery(draft.source,request);
     }
     const resultStatus=this.resultStatus(draft,result),preview=resultStatus.current?this.integrationInput(scope,draft):null;
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
@@ -240,7 +244,7 @@ export class ProjectWork{
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
-      preparationDiagnostic:await diagnostic(draft),validationFailure,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
+      preparationDiagnostic:await diagnostic(draft),validationFailure,validationRecovery,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
   }
   private integrationInput(scope:ProjectChatScope,d:ProjectWorkDraft):WorkIntegrationPreviewInput|null{
     const H0=d.preparation?.H,H=d.delivery?.H,B=scope.repository.defaultHead,target=scope.repository.defaultBranch;

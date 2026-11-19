@@ -577,8 +577,29 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    assert.deepEqual(await readFile(join(prior.plan.workspace,'.git/tongxu-writer.json')),oldLease);
    assert.deepEqual(await readFile(f.trace),oldTrace);
    const bootstrap=join(prior.plan.operationRoot,'validation-correction/native-bootstrap-failure.json'),failureBytes=await readFile(bootstrap);
+   const complete=IssueImplementations.prototype.complete;
+   let loseReceipt=true;
+   t.mock.method(IssueImplementations.prototype,'complete',function(this:IssueImplementations,...args:Parameters<IssueImplementations['complete']>){
+     if(loseReceipt&&args[1]===failed.draft.requestId&&args[2].validationCorrection){loseReceipt=false;throw Error('fixture_controller_lost_after_writer_release');}
+     return complete.apply(this,args);
+   });
    const continueResponse=await correct();
    assert.equal(continueResponse.status,202,JSON.stringify(continueResponse));
+   const pending=await until(detail,d=>!loseReceipt&&d.validationRecovery);
+   assert.equal(pending.draft.delivery,null);
+   assert.equal(pending.validationRecovery.requestId,failed.draft.requestId);
+   const beforeReadback=await readFile(f.trace);
+   await app.close();app=await startWorkbench(planPath,undefined,dependencies);
+   url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};await get('/api/github/projects');
+   assert.deepEqual((await detail()).validationRecovery,pending.validationRecovery);
+   const reconcile='/api/project-work/'+id+'/reconcile-validation';
+   assert.equal((await post(reconcile,{requestId:randomUUID()})).status,503);
+   assert.equal((await post(reconcile,{requestId:failed.draft.requestId})).value.newModelInputs,0);
+   assert.equal((await post(reconcile,{requestId:failed.draft.requestId})).value.newModelInputs,0);
+   assert.deepEqual(await readFile(f.trace),beforeReadback);
+   const receipt=(await detail()).resultStatus.receipt;
+   assert.equal(receipt.H,pending.validationRecovery.H);
+   assert.equal((await post('/api/project-work/'+id+'/receive',receipt)).status,200);
    const completed=await until(detail,d=>d.draft.delivery?.status==='received');
    assert.deepEqual(await readFile(bootstrap),failureBytes);
    assert.equal(completed.draft.requestId,failed.draft.requestId);
@@ -911,12 +932,30 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const outOfOrder=await post('/api/project-secretary/review-supplement',{requestId:laterSupplement.requestId});
      assert.equal(outOfOrder.value.error,'project_supplement_earlier_request_pending');
      assert.equal((await post('/api/project-secretary/cancel-supplement',{requestId:laterSupplement.requestId})).status,200);
-     assert.equal((await post('/api/project-secretary/review-supplement',{requestId:nativeSupplement.requestId})).status,202);
+     const planning=join(config.root,'supplement-planning','supplement-'+nativeSupplement.requestId),startNative=BoundedCodexSession.start;
+     let stopBeforePlanningInput=true;
+     t.mock.method(BoundedCodexSession,'start',async(options:Parameters<typeof startNative>[0])=>{
+       if(stopBeforePlanningInput&&options.directory===join(planning,'preparation','native')){stopBeforePlanningInput=false;throw Error('fixture_prepare_failed_before_model');}
+       return startNative.call(BoundedCodexSession,options);
+     });
+     const reviewNative=()=>post('/api/project-secretary/review-supplement',{requestId:nativeSupplement.requestId});
+     const beforePreparation=await readFile(f.trace);
+     assert.equal((await reviewNative()).status,202);
      const readNativeSupplement=async()=>(await get('/api/project-secretary/conversations/'+nativeSupplement.conversationId)).value.supplements.find((receipt:any)=>receipt.id===nativeSupplement.requestId);
+     const retryable=await until(readNativeSupplement,value=>value.original.planning?.state==='ready_to_retry');
+     assert.equal(retryable.original.canRequestReview,true);
+     assert.equal(await exists(join(planning,'preparation','native','stdin.ndjson')),false);
+     assert.deepEqual(await readFile(f.trace),beforePreparation);
+     const firstPreparation=await readFile(join(planning,'preparation','input.json'));
+     await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
+     await get('/api/github/projects');
+     assert.equal((await readNativeSupplement()).original.planning.state,'ready_to_retry');
+     assert.equal((await reviewNative()).status,202);
      const reviewedInWorkbench=await until(readNativeSupplement,value=>value.original.ready===true);
      assert.equal(reviewedInWorkbench.id,nativeSupplement.requestId);
      assert.deepEqual([reviewedInWorkbench.original.planning.openai.verdict,reviewedInWorkbench.original.planning.moonshot.verdict],['PASS','PASS']);
-     const preparation=join(config.root,'supplement-planning','supplement-'+nativeSupplement.requestId,'preparation');
+     const preparation=join(planning,'preparation-2');
+     assert.deepEqual(await readFile(join(planning,'preparation','input.json')),firstPreparation);
      const frozenPreparation=JSON.parse(await readFile(join(preparation,'input.json'),'utf8'));
      assert.equal(frozenPreparation.preparationVersion,5);
      assert.equal(frozenPreparation.workflowPrompt.revision,successor.plan.request.workflowPrompt.revision);

@@ -10,7 +10,7 @@ import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,ch
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,readdir,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
@@ -396,6 +396,55 @@ export class IssueImplementationControls{
     try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.validationDefinition(entry,s);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
     return {requestId,eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
   }catch{return null;}finally{q.close();}}
+  private async releasedCorrection(s:Row){
+    const operation=s.plan?.operationRoot,reference=s.validationCorrection;
+    if(!operation||!reference||!s.validationFailure||s.result)throw new Error('implementation_validation_recovery_evidence_required');
+    const directory=join(operation,'validation-correction'),json=async(path:string)=>JSON.parse((await regular(path,32*1024*1024)).toString());
+    const result=await json(join(directory,'result.json'));
+    if(!['completed','failed'].includes(result.status)||result.requestId!==s.id||result.task!==s.task||result.H0!==s.H0||
+       canonical(result.validationCorrection)!==canonical(reference)||canonical(result.firstInputContinuation??null)!==canonical(s.firstInputContinuation??null)||
+       result.status==='failed'&&result.H1!==null)throw new Error('implementation_validation_recovery_result_changed');
+    const workspace=s.plan.workspace;
+    if(await exists(join(workspace,'.git','tongxu-writer.json')))throw new Error('implementation_validation_writer_active_or_unknown');
+    const handoffs=(await readdir(directory)).filter(name=>/^handoff-[0-9a-f-]{36}-1\.json$/.test(name));
+    if(handoffs.length!==1)throw new Error('implementation_validation_recovery_writer_changed');
+    const handoff=await json(join(directory,handoffs[0]!)),generation=handoffs[0]!.slice(8,-7),lease=handoff.lease;
+    const plan=await json(s.plan.path);
+    const release=await json(join(operation,'ownership-history',generation+'-released.json'));
+    const retained=await json(join(operation,'ownership-history',generation+'-lock.json'));
+    if(lease?.generation!==generation||lease.operation!==operation||lease.status!=='held'||handoff.to!==result.sessionId||
+       handoff.sessionContinuity!=='new_implementer_context'||handoff.verifiedTreeSha256!==s.validationFailure.treeSha256||canonical(handoff.grant)!==canonical(await json(plan.grant))||
+       release.outcome!==result.status||!Number.isFinite(Date.parse(release.at))||canonical(release.lease)!==canonical(lease)||canonical(retained)!==canonical(lease))
+      throw new Error('implementation_validation_recovery_writer_changed');
+    await readImplementationResult({...s,result});
+    if(await git(workspace,['rev-parse','HEAD'])!==(result.H1??s.H0)||treeHash(await tree(workspace,true))!==result.treeSha256||
+       await exists(join(workspace,'.git','tongxu-writer.json')))throw new Error('implementation_validation_recovery_workspace_changed');
+    return result;
+  }
+  async validationRecovery(id:string,requestId:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      if(this.active.has(id+':'+requestId))return null;
+      const s=q.issueImplementations().state(id,requestId);
+      if(!s.validationCorrection||s.result)return null;
+      const result=await this.releasedCorrection(s);
+      return {requestId,H:result.H1,status:result.status};
+    }catch{return null;}finally{q.close();}
+  }
+  async reconcileValidation(id:string,requestId:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),original=records.state(id,requestId);
+      if(!original.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_recovery_evidence_required');
+      return await withQueueRepairLock(entry.store,original.operation,async()=>{
+        const state=records.state(id,requestId);
+        if(state.result)return {...this.publicState(state),newModelInputs:0};
+        const result=await this.releasedCorrection(state),ended=records.complete(id,requestId,result);
+        if(result.status==='completed')q.tasks().observe(q.tasks().definition(state.task),await observeTaskWorkspace(q.tasks().definition(state.task)));
+        return {...this.publicState(ended),newModelInputs:0};
+      });
+    }finally{q.close();}
+  }
   async definitionConsentPreview(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.persistValidationFailure(q,id,requestId,p);
     const d=await this.validationDefinition(entry,s);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
@@ -545,7 +594,7 @@ export class IssueImplementationControls{
       const review=input?await this.supplementReview?.(input,original.entry.executionKind):null;
       const reviewRequired=original.ready&&original.entry.projectFiles&&!review;
       const planning=input?await this.supplementReviewStatus?.(input):null;
-      return {ready:original.ready&&!reviewRequired,...(reviewRequired&&original.entry.workRequestId&&!planning?{canRequestReview:true}:{}),
+      return {ready:original.ready&&!reviewRequired,...(reviewRequired&&original.entry.workRequestId&&(!planning||planning.state==='ready_to_retry')?{canRequestReview:true}:{}),
         ...(planning?{planning}:{}),reason:reviewRequired?'project_supplement_review_required':original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null,
         ...(original.entry.projectFiles?{delivered:false,adopted:false,coveringCandidate:null}:{})};
     }

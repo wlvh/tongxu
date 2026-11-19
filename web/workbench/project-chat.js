@@ -82,6 +82,7 @@ function appendSupplementReview(row,planning){
   if(planning.state==='running')row.append(el('p','正在准备验收定义并进行双公司审查。','small'));
   else if(planning.state==='awaiting_requirements')row.append(el('p','原准备需要补足要求或验收定义。','small'));
   else if(planning.state==='pending_or_unknown')row.append(el('p','原审查已登记，完整结论待核。','small'));
+  else if(planning.state==='ready_to_retry')row.append(el('p','原补充保存，可沿同一条收件继续准备或审查。','small'));
   else if(planning.state==='returned'){
     for(const [company,report] of [['OpenAI',planning.openai],['Moonshot',planning.moonshot]]){
       if(report)row.append(append(el('details'),el('summary',company+' · '+report.verdict),el('p',report.report,'chat-text')));
