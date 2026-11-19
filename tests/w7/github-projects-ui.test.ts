@@ -238,6 +238,31 @@ for(const supplement of [false,true])for(const [status,label] of [['no_change','
  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({status,H0:request.H0,H1:null,report:{report:'FULL ORIGINAL TERMINAL REPORT'}})});await pending;assert.match(p.nodes.get('report-meta')!.textContent,new RegExp(label));assert.equal(p.nodes.get('report-body')!.textContent,'FULL ORIGINAL TERMINAL REPORT');assert.equal(p.fetchCalls.length,1);
 });
 
+test('implementation report shows truncated previews, exact log download and a distinct retained-evidence gap',async()=>{
+ const p=await page(true),H0='a'.repeat(40),sha256='b'.repeat(64);
+ p.run(`gh.selected={id:1,fullName:'fixture/repo1'};
+   globalThis.URL={createObjectURL:blob=>{globalThis.downloadBytes=blob;return 'blob:fixture';},revokeObjectURL:()=>{}};
+   const newElement=document.createElement;
+   document.createElement=tag=>{const node=newElement(tag);node.click=()=>{globalThis.downloadName=node.download;};return node;};
+   globalThis.setTimeout=fn=>fn();`);
+ const pending=p.run("openImplementationReport('impl',{id:'retained',issue:74})");
+ p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({status:'validation_failed',validationFailed:true,H0,H1:null,tests:{passed:false,tools:[{id:'unit',stdout:'short preview',stdoutOriginal:{sha256,bytes:20000,previewTruncated:true}}],unexecutedTools:['later']}})});
+ await pending;
+ assert.match(p.nodes.get('report-body')!.textContent,/stdout 预览已截断/);
+ assert.match(p.nodes.get('report-body')!.textContent,/未执行：later/);
+ const logs=p.nodes.get('implementation-report-logs')!;
+ assert.equal(logs.hidden,false);assert.match(logs.children[0].children[1].textContent,new RegExp(sha256));
+ const download=logs.children[0].children[0].onclick();
+ const request=p.fetchCalls[1]!;assert.equal(request.path,'/api/implementation-report/impl/retained/logs/unit/stdout');assert.equal(request.options.headers['X-Tongxu-Project'],'1');
+ const raw=new Blob(['exact original log']);request.resolve({ok:true,status:200,blob:async()=>raw});await download;
+ assert.equal(p.run('downloadBytes'),raw);assert.equal(p.run('downloadName'),'unit-stdout.log');
+ const fallback=p.run("openImplementationReport('impl',{id:'retained',issue:74})");
+ p.fetchCalls[2]!.resolve({ok:true,status:200,json:async()=>({status:'partial_or_unknown',observationOnly:true,H0,H1:null,evidenceGap:'retained_additions_unverified',diff:'tracked file diff'})});
+ await fallback;
+ assert.match(p.nodes.get('report-body')!.textContent,/tracked file diff/);assert.match(p.nodes.get('report-body')!.textContent,/新增文件证据待核/);
+ assert.equal(logs.hidden,true);assert.equal(logs.children.length,0);
+});
+
 for(const supplement of [false,true])for(const switchProject of [false,true])test(`registered ${supplement?'supplement':'implementation'} UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
  const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false,supplement};
  const workflow={revision:'b'.repeat(40),executionContract:'coding-loop-v2',promptSha256:'c'.repeat(64)};

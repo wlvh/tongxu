@@ -136,7 +136,8 @@ export class AuthorityRecords {
       const scope=selected.kind==='adopt_scope'?selected.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:null;
       if(scope!==scopeId)return [];
       const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
-      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo:selected.kind==='delegate'?'selected_target':selected.kind==='confirm_action'?'selected_task':'whole_scope',createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
+      const appliesTo=selected.kind==='delegate'?(selected.projectFiles===true?'project_files':'selected_target'):selected.kind==='confirm_action'?'selected_task':'whole_scope';
+      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo,createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
     });
     const controls=(['implementation','investment','merge'] as const).map(control=>{
       const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;

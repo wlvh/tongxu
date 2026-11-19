@@ -65,13 +65,15 @@ export async function verifyImplementationEdits(state:any,plan:any,manifest:any,
 }
 
 /** Observe registered new paths, including retained move targets, without touching the index. */
-export async function retainedProjectAdditions(workspace:string,operation:string,scope:ProjectFiles){
+export async function retainedProjectAdditions(workspace:string,operation:string,H0:string,scope:ProjectFiles){
  const calls=join(operation,'calls'),names=await readdir(calls).catch(error=>{
   if(error.code==='ENOENT')return [];
   throw error;
  });
  if(!names.length)return {additions:[],diff:''};
  const initial:Tree=JSON.parse((await regular(join(operation,'initial-tree.json'),20*1024*1024)).toString());
+ const managed=JSON.parse((await regular(join(workspace,'.git','tongxu-managed.json'))).toString());
+ if(managed.kind!=='owned-project-workspace'||managed.initialH!==H0||managed.initialTreeSha256!==treeHash(initial))throw new Error('implementation_initial_tree_changed');
  const receipts=[];
  for(const name of names.filter(name=>/^[A-Za-z0-9_-]{1,128}\.json$/.test(name))){
   try{

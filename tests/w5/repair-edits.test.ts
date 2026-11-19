@@ -7,7 +7,7 @@ import {replacementText,implementationEditProfile} from '../../src/repair-edits.
 import {verifyImplementationModel} from '../../src/implementation-ai.js';
 import {verifyImplementationEdits,replayImplementationWrite,retainedProjectAdditions} from '../../src/implementation-edits.js';
 import {canonical} from '../../src/comparison.js';
-import {RepairTools,acquireWorkspace,releaseWorkspace,tree,treeHash,projectRepairToolSpecs,projectRepairToolsFor,projectFileMovesVersion} from '../../src/repair-workspace.js';
+import {RepairTools,acquireWorkspace,releaseWorkspace,tree,treeHash,git,projectRepairToolSpecs,projectRepairToolsFor,projectFileMovesVersion} from '../../src/repair-workspace.js';
 import {fixture} from './repair-fixture.js';
 import {hash} from '../../src/snapshot.js';
 const profile='literal-edits-v1',args=(edits:unknown)=>({path:'source.txt',expectedSha256:'a'.repeat(64),edits});
@@ -74,7 +74,9 @@ test('retained project move reports its unstaged target only while the applied r
  const receiptPath=join(calls,request.callId+'.json'),original=JSON.stringify(receipt);
  await rename(join(f.workspace,source),join(f.workspace,destination));
  await writeFile(receiptPath,original);
- const read=()=>retainedProjectAdditions(f.workspace,f.operation,{protectedPaths:[]});
+ const H0=await git(f.workspace,['rev-parse','HEAD']);
+ await writeFile(join(f.workspace,'.git','tongxu-managed.json'),JSON.stringify({kind:'owned-project-workspace',initialH:H0,initialTreeSha256:treeHash(initial)}));
+ const read=()=>retainedProjectAdditions(f.workspace,f.operation,H0,{protectedPaths:[]});
  const retained=await read();
  assert.deepEqual(retained.additions,[destination]);
  assert.match(retained.diff,/\+\+\+ b\/__proto__/);

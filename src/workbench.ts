@@ -371,8 +371,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.issueImplementation&&!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/implementation'){json(res,200,{available:false,options:[],entries:[]});return;}throw new Error('implementation_not_configured');}
         const controls=await openImplementation(selection);
         if(req.method==='GET'&&url.pathname==='/api/implementation'){json(res,200,{available:true,options:controls.options(),entries:await controls.state()});return;}
-        const report=/^\/api\/implementation-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
-        if(req.method==='GET'&&report){json(res,200,await controls.report(report[1]!,report[2]!));return;}
+        const report=/^\/api\/implementation-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})(?:\/logs\/([A-Za-z0-9_-]{1,64})\/(stdout|stderr))?$/.exec(url.pathname);
+        if(req.method==='GET'&&report){
+          const [,entry,request,tool,stream]=report;
+          if(tool&&(stream==='stdout'||stream==='stderr'))reply(res,200,'application/octet-stream',await controls.failureLog(entry!,request!,{tool,stream}));
+          else json(res,200,await controls.report(entry!,request!));
+          return;
+        }
         const action=/^\/api\/implementation\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|cancel|stop|continue-first-input)$/.exec(url.pathname);
         if(req.method!=='POST'||!action){json(res,405,{error:'implementation_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}

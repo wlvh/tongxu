@@ -4,7 +4,7 @@ import {readEndedReadonlyImplementationFailure,requireEndedReadonlyProof,readHos
 import {captureImplementationAI,parseImplementationAI,type ImplementationAI} from './implementation-ai.js';
 import {assertWorkCurrent,type CurrentCheckRef} from './project-work-current.js';
 import {fixedGit} from './project-work-preparation.js';
-import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,readRecordedValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
+import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,readRecordedValidationFailure,type ValidationFailureProof,type ValidationLogSelection} from './implementation-validation.js';
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
@@ -381,8 +381,15 @@ export class IssueImplementationControls{
     if(!state.plan)throw new Error('implementation_original_report_not_available');
     const {workspaceRequest}=state.plan.request;
     const diff=await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...workspaceRequest.allowedPaths]);
-    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,{protectedPaths:workspaceRequest.protectedPaths}):null;
-    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:[diff,added?.diff].filter(Boolean).join('\n'),...(added?{retainedAdditions:added.additions}:{}),observationOnly:true,originalExecutionRetained:true};
+    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,state.H0,{protectedPaths:workspaceRequest.protectedPaths}).catch(()=>null):null;
+    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:[diff,added?.diff].filter(Boolean).join('\n'),...(added?{retainedAdditions:added.additions}:projectFiles?{evidenceGap:'retained_additions_unverified'}:{}),observationOnly:true,originalExecutionRetained:true};
+  }finally{q.close();}}
+  async failureLog(id:string,requestId:string,selection:ValidationLogSelection){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const state=q.issueImplementations().state(id,requestId);
+    if(state.result||state.validationFailure||state.plan?.request.workspaceRequest.projectFiles!==true)throw new Error('report_not_found');
+    const {log}=await observeValidationFailure(state,true,selection);
+    if(!log)throw new Error('report_not_found');
+    return log;
   }finally{q.close();}}
   async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){
     if(!implementationOwnerTarget(target))throw new Error('owner_feedback_target_invalid');await this.catalog();await this.verify();const entry=this.entry(target.source);if(entry.store!==store)throw new Error('owner_feedback_target_queue_mismatch');
