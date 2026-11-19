@@ -737,6 +737,9 @@ test('normal registered workbench starts one project-scoped Issue and returns th
  const manifest=JSON.parse(await readFile(join(state.plan.operationRoot,'input-manifest.json'),'utf8'));
  assert.equal(manifest.request.workflowPrompt.use,'engineering_owner');
  assert.equal(manifest.request.workflowPrompt.revision,'11cf57b34698e6f7b38ee73468e84103cde8f963');
+ assert.deepEqual(prepared.value.workflow,{revision:manifest.request.workflowPrompt.revision,executionContract:manifest.request.workflowPrompt.executionContract,promptSha256:manifest.request.workflowPrompt.sha256});
+ assert.deepEqual(done.workflow,prepared.value.workflow);
+ assert.ok(Date.parse(prepared.value.lastRecordedAt)<=Date.parse(done.lastRecordedAt));
  assert.deepEqual(manifest.request.workspaceRequest.allowedPaths,[]);
  assert.deepEqual(manifest.request.workspaceRequest.materialPaths,['README.md']);
  assert.equal(await git(f.project.objects,['rev-parse','HEAD']),state.H0);

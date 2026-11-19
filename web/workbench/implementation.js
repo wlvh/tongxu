@@ -79,6 +79,12 @@ function implementationPanel(){
     }
     for(const request of entries){const label=request.status==='completed'?'实现完成，待正式审核':request.status==='no_change'?'核对完成，无需修改':request.status==='owner_decision_required'?'需要本人决定':request.status==='cancelled_unstarted'?'已撤回，未发送':request.stopped?'已请求停止，沿原执行核对':request.controllerActive?'正在处理':request.phase==='active_or_unknown'?'原执行待核，不自动重发':request.phase==='prepared'?'已准备，待执行':'已登记，待补准备';
       const row=append(el('div',null,'report-row'),append(el('div'),el('strong',(request.supplement?'原任务补充 · Issue #':'Issue #')+request.issue+' · '+label),el('p',request.reason?implementationReason(request.reason):request.H1?'成果提交 '+request.H1.slice(0,12):'原材料和请求会保留。','small'))),actions=el('div',null,'actions');
+      if(request.workflow){
+        const source=el('a',request.workflow.revision.slice(0,12));
+        source.href='https://github.com/wlvh/coding-workflow/commit/'+encodeURIComponent(request.workflow.revision);
+        row.firstChild.append(append(el('p',null,'small'),el('span','本次请求固定的工作流 '),source,el('span',' · '+request.workflow.executionContract)));
+      }
+      if(request.lastRecordedAt)row.firstChild.append(el('p','最近记录 '+new Date(request.lastRecordedAt).toLocaleString(),'small'));
       if(['registered','prepared'].includes(request.phase)&&!request.controllerActive&&!request.stopped){const start=el('button','继续原请求');start.disabled=data.pending;start.onclick=()=>continueIssueWork(option.id,request,request.phase==='registered'?'prepare':'start',project);actions.append(start);}
       if(['registered','prepared'].includes(request.phase)&&!request.controllerActive){const cancel=el('button','撤回未发请求','outline');cancel.disabled=data.pending;cancel.onclick=()=>continueIssueWork(option.id,request,'cancel',project);actions.append(cancel);}
       if(request.phase!=='returned'&&!request.stopped){const stop=el('button','停止本次实施','outline');stop.disabled=data.pending;stop.onclick=()=>continueIssueWork(option.id,request,'stop',project);actions.append(stop);}
