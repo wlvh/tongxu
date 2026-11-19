@@ -29,6 +29,10 @@ test('one fixed runtime detects stale source, build, configuration and file addi
  await writeFile(plan,'changed plan');await assert.rejects(inspectWorkbenchRuntime(raw),/plan_changed/);await writeFile(plan,'{"kind":"explicit fixture, never launched"}\n');
  const modulePath=join(source,'dist/src/workbench.js'),module=await readFile(modulePath);await writeFile(modulePath,'changed build');await assert.rejects(inspectWorkbenchRuntime(raw),/build_changed/);await writeFile(modulePath,module);
  const policy=join(source,'prompts/secretary.md'),policyBytes=await readFile(policy);await writeFile(policy,'wrong role policy');await assert.rejects(inspectWorkbenchRuntime(raw),/build_changed/);await writeFile(policy,policyBytes);
+ const workflowIndex=manifest.files.find(f=>f.path.endsWith('/coding_workflow.json'));
+ assert.ok(workflowIndex);
+ const indexPath=join(source,workflowIndex.path),indexBytes=await readFile(indexPath);
+ await writeFile(indexPath,'{}');await assert.rejects(inspectWorkbenchRuntime(raw),/build_changed/);await writeFile(indexPath,indexBytes);
  const extra=join(source,'dist/src/extra.js');await writeFile(extra,'additional module');await assert.rejects(inspectWorkbenchRuntime(raw),/file_set_changed/);await rm(extra);
  await writeFile(join(source,'src/selected.ts'),'modified source');await assert.rejects(inspectWorkbenchRuntime(raw),/source_changed/);await writeFile(join(source,'src/selected.ts'),'// explicit fixture source\n');
  await assert.rejects(inspectWorkbenchRuntime(Buffer.from(JSON.stringify({...manifest,files:[...manifest.files,{path:'../outside',sha256:hash('x')}]}))),/manifest_invalid/);

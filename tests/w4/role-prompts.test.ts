@@ -1,11 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assembleRolePrompt,inspectRolePrompt,requireIssuedRolePrompt,upstreamRevision } from '../../src/role-prompts.js';
+import { readCodingWorkflowSource } from '../../src/coding-workflow-source.js';
 import { hash } from '../../src/snapshot.js';
 import { mkdir,cp,readFile,writeFile,rm,symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath,pathToFileURL } from 'node:url';
 import { setup } from '../w3/receiver-fixture.js';
+
+test('coding workflow source rejects missing, edited, unsupported and escaping inputs without falling back', async t => {
+  const f = await setup(t);
+  const source = await readCodingWorkflowSource();
+  const root = join(f.root, 'workflow');
+  await cp(fileURLToPath(new URL(`../../../prompts/upstream/${source.identity.revision}/`, import.meta.url)), root, {recursive: true});
+  const path = join(root, 'zh/prompts/engineering_owner.md');
+  const original = await readFile(path);
+  await writeFile(path, 'Replaced source text');
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_source_digest_mismatch/);
+  await rm(path);
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_source_unavailable/);
+  await symlink(join(root, source.entrypoint), path);
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_source_unavailable/);
+  await rm(path);
+  await writeFile(path, original);
+
+  const indexPath = join(root, 'zh/prompts/coding_workflow.json');
+  const indexSource = await readFile(indexPath, 'utf8');
+  const index = JSON.parse(indexSource);
+  await writeFile(indexPath, JSON.stringify({...index, executionContract: 'future-contract'}));
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_index_unsupported/);
+  const escaped = structuredClone(index);
+  escaped.roles.engineering_owner.promptPaths = ['zh/prompts/../../outside.md'];
+  await writeFile(indexPath, JSON.stringify(escaped));
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_source_path_invalid/);
+  delete index.roles.engineering_owner;
+  await writeFile(indexPath, JSON.stringify(index));
+  await assert.rejects(readCodingWorkflowSource(root), /coding_workflow_uses_mismatch/);
+  await writeFile(indexPath, indexSource);
+  assert.equal((await readCodingWorkflowSource(root)).identity.packageSha256, source.identity.packageSha256);
+});
 
 test('reviewer receives complete fixed review and workflow originals while secretary gets only its own role',async()=>{
   const reviewer=await assembleRolePrompt('reviewer','Fixed task-specific review scope.');

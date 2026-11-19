@@ -21,7 +21,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | `npm run test:authority`、`npm run test:resources`、`npm run test:merge` | 对应 authority/resources/merge 目录；校验本人来源、资源及受管合并的样例，不能证明生产配置已启用。 |
 | `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。events 的 normal-entry 场景以原接收/来源/本人/资源协议样例走真实本机 HTTP/SQLite/子进程；不等于真实模型或浏览器验收。 |
 | `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收。三者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；composition、project-repair 的测试文件在加载阶段检查配置，review-records 的 queue-repair 测试也导入强制要求配置的准备文件。 |
-| `npm run test:sessions` | w4 role-prompts 与 session-* 子集。 |
+| `npm run test:sessions` | w4 role-prompts 与 session-* 子集。包含固定候选提示源的缺件、摘要变化、路径越界及不支持协议的反例。AI 设置只读入口和安装清单对候选索引的保护分别由 w7 的 project-chat 和 workbench-launch 覆盖。 |
 | `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。二者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；integration 及成员修复都使用 `tests/integration/fixture.ts` 的共享准备流程，在进入该流程时强制检查配置并执行真实隔离验证，不能只按少数文件判断环境要求。 |
 | `npm run test:delivery-validation`、`npm run test:delivery-assessment` | 对应 delivery-validation/delivery-assessment 目录，二者均导入真实 Docker 验证 fixture，需 `TONGXU_TEST_DOCKER_CONFIG`、已有镜像和可用引擎；模型判断另用明确样例，不能把它称为真实模型验收。 |
 

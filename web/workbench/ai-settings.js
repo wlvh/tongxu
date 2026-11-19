@@ -33,12 +33,29 @@ async function openAIRolePrompt(role){
   try{const result=await api('/api/ai-settings/prompts/'+role.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=result.meaning;$('report-body').textContent=result.assembly.system;}
   catch(e){if(nonce===reportNonce)$('report-body').textContent='提示词读取未完成：'+aiError(e);}
 }
+async function openCodingWorkflowSource(){
+  const nonce=++reportNonce;
+  $('report-title').textContent='编程工作流来源';
+  $('report-meta').textContent='正在核对固定提交和源文件…';
+  $('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;
+  showWorkbenchReport();
+  try{
+    const {activeRevision,candidate,assembly}=await api('/api/ai-settings/workflow/engineering_owner');
+    if(nonce!==reportNonce||!$('report-dialog').open)return;
+    const {identity,manifest}=candidate;
+    const upstream='https://github.com/'+identity.repository+'/blob/';
+    const link=(name,revision,path)=>{const a=el('a',name+' '+revision.slice(0,7));a.href=upstream+revision+'/'+path;a.target='_blank';a.rel='noopener noreferrer';return a;};
+    $('report-meta').replaceChildren(link('当前提示来源',activeRevision,candidate.entrypoint),document.createTextNode(' · '),link('候选来源',identity.revision,candidate.entrypoint),document.createTextNode(' · '),link('采用说明',identity.revision,candidate.adoption));
+    $('report-body').textContent='候选来源校验通过。配套执行尚待接入。\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
+  }catch(e){if(nonce===reportNonce){$('report-meta').textContent='来源核对未完成';$('report-body').textContent=aiError(e);}}
+}
 function renderAISettings(){
   renderGithub();const page=aiPage(),root=el('div',null,'ai-settings');root.append(intro('AI 与角色设置','为 '+gh.selected.fullName+' 的不同角色选择调用程序、模型与推理强度。调用程序是本机的 Codex CLI、Claude Code CLI、Kimi Code CLI、Gemini CLI、OpenCode 等入口，负责发送问题和收取回答。'));
   const scan=el('button',page.loading?'正在读取本机工具…':'检测本机 AI','refresh');scan.type='button';scan.disabled=page.loading||!!page.saving;scan.onclick=()=>loadAISettings(true);root.append(scan);
   if(page.error)root.append(el('p',page.error,'notice'));else if(page.notice)root.append(el('p',page.notice,'notice'));
   root.append(el('p','模型和强度来自当前 CLI 返回的目录。检测与保存不发送模型问题；服务端认证和额度以实际请求结果为准，执行仍检查任务范围和权限。','small'));
   if(!page.value){root.append(el('p',page.loading?'正在读取设置…':'尚未读取设置。','empty'));$('content').replaceChildren(root);$('refresh').disabled=page.loading;return;}
+  const workflow=el('button','查看编程工作流来源','outline');workflow.type='button';workflow.onclick=openCodingWorkflowSource;root.append(workflow);
   const providers=page.value.catalog||[],list=el('details',null,'ai-provider-list');list.append(el('summary','本机调用程序 · '+providers.filter(p=>p.available).length+' 个可用入口 · '+providers.filter(p=>!p.available).length+' 个待处理（展开查看路径与版本）'));list.append(el('p','同一个程序的不同安装路径会分别列出；入口数量不代表模型数量。','small'));
   if(!providers.length)list.append(el('p','点击“检测本机 AI”，查找已有的 Codex、Claude、Kimi、Gemini、OpenCode 及其当前模型。','empty'));
   for(const provider of providers){const card=el('article',null,'note-card');append(card,el('h3',aiProgramName(provider.tool)+' · '+(provider.installed===false?'未安装':provider.available?'可选择':'尚不可用')),el('p',provider.path||'本机尚未检测到该程序；安装并登录后重新检测。','wrap small'),el('p',(provider.version||'版本尚未取得')+' · '+(provider.authentication==='subscription'?'本机报告订阅登录':provider.authentication==='existing_account'?'现有账号入口':provider.authentication==='not_logged_in'?'未登录':provider.authentication==='other'?'其他认证路线':'认证待核'),'small'));if(provider.reason)card.append(el('p',aiError(provider.reason),'small'));card.append(el('p',provider.models.length+' 个模型选项 · 检测于 '+date(provider.observedAt),'small'));list.append(card);}root.append(list);
