@@ -34,18 +34,26 @@ if(mode==='grow-history-boundary'&&!context.conversation.length){
   report.report+='x'.repeat(192*1024-7-Buffer.byteLength(JSON.stringify(oldHistory)));
 }
 const item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
-readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode==='comments'){log({kind:'comment-result',observation});commentBodies.push(...observation.data.comments.map(c=>c.body));toolReplies++;if(toolReplies===1){queryComments(2,{kind:'issues',number:9,page:2,cursor:observation.data.nextCursor});return;}if(toolReplies===2){queryComments(3,{kind:'pulls',number:65});return;}finish(observation);return;}if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode==='time-budget'){log({kind:'time-result',observation});toolReplies++;if(toolReplies<3){const gate=trace+'.time-'+toolReplies,waiting=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(waiting);query(toolReplies+1);}},5);return;}finish(observation);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
+const lines=readline.createInterface({input:process.stdin});
+lines.on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode==='comments'){log({kind:'comment-result',observation});commentBodies.push(...observation.data.comments.map(c=>c.body));toolReplies++;if(toolReplies===1){queryComments(2,{kind:'issues',number:9,page:2,cursor:observation.data.nextCursor});return;}if(toolReplies===2){queryComments(3,{kind:'pulls',number:65});return;}finish(observation);return;}if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode==='time-budget'){log({kind:'time-result',observation});toolReplies++;if(toolReplies<3){const gate=trace+'.time-'+toolReplies,waiting=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(waiting);query(toolReplies+1);}},5);return;}finish(observation);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
 if(m.method==='model/list')result={data:[{model:'fixture-astra',displayName:'Fixture Astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,reasoningEffort:m.params.config?.model_reasoning_effort??'xhigh',source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name),instructions:m.params.developerInstructions});emit({id:m.id,result:{thread,model:mode==='wrong-selected-model'?'wrong':m.params.model??'fixture-default',reasoningEffort:thread.reasoningEffort,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout'||mode==='hold-first'&&context.question==='查看已有开发进度')return;if(mode.startsWith('grow-history')&&!context.conversation.length){
+if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout'||mode.startsWith('hold-first')&&context.question==='查看已有开发进度')return;if(mode.startsWith('grow-history')&&!context.conversation.length){
   const waiting=setInterval(()=>{if(fs.existsSync(trace+'.release-answer')){clearInterval(waiting);finish(context.initialObservation);}},5);
   return;
 }
 if(mode==='comments'){queryComments(1,{kind:'issues',number:9});return;}if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')||mode==='time-budget'){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
-if(m.method==='turn/interrupt'){log({kind:'interrupt'});emit({id:m.id,result:{}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});return;}
+if(m.method==='turn/interrupt'){
+  log({kind:'interrupt'});emit({id:m.id,result:{}});
+  const interrupted=()=>emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});
+  // Acknowledge the interrupt, then make the turn fail while close is waiting for the process.
+  if(mode==='hold-first-slow-close')lines.once('close',()=>{interrupted();setTimeout(()=>{},500);});
+  else interrupted();
+  return;
+}
 emit({id:m.id,result});});
 `;
   await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0;
@@ -113,9 +121,9 @@ test('stop uses the owned turn, remains available without GitHub, and preserves 
   const state=await f.wait(q.conversationId,m=>m[0]?.status==='interrupted');assert.equal(state.messages[0].answer,null);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
 });
 test('busy intake persists the exact words, then sends original pending questions once and in order',async t=>{
-  const f=await fixture(t,'hold-first'), first=question('查看已有开发进度');
+  const f=await fixture(t,'hold-first-slow-close'), first=question('查看已有开发进度');
   assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
-  await f.wait(first.conversationId,m=>m[0]?.status==='running');
+  await f.waitForInput(first.question);
   const second=question('大报表改为后台生成后下载',first.requestId,first.conversationId);
   const third=question('补充下载结果有效期',second.requestId,first.conversationId);
   const submissions=await Promise.all([f.post('/api/project-secretary/ask',second),f.post('/api/project-secretary/ask',second)]);
@@ -127,6 +135,10 @@ test('busy intake persists the exact words, then sends original pending question
   assert.deepEqual(saved.data.messages.slice(1).map((r:any)=>[r.id,r.question,r.status]),[[second.requestId,second.question,'queued'],[third.requestId,third.question,'queued']]);
   assert.equal((await f.logs()).filter(r=>r.kind==='input').length,1);
   assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  // Observe the model input before any GET can reconcile the old row.
+  await f.waitForInput(third.question);
+  const outcome=JSON.parse(await readFile(join(f.root,'chats',first.requestId,'outcome.json'),'utf8'));
+  assert.deepEqual([outcome.status,outcome.nativeProcessState,outcome.reason],['interrupted','ended','native_turn_interrupted']);
   const end=await f.wait(first.conversationId,m=>m[2]?.status==='completed');
   assert.deepEqual(end.messages.map((r:any)=>r.status),['interrupted','completed','completed']);
   const inputs=(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);

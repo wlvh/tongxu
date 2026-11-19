@@ -27,7 +27,7 @@ export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<Su
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
 export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
-type Active={promise:Promise<void>;session?:BoundedCodexSession;stop:boolean;timedOut?:boolean};
+type Active={promise:Promise<void>;session?:BoundedCodexSession;closePromise?:Promise<void>;stop:boolean;timedOut?:boolean};
 type ProjectChatIdentity={account:{id:number};repository:{id:number;nodeId:string}};
 
 /** One durable conversation history. Existing task queues and native capture
@@ -287,7 +287,7 @@ export class ProjectChat{
       // native executor immediately before input. No stale evidence is dated anew.
       const allowedStop=(request:{action:string;id:string})=>request.action==='interrupt'&&(active.stop&&request.id==='stop-'+id||active.timedOut&&request.id==='timeout-'+id);
       active.session=await BoundedCodexSession.start({executable:runtimeConfig.codexExecutable,...(aiSelection?{aiModel:modelChoice(aiSelection)}:{}),directory:native,operation:directory,candidate,role:'secretary',projectSecretary:true,...(work?{projectSecretaryWork:true as const}:{}),system:prompt.system,inputManifestSha256:hash(canonical(input)),scopeSource:'User-selected GitHub repository '+scope.repository.id,arrangementSource:work?'Project work secretary; coordinate only this saved user-selected approved work; new native context':'Project work secretary; read only; saved history passed into a new native context',disabledMcpServers:this.config.disabledMcpServers,allowedInstructionSources:this.config.allowedInstructionSources,timeoutMs:waitLimitMs,executionKind:this.config.executionKind,beforeTurn:check,afterTurnStarted:()=>{turnStartedAt=performance.now();},gate,control:{beforeControl:async request=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');},beforeControlSendSync:(request,send)=>{if(!allowedStop(request))throw new Error('project_chat_control_not_allowed');send();}}});
-      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,projectSecretarySchema);await active.session.close();await this.complete(id);
+      await check();this.db.prepare("UPDATE messages SET phase='running' WHERE id=?").run(id);await active.session.turn(canonical(input),candidate,projectSecretarySchema);await this.closeNative(active);await this.complete(id);
     }catch(e){
       let cleanupRecordProblem:string|null=null;
       if(reason(e)==='executor_wait_timeout'&&active.session){
@@ -296,7 +296,7 @@ export class ProjectChat{
         catch{cleanupRecordProblem='timeout_record_unavailable';}
         finally{await this.stopNative(id,active,'timeout').catch(()=>{});}
       }
-      await active.session?.close().catch(()=>{});try{await this.complete(id);return;}catch{}
+      await this.closeNative(active).catch(()=>{});try{await this.complete(id);return;}catch{}
       const rowPhase=(this.db.prepare('SELECT phase FROM messages WHERE id=?').get(id) as Row).phase;
       const unstarted=rowPhase==='registered'&&!await exists(native);let ended=unstarted;
       if(!ended)try{const original=JSON.parse((await regular(join(native,'process.json'),4096)).toString());ended=exactKeys(original,['pid','status'])&&Number.isSafeInteger(original.pid)&&original.pid>0&&original.status==='spawn_attempted'&&!alive(original.pid);}catch{ended=false;}
@@ -323,9 +323,13 @@ export class ProjectChat{
   }
   private async complete(id:string){const result=await this.verified(id);save(join(this.directory(id),'answer.json'),result);this.db.prepare("UPDATE messages SET phase='completed',finished_at=COALESCE(finished_at,?),problem=NULL,report=?,receipt=? WHERE id=?").run(now(),result.report,canonical(result.receipt),id);}
 
+  private async closeNative(active:Active){
+    // Stop and execute must wait for the same process and capture cleanup.
+    if(active.session)await (active.closePromise??=active.session.close());
+  }
   private async stopNative(id:string,active:Active,cause:'user'|'timeout'='user'){
     const state=active.session?.controlState();if(state?.currentTurnActive)await active.session!.control({id:(cause==='timeout'?'timeout-':'stop-')+id,action:'interrupt',threadId:state.threadId!,sessionId:state.sessionId!,turnId:state.turnId!,input:null}).catch(()=>{});
-    await active.session?.close();
+    await this.closeNative(active);
   }
   async stopSelected(accountId:number,repositoryId:number,id:string){
     if(!chatId(id)||!Number.isSafeInteger(accountId)||!Number.isSafeInteger(repositoryId))throw new Error('project_chat_id_invalid');
