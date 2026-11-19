@@ -515,12 +515,12 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  }
  if(fault==='project-development'){
    const nativeSuppl={...proposal,goal:'Retain downloads for strictly less than 24 hours',acceptance:['No download at the exact boundary'],validation:{description:'Retention boundary',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);"}};
-   const preciseMarker={...proposal,goal:'Expose whether a download is corrected',acceptance:['The corrected marker is true'],validation:{
-     description:'Corrected download marker',script:"import assert from 'node:assert/strict';import{correctedDownload}from'./src/normalize.mjs';assert.equal(correctedDownload,true);"}};
+   const reportQueue={...proposal,goal:'Expose whether a report was queued before download',acceptance:['The report queue marker is true'],validation:{
+     description:'Queued report marker',script:"import assert from 'node:assert/strict';import{reportQueued}from'./src/normalize.mjs';assert.equal(reportQueued,true);"}};
    const stage="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also add a retention deadline for the download.')";
-   const late="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also mark corrected downloads.')";
+   const shared="if(stage==='tongxu_repository_file'&&[202,203].includes(context.issue.number)&&context.userGoal==='Expose whether the report was queued before download.')";
    code=code.replace("if(stage==='tongxu_repository_file'){const rejected=",stage+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(nativeSuppl)+'});return;}'+
-     late+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(preciseMarker)+'});return;}'+"if(stage==='tongxu_repository_file'){const rejected=");
+     shared+'{finish({candidateH:context.source.H,decision:"confirmed",proposal:'+JSON.stringify(reportQueue)+'});return;}'+"if(stage==='tongxu_repository_file'){const rejected=");
  }
  if(fault==='validation-failed')code=code.replace("decision:repairing?'implemented':","decision:context.originalReport?'no_change':repairing?'implemented':");
  if(fault==='validation-interrupt')code=code.replace("if(stage==='tongxu_replace_file'){","if(stage==='tongxu_replace_file'){if(context.originalReport)process.exit(7);");
@@ -534,7 +534,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  }
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.technicalEvidence&&context.work){finish({candidateH:context.candidate.H,report:'Explicit fixture Tech Lead explanation: tested download retention, with review and publication still unobserved.'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development')code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.material?.issue&&context.reviewedInputSha256){const lookup=context.material.integration&&context.peer===null;finish({candidateH:context.material.head,reviewedInputSha256:context.reviewedInputSha256,verdict:lookup?'REWORK_REQUIRED':'PASS',report:'Explicit fixture review of the exact acceptance material.',findings:[],coverageGaps:lookup?['source:src/caller.mjs']:[],ownerQuestions:[]});return;}if(m.params.outputSchema.properties.title){finish({candidateH:context.head,title:'Add download expiry',report:'Track the specified availability deadline for completed downloads.'});return;}if(context.draft&&context.issue){finish({candidateH:context.draft.head,report:'From Downloads, open a result before the deadline, at the deadline and afterward. Check that expired results are refused.'});return;}if(mode==='host-unavailable'&&turn===1)");
- if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement)throw Error('fixture_original_supplement_required');const amend=context.request.continuation.supplement.text,second=amend==='Also mark corrected downloads.';if(!second&&amend!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt'+(second||context.request.issue.number!==202||context.originalReport?'<':'<=')+'86400000;}\\n';if(second)args.text+='export const correctedDownload=true;\\n';}stage=name;const serial=");
+ if(fault==='project-development')code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'&&context.request?.continuation?.amendment){if(!context.validationDefinition?.supplement)throw Error('fixture_original_supplement_required');const amend=context.request.continuation.supplement.text,repaired=amend==='Also mark corrected downloads.',shared=amend==='Expose whether the report was queued before download.';if(!repaired&&!shared&&amend!=='Also add a retention deadline for the download.')throw Error('fixture_original_supplement_required');args.text+='\\nexport function downloadAvailableAt(createdAt,now){return now>=createdAt && now-createdAt'+(repaired||shared||context.request.issue.number!==202||context.originalReport?'<':'<=')+'86400000;}\\n';if(repaired||shared)args.text+='export const correctedDownload=true;\\n';if(shared)args.text+='export const reportQueued=true;\\n';}stage=name;const serial=");
  if(fault==='project-development')code=code.replace("if(stage==='tongxu_read_file'){", "const initialB=context.request?.issue?.number===202&&context.request.continuation?.supplement.text==='Also add a retention deadline for the download.'&&!context.originalReport;if(initialB&&stage==='tongxu_read_file'){tool('tongxu_run_tests',{});return;}if(initialB&&stage==='tongxu_run_tests'){finish({candidateH:context.candidate.H,decision:'no_change',report:'The unchanged candidate failed the new download requirement.'});return;}if(stage==='tongxu_read_file'){");
  if(fault==='literal-large'||fault==='validation-literal'){code=code.replace("if(stage==='tongxu_read_file'){","if(stage==='tongxu_read_file'){globalThis.literalBefore=v.text;");code=code.replace('stage=name;const serial=',"if(name==='tongxu_replace_file'){args.edits=[{oldText:globalThis.literalBefore.split('\\n// padding\\n')[0],newText:args.text.trimEnd()}];globalThis.literalBefore=args.text.trimEnd()+globalThis.literalBefore.slice(args.edits[0].oldText.length);delete args.text;}stage=name;const serial=");}
  if(readonlyFault){
@@ -696,7 +696,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
    const reached=new Map<string,string>();
    const release=new Map<string,()=>void>();
    const gates=new Map([a,b,c].map(id=>[id,new Promise<void>(resolve=>release.set(id,resolve))]));
-   let releaseSupplement=()=>{};
+   let releaseSupplement=()=>{},releaseSharedDownload=()=>{};
    const waitForSupplement=new Promise<void>(resolve=>{releaseSupplement=resolve;});
    const call=RepairTools.prototype.call;
    t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
@@ -1113,7 +1113,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.ok(currentC?.plan);
      const beforeC=receiptC.draft.delivery.H;
      const lateTarget={source:targetC.source,requestId:targetC.requestId,task:targetC.task,operation:targetC.operation};
-     const lateText='Also mark corrected downloads.';
+     const lateText='Expose whether the report was queued before download.';
      const {formalFixture}=await import('../w5/formal-round-fixture.js');
      const {QueueFormalRoundHost}=await import('../../src/formal-review-host.js');
      const {sourceFixture}=await import('../events/source-fixture.js');
@@ -1152,11 +1152,24 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(started.status,200,JSON.stringify(started.value));
      const repairOperation=started.value.operation;
      const formalReport=(operation:string)=>get('/api/formal-review-report/'+formal.entry.id+'/'+operation);
-     const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),target:lateTarget,text:lateText};
-     const joinedRow=async(id=joined.requestId)=>{
+     const joined={conversationId:currentCWork.draft.conversationId,requestId:randomUUID(),targets:[lateTarget,target],text:lateText};
+     let joinedMember='',downloadMember='',enteredDownload=()=>{},resumeDownload=()=>{};
+     const downloadWriting=new Promise<void>(resolve=>{enteredDownload=resolve;});
+     const holdDownload=new Promise<void>(resolve=>{resumeDownload=resolve;});
+     releaseSharedDownload=resumeDownload;
+     const originalTool=RepairTools.prototype.call;
+     t.mock.method(RepairTools.prototype,'call',async function(this:RepairTools,...args:Parameters<RepairTools['call']>){
+       const result=await originalTool.apply(this,args);
+       if(downloadMember&&args[0].tool==='tongxu_run_tests'&&this.workspace.includes('/executions/supplement-'+downloadMember+'/')){
+         enteredDownload();await holdDownload;
+       }
+       return result;
+     });
+     const joinedRows=async()=>{
        const conversation=(await get('/api/project-secretary/conversations/'+joined.conversationId)).value;
-       return conversation.supplements.find((row:any)=>row.id===id);
+       return conversation.supplements;
      };
+     const joinedRow=async(id=joinedMember)=>(await joinedRows()).find((row:any)=>row.id===id);
      let enterFix=()=>{},resumeFix=()=>{};
      const enteredFix=new Promise<void>(resolve=>{enterFix=resolve;});
      const holdFix=new Promise<void>(resolve=>{resumeFix=resolve;});
@@ -1170,13 +1183,26 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      try{
        await Promise.race([enteredFix,until(()=>formalReport(repairOperation),r=>!r.value.controllerActive).then(()=>assert.fail('formal repair did not reach its original inbox'))]);
        assert.equal((await post('/api/project-secretary/supplement',joined)).status,202);
+       const members=(await joinedRows()).filter((row:any)=>row.originalRequestId===joined.requestId);
+       assert.equal(members.length,2);
+       joinedMember=members.find((row:any)=>canonical(row.target)===canonical(lateTarget)).id;
+       downloadMember=members.find((row:any)=>canonical(row.target)===canonical(target)).id;
        assert.equal((await joinedRow()).original.delivered,false);
+       assert.equal((await post('/api/project-secretary/review-supplement',{requestId:downloadMember})).status,202);
+       await until(()=>joinedRow(downloadMember),row=>row?.original?.ready===true);
+       assert.equal((await post('/api/project-secretary/continue-supplements',{target})).status,202);
+       await Promise.race([downloadWriting,until(()=>joinedRow(downloadMember),row=>row?.original?.successful===true).then(()=>assert.fail('download work completed before the formal repair checkpoint'))]);
      }finally{resumeFix();pauseFirstFix.mock.restore();}
      const firstRepair=(await until(()=>formalReport(repairOperation),r=>!r.value.controllerActive&&r.value.phase==='awaiting_publication')).value.result.fix;
      assert.equal(firstRepair.H0,beforeC);assert.notEqual(firstRepair.H1,beforeC);assert.equal(firstRepair.tested.passed,true);
      const firstFormalDelivery=await joinedRow();
      assert.equal(firstFormalDelivery.original.recipient.sessionId,firstRepair.sessionId);
      assert.deepEqual([firstFormalDelivery.original.delivered,firstFormalDelivery.original.adopted,firstFormalDelivery.original.coveringCandidate],[true,false,null]);
+     assert.deepEqual([(await joinedRow(downloadMember)).compiledRequest,(await joinedRow(downloadMember)).original.coveringCandidate],['supplement-'+downloadMember,null]);
+     resumeDownload();
+     const fixedDownload=await until(()=>joinedRow(downloadMember),row=>!!row?.original?.coveringCandidate);
+     assert.equal(fixedDownload.originalRequestId,joined.requestId);
+     assert.equal(fixedDownload.original.adopted,true);
      const remote=await sourceFixture(t,'fixture/reception');
      formal.q.events().configure(Buffer.from(canonical(remote.profile)));
      const publishRepair=async(fix:any)=>{
@@ -1197,7 +1223,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.notEqual(firstRepair.sessionId,repair.sessionId);
      await publishRepair(repair);
      await until(()=>formalSuccessor(intermediate.operation),review=>review?.phase==='pass'&&!review.controllerActive);
-     const fresh={...joined,requestId:randomUUID(),text:'Fresh supplement after both repairs.'};
+     const fresh={conversationId:joined.conversationId,requestId:randomUUID(),target:lateTarget,text:'Fresh supplement after both repairs.'};
      assert.equal((await post('/api/project-secretary/supplement',fresh)).status,202);
      const freshState=await joinedRow(fresh.requestId);
      assert.equal(freshState.original.continuationBase,repair.H1);
@@ -1212,11 +1238,11 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
        const blocked=await joinedRow();
        assert.equal(blocked.original.reason,'formal_repair_supplement_lineage_pending',JSON.stringify(blocked));
        assert.equal(blocked.original.ready,false);
-       assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,503);
+       assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joinedMember})).status,503);
        assert.equal((await post('/api/project-secretary/continue-supplements',{target:lateTarget})).status,202);
        assert.equal((await joinedRow()).compiledRequest,null);
      }finally{await rename(beforeEvidence+'.missing',beforeEvidence);}
-     assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joined.requestId})).status,202);
+     assert.equal((await post('/api/project-secretary/review-supplement',{requestId:joinedMember})).status,202);
      const readyJoined=await until(()=>joinedRow(),row=>row?.original?.ready===true);
      assert.equal(readyJoined.original.adopted,false);
      assert.equal((await post('/api/project-secretary/continue-supplements',{target:lateTarget})).status,202);
@@ -1227,10 +1253,11 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(joinedReport.tests.tools.some((tool:any)=>tool.id==='fixture-node-tests'),true);
      assert.equal(finishedJoined.original.originalFormalDelivery.recipient.sessionId,firstRepair.sessionId);
      assert.match(await git(repair.workspace,['show',repair.H1+':sample.js']),/reviewedTwice=true/);
-     t.diagnostic(JSON.stringify({formalHistory:[beforeC,firstRepair.H1,repair.H1],repairSessions:[firstRepair.sessionId,repair.sessionId],request:joined.requestId,
-       recipient:finishedJoined.original.recipient,adopted:finishedJoined.original.requirementSha256,covered:cFinal.draft.delivery.H}));
+     t.diagnostic(JSON.stringify({sharedRequest:joined.requestId,formalHistory:[beforeC,firstRepair.H1,repair.H1],repairSessions:[firstRepair.sessionId,repair.sessionId],
+       formalMember:joinedMember,downloadMember,downloadRecipient:fixedDownload.original.recipient,downloadAdopted:fixedDownload.original.requirementSha256,
+       downloadCovered:fixedDownload.original.coveringCandidate,recipient:finishedJoined.original.recipient,adopted:finishedJoined.original.requirementSha256,covered:cFinal.draft.delivery.H}));
      t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:latestReport.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
-   }finally{for(const open of release.values())open();releaseSupplement();}
+   }finally{for(const open of release.values())open();releaseSupplement();releaseSharedDownload();}
    return;
  }
  if(fault==='preparation-typed-retry'){
