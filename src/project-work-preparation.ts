@@ -10,7 +10,7 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {regular,safeEnv,exists} from './repair-workspace.js';
 import {exactKeys} from './authority-contract.js';
-import {parseWorkProposal,preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,parseWorkPreparationOutput,sourcedPreparationInstructions,type WorkProposal} from './project-work-contract.js';
+import {parseWorkProposal,preparationToolsFor,workPreparationInstructions,workPreparationVersion,workPreparationSchema,parseWorkPreparationOutput,sourcedPreparationInstructions,type WorkProposal} from './project-work-contract.js';
 import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
 import type {RepairConfig} from './repair.js';
 import {checkConfig,type Candidate} from './live-codex.js';
@@ -32,12 +32,42 @@ export async function repositoryFiles(source:FixedRepository){
   return raw.split('\0').filter(Boolean).map(line=>{const m=/^([0-7]{6}) (blob|commit) ([a-f0-9]{40}) +([0-9-]+)\t(.+)$/.exec(line);if(!m)throw new Error('project_work_source_manifest_invalid');return {path:m[5]!,mode:m[1]!,object:m[3]!,bytes:Number(m[4])};});
 }
 function readable(path:string){return /^[A-Za-z0-9_.\/-]+$/.test(path)&&path.split('/').every(p=>p&&p!=='.'&&p!=='..'&&p!=='.git')&&!/(?:^|\/)(?:\.env(?:\..*)?|credentials|id_rsa|id_ed25519)(?:$|\/)|\.(?:pem|key|p12|pfx)$/i.test(path);}
+type TrackedFile=Awaited<ReturnType<typeof repositoryFiles>>[number];
+const wholeFileLimit=256*1024,sliceLimit=64*1024;
+async function readTrackedBlob(source:FixedRepository,file:TrackedFile){
+  const bytes=await fixedGit(source,['cat-file','blob',file.object]);if(bytes.length!==file.bytes)throw new Error('project_work_source_changed');
+  return bytes;
+}
 export async function repositoryFile(source:FixedRepository,path:string){
   if(!readable(path))throw new Error('project_work_file_not_readable');
   const file=(await repositoryFiles(source)).find(f=>f.path===path);
-  if(!file||!['100644','100755'].includes(file.mode)||file.bytes>256*1024)throw new Error('project_work_file_not_readable');
-  const bytes=await fixedGit(source,['cat-file','blob',file.object]);if(bytes.length!==file.bytes)throw new Error('project_work_source_changed');
+  if(!file||!['100644','100755'].includes(file.mode)||file.bytes>wholeFileLimit)throw new Error('project_work_file_not_readable');
+  const bytes=await readTrackedBlob(source,file);
   return {path,text:new TextDecoder('utf8',{fatal:true}).decode(bytes),sha256:hash(bytes),bytes:bytes.length};
+}
+async function lookupPreparationFile(source:FixedRepository,files:TrackedFile[],args:{path:string;startByte?:number;byteCount?:number}){
+  const {path,startByte,byteCount}=args;
+  if(path.length>4096||!readable(path))throw new Error('project_work_file_not_readable');
+  const basis={path,H:source.H},file=files.find(row=>row.path===path);
+  if(!file||!['100644','100755'].includes(file.mode))return {...basis,unavailable:'not_regular_tracked_file'};
+  const identity={...basis,object:file.object,totalBytes:file.bytes};
+  if(file.bytes>8*1024*1024)return {...identity,unavailable:'repository_blob_limit'};
+  const ranged=Object.hasOwn(args,'startByte')||Object.hasOwn(args,'byteCount');
+  if(!ranged&&file.bytes>wholeFileLimit)return {...identity,unavailable:'range_required',startByte:0,maximumByteCount:sliceLimit};
+  if(ranged&&(typeof startByte!=='number'||!Number.isSafeInteger(startByte)||startByte<0||startByte>file.bytes||
+      typeof byteCount!=='number'||!Number.isSafeInteger(byteCount)||byteCount<1||byteCount>sliceLimit))
+    return {...identity,unavailable:'invalid_byte_range',maximumByteCount:sliceLimit};
+  const raw=await readTrackedBlob(source,file),start=startByte??0;
+  if(raw.includes(0))return {...identity,unavailable:'not_utf8_text'};
+  const continuation=(offset:number)=>offset<raw.length&&(raw[offset]!&0xc0)===0x80;
+  if(continuation(start))return {...identity,unavailable:'start_byte_not_character_boundary'};
+  let end=Math.min(raw.length,start+(byteCount??raw.length));
+  while(end>start&&continuation(end))end--;
+  if(end===start&&start<raw.length)return {...identity,unavailable:'byte_count_too_short_for_character'};
+  const slice=raw.subarray(start,end);
+  let text:string;
+  try{text=new TextDecoder('utf8',{fatal:true,ignoreBOM:ranged}).decode(slice);}catch{return {...identity,unavailable:'not_utf8_text'};}
+  return {...identity,text,bytes:slice.length,sha256:hash(slice),...(ranged?{startByte:start,nextByte:end<raw.length?end:null}:{})};
 }
 export async function checkWorkMaterial(source:FixedRepository,proposal:WorkProposal){
   let total=0,editable=0;const material:Record<string,unknown>={};for(const path of proposal.materialPaths){const f=await repositoryFile(source,path);total+=f.bytes;material[path]=f;if(proposal.allowedPaths.includes(path))editable+=f.bytes;}
@@ -57,14 +87,16 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const validationEnvironment=await prepareWorkEnvironment(o.verification,join(o.directory,'environment'),o.source.H,T,{refresh:check,start:effect=>{if(o.stopped())throw new Error('project_work_preparation_stopped');effect();}});
   await check();
   const previous=await previousPreparationContext(o.previous,o.source,o.issue,o.goal);
-  const input={preparationVersion:workflowPrompt?5:4,...(workflowPrompt?{workflowPrompt}:{}),...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
+  const input={preparationVersion:workflowPrompt?5:4,repositoryFileSlices:true,...(workflowPrompt?{workflowPrompt}:{}),...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
   const bytes=preparationInputBytes(input);
   await writeFile(join(o.directory,'input.json'),bytes,{flag:'wx',mode:0o600});
   const candidate:Candidate={kind:'local-git',repository:'local/project-work-preparation',pr:null,H:o.source.H,B:o.source.H,target:'preparation'},observations:unknown[]=[];let calls=0,total=0,turnStarted:number|null=null;
   const gate={check,call:async(p:{tool:string;arguments:any;callId:string},before?:()=>void)=>{
     await check();before?.();if(++calls>32)throw new Error('project_work_preparation_tool_limit');let data;
     if(p.tool==='tongxu_repository_files'&&exactKeys(p.arguments,[]))data=files.map(({path,mode,bytes})=>({path,mode,bytes}));
-    else if(p.tool==='tongxu_repository_file'&&exactKeys(p.arguments,['path'])&&typeof p.arguments.path==='string')data=await repositoryFile(o.source,p.arguments.path);
+    else if(p.tool==='tongxu_repository_file'&&p.arguments&&typeof p.arguments.path==='string'&&
+      exactKeys(p.arguments,['path',...['startByte','byteCount'].filter(key=>Object.hasOwn(p.arguments,key))]))
+      data=await lookupPreparationFile(o.source,files,p.arguments);
     else throw new Error('project_work_preparation_tool_not_allowed');
     const base={tool:p.tool,arguments:p.arguments,data};total+=Buffer.byteLength(canonical(base));if(total>768*1024)throw new Error('project_work_preparation_material_limit');
     const elapsedMs=turnStarted===null?null:Math.max(0,Math.floor(performance.now()-turnStarted));
@@ -75,7 +107,7 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const choice=currentAIChoice('secretary');if(choice&&choice.tool!=='codex')throw new Error('project_work_preparation_codex_required');
   let session:BoundedCodexSession|undefined;
   try{
-    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:true,system,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
+    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:'file-slices',system,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
     await session.turn(bytes,candidate,workPreparationSchema(candidate.H));await session.close();session=undefined;
     return await readWorkProposal(o.directory,o.source);
   }finally{await session?.close();}
@@ -115,7 +147,7 @@ async function readPreparationInput(directory:string,source:FixedRepository){
     if(canonical(input.validationEnvironment)!==canonical(await readWorkEnvironment(join(directory,'environment'),source.H,T)))throw new Error('project_work_environment_binding_changed');
     if(version>=3){const evidence=JSON.parse((await regular(join(directory,'environment/observation.json'))).toString());if(canonical(input.validationInvocation)!==canonical(workValidationInvocation(evidence.configuration.node))||canonical(input.materialBudgets)!==canonical(workPreparationBudgets))throw new Error('project_work_validation_invocation_changed');}
   }
-  if(!isDeepStrictEqual(starts[0].params.dynamicTools,preparationToolSpecs)||turns[0].params.input?.[0]?.text!==bytes.toString()||!isDeepStrictEqual(turns[0].params.outputSchema,schema))throw new Error('project_work_preparation_capture_changed');
+  if(!isDeepStrictEqual(starts[0].params.dynamicTools,preparationToolsFor(input.repositoryFileSlices===true))||turns[0].params.input?.[0]?.text!==bytes.toString()||!isDeepStrictEqual(turns[0].params.outputSchema,schema))throw new Error('project_work_preparation_capture_changed');
   return {bytes,input,instructions,version,schema,sent,start:starts[0],turn:turns[0]};
 }
 async function checkPreparationBinding(directory:string,source:FixedRepository,bytes:Buffer,instructions:string,schema:unknown,binding:any){

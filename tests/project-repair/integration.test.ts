@@ -457,6 +457,11 @@ test('selected material implementation preserves full Git history and unselected
 async function firstUseProjectWork(t:TestContext,fault?:string){
  const f=await implementationProject(t);if(fault==='literal-large'){const path=join(f.objects,'src/normalize.mjs'),text=await readFile(path,'utf8');await writeFile(path,text+'\n// padding\n// '+'合成UTF8不可变原文'.repeat(8500));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','synthetic large UTF8 source']);}if(fault==='validation-large'){for(const [path,bytes] of [['src/normalize.mjs',190000],['src/index.mjs',195000]] as Array<[string,number]>){const text=await readFile(join(f.objects,path),'utf8');await writeFile(join(f.objects,path),text+'\n// '+ 'x'.repeat(bytes-Buffer.byteLength(text)-4));}await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large editable fixture']);}await git(f.objects,['remote','add','origin','https://github.com/fixture/reception.git']);await writeFile(join(f.objects,'unselected-large.txt'),'private unused text '.repeat(fault?.startsWith('project-development')?5:20000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','real repository shape']);for(const name of ['policy-a.md','policy-b.md','policy-c.md'])await writeFile(join(f.objects,name),'Supporting fixed policy. '.repeat(fault==='validation-large'?1500:6000));await git(f.objects,['add','.']);await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','bounded read-only policy materials']);
  const proposal={goal:'Preserve trim/default and implement the optional fallback',acceptance:['Blank with Draft returns Draft','Default remains Untitled'],allowedPaths:['validation-large','literal-large'].includes(fault!)?['src/normalize.mjs','src/index.mjs','README.md']:['src/normalize.mjs'],materialPaths:['src/normalize.mjs','src/index.mjs','test/normalize.test.mjs','README.md','policy-a.md','policy-b.md','policy-c.md'],protectedPaths:['test/normalize.test.mjs','policy-a.md','policy-b.md','policy-c.md'],validation:{description:'Actual normalized optional fallback',script:"import assert from 'node:assert/strict';import fs from 'node:fs';import{normalizeLabel}from './src/index.mjs';assert.equal(fs.existsSync('.git'),false);assert.equal(normalizeLabel('  Alpha  '),'Alpha');assert.equal(normalizeLabel(' '),'Untitled');assert.equal(normalizeLabel(' ','Draft'),'Draft');"},questions:[],report:'Protocol preparation read actual source; this is not real model acceptance.'};
+ if(fault==='preparation-large-file'){
+   await writeFile(join(f.objects,'large-validation.mjs'),'//'+ 'a'.repeat(65533)+'界read'+ 'z'.repeat(200000));
+   await git(f.objects,['add','--','large-validation.mjs']);
+   await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','large tracked UTF-8 test material']);
+ }
  if(fault==='validation-legacy'){
   const editorPath='.vscode/launch.json';
   await mkdir(join(f.objects,'.vscode'));
@@ -491,6 +496,17 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  if(fault==='preparation-typed-retry')code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'&&context.preparationVersion===3){finish({candidateH:context.source.H,decision:'confirmed',report:${JSON.stringify(rejectedLegacyReport)}});return;}if(stage==='tongxu_read_file'){`);
  code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){const rejected=${fault==='preparation-questions'}&&!fs.existsSync(trace+'.preparation-question'),needsOwner=${fault==='preparation-typed-retry'}&&context.previousPreparation?.omitted==='project_work_previous_already_prepared';if(rejected){fs.writeFileSync(trace+'.preparation-question','1');emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic project test premise changed; propose a bounded adjustment.',options:null}],text:'Synthetic unaccepted question.'}}});}finish({candidateH:context.source.H,decision:rejected||needsOwner?'needs_owner':'confirmed',...(context.preparationVersion>=4?{proposal:{...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]}}:{report:JSON.stringify({...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]})})});return;}if(stage==='tongxu_read_file'){`);
  code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(![2,3,4,5].includes(context.preparationVersion)||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
+ if(fault==='preparation-large-file'){
+   code=code.replace("tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}", "tool('tongxu_repository_file',{path:'large-validation.mjs'});return;}");
+   code=code.replace("if(stage==='tongxu_repository_file'){const rejected=", `if(stage==='tongxu_repository_file'){
+     const {data:d}=v, path='large-validation.mjs', phase=globalThis.readPhase??0;
+     globalThis.readPhase=phase+1;
+     if(phase===0){if(d.unavailable!=='range_required'||d.H!==context.source.H)throw Error('expected_range_hint');tool('tongxu_repository_file',{path,startByte:0,byteCount:65536});return;}
+     if(phase===1){if(d.nextByte!==65535||d.bytes!==65535)throw Error('split_utf8_character');tool('tongxu_repository_file',{path,startByte:d.nextByte,byteCount:7});return;}
+     if(phase===2){if(d.text!=='界read'||d.nextByte!==65542)throw Error('unexpected_slice');tool('tongxu_repository_file',{path:'missing-selected-test.mjs'});return;}
+     if(phase===3){if(d.unavailable!=='not_regular_tracked_file')throw Error('missing_lookup_should_return');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}
+   }if(stage==='tongxu_repository_file'){const rejected=`);
+ }
  if(fault==='project-development'){
    const nativeSuppl={...proposal,goal:'Retain downloads for strictly less than 24 hours',acceptance:['No download at the exact boundary'],validation:{description:'Retention boundary',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);"}};
    const preciseMarker={...proposal,goal:'Expose whether a download is corrected',acceptance:['The corrected marker is true'],validation:{
@@ -1235,6 +1251,21 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal((await post('/api/project-work/'+id+'/prepare',{goal:'Explicit answer for the same work next version.'})).status,202);await wait(id,'prepared');const next=(await get('/api/project-work/'+id)).value;assert.equal(next.draft.version,2);assert.equal(next.history[0].version,1);assert.deepEqual(next.history[0].preparationDiagnostic,rejected.preparationDiagnostic);assert.deepEqual(await readFile(join(originalDirectory,'native/stdout.ndjson')),original);assert.equal(JSON.parse(await readFile(originals,'utf8')).length,0);assert.equal((await readFile(f.trace,'utf8')).split('model-input').length-1,2);return;
    }
    await wait(id,'prepared');let detail=(await get('/api/project-work/'+id)).value;
+   if(fault==='preparation-large-file'){
+     const directory=detail.draft.preparation.directory,original=await readFile(join(directory,'native/completed.json'));
+     const reads=JSON.parse(await readFile(join(directory,'observations.json'),'utf8')).map((entry:any)=>entry.data);
+     assert.deepEqual(reads.map((entry:any)=>entry.path),['large-validation.mjs','large-validation.mjs','large-validation.mjs','missing-selected-test.mjs','src/normalize.mjs']);
+     assert.equal(reads[2].text,'界read');
+     assert.equal(reads[2].object,await git(f.objects,['rev-parse',H+':large-validation.mjs']));
+     assert.equal(reads[2].sha256,hash('界read'));
+     assert.equal(reads[4].H,H);
+     await app.close();app=await startWorkbench(planPath,undefined,dependencies);url=new URL(app.url);headers={...headers,Authorization:'Bearer '+url.hash.slice(1)};
+     await get('/api/github/projects');
+     assert.equal((await get('/api/project-work/'+id)).value.draft.stage,'prepared');
+     assert.deepEqual(await readFile(join(directory,'native/completed.json')),original);
+     assert.equal(ownerURLs.length,0);
+     return;
+   }
    if(fault==='validation-restart-current'){await post('/api/project-work/'+id+'/recheck',{});await wait(id,'prepared');detail=(await get('/api/project-work/'+id)).value;assert.ok(detail.draft.currentCheck);}
    if(fault==='expiry-a'){
      const scoped={account,repository:{id:1,nodeId:'R_FIRST',fullName:'fixture/reception',defaultHead:H},generation:1} as any,store=await ProjectWorkStore.open(config.root),d=store.get(scoped,id),oldAt=new Date(Date.now()-2*86400000).toISOString();store.save(scoped,{...d,preparation:{...d.preparation!,observedAt:oldAt}},d.revision);store.close();
@@ -1413,6 +1444,7 @@ test('first use expired complete preparation host recheck without model',t=>firs
 for(const mode of ['validation-legacy','validation-future','validation-failed','validation-interrupt','validation-stopped','validation-authority','validation-large'])test('first use bounded known validation correction '+mode,t=>firstUseProjectWork(t,mode));
 
 test('first use normal HTTP rejected preparation questions cold read and explicit same-work next version',t=>firstUseProjectWork(t,'preparation-questions'));
+test('ordinary preparation reads a large tracked file in exact UTF-8 slices and recovers a missing lookup',t=>firstUseProjectWork(t,'preparation-large-file'));
 test('first use normal HTTP explicit V4 preparation reuses only the immediately previous complete unaccepted report without implementation',t=>firstUseProjectWork(t,'preparation-typed-retry'));
 
 test('first use normal HTTP receives the pending original result before its completed supplement',t=>firstUseProjectWork(t,'receipt-pending'));
