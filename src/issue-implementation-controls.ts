@@ -491,9 +491,11 @@ export class IssueImplementationControls{
       throw new Error(source.reason??'project_supplement_review_required');
     const issue=await this.read(source.root.issue);
     if(hash(issue.body)!==source.rootRequest.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+    const workflowPrompt=source.request.workflowPrompt;
+    if(!workflowPrompt)throw new Error('coding_workflow_source_unavailable');
     const H=source.latest.result.H1 as string;
     return {input:{repository:source.entry.repository,target,H1:H,requestId:'supplement-'+receivedId,text},
-      source:{path:source.latest.plan.workspace,H,repository:source.entry.repository},
+      source:{path:source.latest.plan.workspace,H,repository:source.entry.repository},workflowPrompt,
       issue:{number:issue.number,body:issue.body,bodySha256:source.rootRequest.issue.bodySha256,url:issue.url}};
   }
   private async reviewAmendment(entry:ReadEntry&{executionKind:string},target:SupplementTarget,H1:string,requestId:string,text:string){

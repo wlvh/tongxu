@@ -121,6 +121,18 @@ function renderProjectWork(){
     const reportGaps=d.detail.execution?.reportGaps||[],delivery=current?.delivery||item.delivery;if(delivery){section.append(el('h3',delivery.status==='received'?'真实项目成果':'成果接回状态'),el('p','分支：'+delivery.branch),el('p','提交：'+delivery.H),el('p','成果工作区：'+delivery.workspace));if(delivery.status==='received'&&!reportGaps.some(gap=>gap.H1===delivery.H))section.append(el('p','实现与测试结果已接回；正式审核、合并、启用和本人成果接受仍分别办理。','small'));}
     const formalWork=d.detail.formalWork;
     if(formalWork&&!reportGaps.some(gap=>gap.H1===delivery?.H))section.append(formalReviewPanel(formalWork.source,formalWork));
+    const integration=d.detail.integrationSource,preview=d.detail.integrationPreview;
+    if(integration){
+      section.append(el('h3','与当前默认分支整合'),el('p','原工作起点 '+integration.H0+' · 当前 '+integration.target+' '+integration.B,'small'));
+      if(preview?.state==='clean')section.append(el('p','Git 已在隔离目录生成组合文件树 '+preview.tree+'。此组合仍待测试与审查。','small'));
+      else if(preview?.state==='conflicts')section.append(el('p','Git 在这些文件检测到冲突','github-error'),el('pre',preview.paths.join('\n')));
+      else if(preview)section.append(el('p',preview.state==='git_failed'?'本次 Git 整合检查没有得到可用结果。':'整合检查原件待核。','small'));
+      else if(!item.stopRequested&&!reportGaps.some(gap=>gap.H1===delivery?.H)){
+        const check=el('button','检查与当前默认分支能否整合','outline');check.disabled=d.pending;
+        check.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-preview',{H:integration.H,B:integration.B}));
+        section.append(check);
+      }
+    }
     if(delivery?.status==='received'&&d.detail.execution?.requests.some(r=>r.H1===delivery.H&&r.workflow)){
       const explanation=d.detail.explanation;
       if(explanation?.state==='returned')section.append(append(el('details',null,'panel'),el('summary','Tech Lead 交付解读'),el('p','候选 '+explanation.H+' · 工作流 '+explanation.workflowRevision,'small'),el('div',explanation.report,'chat-text')));

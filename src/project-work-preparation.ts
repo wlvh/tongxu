@@ -10,7 +10,8 @@ import {canonical} from './comparison.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {regular,safeEnv,exists} from './repair-workspace.js';
 import {exactKeys} from './authority-contract.js';
-import {parseWorkProposal,preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,parseWorkPreparationOutput,type WorkProposal} from './project-work-contract.js';
+import {parseWorkProposal,preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,parseWorkPreparationOutput,sourcedPreparationInstructions,type WorkProposal} from './project-work-contract.js';
+import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
 import type {RepairConfig} from './repair.js';
 import {checkConfig,type Candidate} from './live-codex.js';
 import {prepareWorkEnvironment,readWorkEnvironment} from './project-work-environment.js';
@@ -45,7 +46,10 @@ export async function checkWorkMaterial(source:FixedRepository,proposal:WorkProp
   if(editable>384*1024||Buffer.byteLength(canonical(material))>768*1024)throw new Error('project_work_material_limit');
   return total;
 }
-export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknown;goal:string;directory:string;config:RepairConfig;verification:DockerConfig;check:()=>Promise<void>;stopped:()=>boolean;onSession:(s:BoundedCodexSession)=>void;previous?:PreviousPreparation}){
+export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknown;goal:string;directory:string;config:RepairConfig;verification:DockerConfig;check:()=>Promise<void>;stopped:()=>boolean;onSession:(s:BoundedCodexSession)=>void;previous?:PreviousPreparation;workflowPrompt?:CodingWorkflowPrompt}){
+  const workflowPrompt=o.workflowPrompt;
+  if(workflowPrompt)await checkPreparationWorkflow(workflowPrompt);
+  const system=workflowPrompt?sourcedPreparationInstructions(workflowPrompt):workPreparationInstructions;
   await privateDirectory(o.directory,true);const files=await repositoryFiles(o.source);
   if(files.length>8192)throw new Error('project_work_repository_listing_limit');
   const check=async()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');await o.check();if(o.stopped())throw new Error('project_work_preparation_stopped');};
@@ -53,7 +57,7 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const validationEnvironment=await prepareWorkEnvironment(o.verification,join(o.directory,'environment'),o.source.H,T,{refresh:check,start:effect=>{if(o.stopped())throw new Error('project_work_preparation_stopped');effect();}});
   await check();
   const previous=await previousPreparationContext(o.previous,o.source,o.issue,o.goal);
-  const input={preparationVersion:4,...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
+  const input={preparationVersion:workflowPrompt?5:4,...(workflowPrompt?{workflowPrompt}:{}),...(previous.context?{previousPreparation:previous.context}:{}),validationInvocation:workValidationInvocation(o.verification.node),materialBudgets:workPreparationBudgets,validationEnvironment,kind:'project_work_engineering_preparation',source:o.source,issue:o.issue,userGoal:o.goal,files:files.map(({path,mode,bytes})=>({path,mode,bytes})),supportedValidation:'Registered Docker Node validation with the observed optional in-container capabilities below; no installation,network or host shell',toolLimit:32,timeLimitMs:o.config.timeoutMs};
   const bytes=preparationInputBytes(input);
   await writeFile(join(o.directory,'input.json'),bytes,{flag:'wx',mode:0o600});
   const candidate:Candidate={kind:'local-git',repository:'local/project-work-preparation',pr:null,H:o.source.H,B:o.source.H,target:'preparation'},observations:unknown[]=[];let calls=0,total=0,turnStarted:number|null=null;
@@ -71,10 +75,15 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
   const choice=currentAIChoice('secretary');if(choice&&choice.tool!=='codex')throw new Error('project_work_preparation_codex_required');
   let session:BoundedCodexSession|undefined;
   try{
-    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:true,system:workPreparationInstructions,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
+    session=await BoundedCodexSession.start({executable:choice?.executable??o.config.codexExecutable,...(choice?{aiModel:modelChoice(choice)}:{}),directory:join(o.directory,'native'),operation:o.directory,candidate,role:'verifier_fact',projectPreparation:true,system,inputManifestSha256:hash(bytes),scopeSource:'User requested engineering preparation for '+o.source.repository,arrangementSource:'Read-only work preparation; no implementation, approval or dispatch',disabledMcpServers:o.config.disabledMcpServers,allowedInstructionSources:o.config.allowedInstructionSources,timeoutMs:o.config.timeoutMs,executionKind:o.config.executionKind??'native_capture',beforeTurn:check,afterTurnStarted:()=>{turnStarted=performance.now();},beforeSendSync:()=>{if(o.stopped())throw new Error('project_work_preparation_stopped');previous.assertCurrent();},gate});o.onSession(session);
     await session.turn(bytes,candidate,workPreparationSchema(candidate.H));await session.close();session=undefined;
     return await readWorkProposal(o.directory,o.source);
   }finally{await session?.close();}
+}
+
+async function checkPreparationWorkflow(workflow:CodingWorkflowPrompt){
+  const shipped=(await readCodingWorkflowSource()).prompt('engineering_owner');
+  if(canonical(shipped)!==canonical(workflow))throw new Error('project_work_preparation_workflow_changed');
 }
 async function readPreparationFinal(directory:string,source:FixedRepository){
   if(resolve(directory)!==directory)throw new Error('project_work_preparation_path_invalid');
@@ -86,11 +95,11 @@ async function readPreparationFinal(directory:string,source:FixedRepository){
 }
 export async function readWorkProposal(directory:string,source:FixedRepository){
   const {bytes,input,version,capture,result}=await readPreparationFinal(directory,source);
-  let value;if(version===4)value=result.proposal;else try{value=JSON.parse(result.report);}catch{throw new Error('project_work_proposal_json_invalid');}
-  const proposal=version===4?parseWorkPreparationOutput(result,source.H):parseWorkProposal(value);if(result.decision==='confirmed'&&!proposal.questions.length){const names=new Set((await repositoryFiles(source)).map(f=>f.path));for(const path of proposal.allowedPaths){const parts=path.split('/');for(let n=0;n<parts.length;n++){const instruction=[...parts.slice(0,n),'AGENTS.md'].join('/');if(names.has(instruction)&&(!proposal.materialPaths.includes(instruction)||!proposal.protectedPaths.includes(instruction)))throw new Error('project_work_instructions_material_required');}}}await checkWorkMaterial(source,proposal);
+  let value;if(version>=4)value=result.proposal;else try{value=JSON.parse(result.report);}catch{throw new Error('project_work_proposal_json_invalid');}
+  const proposal=version>=4?parseWorkPreparationOutput(result,source.H):parseWorkProposal(value);if(result.decision==='confirmed'&&!proposal.questions.length){const names=new Set((await repositoryFiles(source)).map(f=>f.path));for(const path of proposal.allowedPaths){const parts=path.split('/');for(let n=0;n<parts.length;n++){const instruction=[...parts.slice(0,n),'AGENTS.md'].join('/');if(names.has(instruction)&&(!proposal.materialPaths.includes(instruction)||!proposal.protectedPaths.includes(instruction)))throw new Error('project_work_instructions_material_required');}}}await checkWorkMaterial(source,proposal);
   const fileList=await repositoryFiles(source),observationFits=proposal.allowedPaths.some(path=>fileList.some(f=>f.path===path&&f.bytes<=64*1024));
   const validationProblem=(proposal.validation.script?workValidationProblem(proposal.validation.script):null)??(!proposal.questions.length&&!observationFits?'project_work_observation_material_limit':null);
-  return {proposal,...(validationProblem?{validationProblem}:{}),proposalDigest:hash(canonical(proposal)),inputSha256:hash(bytes),captureSha256:hash(await regular(join(directory,'native','completed.json'))),ready:result.decision==='confirmed'&&!proposal.questions.length&&!validationProblem,...([2,3,4].includes(input.preparationVersion)?{preparationVersion:input.preparationVersion as 2|3|4,validationEnvironment:input.validationEnvironment}:{})};
+  return {proposal,...(validationProblem?{validationProblem}:{}),proposalDigest:hash(canonical(proposal)),inputSha256:hash(bytes),captureSha256:hash(await regular(join(directory,'native','completed.json'))),ready:result.decision==='confirmed'&&!proposal.questions.length&&!validationProblem,...(version>=2?{preparationVersion:version,validationEnvironment:input.validationEnvironment}:{})};
 }
 
 async function readPreparationInput(directory:string,source:FixedRepository){
@@ -99,7 +108,8 @@ async function readPreparationInput(directory:string,source:FixedRepository){
   const sent=(await regular(join(directory,'native','stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(l=>JSON.parse(l)),starts=sent.filter((m:any)=>m.method==='thread/start'),turns=sent.filter((m:any)=>m.method==='turn/start');
   if(starts.length!==1||turns.length!==1)throw new Error('project_work_preparation_capture_changed');
   const instructions=starts[0].params.baseInstructions;
-  const version=workPreparationVersion(instructions,input,source.H),schema=version===4?workPreparationSchema(source.H):findingSchema;
+  const version=workPreparationVersion(instructions,input,source.H),schema=version>=4?workPreparationSchema(source.H):findingSchema;
+  if(version===5)await checkPreparationWorkflow(input.workflowPrompt);
   if(version>=2){
     const T=(await fixedGit(source,['rev-parse',source.H+'^{tree}'])).toString().trim();
     if(canonical(input.validationEnvironment)!==canonical(await readWorkEnvironment(join(directory,'environment'),source.H,T)))throw new Error('project_work_environment_binding_changed');
@@ -123,7 +133,7 @@ export async function previousPreparationContext(previous:PreviousPreparation|un
   const original=await readPreparationFinal(previous.directory,source),{input,result,version,capture}=original;
   if(input.issue?.number!==issue.number||input.issue?.bodySha256!==issue.bodySha256||typeof input.issue?.body!=='string'||hash(input.issue.body)!==issue.bodySha256||input.userGoal!==goal)return omitted('project_work_previous_source_changed');
   let errorCode:string;try{const accepted=await readWorkProposal(previous.directory,source);if(accepted.ready)return omitted('project_work_previous_already_prepared');errorCode=accepted.validationProblem??'project_work_requirements_need_clarification';}catch(e){errorCode=e instanceof Error?e.message:'';if(!['project_work_proposal_json_invalid','project_work_proposal_invalid','project_work_material_limit','project_work_instructions_material_required'].includes(errorCode))return omitted('project_work_previous_unavailable');}
-  const report=version===4?result.proposal.report:result.report;
+  const report=version>=4?result.proposal.report:result.report;
   if(typeof report!=='string'||!report.trim())return omitted('project_work_previous_unavailable');
   if(Buffer.byteLength(report)>64*1024)return omitted('project_work_previous_report_limit');
   const refs=['input.json',...['completed.json','binding.json','inputs.json','stdin.ndjson','stdout.ndjson','expected-requests.json','reconciled-tools.json','exit.json','capture-status.json','capture-failure.json','native-boundary-failure.json','native-tool-transports.json'].map(n=>'native/'+n)],files:Array<{path:string;sha256:string|null}>=[];

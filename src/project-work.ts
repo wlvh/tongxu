@@ -4,6 +4,7 @@ import {planAndReviewSupplement,readPlannedSupplement,supplementPlanningDirector
 import {readProjectIssueReview,runProjectIssueReview} from './project-issue-review.js';
 import {readProjectIssueDraft,runProjectIssueDraft} from './project-issue-draft.js';
 import {readProjectExplanation,runProjectExplanation} from './project-delivery-explanation.js';
+import {previewWorkIntegration,readWorkIntegrationPreview,type WorkIntegrationPreviewInput} from './project-work-integration-preview.js';
 import {readReviewedSupplement,type SupplementReviewInput} from './project-supplement-review.js';
 import {currentAIChoice,selectedProviderOptions} from './ai-settings.js';
 import {assertWorkCurrent,assertCurrentAttemptEnded,captureWorkBilling,sealWorkCurrent} from './project-work-current.js';
@@ -218,11 +219,45 @@ export class ProjectWork{
     const diagnostic=async(d:ProjectWorkDraft)=>d.preparation&&!d.preparation.proposal?readWorkPreparationDiagnostic(d.preparation.directory,sourceFor(scope,d)):null;
     let validationProblem:string|null=null;if(draft.preparation?.proposal&&!draft.catalog){try{validationProblem=(await readWorkProposal(draft.preparation.directory,sourceFor(scope,draft))).validationProblem??null;}catch{}}
     const history=[];for(const previous of draft.prior??[]){const old={...draft,...previous};history.push({version:previous.version,delivery:previous.delivery,execution:previous.catalog?await this.implementationState(scope,old):null,preparationDiagnostic:await diagnostic(old)});}
+    const preview=this.integrationInput(scope,draft);
     return {draft,execution:result,history,validationProblem,issueReview:await this.issueReviewState(scope,draft),
+      ...(preview?{integrationSource:preview,integrationPreview:await readWorkIntegrationPreview(this.integrationDirectory(draft,preview),preview)}:{}),
       ...(draft.delivery?.H?{explanation:this.explanations.has(draft.id+':'+draft.delivery.H)
         ?{state:'running',H:draft.delivery.H}
         :await readProjectExplanation(join(this.directory(draft),'explanation-'+draft.delivery.H),draft.id,draft.delivery.H)}:{}),
       preparationDiagnostic:await diagnostic(draft),validationFailure:draft.catalog&&draft.source?await(await this.controls(scope)).validationState(draft.source,draft.requestId):null,firstInputContinuation:draft.catalog&&draft.source?await(await this.controls(scope)).firstInputContinuation(draft.source,draft.requestId):null,newModelInputs:0};
+  }
+  private integrationInput(scope:ProjectChatScope,d:ProjectWorkDraft):WorkIntegrationPreviewInput|null{
+    const H0=d.preparation?.H,H=d.delivery?.H,B=scope.repository.defaultHead,target=scope.repository.defaultBranch;
+    if(!H0||!H||!B||!target||B===H0||d.delivery?.status!=='received')return null;
+    return {repository:scope.repository.fullName,target,H0,H,B};
+  }
+  private integrationDirectory(d:ProjectWorkDraft,input:WorkIntegrationPreviewInput){
+    return join(this.directory(d),'integration-preview-'+hash(canonical(input)).slice(0,32));
+  }
+  async integrationPreview(scope:ProjectChatScope,id:string,b:unknown){
+    const d=this.store.get(scope,id),input=this.integrationInput(scope,d),body=b as Row;
+    if(!exactKeys(b,['H','B'])||!input||body.H!==input.H||body.B!==input.B||!d.catalog||d.stopRequested)
+      throw new Error('project_work_integration_preview_changed');
+    const results=await this.implementationState(scope,d);
+    if(!results.reports.some(r=>r.H1===input.H&&r.status==='completed'&&r.tests?.passed===true))
+      throw new Error('project_work_integration_preview_evidence_required');
+    const stillCurrent=()=>{
+      const current=this.store.get(scope,id);
+      if(!this.accepting||current.stopRequested||current.version!==d.version||current.delivery?.H!==input.H)throw new Error('project_work_integration_preview_changed');
+    };
+    const check=async()=>{
+      stillCurrent();
+      await this.verify(scope);
+      const issue=await this.readIssue(scope,d.issue.number);
+      if((issue.defaultHead===undefined?scope.repository.defaultHead:issue.defaultHead)!==input.B||hash(issue.body)!==d.issue.bodySha256)
+        throw new Error('project_work_integration_preview_changed');
+      stillCurrent();
+    };
+    await check();
+    const repositoryPath=d.preparation!.repositoryPath;
+    await ensureWorkCommit({path:repositoryPath,H:input.B,repository:input.repository},workAuthorityProfile(this.config.owner,scope,d.issue.number));
+    return previewWorkIntegration(this.integrationDirectory(d,input),input,repositoryPath,check);
   }
   private job(scope:ProjectChatScope,id:string,action:(job:Job)=>Promise<void>){
     if(!this.accepting)throw new Error('project_work_closing');if(this.active.has(id))return {id,active:true,duplicate:true};
@@ -258,7 +293,9 @@ export class ProjectWork{
       try{workflowPrompt=(await readCodingWorkflowSource()).prompt('engineering_owner');}
       catch(error){workflowProblem=problem(error);}
       d=this.save(scope,{...d,prior,catalog:undefined,source:undefined,delivery:undefined,currentCheck:undefined,checking:undefined,stopRequested:false,projectDevelopment:undefined,goal:b.goal,draftGoal:undefined,issue:{...issue,bodySha256:hash(issue.body)},...(this.store.originatedFromProposal(scope,hash(issue.body))?{issueReviewRequired:true as const}:{}),version,requestId:randomUUID(),stage:'preparing',problem:null,preparation:{directory,H,repositoryPath,verification:this.config.verification,...(workflowPrompt?{workflowPrompt}:{}),...(workflowProblem?{workflowProblem}:{}),inputSha256:'',pid:process.pid,observedAt:now()}},'preparation_started','Explicit read-only engineering preparation');
-      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
+      if(d.issueReviewRequired&&!workflowPrompt)throw new Error(workflowProblem??'coding_workflow_source_unavailable');
+      const result=await prepareWorkProposal({source,issue:d.issue,goal:d.goal,directory,config:await this.executor(true),verification:this.config.verification,previous,
+        ...(d.issueReviewRequired&&workflowPrompt?{workflowPrompt}:{}),check:()=>this.verify(scope),stopped:()=>job.stop||!this.accepting,onSession:s=>{job.session=s;}});
       if(job.stop||!this.accepting)throw new Error('project_work_preparation_stopped');d=this.store.get(scope,id);
       this.save(scope,{...d,preparation:{...d.preparation!,...result},stage:result.ready?'prepared':'needs_input',problem:result.ready?null:result.validationProblem??'project_work_requirements_need_clarification'},'preparation_completed','Proposal only; no implementation or authority granted');
     });

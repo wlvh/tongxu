@@ -477,8 +477,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
  let code=await readFile(f.config.codexExecutable,'utf8');if(fault==='implementation-ai')code=code.replace("{model:'fixture-astra',supportedReasoningEfforts:[{reasoningEffort:'max'}]}","{model:'fixture-astra',supportedReasoningEfforts:[{reasoningEffort:'max'}]},{model:'fixture-second',supportedReasoningEfforts:[{reasoningEffort:'max'}]},{model:'fixture-owner',supportedReasoningEfforts:[{reasoningEffort:'max'}]}");
  const rejectedLegacyReport=String.raw`{"validation":{"script":"const re=/\d/;"}}`;
  if(fault==='preparation-typed-retry')code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'&&context.preparationVersion===3){finish({candidateH:context.source.H,decision:'confirmed',report:${JSON.stringify(rejectedLegacyReport)}});return;}if(stage==='tongxu_read_file'){`);
- code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){const rejected=${fault==='preparation-questions'}&&!fs.existsSync(trace+'.preparation-question'),needsOwner=${fault==='preparation-typed-retry'}&&context.previousPreparation?.omitted==='project_work_previous_already_prepared';if(rejected){fs.writeFileSync(trace+'.preparation-question','1');emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic project test premise changed; propose a bounded adjustment.',options:null}],text:'Synthetic unaccepted question.'}}});}finish({candidateH:context.source.H,decision:rejected||needsOwner?'needs_owner':'confirmed',...(context.preparationVersion===4?{proposal:{...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]}}:{report:JSON.stringify({...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]})})});return;}if(stage==='tongxu_read_file'){`);
- code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(![2,3,4].includes(context.preparationVersion)||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
+ code=code.replace("if(stage==='tongxu_read_file'){",`if(stage==='tongxu_repository_file'){const rejected=${fault==='preparation-questions'}&&!fs.existsSync(trace+'.preparation-question'),needsOwner=${fault==='preparation-typed-retry'}&&context.previousPreparation?.omitted==='project_work_previous_already_prepared';if(rejected){fs.writeFileSync(trace+'.preparation-question','1');emit({method:'item/completed',params:{threadId:thread.id,turnId:current,completedAtMs:99,item:{id:current+'-question',type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'Synthetic project test premise changed; propose a bounded adjustment.',options:null}],text:'Synthetic unaccepted question.'}}});}finish({candidateH:context.source.H,decision:rejected||needsOwner?'needs_owner':'confirmed',...(context.preparationVersion>=4?{proposal:{...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]}}:{report:JSON.stringify({...${JSON.stringify(proposal)},questions:rejected||needsOwner?['Synthetic project test premise changed; propose a bounded adjustment.']:[]})})});return;}if(stage==='tongxu_read_file'){`);
+ code=code.replace("if(mode==='host-unavailable'&&turn===1)","if(context.kind==='project_work_engineering_preparation'){if(![2,3,4,5].includes(context.preparationVersion)||context.validationEnvironment?.sourceMounted!==false||context.validationEnvironment?.networkAccess!==false)throw Error('fixture_environment_facts_required');tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}if(mode==='host-unavailable'&&turn===1)");
  if(fault==='project-development'){
    const nativeSuppl={...proposal,goal:'Retain downloads for strictly less than 24 hours',acceptance:['No download at the exact boundary'],validation:{description:'Retention boundary',script:"import assert from 'node:assert/strict';import {downloadAvailableAt} from './src/normalize.mjs';assert.equal(downloadAvailableAt(0,86399999),true);assert.equal(downloadAvailableAt(0,86400000),false);"}};
    const stage="if(stage==='tongxu_repository_file'&&context.issue.number===203&&context.userGoal==='Also add a retention deadline for the download.')";
@@ -830,6 +830,12 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const reviewedInWorkbench=await until(readNativeSupplement,value=>value.original.ready===true);
      assert.equal(reviewedInWorkbench.id,nativeSupplement.requestId);
      assert.deepEqual([reviewedInWorkbench.original.planning.openai.verdict,reviewedInWorkbench.original.planning.moonshot.verdict],['PASS','PASS']);
+     const preparation=join(config.root,'supplement-planning','supplement-'+nativeSupplement.requestId,'preparation');
+     const frozenPreparation=JSON.parse(await readFile(join(preparation,'input.json'),'utf8'));
+     assert.equal(frozenPreparation.preparationVersion,5);
+     assert.equal(frozenPreparation.workflowPrompt.revision,successor.plan.request.workflowPrompt.revision);
+     const preparationWire=(await readFile(join(preparation,'native','stdin.ndjson'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+     assert.ok(preparationWire.find(message=>message.method==='thread/start').params.baseInstructions.startsWith(frozenPreparation.workflowPrompt.system+'\n\n'));
      assert.equal((await post('/api/project-secretary/continue-supplements',{target:targetC})).status,202);
      const covered=await until(readNativeSupplement,value=>!!value.original.coveringCandidate);
      assert.equal(covered.original.delivered,true);
@@ -840,7 +846,31 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      const receiptC=await until(()=>detail(c),value=>value.draft.delivery?.H===covered.original.coveringCandidate&&value.execution.requests.every((r:any)=>!r.controllerActive));
      assert.equal(receiptC.execution.reports.at(-1).tests.passed,true);
      assert.equal(ownerURLs.length,1);
-     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id)}));
+     const beforePreview=await readFile(f.trace);
+     const advanceBase=async(path:string,text:string)=>{
+       await writeFile(join(f.objects,path),text);
+       await git(f.objects,['add','--',path]);
+       await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','Advance the default branch in the fixture']);
+       const base=await git(f.objects,['rev-parse','HEAD']);repository.defaultBranchRef.target.oid=base;
+       await get('/api/github/projects');return base;
+     };
+     const previewRoute='/api/project-work/'+b+'/integration-preview';
+     const nextBase=await advanceBase('upstream.md','Unrelated upstream change.\n'),withNewBase=await detail(b);
+     assert.deepEqual([withNewBase.integrationSource.H0,withNewBase.integrationSource.H,withNewBase.integrationSource.B],[H,result.H1,nextBase]);
+     assert.equal((await post(previewRoute,{H:result.H1,B:H})).status,503);
+     const clean=await post(previewRoute,{H:result.H1,B:nextBase});
+     assert.equal(clean.value.state,'clean',JSON.stringify(clean.value));
+     assert.match(clean.value.tree,/^[a-f0-9]{40}$/);
+     assert.deepEqual((await detail(b)).integrationPreview,clean.value);
+     const conflictingBase=await advanceBase('src/normalize.mjs','export function normalizeLabel(){return "upstream conflict";}\n');
+     const conflict=await post(previewRoute,{H:result.H1,B:conflictingBase});
+     assert.equal(conflict.value.state,'conflicts',JSON.stringify(conflict.value));
+     assert.ok(conflict.value.paths.includes('src/normalize.mjs'));
+     assert.deepEqual((await detail(b)).integrationPreview,conflict.value);
+     assert.equal(await git(f.objects,['rev-parse','HEAD']),conflictingBase);
+     assert.equal(await git(f.objects,['rev-parse',updated.draft.delivery.branch]),result.H1);
+     assert.deepEqual(await readFile(f.trace),beforePreview);
+     t.diagnostic(JSON.stringify({approvedOnce:ownerURLs.length,A:{work:a,issue:201,stopped:true},B:{work:b,issue:202,originalH1:finished.draft.delivery.H,revisedH1:result.H1,requestId,recipient:delivered.original.recipient,adoptedRequirement:hash(amendment),reviewRun:reviewed.run},C:{work:c,issue:203,H1:unrelated.draft.delivery.H},shared:{requestId:shared.requestId,savedTargets:linked.map((row:any)=>row.target.source)},bothRegisteredTests:result.tests.tools.map((tool:any)=>tool.id),integration:{original:H,candidate:result.H1,cleanBase:nextBase,tree:clean.value.tree,conflictingBase,conflictPaths:conflict.value.paths}}));
    }finally{for(const open of release.values())open();releaseSupplement();}
    return;
  }

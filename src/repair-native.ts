@@ -335,7 +335,7 @@ export class BoundedCodexSession {
     const typed=preparationSchemaFamily(schema);
     if(typed&&!this.o.projectPreparation)throw new Error('native_project_preparation_output_profile_mismatch');
     if(this.o.projectPreparation){
-      const version=workPreparationVersion(this.o.system,JSON.parse(input),candidate.H),expected=version===4?workPreparationSchema(candidate.H):findingSchema;
+      const version=workPreparationVersion(this.o.system,JSON.parse(input),candidate.H),expected=version>=4?workPreparationSchema(candidate.H):findingSchema;
       if(!isDeepStrictEqual(schema,expected)||version<4&&this.o.executionKind!=='fixture')throw new Error('native_project_preparation_output_required');
     }
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
@@ -484,7 +484,7 @@ export async function readRepairSession(directory: string) {
   if(binding.candidate?.repository==='local/project-work-preparation'||starts.some(m=>m.params?.baseInstructions===workPreparationInstructions)||turns.some(m=>preparationSchemaFamily(m.params?.outputSchema))){
     const inputs=await read('inputs.json'),c=binding.candidate,start=starts[0],turn=turns[0];
     if(binding.role!=='verifier_fact'||c.kind!=='local-git'||c.repository!=='local/project-work-preparation'||c.pr!==null||c.B!==c.H||c.target!=='preparation'||starts.length!==1||turns.length!==1||parsed.turns.length!==1||inputs.length!==1||binding.run!==dirname(directory)||binding.workspace!==join(directory,'workspace')||!isDeepStrictEqual(start.params.dynamicTools,preparationToolSpecs)||turn.params.input?.length!==1||turn.params.input[0].type!=='text')throw new Error('native_project_preparation_capture_changed');
-    const text=turn.params.input[0].text,version=workPreparationVersion(start.params.baseInstructions,JSON.parse(text),c.H),schema=version===4?workPreparationSchema(c.H):findingSchema;
+    const text=turn.params.input[0].text,version=workPreparationVersion(start.params.baseInstructions,JSON.parse(text),c.H),schema=version>=4?workPreparationSchema(c.H):findingSchema;
     if(!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
     validateNativeReport(JSON.parse(parsed.turns[0]!.final!.text),c,schema);
   }

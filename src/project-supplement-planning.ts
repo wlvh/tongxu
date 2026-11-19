@@ -10,9 +10,10 @@ import type {AIRuntimeChoice} from './ai-settings.js';
 import type {RepairConfig} from './repair.js';
 import type {DockerConfig} from './docker-sandbox.js';
 import type {BoundedCodexSession} from './repair-native.js';
+import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 
 export type SupplementPlanningSource={
-  input:SupplementReviewInput;source:FixedRepository;issue:{number:number;body:string;bodySha256:string;url:string};
+  input:SupplementReviewInput;source:FixedRepository;issue:{number:number;body:string;bodySha256:string;url:string};workflowPrompt:CodingWorkflowPrompt;
 };
 export const supplementPlanningDirectory=(root:string,id:string)=>join(root,'supplement-planning',id);
 const reviewedMaterial=(source:SupplementPlanningSource,proposal:{goal:string;acceptance:string[];validation:{description:string;script:string}})=>{
@@ -57,7 +58,7 @@ export async function planAndReviewSupplement(root:string,source:SupplementPlann
   await writeFixed(join(directory,'request.json'),canonical(source));
   const prepared=await prepareWorkProposal({
     source:source.source,issue:source.issue,goal:source.input.text,directory:join(directory,'preparation'),
-    config,verification,check,stopped,onSession
+    config,verification,check,stopped,onSession,workflowPrompt:source.workflowPrompt
   });
   if(!prepared.ready||prepared.validationProblem)return {state:'awaiting_requirements'};
   const {material}=reviewedMaterial(source,prepared.proposal);
