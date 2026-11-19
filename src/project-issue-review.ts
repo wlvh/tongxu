@@ -4,7 +4,7 @@ import {hash,privateDirectory} from './snapshot.js';
 import {regular,exists} from './repair-workspace.js';
 import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
 import {BoundedCodexSession,readRepairSession} from './repair-native.js';
-import {checkAcpSessionEvents,ExtraCliSession,parseAcpPrompt} from './additional-cli.js';
+import {checkAcpSessionEvents,ExtraCliSession,extraProfileFiles,parseAcpPrompt,retainKimiDataConfig} from './additional-cli.js';
 import {checkCapture} from './live-process.js';
 import {formalReviewSchema,validateFormalReview} from './formal-review-contract.js';
 import {writeFixed} from './project-work-runtime.js';
@@ -29,6 +29,12 @@ async function peerCapture(directory:string,request:ReviewRequest){
   if(launch.command!==request.peer.executable||canonical(selection.requested)!==canonical({model:request.peer.model,effort:request.peer.effort}))
     throw new Error('project_issue_review_peer_binding_changed');
   if(request.executionKind==='native_capture'){
+    const profile=JSON.parse((await read(directory,'profile.json')).toString());
+    for(const [path,text] of Object.entries(extraProfileFiles('kimi',directory,request.minimality.system))){
+      if((await read(directory,path)).toString()!==text||profile.files?.[path]!==hash(text))
+        throw new Error('project_issue_review_peer_binding_changed');
+    }
+    await retainKimiDataConfig(directory,profile,{});
     const observed=JSON.parse((await read(directory,'profile-observed.json')).toString());
     if(observed.systemPromptSha256!==hash(request.minimality.system.trim())||observed.activeToolNames?.length!==0||
       observed.subagents?.length!==0||observed.agentsMdPaths?.length!==0||observed.modelAlias!==request.peer.model||
