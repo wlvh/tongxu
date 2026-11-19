@@ -17,11 +17,12 @@ import {BoundedCodexSession,implementationOutputSchema,readRepairSession} from '
 import {prepareProjectRepair,validateProjectContract,projectTestPlan,projectMaterial,projectModelTestResult,testProject,bindProjectTestToCandidate,type ProjectRequest} from './project-repair.js';
 import {regular,exists,git,tree,treeHash,acquireWorkspace,releaseWorkspace,RepairTools,commitScopedCandidate,assertUnselectedGitUnchanged,projectFileMovesVersion,type Grant} from './repair-workspace.js';
 import type {ReviewedSupplement} from './project-supplement-review.js';
+import type {EndedRepairSupplement} from './project-chat.js';
 import type {ScopeBody} from './authority-contract.js';
 import type {RepairPlan} from './repair.js';
 
 type Row=Record<string,any>;
-export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;workflowPrompt?:CodingWorkflowPrompt;editProfile?:EditProfile;implementationAI?:ImplementationAI;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};amendment?:ReviewedSupplement;history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
+export type ImplementationRequest={schemaVersion:1;kind:'tongxu-issue-implementation';id:string;task:string;adoptedScope:{adoption:string;body:ScopeBody;bodySha256:string;source:string};issue:{number:number;body:string;bodySha256:string;adjudication:string};workspaceRequest:ProjectRequest;workflowPrompt?:CodingWorkflowPrompt;editProfile?:EditProfile;implementationAI?:ImplementationAI;origin?:ProjectWorkOrigin;continuation?:{logicalOwner:string;originalTarget:{source:string;requestId:string;task:string;operation:string};predecessor:{requestId:string;operation:string;H1:string;resultSha256:string};supplement:{id:string;text:string};amendment?:ReviewedSupplement;endedRepair?:EndedRepairSupplement;history:Array<{requestId:string;operation:string;H0:string;H1:string;sessionId:string;report:Row;supplement?:{id:string;text:string}}>}};
 export type ImplementationGate={refresh():Promise<void>;unsent():void;check(effect?:()=>void):void;dispatch():void;validationDefinition?:unknown};
 
 /** The existing fixed-project preparer is used with an empty finding list.

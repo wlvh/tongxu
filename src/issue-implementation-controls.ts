@@ -28,7 +28,7 @@ import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,runValidationCorrection,validationCorrectionInput,type ImplementationRequest} from './issue-implementation.js';
 import type {ProjectContract,ProjectRequest} from './project-repair.js';
 import type {DockerStartGate} from './docker-sandbox.js';
-import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
+import type {EndedRepairSupplement,SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
 import {assertFirstSendCurrent,readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
@@ -49,9 +49,11 @@ export class IssueImplementationControls{
   private retired=new Set<string>();
   private supplementReview?: (input:SupplementReviewInput,executionKind:string)=>Promise<ReviewedSupplement|null>;
   private supplementReviewStatus?: (input:SupplementReviewInput)=>Promise<Row|null>;
+  private endedRepair?: (target:SupplementTarget,id:string,text:string,operation:string)=>Promise<EndedRepairSupplement|undefined>;
   setSupplementReview(read:NonNullable<IssueImplementationControls['supplementReview']>,inspect?:IssueImplementationControls['supplementReviewStatus']){
     this.supplementReview=read;this.supplementReviewStatus=inspect;
   }
+  setEndedRepair(read:NonNullable<IssueImplementationControls['endedRepair']>){this.endedRepair=read;}
   onFinished(callback:(target:SupplementTarget)=>Promise<void>){this.finished=callback;}
   private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>,private repository:string,private historySources:()=>Promise<readonly HistorySource[]>){}
   static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>,historySources:()=>Promise<readonly HistorySource[]>=async()=>[]){
@@ -582,10 +584,20 @@ export class IssueImplementationControls{
       if(target.source!==source||canonical(fixed)!==canonical(request)||rootRequest.continuation||root.task!==continuation.logicalOwner||root.task!==target.task||root.operation!==target.operation||request.id!==continuation.supplement.id||request.issue.number!==root.issue||request.workspaceRequest.candidate.H!==continuation.predecessor.H1||request.workspaceRequest.objects!==parent.plan?.workspace||parent.operation!==continuation.predecessor.operation||parent.result?.status!=='completed'||!parent.result.completeCapture||parent.result.H1!==continuation.predecessor.H1||hash(canonical(parent.result))!==continuation.predecessor.resultSha256||parent.id!==root.id&&(parentRequest.continuation?.logicalOwner!==root.task||canonical(parentRequest.continuation.originalTarget)!==canonical(target)))throw new Error('project_supplement_predecessor_changed');
       await readImplementationResult(parent);
       if(current){
+        if(continuation.endedRepair){
+          await this.checkEndedRepair(target,request.id,continuation.supplement.text,continuation.predecessor.H1,continuation.endedRepair);
+          if(!('executionKind' in entry)||!continuation.amendment||canonical(await this.reviewAmendment(entry as Entry,target,continuation.predecessor.H1,request.id,continuation.supplement.text))!==canonical(continuation.amendment))
+            throw new Error('project_supplement_review_binding_changed');
+        }
         for(const resource of parent.plan.resourceRequests as string[])if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
         if(await exists(join(parent.plan.workspace,'.git','tongxu-writer.json'))||await git(parent.plan.workspace,['rev-parse','HEAD'])!==parent.result.H1||treeHash(await tree(parent.plan.workspace,true))!==parent.result.treeSha256||await git(parent.plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('project_supplement_committed_result_changed');
       }
     }finally{q.close();}
+  }
+  private async checkEndedRepair(target:SupplementTarget,id:string,text:string,H:string,ended:EndedRepairSupplement){
+    if(ended.H!==H)throw new Error('formal_repair_supplement_current_base_required');
+    const original=await this.endedRepair?.(target,id.slice('supplement-'.length),text,ended.operation);
+    if(!original||canonical(original)!==canonical(ended))throw new Error('formal_repair_supplement_writer_unresolved');
   }
   private async boundSupplement(target:SupplementTarget,id:string,text:string,entry:ReadEntry=this.entry(target.source)){
     const q=await QueueStore.open(entry.store);let request:ImplementationRequest;
@@ -675,17 +687,25 @@ export class IssueImplementationControls{
       const coveringCandidate=amendment&&report?.status==='completed'&&report?.tests?.passed===true&&report.tests.tools?.some((tool:Row)=>tool.id===supplementTestId(amendment)&&tool.exitCode===0)?report.H1:null;
       const resumable=!!amendment&&!historical&&!state.stopped&&!this.active.has(target.source+':'+compiled)&&['registered','prepared'].includes(state.phase);
       const successful=!historical&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)&&!!report);
-      return {ready:false,resumable,successful,...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted:true,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate}:{}),status:state.phase,reason:state.reason||(successful?null:original.reason),operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
+      const endedRepair=continuation.endedRepair;
+      const approvalVerified=!!endedRepair&&!!amendment&&!historical&&'executionKind' in entry&&
+        canonical(await this.reviewAmendment(entry as Entry,target,continuation.predecessor.H1,compiled,text))===canonical(amendment);
+      const ordinaryRepairSettled=approvalVerified&&successful&&!!recipient&&!this.active.has(target.source+':'+compiled)&&
+        !await exists(join(state.plan.workspace,'.git','tongxu-writer.json'))&&state.plan.resourceRequests.every((resource:string)=>!!q.resources().settledOutcome(resource));
+      const adopted=!!amendment&&(!endedRepair||approvalVerified&&!!recipient);
+      return {ready:false,resumable:resumable&&(!endedRepair||approvalVerified),successful:endedRepair?ordinaryRepairSettled:successful,...(endedRepair?{endedRepair,ordinaryRepairSettled}:{}),...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate:adopted?coveringCandidate:null}:{}),status:state.phase,reason:state.reason||(endedRepair&&!approvalVerified?'project_supplement_review_required':successful?null:original.reason),operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
     }finally{q.close();}
   }
-  async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){
+  async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void,endedRepair?:EndedRepairSupplement){
     await this.catalog();await this.verify();if(this.retired.has(target.source))throw new Error('implementation_prepared_work_retired');const entry=this.entry(target.source),q=await QueueStore.open(entry.store);let existing:ImplementationRequest|undefined;
     try{if(q.issueImplementations().requests(target.source).some(r=>r.id===id))existing=q.issueImplementations().original(target.source,id);}finally{q.close();}
     if(existing){
+      if(canonical(existing.continuation?.endedRepair??null)!==canonical(endedRepair??null))throw new Error('formal_repair_inbox_binding_changed');
       await this.boundSupplement(target,id,text);beforeRegistration();
       await this.prepareSelected(target.source,{requestId:id,issueNumber:existing.issue.number},{entry,continuation:existing.continuation!,beforeRegistration});
     }else{
       const source=await this.supplementSource(target);if(!source.ready)throw new Error(source.reason??'project_supplement_original_pending_or_unknown');
+      if(endedRepair)await this.checkEndedRepair(target,id,text,source.latest.result.H1,endedRepair);
       const amendment=entry.projectFiles&&entry.workRequestId?await this.reviewAmendment(entry,target,source.latest.result.H1,id,text):null;
       if(entry.projectFiles&&!amendment)throw new Error('project_supplement_review_required');
       const queue=await QueueStore.open(entry.store),history:NonNullable<ImplementationRequest['continuation']>['history']=[];
@@ -693,7 +713,7 @@ export class IssueImplementationControls{
         // Keep reports flat and supplement strings opaque; never copy request envelopes.
         for(const s of queue.issueImplementations().requests(target.source)){const request=queue.issueImplementations().original(target.source,s.id);if(s.id!==source.root.id&&request.continuation?.logicalOwner!==target.task)continue;if(s.result?.status==='cancelled_unstarted')continue;if(!['completed','no_change'].includes(s.result?.status))throw new Error('project_supplement_original_pending_or_unknown');const result=await this.report(target.source,s.id);history.push({requestId:s.id,operation:s.operation,H0:s.H0,H1:result.H1??result.H0,sessionId:result.sessionId,report:result.report,...(request.continuation?{supplement:request.continuation.supplement}:{})});}
       }finally{queue.close();}
-      const continuation:NonNullable<ImplementationRequest['continuation']>={logicalOwner:target.task,originalTarget:target,predecessor:{requestId:source.latest.id,operation:source.latest.operation,H1:source.latest.result.H1,resultSha256:hash(canonical(source.latest.result))},supplement:{id,text},...(amendment?{amendment}:{}),history};if(Buffer.byteLength(canonical(continuation))>192*1024||history.length>32)throw new Error('project_supplement_context_limit');
+      const continuation:NonNullable<ImplementationRequest['continuation']>={logicalOwner:target.task,originalTarget:target,predecessor:{requestId:source.latest.id,operation:source.latest.operation,H1:source.latest.result.H1,resultSha256:hash(canonical(source.latest.result))},supplement:{id,text},...(amendment?{amendment}:{}),...(endedRepair?{endedRepair}:{}),history};if(Buffer.byteLength(canonical(continuation))>192*1024||history.length>32)throw new Error('project_supplement_context_limit');
       await this.prepareSelected(target.source,{requestId:id,issueNumber:source.root.issue},{entry:{...entry,H0:source.latest.result.H1,objects:source.latest.plan.workspace},continuation,beforeRegistration});
     }
     await this.boundSupplement(target,id,text);

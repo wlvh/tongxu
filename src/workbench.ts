@@ -186,7 +186,16 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round,H,executionKind,recheck)=>{
       if(work.account!==scope.account.id||work.repository!==scope.repository.id||work.nodeId!==scope.repository.nodeId)
         throw new Error('formal_original_project_work_changed');
-      const receipts=(await openProjectChat()).repairInbox(scope,work.target,operation,round,recheck);
+      const chat=await openProjectChat(),compiled=chat.compiledRepairSupplements(scope,work.target);
+      const settled:string[]=[];
+      if(compiled.length){
+        const controls=await openImplementation(scope);
+        for(const row of compiled){
+          const result=await controls.readSupplement(work.target,row.compiled,row.text,row.id);
+          if(result.ordinaryRepairSettled&&result.coveringCandidate===H)settled.push(row.compiled);
+        }
+      }
+      const receipts=chat.repairInbox(scope,work.target,operation,round,recheck,settled);
       const projectWork=await openProjectWork();
       return Promise.all(receipts.map(async receipt=>{
         const approved=await projectWork.supplementReview({repository:scope.repository.fullName,target:work.target,H1:H,
@@ -247,7 +256,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       ]);
       for(const result of results)if(result.status==='rejected')throw result.reason;
     });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
-    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
+    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));controls.setEndedRepair(async(target,id,text,operation)=>(await formalForSupplement(scope,target,id,text,operation))?.endedRepair);await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
   const openProjectWork=():Promise<ProjectWork>=>{
@@ -257,14 +266,14 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     },verifyProject,openImplementation,scope=>ai?.workflowRevision(scope)).catch(error=>{projectWork=undefined;throw error;});
   };
   let projectChat:Promise<ProjectChat>|undefined;
-  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,target:SupplementTarget,receivedId?:string,text?:string)=>{
+  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,target:SupplementTarget,receivedId?:string,text?:string,operation?:string)=>{
     if(!p.formalReview||!p.projectWork)return null;
     const loaded=await locals.get('project:'+scope.repository.id)?.value;
-    if(loaded?.formal)return loaded.formal.workRepairInbox(target,receivedId,text);
+    if(loaded?.formal)return loaded.formal.workRepairInbox(target,receivedId,text,operation);
     const context=await projectPlan(scope);
     const ref=context.plan.formalReview;if(!ref)return null;
     const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
-    return formal.workRepairInbox(target,receivedId,text);
+    return formal.workRepairInbox(target,receivedId,text,operation);
   };
   const openProjectChat=():Promise<ProjectChat>=>{
     if(!p.projectSecretary||!github)throw new Error('project_chat_not_configured');
@@ -293,16 +302,30 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     },verifyProject,p.issueImplementation||p.projectWork?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
       read:async(scope,target,compiled,text,receivedId)=>{
-        const repair=!compiled?await formalForSupplement(scope,target,receivedId,text):null;
         const original=()=>openImplementation(scope).then(controls=>controls.readSupplement(target,compiled,text,receivedId));
-        if(!repair)return original();
-        if(repair.adopted||!repair.owned)return repair;
-        const pending=await original().catch(()=>null);
+        const compiledState=compiled?await original():null;
+        if(compiledState&&!compiledState.endedRepair&&!compiledState.resumable)return compiledState;
+        const repair=await formalForSupplement(scope,target,receivedId,text,compiledState?.endedRepair?.operation);
+        if(!repair||compiled&&!repair.delivered)return compiledState??original();
+        if(repair.adopted)return repair;
+        const pending=compiledState??await original().catch(()=>null);
+        if(compiled&&pending?.endedRepair){
+          return {...pending,resumable:pending.resumable&&!!repair.endedRepair,
+            endedRepair:pending.endedRepair,originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
+            reason:pending.resumable&&!repair.endedRepair?repair.reason:pending.reason};
+        }
+        if(repair.endedRepair){
+          if(pending?.H1!==repair.endedRepair.H)return {...repair,endedRepair:undefined,reason:'formal_repair_supplement_current_base_required'};
+          return {...repair,ready:!compiled&&pending.ready,resumable:!!compiled&&pending.resumable,
+            canRequestReview:pending.canRequestReview,planning:pending.planning,
+            reason:pending.ready||pending.resumable?'formal_repair_supplement_ordinary_ready':pending.reason??repair.reason};
+        }
+        if(!repair.owned)return repair;
         return {...repair,canRequestReview:pending?.H1===repair.H1&&pending?.canRequestReview,planning:pending?.H1===repair.H1?pending?.planning:undefined};
       },
-      work:async(scope,target,id,text,before)=>{
-        if((await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
-        return (await openImplementation(scope)).workSupplement(target,id,text,before);
+      work:async(scope,target,id,text,before,endedRepair)=>{
+        if(!endedRepair&&(await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
+        return (await openImplementation(scope)).workSupplement(target,id,text,before,endedRepair);
       },
       ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
         const prepared=await(await openImplementation(scope)).supplementPlanningInput(target,id,text);
@@ -525,7 +548,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           json(res,202,await withAI(()=>chat.reviewSupplement(selection,body.requestId)));return;
         }
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
-        if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
+        if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target,true));return;}
         if(url.pathname.endsWith('/continue-work')||url.pathname.endsWith('/cancel-work')||url.pathname.endsWith('/stop-work')){if(!exactKeys(body,['requestId']))throw new Error('project_work_request_invalid');json(res,200,url.pathname.endsWith('/cancel-work')?await chat.cancelWork(selection,body.requestId):url.pathname.endsWith('/stop-work')?await chat.stopWork(selection,body.requestId):await withAI(()=>chat.coordinateWork(selection,body.requestId)));return;}
         json(res,202,await withAI(()=>chat.begin(selection,body)));return;
       }

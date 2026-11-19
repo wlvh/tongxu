@@ -85,6 +85,33 @@ emit({id:m.id,result});});
   return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineOnProjectRead:(number:number)=>{projectReadsUntilOffline=number;},offlineChecks:()=>offlineChecks,pauseNextProjectRead,setAccount:(v:number)=>{account=v;}};
 }
 const question=(text='当前项目有哪些待办？',parent:string|null=null,conversationId=randomUUID())=>({requestId:randomUUID(),conversationId,parent,question:text});
+test('late formal supplement handoff fences concurrent formal repair and fails closed after proof loss',async t=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-late-chat-')));
+  const scope={account:{id:7},repository:{id:1,nodeId:'R_1',fullName:'fixture/repo'}} as Parameters<ProjectChat['list']>[0];
+  const target={source:'A',requestId:randomUUID(),task:'task-A',operation:randomUUID()};
+  const requestId=randomUUID(),text='Review finished after the checkpoint.',conversationId=randomUUID();
+  const original={operation:'formal-a',round:1,H:'a'.repeat(40),sessionId:'original-session',report:{decision:'no_change'}};
+  let proof=true,compete=false,sendCount=0;
+  const chat=await ProjectChat.open({root,codexExecutable:process.execPath,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,billing:'existing_subscription_only',executionKind:'fixture'},
+    async()=>{},async()=>{}, {targets:async()=>[{...target,title:'A'}],read:async(_scope,_target,compiled)=>{
+      if(compete){compete=false;chat.repairInbox(scope,target,'newer-formal',1,[requestId]);}
+      return {ready:!compiled,resumable:!!compiled,...(proof?{endedRepair:original}:{})};
+    },work:async(_scope,_target,_id,_text,check)=>{check();sendCount++;assert.throws(()=>chat.repairInbox(scope,target,'racing-formal',1),/formal_repair_supplement_ordinary_active_or_unknown/);throw Error('fixture_registration_interrupted');},cancel:async()=>assert.fail('the original receipt was delivered')});
+  t.after(async()=>{await chat.drain();await rm(root,{recursive:true,force:true});});
+  await chat.receiveSupplement(scope,{requestId,text,conversationId,target});
+  const snapshot=chat.repairInbox(scope,target,original.operation,1);
+  await chat.processSupplements(scope,target);assert.equal(sendCount,0);
+  compete=true;
+  await assert.rejects(chat.processSupplements(scope,target,true),/formal_repair_supplement_already_reserved/);
+  assert.equal(sendCount,0);
+  original.operation='newer-formal';
+  await assert.rejects(chat.processSupplements(scope,target,true),/fixture_registration_interrupted/);
+  assert.equal(sendCount,1);
+  proof=false;
+  await chat.processSupplements(scope,target,true);assert.equal(sendCount,1);
+  await assert.rejects(chat.cancelSupplement(scope,requestId),/formal_repair_supplement_already_reserved/);
+  assert.deepEqual(snapshot.map(row=>row.text),[text]);
+});
 test('normal project secretary reads both ordinary comment kinds, pages and verified history without opening old queues',async t=>{
   const f=await fixture(t,'comments');
   const plan={...f.plan,sources:[{id:'unavailable',title:'Unavailable legacy source',store:join(f.root,'absent-queue'),item:'b'.repeat(64)}]};

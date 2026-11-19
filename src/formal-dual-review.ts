@@ -237,8 +237,8 @@ export async function runDualFormalReviewRound(host:QueueFormalRoundHost,prompts
           throw new Error('formal_original_impact_capture_unbound');
       }
     };
-    const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
     const inbox=await host.repairInbox(readInbox);
+    const original:OwnedFormalFact={session:gpt,gate:await host.factGate(),firstSessionId:first.sessionId,firstThreadId:gpt.executionBinding.threadId};
     let revisions=await host.admitRepairRevisions(inbox);
     const supplements=(items:FormalRepairInboxItem[])=>({policy:'Acknowledge each related request by requestId and explain its impact or dependency. Only entries with a reviewed revision are adopted in this turn. Implement those within the authorized files and preserve the original findings and requirements. If the approved scope cannot cover a revision, report the blocker. The host verifies the registered acceptance against the resulting candidate separately.',items});
     const input=jsonInput({instructions:prompts.fact.system,stage:'authorized-repair',material,batch,fact,assessed,

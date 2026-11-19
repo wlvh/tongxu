@@ -25,7 +25,8 @@ const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch(e:any){ret
 const activePhase=(phase:string)=>['registered','running','unknown'].includes(phase);
 export type SupplementTarget={source:string;requestId:string;task:string;operation:string};
 export type RepairInboxItem={requestId:string;originalRequestId:string;text:string;receivedAt:string};
-export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void):Promise<string>;review?(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,stillCurrent:()=>void):Promise<Row>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
+export type EndedRepairSupplement={operation:string;round:number;H:string;sessionId:string;report:Row};
+export type SupplementConsumer={targets(scope:ProjectChatScope):Promise<Array<SupplementTarget&{title:string}>>;read(scope:ProjectChatScope,target:SupplementTarget,compiled:string|null,text:string,receivedId?:string):Promise<Row>;work(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void,endedRepair?:EndedRepairSupplement):Promise<string>;review?(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string,stillCurrent:()=>void):Promise<Row>;cancel(scope:ProjectChatScope,target:SupplementTarget,id:string,text:string):Promise<void>};
 export type ProjectWorkLink={requestId:string;linked:boolean};
 export type ProjectWorkRequest={origin:ProjectWorkOrigin;original:ProjectWorkLink|null};
 export type ProjectWorkConsumer={options(scope:ProjectChatScope):Promise<Array<ProjectWorkTarget&{title:string}>>;coordinate(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest,checkpoint:(link?:ProjectWorkLink)=>void):Promise<ProjectWorkLink>;read(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row|null>;cancel(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>;stop(scope:ProjectChatScope,target:ProjectWorkTarget,request:ProjectWorkRequest):Promise<Row>};
@@ -268,8 +269,14 @@ export class ProjectChat{
       WHERE s.conversation=? ORDER BY s.rowid`).all(conversation) as Row[];
   }
   private supplementText(row:Row){return (row.original_text??row.text) as string;}
-  repairInbox(scope:ProjectChatScope,target:SupplementTarget,operation:string,round:number,recheck:string[]=[]):RepairInboxItem[]{
+  compiledRepairSupplements(scope:ProjectChatScope,target:SupplementTarget){
+    return this.targetSupplements(scope,target).filter(row=>!row.cancelled&&row.compiled&&this.inRepairInbox(row.id))
+      .map(row=>({id:row.id,compiled:row.compiled as string,text:this.supplementText(row)}));
+  }
+  repairInbox(scope:ProjectChatScope,target:SupplementTarget,operation:string,round:number,recheck:string[]=[],settled:string[]=[]):RepairInboxItem[]{
     return this.transaction(()=>{
+      if(this.compiledRepairSupplements(scope,target).some(row=>!settled.includes(row.compiled)))
+        throw new Error('formal_repair_supplement_ordinary_active_or_unknown');
       const selection=canonical({account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId,target});
       const previous=this.db.prepare('SELECT target,requests FROM task_supplement_repair_inboxes WHERE operation=? AND round=?').get(operation,round) as Row|undefined;
       if(previous&&previous.target!==selection)throw new Error('formal_repair_inbox_binding_changed');
@@ -293,6 +300,8 @@ export class ProjectChat{
       const target=JSON.parse(r.target),text=this.supplementText(r);let original;
       try{original=this.supplements?await this.supplements.read(scope,target,r.compiled,text,r.id):{reason:'project_supplement_consumer_unavailable'};}
       catch(e){original={reason:reason(e)};}
+      if(r.compiled&&!original.endedRepair&&this.inRepairInbox(r.id))
+        original={...original,resumable:false,reason:original.reason??'formal_repair_supplement_writer_unresolved'};
       if(!includePlanningReports&&original.planning){
         const {state,approved,executionKind}=original.planning;
         original={...original,planning:{state,approved,executionKind}};
@@ -379,6 +388,7 @@ export class ProjectChat{
     if(!chatId(id)||!this.supplements)throw new Error('project_supplement_invalid');const r=this.db.prepare(`SELECT s.*,g.text AS original_text FROM task_supplements s LEFT JOIN task_supplement_members m ON m.member=s.id
       LEFT JOIN task_supplement_groups g ON g.id=m.group_id WHERE s.id=?`).get(id) as Row|undefined;if(!r)throw new Error('project_supplement_not_found');this.conversationRow(scope,r.conversation);
     if(r.cancelled)return {requestId:id,cancelled:true,duplicate:true,newModelInputs:0};
+    if(this.inRepairInbox(id))throw new Error('formal_repair_supplement_already_reserved');
     if(r.compiled)await this.supplements.cancel(scope,JSON.parse(r.target),r.compiled,this.supplementText(r));
     this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(id) as Row;if(current.compiled!==r.compiled)throw new Error('project_supplement_compilation_started');if(this.inRepairInbox(id))throw new Error('formal_repair_supplement_already_reserved');this.db.prepare('UPDATE task_supplements SET cancelled=1 WHERE id=?').run(id);});return {requestId:id,cancelled:true,newModelInputs:0};
   }
@@ -387,17 +397,33 @@ export class ProjectChat{
       LEFT JOIN task_supplement_members m ON m.member=s.id LEFT JOIN task_supplement_groups g ON g.id=m.group_id
       WHERE c.account=? AND c.repository=? AND c.node_id=? AND s.target=? ORDER BY s.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId,canonical(target)) as Row[];
   }
-  async processSupplements(scope:ProjectChatScope,target:SupplementTarget){
+  async processSupplements(scope:ProjectChatScope,target:SupplementTarget,explicit=false){
     if(!this.accepting||!this.supplements)throw new Error('project_supplement_consumer_unavailable');
     for(const row of this.targetSupplements(scope,target)){
       if(row.cancelled)continue;
       const state=await this.supplements.read(scope,target,row.compiled,this.supplementText(row),row.id);
       if(state.successful)continue;
       if(row.compiled?!state.resumable:!state.ready)break;
+      const endedRepair=state.endedRepair as EndedRepairSupplement|undefined;
+      if((endedRepair||row.compiled&&this.inRepairInbox(row.id))&&(!endedRepair||!explicit))break;
       const compiled=row.compiled??'supplement-'+row.id;
-      if(!row.compiled)this.transaction(()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');if(this.inRepairInbox(row.id))throw new Error('formal_repair_supplement_already_reserved');this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);});
+      if(!row.compiled)this.transaction(()=>{
+        const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;
+        if(current.cancelled||current.compiled)throw new Error('project_supplement_original_changed');
+        if(this.inRepairInbox(row.id)){
+          const binding=canonical({account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId,target});
+          const latest=this.db.prepare('SELECT operation,round FROM task_supplement_repair_inboxes WHERE target=? ORDER BY rowid DESC LIMIT 1').get(binding) as Row;
+          const operations=endedRepair?[endedRepair.operation,endedRepair.operation+'/after-repair']:[];
+          if(!endedRepair||latest?.round!==endedRepair.round||!operations.includes(latest.operation))
+            throw new Error('formal_repair_supplement_already_reserved');
+          const reserved=this.db.prepare(`SELECT 1 FROM task_supplement_repair_inboxes,json_each(requests)
+            WHERE target=? AND round=? AND operation IN (?,?) AND json_each.value=?`).get(binding,endedRepair.round,operations[0]!,operations[1]!,row.id);
+          if(!reserved)throw new Error('formal_repair_inbox_binding_changed');
+        }else if(endedRepair)throw new Error('formal_repair_inbox_binding_changed');
+        this.db.prepare('UPDATE task_supplements SET compiled=? WHERE id=?').run(compiled,row.id);
+      });
       const beforeRegistration=()=>{const current=this.db.prepare('SELECT * FROM task_supplements WHERE id=?').get(row.id) as Row;if(!this.accepting||current.cancelled||current.compiled!==compiled)throw new Error('project_supplement_cancelled_or_changed');};
-      await this.supplements.work(scope,target,compiled,this.supplementText(row),beforeRegistration);break;
+      await this.supplements.work(scope,target,compiled,this.supplementText(row),beforeRegistration,endedRepair);break;
     }
     return {newModelInputs:null,originalRequestsRetained:true};
   }

@@ -16,6 +16,22 @@ const A='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',B='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbb
 const list={available:true,conversations:[{id:A,title:'A'},{id:B,title:'B'}],busy:[],executionKind:'fixture'};
 const messages=(id:string)=>[{id:id+'-answer',question:'question '+id,status:'completed',answer:'answer '+id,receipt:{reportSha256:id},active:false}];
 const flush=()=>new Promise(r=>setImmediate(r));
+test('a delivered late supplement offers explicit ordinary continuation without showing adoption or coverage',async()=>{
+  const p=await page(),target={source:'A',requestId:A,task:'task-A',operation:A};
+  const row={id:B,target,text:'Late validated change',original:{formalRepair:true,completeCapture:true,delivered:true,adopted:false,
+    coveringCandidate:null,ready:true,endedRepair:{operation:A},recipient:{sessionId:'original-review'},issue:72,report:{report:'Original reply'}}};
+  p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,supplements:[row]})});renderProjectChat()`);
+  const children=p.nodes.get('project-chat-supplements')!.children[0]!.children;
+  assert.ok(children.some(el=>el.textContent.includes('original-review')));
+  assert.ok(children.some(el=>el.textContent==='Original reply'));
+  assert.equal(children.some(el=>/已采用需求|验证通过的候选/.test(el.textContent)),false);
+  assert.equal(p.sends.length,0);
+  const action=children.find(el=>el.textContent==='交回原实施并继续补充')!.onclick();
+  assert.equal(p.sends[0]!.path,'/api/project-secretary/continue-supplements');
+  assert.deepEqual(JSON.parse(p.sends[0]!.options.body),{target});
+  p.sends[0]!.resolve({ok:true,status:202,json:async()=>({})});await flush();
+  p.calls[0]!.resolve(list);await flush();p.calls[1]!.resolve({messages:[],supplements:[row]});await action;
+});
 test('the real conversation selector queues a new read and never paints a delayed A reply under B',async()=>{
   const p=await page();p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:messages(A)})});renderProjectChat()`);
   const pending=p.run('loadProjectChat()');p.calls[0]!.resolve(list);await flush();assert.ok(p.calls[1]!.path.endsWith(A));

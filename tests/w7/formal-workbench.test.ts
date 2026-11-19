@@ -17,6 +17,8 @@ import type {AIPreferenceSnapshot} from '../../src/ai-settings.js';
 import {ProjectWork} from '../../src/project-work.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {BoundedCodexSession} from '../../src/repair-native.js';
+import type {EndedRepairSupplement} from '../../src/project-chat.js';
+const unusedDockerFixture={kind:'docker',client:'/fixture/docker-not-launched',endpoint:'unix:///fixture/docker.sock',image:'fixture/node',node:'/usr/bin/node'};
 async function page(t:test.TestContext){const f=await formalFixture(t),path=join(f.root,'formal-workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Explicit formal review fixture',goal:'Protocol fixture; no real remote or model',sources:f.sources.map(s=>({...s,title:'Explicit PR #1'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path,undefined,{formalSourceReader:async()=>f.live});let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};t.after(close);const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1)},get=(p:string)=>fetch(url.origin+p,{headers}),post=(p:string,body:unknown,origin=url.origin)=>fetch(url.origin+p,{method:'POST',headers:{...headers,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {...f,path,app,url,get,post,close};}
 test('a project work candidate can open its exact registered PR review and refuses a different base or requirement',async t=>{
  const f=await page(t),{H}=f.live.candidate,route='/api/formal-review/'+f.entry.id+'/prepare';
@@ -51,7 +53,7 @@ test('dual verification can answer every finding from two valid reports',()=>{
 });
 
 async function dualPrograms(t:test.TestContext,mode:string){
- const f=await formalFixture(t,mode==='fix-clean'?'fix-owner':mode.startsWith('fix')||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended');
+ const f=await formalFixture(t,mode==='fix-clean'?'fix-owner':mode==='fix-late-approved'?'fix-no-change':mode.startsWith('fix')||mode==='replace-fix-wait'?'confirmed':'pass',mode==='replace-ended');
  const peer=await additionalFixture(t,'kimi',mode==='late-peer'?'after-terminal-text':
   ['late-close','fix-late-close','fix-archived-failure'].includes(mode)?'text-during-close':'complete');
  const codex=await readFile(f.n.config.codexExecutable,'utf8');
@@ -60,7 +62,12 @@ async function dualPrograms(t:test.TestContext,mode:string){
  const source="if(responseKind==='message')output={messageId:envelope.messageId,consumed:envelope.replyReferences,report:'Explicit '+tool+' fixture complete material report '+turn};";
  const replacement="if(responseKind==='message')output=envelope.batch?{candidateH:envelope.material.candidate.H,batchSha256:envelope.batch.sha256,report:'Independent fixture impact verification',assessments:envelope.batch.findings.map(f=>({id:f.id,decision:'confirmed',report:'Fixture confirms the finding',evidence:['test.mjs']}))}:{candidateH:envelope.material.candidate.H,reviewedInputSha256:envelope.material.sha256,verdict:'PASS',report:'Independent fixture full review',findings:[],coverageGaps:[],ownerQuestions:[]};";
  assert.ok(peerCode.includes(source));await writeFile(peer.binary,peerCode.replace(source,replacement));
- const catalog=JSON.parse(await readFile(f.catalog,'utf8'));catalog.entries[0].workflowContract='coding-loop-v2';await writeFile(f.catalog,canonical(catalog));
+ const catalog=JSON.parse(await readFile(f.catalog,'utf8'));catalog.entries[0].workflowContract='coding-loop-v2';
+ if(mode==='fix-late-approved'){
+   const tests=canonical({schemaVersion:2,executor:unusedDockerFixture,tools:[{id:'fixture-node-tests',argv:['/usr/bin/node','--test','test.mjs'],timeoutMs:10000}]});
+   await writeFile(f.entry.repair.testPlan,tests);catalog.entries[0].repair.testPlanSha256=hash(tests);
+ }
+ await writeFile(f.catalog,canonical(catalog));
  return {f,peer};
 }
 
@@ -111,7 +118,7 @@ for(const mode of ['fix-clean','fix-late-close','fix-archived-failure','fix-disp
  assert.equal(handoffs,mode==='fix-dispatch-late'?1:0);
 });
 
-for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
+for(const mode of ['pass','missing-peer','fix-late-approved',...(process.env.TONGXU_TEST_DOCKER_CONFIG?['fix']:[])])test('normal dual formal review '+mode+' keeps the independent reports and original sessions',async t=>{
  const {f,peer}=await dualPrograms(t,mode);
  const path=join(f.root,'dual-review-workbench.json'),account={id:7,login:'fixture'},repo={
    id:1,nodeId:'R_1',full_name:'fixture/reception',description:'Dual review fixture',private:true,archived:false,
@@ -120,11 +127,14 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
  const a={source:'work-A',requestId:randomUUID(),task:'ordinary-A',operation:randomUUID()};
  const b={source:'work-B',requestId:randomUUID(),task:'ordinary-B',operation:randomUUID()};
  const workId=randomUUID(),conversationId=randomUUID(),groupId=randomUUID();
+ const late=mode==='fix-late-approved';
+ const text='Generate large reports in the background before the download step.';
+ let approved=false,handoffs:EndedRepairSupplement[]=[];
  let projectControls={};
- if(mode==='fix'){
+ if(mode==='fix'||late){
    const {repository:_,issue:_issue,kind:_kind,schemaVersion:_schema,...owner}=f.q.authority().configuration().profile;
    const configPath=join(f.root,'work-config.json');
-   await writeFile(configPath,canonical({root:join(f.root,'works'),executor:f.entry.config,verification:JSON.parse(await readFile(process.env.TONGXU_TEST_DOCKER_CONFIG!,'utf8')),owner}));
+   await writeFile(configPath,canonical({root:join(f.root,'works'),executor:f.entry.config,verification:late?unusedDockerFixture:JSON.parse(await readFile(process.env.TONGXU_TEST_DOCKER_CONFIG!,'utf8')),owner}));
    projectControls={
      projectWork:{path:configPath,sha256:hash(await readFile(configPath))},
      projectSecretary:{root:join(f.root,'project-chat'),codexExecutable:f.n.config.codexExecutable,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:30000,billing:'existing_subscription_only',executionKind:'fixture'}
@@ -136,13 +146,22 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
      return {draft:{id,source:a.source,requestId:a.requestId,issue:f.entry.issue,delivery:{H:f.live.candidate.H}},resultStatus:{current:true}};
    });
    t.mock.method(IssueImplementationControls.prototype,'supplementTargets',async()=>[{...a,title:'A'},{...b,title:'B'}]);
-   const binary=await readFile(f.n.config.codexExecutable,'utf8');
-   const edit="export const value=4;\\n'";
-   assert.ok(binary.includes(edit));
-   await writeFile(f.n.config.codexExecutable,binary.replace(edit,edit+
-     "+(context.projectSupplements?.items.some(item=>item.revision)?'\\nexport const generatedInBackground=true;':'')"));
+   if(late){
+     const ordinaryH=f.live.candidate.H;
+     t.mock.method(IssueImplementationControls.prototype,'readSupplement',async()=>({ready:approved,H1:ordinaryH,resumable:false,adopted:false,coveringCandidate:null}));
+     t.mock.method(IssueImplementationControls.prototype,'workSupplement',async(target:any,id:string,requestText:string,check:()=>void,source?:EndedRepairSupplement)=>{
+       check();assert.deepEqual(target,a);assert.equal(id,'supplement-'+groupId);assert.equal(requestText,text);assert.equal(source?.H,ordinaryH);
+       handoffs.push(source!);return id;
+     });
+   }else{
+     const binary=await readFile(f.n.config.codexExecutable,'utf8');
+     const edit="export const value=4;\\n'";
+     assert.ok(binary.includes(edit));
+     await writeFile(f.n.config.codexExecutable,binary.replace(edit,edit+
+       "+(context.projectSupplements?.items.some(item=>item.revision)?'\\nexport const generatedInBackground=true;':'')"));
+   }
    t.mock.method(ProjectWork.prototype,'supplementReview',async(input:{target:{source:string};text:string;H1:string})=>
-     input.target.source===a.source&&input.H1===f.live.candidate.H&&input.text===text?{
+     (!late||approved)&&input.target.source===a.source&&input.H1===f.live.candidate.H&&input.text===text?{
        inputSha256:hash('fixture approved exact revised requirement'),reviewRun:hash('fixture approved independent review pair'),
        requirement:'Generate the report in the background before download.',
        acceptance:['The download path exposes the background generation flag'],
@@ -185,7 +204,7 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
  assert.equal((await http('/api/ai-settings/scan',{})).status,200);
  const selection=await http('/api/ai-settings/role',{revision:0,role:'verifier_impact',choice:{providerId:hash(peer.binary),model:'fixture/model-next',effort:'future-depth'}});
  assert.equal(selection.status,200,JSON.stringify(selection.data));
- const prepared=await http(route+'/prepare',{requestId:'dual-review-test',...(mode==='fix'?{projectWorkId:workId,expectedCandidate:f.live.candidate}:{})});
+ const prepared=await http(route+'/prepare',{requestId:'dual-review-test',...(mode==='fix'||late?{projectWorkId:workId,expectedCandidate:f.live.candidate}:{})});
  assert.equal(prepared.status,200,JSON.stringify(prepared.data));
  const operation=prepared.data.operation as string;
  let release=()=>{};
@@ -200,11 +219,45 @@ for(const mode of ['pass','missing-peer',...(process.env.TONGXU_TEST_DOCKER_CONF
      if(input.stage==='authorized-repair'&&!input.checkpoint){entered();await hold;}
      return capture;
    });
+ }else if(late){
+   let entered=()=>{};
+   reached=new Promise<void>(resolve=>{entered=resolve;});
+   const hold=new Promise<void>(resolve=>{release=resolve;});t.after(release);
+   const original=QueueFormalRoundHost.prototype.fixAvailable;
+   t.mock.method(QueueFormalRoundHost.prototype,'fixAvailable',async function(this:QueueFormalRoundHost){
+     const available=await original.call(this);if(available.available){entered();await hold;}return available;
+   });
  }
  assert.equal((await http(route+'/start',{operation})).status,202);
  const report=async()=>(await http('/api/formal-review-report/'+f.entry.id+'/'+operation)).data;
  const projectChat='/api/project-secretary',inbox=async()=>(await http(projectChat+'/conversations/'+conversationId)).data.supplements;
- const text='Generate large reports in the background before the download step.';
+ if(late){
+   try{
+     await Promise.race([reached,waitFor(async()=>!(await report()).controllerActive).then(()=>assert.fail('repair checkpoint was not reached'))]);
+     assert.equal((await http(projectChat+'/supplement',{requestId:groupId,conversationId,target:a,text})).status,202);
+   }finally{release();}
+   await waitFor(async()=>!(await report()).controllerActive);
+   const original=f.q.formalReviews().state(operation);
+   assert.equal(original.terminal?.result.status,'needs_evidence',JSON.stringify(original.detail));
+   const inboxPath=join(original.request.directory,'repair-inbox-1.json'),bytes=await readFile(inboxPath),originalInput=JSON.parse(bytes.toString());
+   assert.equal(originalInput.items[0].requestId,groupId);assert.equal(originalInput.items[0].revision,undefined);
+   assert.equal((await inbox())[0].original.adopted,false);
+   approved=true;
+   const take=()=>http(projectChat+'/continue-supplements',{target:a});
+   const H=f.live.candidate.H;f.live.candidate.H='0'.repeat(40);
+   assert.equal((await inbox())[0].original.reason,'formal_repair_supplement_current_base_required');
+   assert.equal((await take()).status,202);assert.equal(handoffs.length,0);f.live.candidate.H=H;
+   const processPath=join(original.request.directory,'round-1-correctness-initial','process.json');
+   await rename(processPath,processPath+'.missing');
+   try{assert.equal((await inbox())[0].original.reason,'formal_repair_supplement_writer_unresolved');assert.equal((await take()).status,202);assert.equal(handoffs.length,0);}
+   finally{await rename(processPath+'.missing',processPath);}
+   const ready=(await inbox())[0];assert.equal(ready.original.delivered,true);assert.equal(ready.original.ready,true,JSON.stringify(ready));
+   assert.equal(ready.original.adopted,false);assert.equal(ready.original.coveringCandidate,null);
+   assert.equal((await take()).status,202);assert.equal((await take()).status,202);
+   assert.equal(handoffs.length,1);assert.equal(handoffs[0]!.sessionId,ready.original.recipient.sessionId);
+   assert.deepEqual(await readFile(inboxPath),bytes);assert.deepEqual(f.q.formalReviews().state(operation).terminal,original.terminal);
+   assert.equal((await f.calls()).filter((call:any)=>call.context?.checkpoint==='after-original-repair').length,0);return;
+ }
  if(mode==='fix'){
    try{
      await Promise.race([reached,waitFor(async()=>!(await report()).controllerActive).then(()=>assert.fail('repair checkpoint was not reached'))]);

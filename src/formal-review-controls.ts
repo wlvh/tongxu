@@ -6,7 +6,8 @@ import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {canonical} from './comparison.js';
-import {regular,exists} from './repair-workspace.js';
+import {regular,exists,processState,tree,treeHash,git,checkRepairIndex} from './repair-workspace.js';
+import {readRepairSession} from './repair-native.js';
 import {exactKeys,isAuthorityDigest,safeRelativePath} from './authority-contract.js';
 import {messageId} from './message-contract.js';
 import {readEventSource,eventMaterialHash,type EventSourceObservation} from './event-source.js';
@@ -21,7 +22,7 @@ import {QueueFormalRoundHost,type FormalFrozenRequest} from './formal-review-hos
 import {withQueueRepairLock} from './queue-repair.js';
 import type {ProjectRequest} from './project-repair.js';
 import {adoptedRepairRevisions,readRepairInbox,repairSupplementTest,verifiedRepairSupplementTests,type AdoptedRepairRevision,type FormalProjectWork,type ReadRepairInbox} from './formal-repair-inbox.js';
-import type {SupplementTarget} from './project-chat.js';
+import type {EndedRepairSupplement,SupplementTarget} from './project-chat.js';
 import {readFailedValidationTests} from './implementation-validation.js';
 import {projectModelTestResult} from './project-repair.js';
 type Row=Record<string,any>;
@@ -118,7 +119,67 @@ export class FormalReviewControls{
   }
   return matched.length===1?matched[0]:null;
  }
- async workRepairInbox(target:SupplementTarget,receivedId?:string,text?:string){
+ private async endedRepairSupplement(s:Row,stage:Row,entry:FormalEntry,source:Source):Promise<EndedRepairSupplement>{
+   const result=s.terminal?.result,report=stage.returned?.result;
+   if(!s.request.workflowReview||s.stopped||!s.resourcesSettled||result?.status!=='needs_evidence'||
+      report?.decision!=='no_change'||canonical(result.report)!==canonical(report)||
+      s.stages.some((item:Row)=>item.dispatched&&!item.returned))
+     throw new Error('formal_repair_supplement_writer_unresolved');
+   const round=s.executionRound,H=s.request.candidate.H;
+   if(stage.stage.key!=='round-'+round+'/fix')throw new Error('formal_repair_supplement_writer_unresolved');
+   const directory=join(s.request.directory,'round-'+round+'-correctness-initial');
+   const root=join(s.request.directory,round===s.request.round?'project':'project-round-'+round),workspace=join(root,'workspace'),operation=join(root,'operation');
+   const json=async(path:string)=>JSON.parse((await regular(path,16*1024*1024)).toString());
+   const process=await json(join(directory,'process.json')),capture=await readRepairSession(directory),native=stage.returned.proof.native;
+   const final=capture.turns.at(-1),pairs:Row[]=await json(join(directory,'reconciled-tools.json'));
+   if(process.status!=='spawn_attempted'||processState(process.pid)!=='ended'||capture.binding.sessionId!==native.sessionId||
+      capture.binding.threadId!==native.threadId||capture.binding.run!==s.request.directory||final?.id!==native.turnId||
+      capture.binding.candidate.H!==H||canonical(JSON.parse(final?.final?.text??'null'))!==canonical(report)||
+      pairs.some(pair=>!['tongxu_read_file','tongxu_run_tests'].includes(pair.request?.params?.tool)))
+     throw new Error('formal_repair_supplement_writer_unresolved');
+   if(await exists(join(directory,'native-tool-transports.json'))){
+     const transports=await json(join(directory,'native-tool-transports.json'));
+     if(transports.some((item:Row)=>item.appServerPid!==process.pid||!Array.isArray(item.observedHelperPids)||
+         item.observedHelperPids.some((pid:unknown)=>processState(pid)!=='ended')))
+       throw new Error('formal_repair_supplement_writer_unresolved');
+   }
+   const plan=await json(join(root,'plan.json')),grant=await json(join(root,'grant.json'));
+   if(plan.workspace!==workspace||plan.grant!==join(root,'grant.json')||canonical(plan.project?.sourceCandidate)!==canonical(s.request.project.candidate)||
+      grant.H!==H||grant.workspace!==workspace||await exists(join(workspace,'.git','tongxu-writer.json')))
+     throw new Error('formal_repair_supplement_writer_unresolved');
+   const testDirectory=join(operation,'tests'),tests=new Map<string,Row>();
+   for(const pair of pairs.filter(item=>item.request.params.tool==='tongxu_run_tests')){
+     const id=pair.request.params.callId;
+     if(typeof id!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(id))throw new Error('formal_repair_supplement_writer_unresolved');
+     tests.set('tool-'+id,pair.response.result);
+   }
+   const directories=await exists(testDirectory)?await readdir(testDirectory):[];
+   if(canonical(directories.sort())!==canonical([...tests.keys()].sort()))throw new Error('formal_repair_supplement_writer_unresolved');
+   for(const [name,reply] of tests){
+     const {result}=await readFailedValidationTests(join(testDirectory,name),plan,false);
+     if(canonical(projectModelTestResult(result))!==canonical(JSON.parse(reply.contentItems[0].text)))
+       throw new Error('formal_repair_supplement_writer_unresolved');
+   }
+   const releases=(await readdir(join(operation,'ownership-history'))).filter(name=>name.endsWith('-released.json'));
+   if(releases.length!==1)throw new Error('formal_repair_supplement_writer_unresolved');
+   const released=await json(join(operation,'ownership-history',releases[0]!)),lease=released.lease;
+   if(lease?.operation!==operation||lease.status!=='held'||released.outcome!==result.status||
+      releases[0]!==lease.generation+'-released.json'||canonical(lease)!==canonical(await json(join(operation,'ownership-history',lease.generation+'-lock.json')))||
+      canonical(await json(join(operation,'handoff-'+lease.generation+'-1.json')))!==canonical({from:'trusted-preparer',to:native.sessionId,
+        sessionContinuity:'same_fact_verifier_session',grant,lease,verifiedTreeSha256:grant.treeSha256,backgroundCommands:'none-active-in-managed-workspace'}))
+     throw new Error('formal_repair_supplement_writer_unresolved');
+   const current=await tree(workspace,true);
+   await checkRepairIndex(workspace,operation,[],current,undefined,true);
+   if(treeHash(current)!==grant.treeSha256||await git(workspace,['rev-parse','HEAD'])!==H)
+     throw new Error('formal_repair_supplement_current_base_required');
+   await this.catalog();
+   const live=await this.read(entry,source),{repository,pr,B,target}=s.request.candidate;
+   if(canonical(live.candidate)!==canonical({repository,pr,H,B,target})||hash(live.issue.body)!==entry.issue.bodySha256||
+      (live.evidence as Row)?.materialSha256!==s.request.material.sourceEvidence?.materialSha256)
+     throw new Error('formal_repair_supplement_current_base_required');
+   return {operation:s.operation,round,H,sessionId:native.sessionId,report};
+ }
+ async workRepairInbox(target:SupplementTarget,receivedId?:string,text?:string,continuingOperation?:string){
   for(const {entry,source} of this.entries){
    const q=await QueueStore.open(source.store);
    try{
@@ -126,7 +187,7 @@ export class FormalReviewControls{
     const requests=records.forEntry(entry.id).reverse();
     for(const s of requests){
      const work=s.request.projectWork;
-     if(!work||canonical(work.target)!==canonical(target))continue;
+     if(!work||canonical(work.target)!==canonical(target)||continuingOperation&&s.operation!==continuingOperation)continue;
      const stages=s.stages as Array<ReturnType<typeof records.stage>>;
      const owned=stages.some(stage=>stage.stage.role==='fix'&&stage.dispatched&&!stage.returned)||this.active.has(s.operation)||
        !s.stopped&&(!s.terminal||s.terminal.result.status==='awaiting_publication'&&!requests.some(r=>r.request.previousOperation===s.operation));
@@ -151,16 +212,37 @@ export class FormalReviewControls{
         if(result.passed&&result.tools.some((tool:Row)=>tool.id===repairSupplementTest(revision)&&tool.exitCode===0))coveringCandidate=fix.H1;
        }catch{verificationMissing=true;}
       }
+      let endedRepair:EndedRepairSupplement|undefined,endedProblem:string|undefined;
+      if(delivered&&!revision&&!s.stopped&&s.terminal){
+        if(fix?.H1&&fix.H1!==s.request.candidate.H)endedProblem='formal_repair_supplement_current_base_required';
+        else if(!owned&&!requests.some(other=>{
+          if(other.operation===s.operation)return false;
+          const fixDispatched=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched);
+          const unknown=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched&&!row.returned);
+          const guarded=continuingOperation&&other.request.projectWork&&canonical(other.request.projectWork.target)===canonical(target);
+          return unknown||(!other.stopped&&other.terminal?.result.status==='awaiting_publication')||
+            ((!guarded||fixDispatched)&&!other.stopped&&(!other.terminal||this.active.has(other.operation)));
+        })){
+          try{
+            const current=records.currentSource(s.item),candidate=s.request.candidate;
+            if(!current.current||current.prerequisites.length||current.candidate.H!==candidate.H||current.candidate.B!==candidate.B||current.candidate.targetRef!==candidate.target)
+              throw new Error('formal_repair_supplement_current_base_required');
+            endedRepair=await this.endedRepairSupplement(s,stage,entry,source);
+          }
+          catch(error){endedProblem=(error as Error).message==='formal_repair_supplement_current_base_required'?
+            'formal_repair_supplement_current_base_required':'formal_repair_supplement_writer_unresolved';}
+        }
+      }
       return {owned,formalRepair:true,ready:false,successful:!!coveringCandidate,issue:entry.issue.number,H1:s.request.candidate.H,
-        reason:verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
+        endedRepair,reason:endedProblem??(verificationMissing?'formal_repair_supplement_evidence_missing':coveringCandidate?null:revision?
           (s.detail?.reason==='formal_fixed_supplement_tests_failed'?s.detail.reason:'formal_repair_supplement_coverage_pending'):
-          delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending',
+          delivered?'formal_repair_supplement_requires_adoption':'formal_repair_supplement_delivery_pending'),
         operation:s.operation,dispatchRecorded:stage.dispatched,delivered:!!delivered,adopted:!!revision,coveringCandidate,
         ...(revision?{requirementSha256:revision.inputSha256,reviewRun:revision.reviewRun}:{}),
         completeCapture:!!delivered,recipient:delivered?{role:'formal-repair',work:work.id,sessionId:proof.sessionId}:null,
         report:delivered?stage.returned.result:null};
      }
-     if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,
+     if(owned)return {owned,formalRepair:true,ready:false,successful:false,issue:entry.issue.number,H1:s.request.candidate.H,endedRepair:undefined,
       reason:fixes.length?'formal_repair_supplement_next_checkpoint':'formal_repair_supplement_waiting_checkpoint',
       operation:s.operation,delivered:false,adopted:false,coveringCandidate:null};
     }
