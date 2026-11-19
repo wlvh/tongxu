@@ -63,8 +63,11 @@ export class ProjectChat{
       WHERE conversations.account=? AND conversations.repository=? AND conversations.node_id=?
       AND messages.phase IN ${phases} ORDER BY messages.rowid`).all(scope.account.id,scope.repository.id,scope.repository.nodeId) as Row[];
   }
-  private checkHistoryLimit(history:Row[]){
-    if(history.length>=64||Buffer.byteLength(canonical(history.map(r=>({question:r.question,answer:r.report,status:r.phase}))))>192*1024)throw new Error('project_chat_context_limit');
+  private modelHistory(rows:Row[]){
+    const history=rows.filter(r=>r.problem!=='project_chat_queued_cancelled')
+      .map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report}));
+    if(history.length>=64||Buffer.byteLength(canonical(history))>192*1024)throw new Error('project_chat_context_limit');
+    return history;
   }
   private async verifyHistory(history:Row[]){
     for(const row of history)if(row.phase==='completed'){
@@ -138,7 +141,7 @@ export class ProjectChat{
       this.ensureConversation(scope,b.conversationId,b.question);
       const history=this.rows(b.conversationId);
       if((history.at(-1)?.id??null)!==b.parent)throw new Error('project_chat_parent_changed');
-      this.checkHistoryLimit(history);
+      this.modelHistory(history);
       const status=queued?'queued':'registered';
       this.db.prepare('INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,?,?,?,?,?,?)').run(b.requestId,b.conversationId,b.parent,b.question,status,now(),queued?null:process.pid,queued?null:this.owner);
       if(b.workTarget)this.db.prepare('INSERT INTO task_work_requests(id,target) VALUES(?,?)').run(b.requestId,canonical(b.workTarget));
@@ -254,9 +257,9 @@ export class ProjectChat{
       await privateDirectory(directory,true);const initial={kind:'project_context',observedAt:now(),data:{account:scope.account,repository:scope.repository},toolBudget:{limit:projectChatToolLimit,used:0,remaining:projectChatToolLimit},timeBudget:timeBudget()},initialId=hash(canonical(initial));
       const observations:Array<{id:string;tool:string;observation:unknown}>=[{id:initialId,tool:'initial_project_context',observation:initial}];save(join(directory,'observations.json'),observations);
       const preceding=this.preceding(row.conversation,id);
-      this.checkHistoryLimit(preceding);
+      const history=this.modelHistory(preceding);
       await this.verifyHistory(preceding);
-      const history=preceding.map(r=>({requestId:r.id,question:r.question,status:r.phase,answer:r.report})),taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
+      const taskSupplements=await this.supplementState(scope,row.conversation),taskWork=await this.workState(scope,row.conversation),work=this.workRow(id);
       const candidate:Candidate={kind:'project-conversation',repository:scope.repository.fullName,pr:null,projectId:scope.repository.id,accountId:scope.account.id,conversationId:row.conversation,H:scope.repository.defaultHead??'',B:scope.repository.defaultHead??'',target:scope.repository.defaultHead?scope.repository.defaultBranch??'':'',sourceSha256:initialId};
       const prompt=await assembleRolePrompt('secretary',projectChatInstructionsFor(!!work)),input={kind:'project_secretary_question',candidate,initialObservation:{observationId:initialId,...initial},conversation:history,taskSupplements,taskWork,...(work?{workTarget:JSON.parse(work.target)}:{}),question:row.question};
       if(Buffer.byteLength(canonical(input))>512*1024)throw new Error('project_chat_context_limit');
