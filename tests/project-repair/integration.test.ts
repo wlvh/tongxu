@@ -470,6 +470,8 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
   await writeFile(join(f.objects,'src/AGENTS.md'),'Preserve the exact download boundary. This rule applies to this folder.\n');
   await git(f.objects,['add','--','src/AGENTS.md']);
   await git(f.objects,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m','add scoped original rules']);
+  proposal.materialPaths.push('src/AGENTS.md');
+  proposal.protectedPaths.push('src/AGENTS.md');
  }
  const H=await git(f.objects,['rev-parse','HEAD']);
  const readonlyFault=fault?.startsWith('readonly-')===true,validationFault=fault?.startsWith('validation-')===true,futureValidation=fault==='validation-future'||fault==='validation-large';
