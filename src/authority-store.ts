@@ -126,7 +126,8 @@ export class AuthorityRecords {
     return {proposalSha256:sha,adoption:p.adoption,scopeId:a.proposal.scopeId,scopeVersion:a.proposal.scopeVersion,material,contentsAreNotAcceptance:true,permissionsGranted:false};
   });}
   forScope(scopeId:string,selection:{item:string;target:string}){return this.transaction(()=>{
-    const {profile}=this.profile(),current=this.currentScope(scopeId),requests=this.all('authority_proposal_prepared').flatMap(e=>{
+    const {profile}=this.profile(),latest=this.latestScope(scopeId);
+    const current=latest&&!this.revoked(latest.proposalSha256)?latest:null,requests=this.all('authority_proposal_prepared').flatMap(e=>{
       const p=this.prepared(e.data.proposalSha256),proposal=p.proposal;
       if(!['adopt_scope','accept_baseline','delegate','confirm_action','control','revoke'].includes(proposal.kind))return [];
       const selected=proposal.kind==='revoke'?this.decision(proposal.decision).proposal:proposal;
@@ -143,7 +144,7 @@ export class AuthorityRecords {
       const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;
       return {control,state:row?.stopped?'stopped' as const:'open' as const,revision:row?.revision??0,recorded:!!row,verifiedOwnerStop:owner?.state==='stopped',effectiveAt:row?.effective_at??null};
     });
-    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,...sharedAccountApprovalProjection(profile),sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
+    return {scopeId,latestAdoption:latest?.proposalSha256??null,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,...sharedAccountApprovalProjection(profile),sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
   });}
   inspectRecordedDecision(sha:string){return this.transaction(()=>{
     const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
@@ -153,11 +154,11 @@ export class AuthorityRecords {
   });}
   private decision(sha:string){const e=this.events('authority-decision:'+sha,'authority_decision_applied')[0];if(!e)throw new Error('verified_owner_decision_missing');return {...e.data,proposal:this.prepared(sha).proposal};}
   private revoked(sha:string){return this.all('authority_revoked').some(e=>e.data.decision===sha);}
-  private currentScope(id:string){return this.events('authority-scope:'+id,'authority_scope_adopted').at(-1)?.data??null;}
-  private adoption(sha:string,current=true){const d=this.decision(sha);if(d.proposal.kind!=='adopt_scope'||this.revoked(sha)||(current&&this.currentScope(d.proposal.scopeId)?.proposalSha256!==sha))throw new Error('current_adopted_scope_required');return d;}
+  private latestScope(id:string){return this.events('authority-scope:'+id,'authority_scope_adopted').at(-1)?.data??null;}
+  private adoption(sha:string,current=true){const d=this.decision(sha);if(d.proposal.kind!=='adopt_scope'||this.revoked(sha)||(current&&this.latestScope(d.proposal.scopeId)?.proposalSha256!==sha))throw new Error('current_adopted_scope_required');return d;}
   private proposalContext(p:OwnerProposal){
     if(p.kind==='adopt_scope'){
-      const old=this.currentScope(p.scopeId);
+      const old=this.latestScope(p.scopeId);
       if((old?.proposalSha256??null)!==p.previousAdoption)throw new Error('owner_scope_previous_version_changed');
       if(this.events('authority-scope:'+p.scopeId,'authority_scope_adopted').some(e=>e.data.scopeVersion===p.scopeVersion))throw new Error('owner_scope_new_version_required');
     }else if(p.kind==='revoke'){this.decision(p.decision);}

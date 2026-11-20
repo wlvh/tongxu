@@ -134,7 +134,7 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 
 `formal-workbench` 的 `fix-late-approved` 场景走原工作台路由、Git、SQLite 和双席协议样例。正式修复不改代码时，检查点后的批准可显式交回原实施。用例模拟普通实施边界，检查准确候选、进程原件缺失拒绝、重复点击及原快照保留。
 
-`fix-late-published` 用真实 Git 生成修复提交，通过远端读取和双席协议样例建立本地发布及复审记录，再从项目对话显式接续。Docker 协议样例运行夹具的 Node 验证命令并保留原捕获，普通实施边界使用样例。用例检查旧审批不足以接续、候选退回、写者释放或测试及原生证据缺失、快照保留和重复操作只登记一次。
+`fix-late-published` 用真实 Git 生成修复提交，通过远端读取和双席协议样例建立本地发布及复审记录，再从项目对话显式接续。Docker 协议样例运行夹具的 Node 验证命令并保留原捕获，普通实施边界使用样例。用例检查旧审批不足以接续、候选退回、写者释放或测试及原生证据缺失、快照保留和重复操作只登记一次。H2 交接另参数化目标替换与撤销无替代：共享／独立队列均在最后发送前拒绝已失效采用，保留原接收者与报告；Owner 页面回归同时核撤销后的空现行授权、历史链接和新目标请求。
 
 同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
 
@@ -159,7 +159,7 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 V3准备回归核固定ESM eval/cwd/no-args调用和预算输入绑定；旧完整不兼容require/argv方案仍可读但确认／开始前拒绝。大editable场景以真实Git/Docker使改后总量超过384KiB，保留全部Grant/material写范围，同时小TaskObservation、owner proof、补充／接回可用；改变未被代表观察的获准路径仍由完整树当前性门拒绝。
 
 
-V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；模型及Owner为协议样例，实际真实准备另记。
+V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；固定大文件搜索和UTF-8分段场景还核缺失路径恢复、800,000字节非法查询的有界响应及后续读取。模型及Owner为协议样例，实际真实准备另记。
 
 过期与已结束只读超时恢复沿原 `project-repair` fixtures：旧准备宿主重核零模型／零thread，固定时限和真实元数据；已知健康失败或专用严格只读失败先结清准确原claim与lease历史，同work唯一干净H0后继request/Grant0。覆盖显式新check保留raw-index拒绝、GET不换签、语义flags／坏wire／noop replace永久拒绝、terminal/release/check崩溃冷续、后继0成功及再次失败、普通prepare/repair0拒绝和成功后原补充。模型与Owner为协议程序；Git、HTTP、SQLite和登记Docker实际执行。
 

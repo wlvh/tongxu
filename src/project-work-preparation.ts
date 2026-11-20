@@ -112,11 +112,16 @@ export async function prepareWorkProposal(o:{source:FixedRepository;issue:unknow
       exactKeys(p.arguments,['path',...['startByte','byteCount','contains'].filter(key=>Object.hasOwn(p.arguments,key))]))
       data=await lookupPreparationFile(o.source,files,p.arguments);
     else throw new Error('project_work_preparation_tool_not_allowed');
-    const limit=768*1024,base={tool:p.tool,arguments:p.arguments,data},size=Buffer.byteLength(canonical(base));
-    if(total+size<=limit)total+=size;
-    else base.data={unavailable:'preparation_material_budget_remaining',H:o.source.H,remainingDataBytes:limit-total};
+    const limit=768*1024,argumentsBytes=Buffer.byteLength(canonical(p.arguments));
+    const base={tool:p.tool,arguments:argumentsBytes<=8192?p.arguments:{},data};
+    const size=Buffer.byteLength(canonical(base));
+    if(total+size<=limit&&size<=limit-1024)total+=size;
+    else{
+      base.arguments={};
+      base.data={unavailable:'preparation_material_budget_remaining',H:o.source.H,remainingDataBytes:limit-total};
+    }
     const elapsedMs=turnStarted===null?null:Math.max(0,Math.floor(performance.now()-turnStarted));
-    const result={...base,remainingTools:32-calls,materialBudget:{limitBytes:768*1024,usedDataBytes:total,remainingDataBytes:768*1024-total},timeBudget:{limitMs:o.config.timeoutMs,elapsedMs,remainingMs:elapsedMs===null?null:Math.max(0,o.config.timeoutMs-elapsedMs)}};
+    const result={...base,remainingTools:32-calls,materialBudget:{limitBytes:limit,usedDataBytes:total,remainingDataBytes:limit-total},timeBudget:{limitMs:o.config.timeoutMs,elapsedMs,remainingMs:elapsedMs===null?null:Math.max(0,o.config.timeoutMs-elapsedMs)}};
     observations.push(result);await writeFile(join(o.directory,'observations.json'),canonical(observations),{mode:0o600});await check();before?.();
     return {success:true,contentItems:[{type:'inputText',text:canonical(result)}]};
   }};

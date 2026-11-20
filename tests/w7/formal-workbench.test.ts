@@ -20,13 +20,14 @@ import {ProjectWork} from '../../src/project-work.js';
 import {IssueImplementationControls} from '../../src/issue-implementation-controls.js';
 import {BoundedCodexSession} from '../../src/repair-native.js';
 import {QueueStore} from '../../src/queue-store.js';
+import {OwnerControls} from '../../src/owner-controls.js';
 import {freezeRepairInbox} from '../../src/formal-repair-inbox.js';
 import type {ImplementationRequest} from '../../src/issue-implementation.js';
 import type {EndedRepairSupplement} from '../../src/project-chat.js';
 import type {DockerConfig} from '../../src/docker-sandbox.js';
 import {dockerProtocolFixture} from '../w2/docker-protocol-fixture.js';
 const unusedDockerFixture={kind:'docker',client:'/fixture/docker-not-launched',endpoint:'unix:///fixture/docker.sock',image:'fixture/node',node:'/usr/bin/node'};
-test('published H2 handoff rechecks adoption after the live read and holds the formal queue through dispatch',async t=>{
+async function publishedH2Handoff(t:test.TestContext,revoke:boolean){
  const f=await formalFixture(t),candidate=f.live.candidate;
  const H1=await git(f.entry.objects,['rev-parse',candidate.H+'^']),H0=candidate.B;
  assert.notEqual(H0,H1);
@@ -38,6 +39,8 @@ test('published H2 handoff rechecks adoption after the live read and holds the f
  const originalReport={report:'Original recipient returned without adopting the supplement'};
  const oldScope=f.owner.a.inspectRecordedDecision(f.owner.scope.sha).proposal;
  assert.equal(oldScope.kind,'adopt_scope');
+ const scope=()=>f.q.authority().forScope(oldScope.scopeId,{item:f.item,target:candidate.target});
+ assert.equal(scope().currentAdoption,f.owner.scope.sha);
  const material={issue:f.live.issue,adoptedScope:{adoption:f.owner.scope.sha},sha256:hash('H2 reviewed material'),sourceEvidence:{materialSha256:hash('H2 observed source')}};
  const publicRecord='H2 repair publication';
  const observation={result:{complete:true},records:[{kind:'pr',body:Buffer.from(JSON.stringify({body:publicRecord}))}]};
@@ -94,19 +97,45 @@ test('published H2 handoff rechecks adoption after the live read and holds the f
  const pending=read(),unchanged=canonical(live);
  try{
    await Promise.race([reached,pending.then(result=>assert.fail('handoff did not reach the final awaited source read: '+JSON.stringify(result)))]);
-   await f.owner.adopt({...oldScope,scopeVersion:oldScope.scopeVersion+'-next',previousAdoption:f.owner.scope.sha});
+   if(revoke){
+     await f.owner.adopt({kind:'revoke',decision:f.owner.scope.sha});
+     const revoked=scope();
+     assert.equal(revoked.currentAdoption,null);
+     assert.equal(revoked.currentScope,null);
+     assert.equal(revoked.latestAdoption,f.owner.scope.sha);
+     assert.equal(revoked.requests.find(row=>row.proposalSha256===f.owner.scope.sha)?.revoked,true);
+     assert.deepEqual(f.q.authority().inspectRecordedDecision(f.owner.scope.sha).proposal,oldScope);
+   }else{
+     const replacement=await f.owner.adopt({...oldScope,scopeVersion:oldScope.scopeVersion+'-next',previousAdoption:f.owner.scope.sha});
+     assert.equal(scope().currentAdoption,replacement.sha);
+   }
    assert.equal(canonical(live),unchanged);
  }finally{beforeRead=async()=>{};resume();}
  const blocked=await pending;
  assert.equal(blocked?.reason,'formal_repair_supplement_lineage_pending');
  assert.equal(blocked?.endedRepair,undefined);
  assert.ok(blocked&&'recipient' in blocked);assert.deepEqual(blocked.recipient,original.recipient);
+ assert.deepEqual(blocked.report,original.report);
  assert.equal(blocked.adopted,false);
  assert.equal((await read())?.endedRepair,undefined);
  assert.equal((await controls.workRepairInbox(target,randomUUID(),text))?.endedRepair,undefined);
  for(const fence of [shared,separate])assert.throws(()=>fence.dispatch(()=>{recorded++;},send),/formal_repair_supplement_current_base_required/);
  assert.deepEqual([recorded,sent],[3,2]);
  assert.equal((await f.calls()).length,0);
+ if(revoke){
+   const owner=new OwnerControls([f.sources[0]!.id],f.sources);
+   const next=await owner.prepare(f.sources[0]!.id,{
+     kind:'goal',scopeVersion:oldScope.scopeVersion+'-next',body:oldScope.body,previousAdoption:f.owner.scope.sha
+   });
+   const proposal=f.owner.a.proposal(next.proposalSha256).proposal;
+   assert.equal(proposal.kind,'adopt_scope');
+   assert.equal(proposal.previousAdoption,f.owner.scope.sha);
+   assert.equal(scope().currentAdoption,null);
+ }
+}
+test('published H2 handoff rechecks adoption after the live read and holds the formal queue through dispatch',async t=>{
+ await t.test('replacement adoption',t=>publishedH2Handoff(t,false));
+ await t.test('revocation without replacement',t=>publishedH2Handoff(t,true));
 });
 async function page(t:test.TestContext){const f=await formalFixture(t),path=join(f.root,'formal-workbench.json');await writeFile(path,JSON.stringify({schemaVersion:1,kind:'tongxu-controlled-workbench',title:'Explicit formal review fixture',goal:'Protocol fixture; no real remote or model',sources:f.sources.map(s=>({...s,title:'Explicit PR #1'})),formalReview:{path:f.catalog,sha256:hash(await readFile(f.catalog))}}));const app=await startWorkbench(path,undefined,{formalSourceReader:async()=>f.live});let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};t.after(close);const url=new URL(app.url),headers={Authorization:'Bearer '+url.hash.slice(1)},get=(p:string)=>fetch(url.origin+p,{headers}),post=(p:string,body:unknown,origin=url.origin)=>fetch(url.origin+p,{method:'POST',headers:{...headers,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});return {...f,path,app,url,get,post,close};}
 test('a project work candidate can open its exact registered PR review and refuses a different base or requirement',async t=>{

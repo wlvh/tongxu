@@ -505,8 +505,14 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      if(phase===1){if(d.nextByte!==65535||d.bytes!==65535)throw Error('split_utf8_character');tool('tongxu_repository_file',{path,contains:'界read'});return;}
      if(phase===2){if(d.matches.length!==1||d.matches[0].startByte!==65535||d.matches[0].byteCount!==7)throw Error('expected_exact_search');tool('tongxu_repository_file',{path,...d.matches[0]});return;}
      if(phase===3){if(d.text!=='界read'||d.nextByte!==65542)throw Error('unexpected_slice');tool('tongxu_repository_file',{path:'missing-selected-test.mjs'});return;}
-     if(phase===4&&d.unavailable!=='not_regular_tracked_file')throw Error('missing_lookup_should_return');
-     if(phase>=4&&!globalThis.budgetSeen){
+     if(phase===4){
+       if(d.unavailable!=='not_regular_tracked_file')throw Error('missing_lookup_should_return');
+       tool('tongxu_repository_file',{path,contains:'x'.repeat(800000)});return;
+     }
+     if(phase===5&&(m.result.success!==true||d.unavailable!=='invalid_text_search'||
+         Object.keys(v.arguments).length||Buffer.byteLength(m.result.contentItems[0].text)>1024))
+       throw Error('oversized_search_should_return_bounded_observation');
+     if(phase>=5&&!globalThis.budgetSeen){
        if(d.unavailable==='preparation_material_budget_remaining'){globalThis.budgetSeen=true;tool('tongxu_repository_file',{path:'src/normalize.mjs'});return;}
        if(phase>18)throw Error('expected_budget_observation');
        tool('tongxu_repository_file',{path,startByte:65542,byteCount:65536});return;
@@ -1292,6 +1298,7 @@ async function firstUseProjectWork(t:TestContext,fault?:string){
      assert.equal(reads[3].text,'界read');
      assert.equal(reads[3].object,await git(f.objects,['rev-parse',H+':large-validation.mjs']));
      assert.equal(reads[3].sha256,hash('界read'));
+     assert.equal(reads[5].unavailable,'invalid_text_search');
      assert.equal(reads.at(-2).unavailable,'preparation_material_budget_remaining');
      assert.equal(reads.at(-1).path,'src/normalize.mjs');
      assert.equal(reads.at(-1).H,H);
