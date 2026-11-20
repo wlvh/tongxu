@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,realpath,writeFile,readFile,rm,appendFile} from 'node:fs/promises';
+import {mkdtemp,realpath,writeFile,readFile,readdir,rm,appendFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -8,6 +8,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {mkdir} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {startWorkbench} from '../../src/workbench.js';
+import {ProjectChat} from '../../src/project-chat.js';
 import type {GitHubReaderFactory} from '../../src/github-projects.js';
 import {hash} from '../../src/snapshot.js';
 import {canonical} from '../../src/comparison.js';
@@ -28,20 +29,44 @@ const counts={'citation-one':1,'citation-empty':0,'citation-nine':9};
 const references=mode.startsWith('citation-')?observationIds.slice(0,counts[mode]??8):[observation.observationId];
 if(mode==='citation-invalid-hex')references[0]='invalid-hex';
 if(mode==='citation-unobserved')references[0]='f'.repeat(64);
-const report={candidateH:mode==='citation-wrong-candidate'?'wrong-candidate':context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无')+(mode==='comments'?'；评论原文：'+commentBodies.join(' | '):''),observationIds:references},item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
-readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode==='comments'){log({kind:'comment-result',observation});commentBodies.push(...observation.data.comments.map(c=>c.body));toolReplies++;if(toolReplies===1){queryComments(2,{kind:'issues',number:9,page:2,cursor:observation.data.nextCursor});return;}if(toolReplies===2){queryComments(3,{kind:'pulls',number:65});return;}finish(observation);return;}if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode==='time-budget'){log({kind:'time-result',observation});toolReplies++;if(toolReplies<3){const gate=trace+'.time-'+toolReplies,waiting=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(waiting);query(toolReplies+1);}},5);return;}finish(observation);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
+const report={candidateH:mode==='citation-wrong-candidate'?'wrong-candidate':context.candidate.H,report:'明确测试回答：'+context.question+'；历史问题：'+(context.conversation[0]?.question??'无')+'；历史完整回答：'+(context.conversation[0]?.answer??'无')+(mode==='comments'?'；评论原文：'+commentBodies.join(' | '):'')+(mode==='grow-history'&&!context.conversation.length?'x'.repeat(195*1024):''),observationIds:references};
+if(mode==='grow-history-boundary'&&!context.conversation.length){
+  const oldHistory=[{question:context.question,answer:report.report,status:'completed'}];
+  report.report+='x'.repeat(192*1024-7-Buffer.byteLength(JSON.stringify(oldHistory)));
+}
+const item={id:'answer',type:'agentMessage',phase:mode==='partial'?'commentary':'final_answer',text:JSON.stringify(report)};emit({method:'item/completed',params:{threadId:thread.id,turnId:turn,completedAtMs:100,item}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'completed',rootTurnId:turn,items:[item],itemsView:'full',error:null}}});};
+const lines=readline.createInterface({input:process.stdin});
+lines.on('line',line=>{const m=JSON.parse(line);if(!m.method&&typeof m.id==='string'){if(m.error)return;const observation=JSON.parse(m.result.contentItems[0].text);if(mode==='comments'){log({kind:'comment-result',observation});commentBodies.push(...observation.data.comments.map(c=>c.body));toolReplies++;if(toolReplies===1){queryComments(2,{kind:'issues',number:9,page:2,cursor:observation.data.nextCursor});return;}if(toolReplies===2){queryComments(3,{kind:'pulls',number:65});return;}finish(observation);return;}if(mode.startsWith('citation-')){observationIds.push(observation.observationId);toolReplies++;if(toolReplies===21){finish(observation);return;}query(toolReplies+1);return;}if(mode==='time-budget'){log({kind:'time-result',observation});toolReplies++;if(toolReplies<3){const gate=trace+'.time-'+toolReplies,waiting=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(waiting);query(toolReplies+1);}},5);return;}finish(observation);return;}if(mode.startsWith('budget-')){log({kind:'tool-result',budget:observation.toolBudget});toolReplies++;if(mode==='budget-aware'&&observation.toolBudget?.remaining===0){finish(observation);return;}query(toolReplies+1);return;}finish(observation);return;}if(!('id'in m))return;let result={};
 if(m.method==='model/list')result={data:[{model:'fixture-astra',displayName:'Fixture Astra',supportedReasoningEfforts:[{reasoningEffort:'max'}],defaultReasoningEffort:'max'}],nextCursor:null};
 if(m.method==='account/read')result={account:{type:'chatgpt'}};
 if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:mode!=='quota'};
 if(m.method==='config/read')result={config:{mcp_servers:{},web_search:'disabled',model_provider:'openai',service_tier:'default',features:Object.fromEntries(process.argv.filter(x=>x.startsWith('features.')).map(x=>[x.slice(9).split('=')[0],x.split('=')[1]==='true']))}};
 if(m.method==='thread/start'){thread={id:'project-fixture-'+process.pid,sessionId:'project-fixture-'+process.pid,cwd:m.params.cwd,reasoningEffort:m.params.config?.model_reasoning_effort??'xhigh',source:'appServer',cliVersion:'0.163.0-alpha.10.2',parentThreadId:null,forkedFromId:null};log({kind:'tools',tools:m.params.dynamicTools.map(t=>t.name),instructions:m.params.developerInstructions});emit({id:m.id,result:{thread,model:mode==='wrong-selected-model'?'wrong':m.params.model??'fixture-default',reasoningEffort:thread.reasoningEffort,cwd:thread.cwd,modelProvider:'openai',approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false},instructionSources:[]}});emit({method:'thread/started',params:{thread}});return;}
-if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout')return;if(mode==='comments'){queryComments(1,{kind:'issues',number:9});return;}if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')||mode==='time-budget'){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
-if(m.method==='turn/interrupt'){log({kind:'interrupt'});emit({id:m.id,result:{}});emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});return;}
+if(m.method==='turn/start'){turn='project-turn';context=JSON.parse(m.params.input[0].text);log({kind:'input',schema:m.params.outputSchema,context,model:m.params.model,effort:m.params.effort,effectiveEffort:m.params.effort??thread.reasoningEffort});emit({id:m.id,result:{turn:{id:turn}}});emit({method:'turn/started',params:{threadId:thread.id,turn:{id:turn,status:'inProgress',items:[],rootTurnId:turn}}});observationIds=[context.initialObservation.observationId];if(mode==='hold'||mode==='timeout'||mode.startsWith('hold-first')&&context.question==='查看已有开发进度')return;if(mode.startsWith('grow-history')&&!context.conversation.length){
+  const waiting=setInterval(()=>{if(fs.existsSync(trace+'.release-answer')){clearInterval(waiting);finish(context.initialObservation);}},5);
+  return;
+}
+if(mode==='comments'){queryComments(1,{kind:'issues',number:9});return;}if(mode.startsWith('citation-')){query(1);return;}if(mode.startsWith('budget-')||mode==='time-budget'){query(1);return;}emit({id:'query-1',method:'item/tool/call',params:{threadId:thread.id,turnId:turn,callId:'query-1',tool:mode==='forbidden'?'shell':'tongxu_project_info',namespace:null,arguments:{}}});return;}
+if(m.method==='turn/interrupt'){
+  log({kind:'interrupt'});emit({id:m.id,result:{}});
+  const interrupted=()=>emit({method:'turn/completed',params:{threadId:thread.id,turn:{id:turn,status:'interrupted',rootTurnId:turn,items:[],itemsView:'full',error:null}}});
+  // Acknowledge the interrupt, then make the turn fail while close is waiting for the process.
+  if(mode==='hold-first-slow-close')lines.once('close',()=>{interrupted();setTimeout(()=>{},500);});
+  else interrupted();
+  return;
+}
 emit({id:m.id,result});});
 `;
-  await writeFile(binary,code,{mode:0o700});let account=7,offline=false;
+  await writeFile(binary,code,{mode:0o700});let account=7,offline=false,offlineChecks=0,projectReadsUntilOffline=Infinity;
+  let pauseProjectRead:(()=>Promise<void>)|undefined;
+  const pauseNextProjectRead=()=>{
+    let entered!:()=>void,release!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;}),paused=new Promise<void>(resolve=>{release=resolve;});
+    pauseProjectRead=async()=>{entered();await paused;};
+    return {started,release};
+  };
   const repo=(id:number)=>({id,nodeId:'R_'+id,full_name:'fixture/project-'+id,description:'Explicit project fixture',private:true,archived:false,defaultBranchRef:id===2?null:{name:'main',target:{oid:'a'.repeat(40)}},updated_at:'2026-10-30T00:00:00Z'});
-  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(offline)throw new Error('github_connection_unavailable');
+  const reader:GitHubReaderFactory=async()=>({query:async(op,v)=>{if(mode==='budget-overrun')await appendFile(trace,JSON.stringify({kind:'read-op',op,args:v})+'\n');if(op==='project'&&pauseProjectRead){const pause=pauseProjectRead;pauseProjectRead=undefined;await pause();}if(op==='project'&&--projectReadsUntilOffline===0)offline=true;if(offline){offlineChecks++;throw new Error('github_connection_unavailable');}
     const selected=repo(v.id==='R_2'?2:1),pull=op==='pull_comments',commentId=pull?3:v.before?1:2;
     const comments={number:v.number,comments:{totalCount:pull?1:2,edges:[{cursor:'comment-'+commentId,node:{databaseId:commentId,author:pull?null:{login:'fixture'},createdAt:'2026-10-30T00:00:00Z',updatedAt:'2026-10-31T00:00:00Z',url:'https://github.com/'+selected.full_name+'/'+(pull?'pull':'issues')+'/'+v.number+'#issuecomment-'+commentId,body:pull?'PR ordinary conversation':'Issue comment '+commentId}}],pageInfo:{hasPreviousPage:!pull&&!v.before,startCursor:'comment-'+commentId}}};
     return {status:200,headers:{},provenance:'gh-http-body',body:JSON.stringify({data:op==='projects'?{account:{id:account,login:'fixture',projects:{nodes:[repo(1),repo(2)],pageInfo:{hasNextPage:false,endCursor:null}}}}:{account:{id:account,login:'fixture'},repository:{...selected,...(op==='issue_comments'||op==='pull_comments'?{item:comments}:{})}}})};}});
@@ -50,9 +75,43 @@ emit({id:m.id,result});});
   const current=await launch();t.after(async()=>{await current.close();await rm(root,{recursive:true,force:true});});
   const logs=async()=>((await readFile(trace,'utf8')).trim().split('\n').filter(Boolean).map(x=>JSON.parse(x)));
   const wait=async(id:string,predicate:(messages:any[])=>boolean)=>{for(let n=0;n<150;n++){const r=await current.get('/api/project-secretary/conversations/'+id);if(predicate(r.data.messages??[]))return r.data;await new Promise(r=>setTimeout(r,25));}throw new Error('fixture_chat_timeout');};
-  return {...current,root,path,plan,logs,wait,launch,setOffline:(v:boolean)=>{offline=v;},setAccount:(v:number)=>{account=v;}};
+  const waitForInput=async(question:string)=>{
+    for(let n=0;n<120;n++){
+      if((await logs()).some(r=>r.kind==='input'&&r.context.question===question))return;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.fail('the fixture did not receive the expected model input');
+  };
+  return {...current,root,path,plan,logs,wait,waitForInput,launch,setOffline:(v:boolean)=>{offline=v;},offlineOnProjectRead:(number:number)=>{projectReadsUntilOffline=number;},offlineChecks:()=>offlineChecks,pauseNextProjectRead,setAccount:(v:number)=>{account=v;}};
 }
 const question=(text='当前项目有哪些待办？',parent:string|null=null,conversationId=randomUUID())=>({requestId:randomUUID(),conversationId,parent,question:text});
+test('late formal supplement handoff fences concurrent formal repair and fails closed after proof loss',async t=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-late-chat-')));
+  const scope={account:{id:7},repository:{id:1,nodeId:'R_1',fullName:'fixture/repo'}} as Parameters<ProjectChat['list']>[0];
+  const target={source:'A',requestId:randomUUID(),task:'task-A',operation:randomUUID()};
+  const requestId=randomUUID(),text='Review finished after the checkpoint.',conversationId=randomUUID();
+  const original={operation:'formal-a',round:1,H:'a'.repeat(40),sessionId:'original-session',report:{decision:'no_change'}};
+  let proof=true,compete=false,sendCount=0;
+  const chat=await ProjectChat.open({root,codexExecutable:process.execPath,disabledMcpServers:[],allowedInstructionSources:[],timeoutMs:3000,billing:'existing_subscription_only',executionKind:'fixture'},
+    async()=>{},async()=>{}, {targets:async()=>[{...target,title:'A'}],read:async(_scope,_target,compiled)=>{
+      if(compete){compete=false;chat.repairInbox(scope,target,'newer-formal',1,[requestId]);}
+      return {ready:!compiled,resumable:!!compiled,...(proof?{endedRepair:original}:{})};
+    },work:async(_scope,_target,_id,_text,check)=>{check();sendCount++;assert.throws(()=>chat.repairInbox(scope,target,'racing-formal',1),/formal_repair_supplement_ordinary_active_or_unknown/);throw Error('fixture_registration_interrupted');},cancel:async()=>assert.fail('the original receipt was delivered')});
+  t.after(async()=>{await chat.drain();await rm(root,{recursive:true,force:true});});
+  await chat.receiveSupplement(scope,{requestId,text,conversationId,target});
+  const snapshot=chat.repairInbox(scope,target,original.operation,1);
+  await chat.processSupplements(scope,target);assert.equal(sendCount,0);
+  compete=true;
+  await assert.rejects(chat.processSupplements(scope,target,true),/formal_repair_supplement_already_reserved/);
+  assert.equal(sendCount,0);
+  original.operation='newer-formal';
+  await assert.rejects(chat.processSupplements(scope,target,true),/fixture_registration_interrupted/);
+  assert.equal(sendCount,1);
+  proof=false;
+  await chat.processSupplements(scope,target,true);assert.equal(sendCount,1);
+  await assert.rejects(chat.cancelSupplement(scope,requestId),/formal_repair_supplement_already_reserved/);
+  assert.deepEqual(snapshot.map(row=>row.text),[text]);
+});
 test('normal project secretary reads both ordinary comment kinds, pages and verified history without opening old queues',async t=>{
   const f=await fixture(t,'comments');
   const plan={...f.plan,sources:[{id:'unavailable',title:'Unavailable legacy source',store:join(f.root,'absent-queue'),item:'b'.repeat(64)}]};
@@ -93,12 +152,378 @@ for(const mode of ['quota','partial','forbidden'])test(mode+' never becomes a fu
 });
 test('stop uses the owned turn, remains available without GitHub, and preserves incomplete history',async t=>{
   const f=await fixture(t,'hold'),q=question();await f.post('/api/project-secretary/ask',q);for(let i=0;i<120;i++){if((await f.logs()).some(x=>x.kind==='input'))break;await new Promise(r=>setTimeout(r,25));}
-  const blocked=await f.post('/api/project-secretary/ask',question('不能并发重复发起'));assert.equal(blocked.status,503);f.setOffline(true);const stopped=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stopped.status,200);f.setOffline(false);
+  f.setOffline(true);
+  const withdrawal=await f.post('/api/project-secretary/stop',{requestId:q.requestId,withdrawQueued:true});
+  assert.deepEqual([withdrawal.status,withdrawal.data.error],[409,'project_chat_withdrawal_state_changed']);
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,0);
+  const stopped=await f.post('/api/project-secretary/stop',{requestId:q.requestId});assert.equal(stopped.status,200);f.setOffline(false);
   const state=await f.wait(q.conversationId,m=>m[0]?.status==='interrupted');assert.equal(state.messages[0].answer,null);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
+});
+test('a queued withdrawal that loses to automatic claim leaves the running native turn alone',async t=>{
+  const f=await fixture(t,'hold'),first=question('正在处理的第一条'),next=question('后台即将领取的第二条',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  await f.waitForInput(next.question);
+
+  f.setOffline(true);
+  const stale=await f.post('/api/project-secretary/stop',{requestId:next.requestId,withdrawQueued:true});
+  assert.deepEqual([stale.status,stale.data.error],[409,'project_chat_withdrawal_state_changed']);
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,1);
+  await assert.rejects(readFile(join(f.root,'chats',next.requestId,'stop-request.json')),{code:'ENOENT'});
+  f.setOffline(false);
+  const original=await f.wait(first.conversationId,m=>m[1]?.status==='running');
+  assert.equal(original.messages[1].id,next.requestId);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:next.requestId})).status,200);
+  await f.wait(first.conversationId,m=>m[1]?.status==='interrupted');
+  assert.equal((await f.logs()).filter(x=>x.kind==='interrupt').length,2);
+});
+for(const {check,nativeState,cold} of [
+  {check:2,nativeState:'not_started',cold:true},
+  {check:5,nativeState:'ended',cold:false},
+])test('a queued question can continue with its original ID after a verified pre-input outage ('+nativeState+')',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const next=question('继续核对这个项目',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  // Checks after the stop are auto-claim, pre-launch, after initialization,
+  // native tool gate, and the native check just before the first input.
+  f.offlineOnProjectRead(check);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  const chats=join(f.root,'chats'),db=new DatabaseSync(join(chats,'conversations.sqlite'),{readOnly:true});
+  try{
+    const row=db.prepare('SELECT phase,problem,owner,pid FROM messages WHERE id=?');
+    for(let i=0;i<150&&!row.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual({...row.get(next.requestId)},{phase:'queued',problem:'github_connection_unavailable',owner:null,pid:null});
+  }finally{db.close();}
+  const attempts=(await readdir(chats)).filter(name=>name.startsWith(next.requestId+'.unstarted-'));
+  assert.equal(attempts.length,1);
+  const attempt=join(chats,attempts[0]!);
+  const proof=JSON.parse(await readFile(join(attempt,'outcome.json'),'utf8'));
+  assert.deepEqual([proof.status,proof.nativeProcessState,proof.automaticResend],['queued',nativeState,false]);
+  if(nativeState==='ended'){
+    const wire=(await readFile(join(attempt,'native','stdin.ndjson'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    assert.ok(wire.some(entry=>entry.method==='thread/start'));
+    assert.ok(!wire.some(entry=>entry.method==='turn/start'));
+  }
+  assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question]);
+
+  f.setOffline(false);
+  if(cold)await f.close();
+  const resumed=cold?await f.launch():f,conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const saved=(await resumed.get(conversation)).data.messages[1];
+    assert.deepEqual([saved.id,saved.parent,saved.question,saved.status],[next.requestId,first.requestId,next.question,'queued']);
+    const duplicate=await resumed.post('/api/project-secretary/ask',next);
+    assert.deepEqual([duplicate.data.duplicate,duplicate.data.newModelInputs],[true,0]);
+    const results=await Promise.all(Array.from({length:2},()=>resumed.post('/api/project-secretary/continue-question',{requestId:next.requestId})));
+    assert.equal(results.filter(r=>r.data.newModelInputs===null).length,1);
+    await f.waitForInput(next.question);
+    for(let i=0;i<120;i++){
+      if((await resumed.get(conversation)).data.messages[1]?.status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.equal((await resumed.get(conversation)).data.messages[1].status,'completed');
+    assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
+    assert.equal(await readFile(join(attempt,'outcome.json'),'utf8').then(JSON.parse).then(v=>v.nativeProcessState),nativeState);
+  }finally{if(cold)await resumed.close();}
+});
+test('a project outage after a queued question sends its first input does not requeue it',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const next=question('发送后失联的原话',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  // The sixth project check belongs to the first tool call, after turn/start.
+  f.offlineOnProjectRead(6);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  await f.waitForInput(next.question);
+  const db=new DatabaseSync(join(f.root,'chats','conversations.sqlite'),{readOnly:true});
+  try{
+    const row=db.prepare('SELECT phase,problem FROM messages WHERE id=?');
+    for(let i=0;i<150&&!row.get(next.requestId)?.problem;i++)await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual({...row.get(next.requestId)},{phase:'failed',problem:'github_connection_unavailable'});
+  }finally{db.close();}
+  f.setOffline(false);
+  const original=await f.post('/api/project-secretary/continue-question',{requestId:next.requestId});
+  assert.deepEqual([original.data.status,original.data.duplicate,original.data.newModelInputs],['failed',true,0]);
+  assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question,next.question]);
+});
+
+test('cold recovery completes a recorded zero-input archive move before returning the same request to the queue',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'),first=question('查看已有进度'),next=question('按原请求继续核对',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');
+  const prototype=ProjectChat.prototype as unknown as {requeue(id:string,owner:string,problem:string):boolean};
+  const requeue=prototype.requeue;let cut=false;
+  t.mock.method(prototype,'requeue',function(this:ProjectChat,id:string,owner:string,problem:string){
+    if(id===next.requestId&&!cut){cut=true;throw Error('fixture_controller_lost_after_archive_move');}
+    return requeue.call(this as unknown as typeof prototype,id,owner,problem);
+  });
+  f.offlineOnProjectRead(5);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  for(let i=0;i<150&&!cut;i++)await new Promise(r=>setTimeout(r,25));
+  assert.equal(cut,true);
+  await f.close();
+  const chats=join(f.root,'chats'),database=new DatabaseSync(join(chats,'conversations.sqlite'));
+  try{
+    const transfer=database.prepare('SELECT body FROM unstarted_attempt_moves WHERE id=?').get(next.requestId) as {body:string};
+    const {archive}=JSON.parse(transfer.body),attempt=join(chats,next.requestId+'.unstarted-'+archive);
+    const {pid}=JSON.parse(await readFile(join(attempt,'native','process.json'),'utf8'));
+    assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
+    // Represent the ended prior controller using a real ended process identity.
+    database.prepare('UPDATE messages SET pid=? WHERE id=?').run(pid,next.requestId);
+  }finally{database.close();}
+  f.setOffline(false);
+  const reopened=await f.launch(),conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const pending=(await reopened.get(conversation)).data.messages[1];
+    assert.deepEqual([pending.id,pending.status,pending.problem],[next.requestId,'queued','github_connection_unavailable']);
+    assert.deepEqual((await f.logs()).filter(row=>row.kind==='input').map(row=>row.context.question),[first.question]);
+    assert.equal((await reopened.post('/api/project-secretary/continue-question',{requestId:next.requestId})).status,202);
+    await f.waitForInput(next.question);
+    assert.deepEqual((await f.logs()).filter(row=>row.kind==='input').map(row=>row.context.question),[first.question,next.question]);
+  }finally{await reopened.close();}
+});
+test('busy intake persists the exact words, then sends original pending questions once and in order',async t=>{
+  const f=await fixture(t,'hold-first-slow-close'), first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const second=question('大报表改为后台生成后下载',first.requestId,first.conversationId);
+  const third=question('补充下载结果有效期',second.requestId,first.conversationId);
+  const submissions=await Promise.all([f.post('/api/project-secretary/ask',second),f.post('/api/project-secretary/ask',second)]);
+  assert.ok(submissions.every(r=>r.status===202&&r.data.status==='queued'&&r.data.newModelInputs===0));
+  assert.deepEqual(submissions.map(r=>r.data.duplicate).sort(),[false,true]);
+  assert.equal((await f.post('/api/project-secretary/ask',{...second,question:'替换旧原话'})).status,503);
+  assert.equal((await f.post('/api/project-secretary/ask',third)).data.status,'queued');
+  const saved=await f.get('/api/project-secretary/conversations/'+first.conversationId);
+  assert.deepEqual(saved.data.messages.slice(1).map((r:any)=>[r.id,r.question,r.status]),[[second.requestId,second.question,'queued'],[third.requestId,third.question,'queued']]);
+  assert.equal((await f.logs()).filter(r=>r.kind==='input').length,1);
+  assert.equal((await f.post('/api/project-secretary/stop',{requestId:first.requestId})).status,200);
+  // Observe the model input before any GET can reconcile the old row.
+  await f.waitForInput(third.question);
+  const outcome=JSON.parse(await readFile(join(f.root,'chats',first.requestId,'outcome.json'),'utf8'));
+  assert.deepEqual([outcome.status,outcome.nativeProcessState,outcome.reason],['interrupted','ended','native_turn_interrupted']);
+  const end=await f.wait(first.conversationId,m=>m[2]?.status==='completed');
+  assert.deepEqual(end.messages.map((r:any)=>r.status),['interrupted','completed','completed']);
+  const inputs=(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);
+  assert.deepEqual(inputs.map(r=>r.question),[first.question,second.question,third.question]);
+  assert.deepEqual(inputs[1].conversation.map((r:any)=>r.requestId),[first.requestId]);
+  assert.deepEqual(inputs[2].conversation.map((r:any)=>r.requestId),[first.requestId,second.requestId]);
+});
+for(const {cold,boundary} of [
+  {cold:false,boundary:false},
+  {cold:true,boundary:false},
+  {cold:false,boundary:true}
+])test('queued history growth blocks model input on '+(cold?'manual continuation after reopening':boundary?'automatic claim when request ID crosses the limit':'automatic claim'),async t=>{
+  const f=await fixture(t,boundary?'grow-history-boundary':'grow-history');
+  const first=question('请给出完整记录');
+  const followup=question('请继续解释',first.requestId,first.conversationId);
+  const conversation='/api/project-secretary/conversations/'+first.conversationId;
+  const historyBytes=(message:any)=>Buffer.byteLength(canonical([{question:message.question,answer:message.answer,status:message.status}]));
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  const running=await f.wait(first.conversationId,m=>m[0]?.status==='running');
+  assert.ok(historyBytes(running.messages[0])<=192*1024);
+
+  // A different controller can save the pending row while the first still
+  // owns the running turn. Closing that receiver leaves a cold pending row.
+  const receiver=cold?await f.launch():f;
+  try{
+    const receipt=await receiver.post('/api/project-secretary/ask',followup);
+    assert.equal(receipt.status,202);
+    assert.equal(receipt.data.status,'queued');
+  }finally{if(cold)await receiver.close();}
+  await writeFile(join(f.root,'trace.ndjson.release-answer'),'');
+  const answered=await f.wait(first.conversationId,m=>m[0]?.status==='completed');
+  const {id,question:originalQuestion,answer,status}=answered.messages[0];
+  const actualBytes=Buffer.byteLength(canonical([{requestId:id,question:originalQuestion,answer,status}]));
+  assert.ok(actualBytes>192*1024&&actualBytes<256*1024);
+  if(boundary)assert.equal(historyBytes(answered.messages[0]),192*1024-7);
+  else assert.ok(historyBytes(answered.messages[0])>192*1024);
+
+  if(cold)await f.close();
+  const active=cold?await f.launch():f;
+  try{
+    if(cold){
+      assert.equal((await active.get(conversation)).data.messages[1].status,'queued');
+      assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+      assert.equal((await active.post('/api/project-secretary/continue-question',{requestId:followup.requestId})).data.status,'registered');
+    }
+    let message;
+    for(let n=0;n<150;n++){
+      message=(await active.get(conversation)).data.messages[1];
+      if(message?.status==='failed'||message?.status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.equal(message?.status,'failed');
+    assert.equal(message.problem,'project_chat_context_limit');
+    assert.equal(message.id,followup.requestId);
+    assert.equal(message.question,followup.question);
+    assert.equal(message.answer,null);
+    const duplicate=await active.post('/api/project-secretary/ask',followup);
+    assert.equal(duplicate.data.duplicate,true);
+    assert.equal(duplicate.data.newModelInputs,0);
+    assert.deepEqual((await f.logs()).filter(x=>x.kind==='input').map(x=>x.context.question),[first.question]);
+  }finally{if(cold)await active.close();}
+});
+test('cold reopening keeps pending intake readable; explicit continuation or cancellation acts on the saved row',async t=>{
+  const f=await fixture(t,'hold-first'), first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.wait(first.conversationId,m=>m[0]?.status==='running');
+  const cancelled=question('这条待处理消息撤回',first.requestId,first.conversationId);
+  const waiting=question('冷重开后原话仍可处理',cancelled.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',cancelled)).data.status,'queued');
+  assert.equal((await f.post('/api/project-secretary/ask',waiting)).data.status,'queued');
+  await f.close();
+  const reopened=await f.launch();
+  try{
+    await reopened.get('/api/project-secretary');
+    const before=await reopened.get('/api/project-secretary/conversations/'+first.conversationId);
+    assert.deepEqual(before.data.messages.slice(1).map((m:any)=>[m.question,m.status]),[[cancelled.question,'queued'],[waiting.question,'queued']]);
+    assert.equal((await reopened.post('/api/project-secretary/ask',waiting)).data.duplicate,true);
+    assert.equal((await reopened.post('/api/project-secretary/continue-question',{requestId:waiting.requestId})).data.status,'queued');
+    for(let repeat=0;repeat<2;repeat++){
+      const withdrawal=await reopened.post('/api/project-secretary/stop',{requestId:cancelled.requestId,withdrawQueued:true});
+      assert.deepEqual([withdrawal.status,withdrawal.data.stopRequested,withdrawal.data.newModelInputs],[200,true,0]);
+    }
+    assert.equal((await f.logs()).filter(r=>r.kind==='input').length,1);
+    const actions=await Promise.all(Array.from({length:2},()=>reopened.post('/api/project-secretary/continue-question',{requestId:waiting.requestId})));
+    assert.equal(actions.filter(r=>r.data.newModelInputs===null).length,1);
+    let result=before;
+    for(let n=0;n<120;n++){
+      result=await reopened.get('/api/project-secretary/conversations/'+first.conversationId);
+      if(result.data.messages[2].status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.equal(result.data.messages[2].status,'completed');
+    const withdrawn=result.data.messages[1];
+    assert.deepEqual([withdrawn.id,withdrawn.question,withdrawn.status,withdrawn.problem],[cancelled.requestId,cancelled.question,'interrupted','project_chat_queued_cancelled']);
+    assert.equal(result.data.messages[2].parent,cancelled.requestId);
+    const inputs=(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);
+    assert.deepEqual(inputs.map(r=>r.question),[first.question,waiting.question]);
+    assert.deepEqual(inputs[1].conversation,[{requestId:first.requestId,question:first.question,status:'interrupted',answer:null}]);
+  }finally{await reopened.close();}
+});
+for(const offline of [false,true])test(offline?'withdrawing a cold queue head offline preserves pending requests for same-ID continuation':'withdrawing a cold queue head advances current-process intake without a manual continuation',async t=>{
+  const f=await fixture(t,'hold-first'),first=question('查看已有开发进度');
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const old=question('重启前的待办',first.requestId,first.conversationId);
+  assert.equal((await f.post('/api/project-secretary/ask',old)).data.status,'queued');
+  await f.close();
+  const reopened=await f.launch(),conversation='/api/project-secretary/conversations/'+first.conversationId;
+  try{
+    const project=await reopened.get('/api/project-secretary');
+    assert.deepEqual(project.data.busy,[]);
+    assert.equal(project.data.nextQuestion.requestId,old.requestId);
+    const next=question('重启后保存的原话',old.requestId,first.conversationId);
+    assert.equal((await reopened.post('/api/project-secretary/ask',next)).data.status,'queued');
+    assert.deepEqual((await reopened.get(conversation)).data.messages.map((m:any)=>m.status),['interrupted','queued','queued']);
+    const later=question('离线时还在等待的原话',next.requestId,first.conversationId);
+    if(offline)assert.equal((await reopened.post('/api/project-secretary/ask',later)).data.status,'queued');
+    const inputs=async()=>(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);
+    assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
+
+    f.setOffline(offline);
+    const preflight=offline?null:f.pauseNextProjectRead();
+    try{
+      const receipt=await reopened.post('/api/project-secretary/stop',{requestId:old.requestId,withdrawQueued:true});
+      assert.equal(receipt.status,200);
+      assert.equal(receipt.data.stopRecordSaved,true);
+      if(preflight){
+        await preflight.started;
+        const duringClaim=(await reopened.get('/api/project-secretary')).data;
+        assert.deepEqual(duringClaim.busy,[]);
+        assert.deepEqual(duringClaim.nextQuestion,{conversationId:first.conversationId,requestId:next.requestId,checking:true});
+        assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
+      }
+    }finally{preflight?.release();}
+    if(offline){
+      for(let n=0;n<120&&!f.offlineChecks();n++)await new Promise(r=>setTimeout(r,25));
+      assert.ok(f.offlineChecks(),'automatic continuation reached the offline GitHub check');
+      for(const pending of [next,later])await assert.rejects(readFile(join(f.root,'chats',pending.requestId,'request.json')),{code:'ENOENT'});
+      assert.deepEqual((await inputs()).map(r=>r.question),[first.question]);
+      f.setOffline(false);
+      const queued=(await reopened.get(conversation)).data.messages.slice(2);
+      assert.deepEqual(queued.map((m:any)=>[m.id,m.question,m.status]),[next,later].map(q=>[q.requestId,q.question,'queued']));
+      assert.equal((await reopened.get('/api/project-secretary')).data.nextQuestion.checking,false);
+      const actions=await Promise.all(Array.from({length:2},()=>reopened.post('/api/project-secretary/continue-question',{requestId:next.requestId})));
+      assert.ok(actions.every(r=>r.status===202&&r.data.requestId===next.requestId));
+      assert.equal(actions.filter(r=>r.data.newModelInputs===null).length,1);
+    }
+    const outcomePath=join(f.root,'chats',(offline?later:next).requestId,'answer.json');
+    let result;
+    for(let n=0;n<120;n++){
+      try{result=JSON.parse(await readFile(outcomePath,'utf8'));break;}
+      catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.ok(result,'eligible pending requests should progress without any further HTTP request');
+    const saved=(await reopened.get(conversation)).data.messages;
+    assert.deepEqual([saved[1].id,saved[1].question,saved[1].problem],[old.requestId,old.question,'project_chat_queued_cancelled']);
+    const processed=offline?[next,later]:[next];
+    assert.deepEqual(saved.slice(2).map((m:any)=>[m.id,m.question,m.status]),processed.map(q=>[q.requestId,q.question,'completed']));
+    const actual=await inputs();
+    assert.deepEqual(actual.map(r=>r.question),[first,...processed].map(q=>q.question));
+    assert.deepEqual(actual[1].conversation,[{requestId:first.requestId,question:first.question,status:'interrupted',answer:null}]);
+    if(offline)assert.deepEqual(actual[2].conversation.map((r:any)=>r.requestId),[first.requestId,next.requestId]);
+  }finally{f.setOffline(false);await reopened.close();}
+});
+test('intake saves a question when pending history already exceeds the byte limit and continues its original ID after withdrawal',async t=>{
+  const f=await fixture(t,'hold-first'),first=question('查看已有开发进度');
+  const conversation='/api/project-secretary/conversations/'+first.conversationId;
+  assert.equal((await f.post('/api/project-secretary/ask',first)).status,202);
+  await f.waitForInput(first.question);
+  const pending=[];
+  let parent=first.requestId;
+  for(let index=0;index<8;index++){
+    const request=question('撤'.repeat(8192),parent,first.conversationId);
+    assert.equal((await f.post('/api/project-secretary/ask',request)).data.status,'queued');
+    pending.push(request);
+    parent=request.requestId;
+  }
+  const before=(await f.get(conversation)).data.messages;
+  const projected=before.map((m:any)=>({requestId:m.id,question:m.question,status:m.status,answer:m.answer}));
+  assert.ok(Buffer.byteLength(canonical(projected))>192*1024);
+  const next=question('历史缩小后处理这一条原话',parent,first.conversationId);
+  const receipt=await f.post('/api/project-secretary/ask',next);
+  assert.equal(receipt.status,202);
+  assert.deepEqual([receipt.data.requestId,receipt.data.status,receipt.data.newModelInputs],[next.requestId,'queued',0]);
+
+  await f.close();
+  const reopened=await f.launch();
+  try{
+    const saved=(await reopened.get(conversation)).data.messages.at(-1);
+    assert.deepEqual([saved.id,saved.question,saved.parent,saved.status],[next.requestId,next.question,parent,'queued']);
+    for(const request of pending){
+      assert.equal((await reopened.post('/api/project-secretary/stop',{requestId:request.requestId})).data.stopRecordSaved,true);
+    }
+    assert.deepEqual((await f.logs()).filter(r=>r.kind==='input').map(r=>r.context.question),[first.question]);
+    const continued=await reopened.post('/api/project-secretary/continue-question',{requestId:next.requestId});
+    assert.deepEqual([continued.status,continued.data.requestId,continued.data.status],[202,next.requestId,'registered']);
+    let message;
+    for(let n=0;n<120;n++){
+      message=(await reopened.get(conversation)).data.messages.at(-1);
+      if(message?.status==='completed')break;
+      await new Promise(r=>setTimeout(r,25));
+    }
+    assert.deepEqual([message?.id,message?.status],[next.requestId,'completed']);
+    const actual=(await f.logs()).filter(r=>r.kind==='input').map(r=>r.context);
+    assert.deepEqual(actual.map(r=>r.question),[first.question,next.question]);
+    assert.deepEqual(actual[1].conversation,[{requestId:first.requestId,question:first.question,status:'interrupted',answer:null}]);
+    assert.ok(Buffer.byteLength(canonical(actual[1].conversation))<=192*1024);
+  }finally{await reopened.close();}
 });
 test('tampered original capture is unavailable, cannot seed follow-up context, and triggers no model',async t=>{
   const f=await fixture(t),q=question();await f.post('/api/project-secretary/ask',q);await f.wait(q.conversationId,m=>m[0]?.status==='completed');await appendFile(join(f.root,'chats',q.requestId,'native','stdout.ndjson'),'broken capture');
-  const state=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(state.data.messages[0].status,'unavailable');assert.equal(state.data.messages[0].answer,null);assert.equal((await f.post('/api/project-secretary/ask',question('继续',q.requestId,q.conversationId))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+  const state=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(state.data.messages[0].status,'unavailable');assert.equal(state.data.messages[0].answer,null);
+  const next=question('继续',q.requestId,q.conversationId);assert.equal((await f.post('/api/project-secretary/ask',next)).status,202);
+  const preserved=await f.wait(q.conversationId,m=>m[1]?.status==='failed');
+  assert.equal(preserved.messages[1].question,next.question);assert.equal(preserved.messages[1].answer,null);
+  assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
 });
 for(const mode of ['missing','truncated'])test('lost original '+mode+' process identity stays unknown until the actual child is proved ended',async t=>{
   const f=await fixture(t);await f.get('/api/project-secretary');
@@ -106,16 +531,16 @@ for(const mode of ['missing','truncated'])test('lost original '+mode+' process i
   const q=question(),native=join(f.root,'chats',q.requestId,'native');await mkdir(native,{recursive:true});const original={pid:child.pid,status:'spawn_attempted'};
   if(mode==='truncated')await writeFile(join(native,'process.json'),'{"pid":');
   const db=new DatabaseSync(join(f.root,'chats','conversations.sqlite'));db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?,?,?)').run(q.conversationId,7,1,'R_1','fixture/project-1','Explicit interrupted fixture',new Date().toISOString());db.prepare("INSERT INTO messages(id,conversation,parent,question,phase,created_at,pid,owner) VALUES (?,?,NULL,?,'running',?,?,'ended-fixture-host')").run(q.requestId,q.conversationId,q.question,new Date().toISOString(),endedHost);db.close();
-  const unknown=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(unknown.data.messages[0].status,'unknown');assert.equal((await f.post('/api/project-secretary/ask',question('不能绕过未知旧执行'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+  const unknown=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(unknown.data.messages[0].status,'unknown');const next=question('不能绕过未知旧执行');assert.equal((await f.post('/api/project-secretary/ask',next)).data.status,'queued');assert.equal((await f.post('/api/project-secretary/continue-question',{requestId:next.requestId})).data.status,'queued');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
   await writeFile(join(native,'process.json'),JSON.stringify(original));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;
-  const ended=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(ended.data.messages[0].status,'interrupted');assert.equal(ended.data.messages[0].answer,null);const next=question('原执行结束后明确提新问题');assert.equal((await f.post('/api/project-secretary/ask',next)).status,202);await f.wait(next.conversationId,m=>m[0]?.status==='completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
+  const ended=await f.get('/api/project-secretary/conversations/'+q.conversationId);assert.equal(ended.data.messages[0].status,'interrupted');assert.equal(ended.data.messages[0].answer,null);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);assert.equal((await f.post('/api/project-secretary/continue-question',{requestId:next.requestId})).data.status,'registered');await f.wait(next.conversationId,m=>m[0]?.status==='completed');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,1);
 });
 test('initialization rejection after creating a native stage does not infer an ended child from a missing session object',async t=>{
   const f=await fixture(t),originalStart=BoundedCodexSession.start,child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});assert.ok(child.pid);const exited=new Promise<void>(r=>child.once('exit',()=>r()));
   t.after(async()=>{BoundedCodexSession.start=originalStart;child.kill();await exited;});
   BoundedCodexSession.start=async options=>{await mkdir(options.directory,{recursive:true});await writeFile(join(options.directory,'process.json'),'{truncated');throw new Error('fixture_start_rejected_after_native_stage');};
   const q=question('启动故障夹具');assert.equal((await f.post('/api/project-secretary/ask',q)).status,202);const unknown=await f.wait(q.conversationId,m=>m[0]&&m[0].status!=='registered'&&!m[0].owned);assert.equal(unknown.messages[0].status,'unknown');assert.equal(unknown.messages[0].active,false);const outcome=JSON.parse(await readFile(join(f.root,'chats',q.requestId,'outcome.json'),'utf8'));assert.equal(outcome.status,'unknown');assert.equal(outcome.nativeProcessState,'unknown');
-  assert.equal((await f.post('/api/project-secretary/ask',question('不得越过未知启动'))).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+  assert.equal((await f.post('/api/project-secretary/ask',question('不得越过未知启动'))).data.status,'queued');assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
   await writeFile(join(f.root,'chats',q.requestId,'native','process.json'),JSON.stringify({pid:child.pid,status:'spawn_attempted'}));assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'unknown');child.kill();await exited;BoundedCodexSession.start=originalStart;
   assert.equal((await f.get('/api/project-secretary/conversations/'+q.conversationId)).data.messages[0].status,'interrupted');
 });
@@ -133,6 +558,26 @@ test('each AI setting exposes a usable destination and complete role policy with
   for(const role of state.data.roles){assert.ok(['secretary','tasks','project-work','retrospective','deliveries'].includes(role.view));assert.ok(role.entry.length>0);assert.ok(role.interaction.length>0);
     const prompt=await f.get('/api/ai-settings/prompts/'+role.id);assert.equal(prompt.status,200);assert.equal(prompt.data.assembly.role,role.id);assert.ok(prompt.data.assembly.system.includes('全文已由运行器放入系统提示'));assert.equal(prompt.data.modelInputs,0);}
   assert.equal((await f.get('/api/ai-settings/prompts/not_a_role')).status,503);assert.equal((await f.logs()).filter(x=>x.kind==='input').length,0);
+});
+
+test('the project workbench exposes the fixed candidate and ordered source without activating it', async t => {
+  const f = await fixture(t);
+  const result = await f.get('/api/ai-settings/workflow/pr_review_correctness');
+  assert.equal(result.status, 200);
+  const {activeRevision, candidate, assembly, status, modelInputs} = result.data;
+  assert.equal(activeRevision, '1772cd2c25bfc42b7a89cf38b35bf19d3dc22000');
+  assert.equal(candidate.identity.revision, '11cf57b34698e6f7b38ee73468e84103cde8f963');
+  assert.equal(candidate.identity.executionContract, 'coding-loop-v2');
+  assert.equal(candidate.sources.length, 15);
+  assert.equal(status, 'controls_pending');
+  assert.equal(modelInputs, 0);
+  assert.deepEqual(assembly.parts.map((p: {path: string}) => p.path), [
+    'zh/prompts/pr_review_system.md', 'zh/prompts/pr_review_correctness.md',
+  ]);
+  assert.equal(assembly.system, assembly.parts.map((p: {text: string}) => p.text).join('\n\n'));
+  assert.equal(assembly.sha256, hash(assembly.system));
+  assert.equal((await f.get('/api/ai-settings/workflow/unknown_use')).status, 503);
+  assert.equal((await f.logs()).filter(x => x.kind === 'input').length, 0);
 });
 
 test('the visible wait limit interrupts the exact owned turn, records timeout rather than user stop, and never repeats input',async t=>{
@@ -286,6 +731,7 @@ test('history accepts the exact old generic schema but refuses coherently rehash
     { schema: { ...secretarySchema, description: 'unregistered' }, known: false },
     { schema: projectSecretarySchema, known: true }
   ];
+  let parent=q.requestId;
   for (const { schema, known } of profiles) {
     assert.equal(isSecretaryOutputSchema(schema), known);
     // Explicit historical-wire fixtures keep the original capture hashes coherent.
@@ -310,7 +756,12 @@ test('history accepts the exact old generic schema but refuses coherently rehash
       assert.equal(restored.status, 'unavailable');
       assert.equal(restored.problem, 'project_chat_original_mismatch');
       assert.equal(restored.answer, null);
-      assert.equal((await f.post('/api/project-secretary/ask', question('不能用未知格式追问', q.requestId, q.conversationId))).status, 503);
+      const followup=question('不能用未知格式追问',parent,q.conversationId);
+      assert.equal((await f.post('/api/project-secretary/ask',followup)).status,202);
+      const preserved=await f.wait(q.conversationId,m=>m.at(-1)?.id===followup.requestId&&m.at(-1)?.status==='failed');
+      assert.equal(preserved.messages.at(-1).question,followup.question);
+      assert.equal(preserved.messages.at(-1).answer,null);
+      parent=followup.requestId;
     }
     assert.deepEqual(await f.logs(), logs);
   }

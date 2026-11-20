@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access,realpath} from 'node:fs/promises';
+import {mkdir,mkdtemp,writeFile,readFile,rm,cp,access,realpath,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync,spawnSync,spawn} from 'node:child_process';
@@ -10,11 +10,67 @@ import {minimumNodeVersion,supportedNodeVersion,requireNodeRuntime} from '../../
 import {setup} from '../w3/receiver-fixture.js';
 import {once} from 'node:events';
 import {hash} from '../../src/snapshot.js';
+
+const candidateDirectory='workflow-candidates';
+const candidateFiles=['coding_workflow.json','engineering_owner.md'];
+const candidatePrompts='11cf57b34698e6f7b38ee73468e84103cde8f963/zh/prompts';
+const copyCandidates=(source:string)=>cp(
+  fileURLToPath(new URL('../../../'+candidateDirectory+'/',import.meta.url)),
+  join(source,candidateDirectory),
+  {recursive:true},
+);
+test('a legacy proof that omitted an emitted module can launch without acquiring reproduced-build identity',async t=>{
+ const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-legacy-build-proof-')));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const source=join(root,'composition'),repo=new URL('../../../',import.meta.url);
+ for(const dir of ['src','scripts','tests'])await mkdir(join(source,dir),{recursive:true});
+ for(const file of ['src/node-runtime.ts','src/workbench-launch.ts','scripts/prepare-workbench-runtime.mjs','tsconfig.json'])
+   await cp(fileURLToPath(new URL(file,repo)),join(source,file));
+ await cp(fileURLToPath(new URL('web/workbench/',repo)),join(source,'web/workbench'),{recursive:true});
+ await cp(fileURLToPath(new URL('prompts/',repo)),join(source,'prompts'),{recursive:true});
+ await symlink(await realpath(fileURLToPath(new URL('node_modules/',repo))),join(source,'node_modules'),'dir');
+ await writeFile(join(source,'.gitignore'),'dist/\nnode_modules/\n');
+ await writeFile(join(source,'package.json'),' {"type":"module"}\n');
+ await writeFile(join(source,'tests/placeholder.ts'),'export {};\n');
+ await writeFile(join(source,'src/workbench-cli.ts'),'export const unusedByLauncher=true;\n');
+ await writeFile(join(source,'src/workbench.ts'),'export async function startWorkbench(){return {mode:"fixture",url:"http://127.0.0.1:0/",close:async()=>{}}}\n');
+ const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args],{encoding:'utf8'}).trim();
+ git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','fixed build proof fixture');
+ execFileSync(process.execPath,[join(source,'node_modules/typescript/lib/tsc.js'),'--project',join(source,'tsconfig.json')]);
+ const plan=join(root,'plan.json'),manifestPath=join(root,'runtime.json');await writeFile(plan,'{}');
+ const prepare=()=>spawnSync(process.execPath,[join(source,'scripts/prepare-workbench-runtime.mjs'),plan],{encoding:'utf8',timeout:30000});
+ const prepared=prepare();assert.equal(prepared.status,0,prepared.stderr);
+ const complete=JSON.parse(prepared.stdout),verified=await inspectWorkbenchRuntime(Buffer.from(prepared.stdout));
+ assert.equal(verified.identity.sourceHead,git('rev-parse','HEAD'));
+ assert.equal(verified.identity.buildProofKind,'tsc-complete-modules-v2');
+ assert.match(verified.identity.emittedModulesSha256!,/^[0-9a-f]{64}$/);
+ assert.equal(verified.identity.reproducedRuntimeFilesSha256,verified.identity.runtimeFilesSha256);
+ const changedProof={...complete,buildProof:{...complete.buildProof,emittedModulesSha256:'0'.repeat(64)}};
+ await assert.rejects(inspectWorkbenchRuntime(Buffer.from(JSON.stringify(changedProof))),/workbench_runtime_build_proof_changed/);
+ const omitted='dist/src/workbench-cli.js';assert.ok(complete.files.some((file:{path:string})=>file.path===omitted));
+ await rm(join(source,omitted));
+ await assert.rejects(inspectWorkbenchRuntime(Buffer.from(prepared.stdout)),/workbench_runtime_file_set_changed/);
+ const incomplete=prepare();assert.equal(incomplete.status,1,incomplete.stderr);assert.match(incomplete.stderr,/workbench_runtime_build_not_reproducible/);
+ const {buildProof,...manifest}=complete;
+ manifest.files=manifest.files.filter((file:{path:string})=>file.path!==omitted);
+ const {identity}=await inspectWorkbenchRuntime(Buffer.from(JSON.stringify(manifest)));
+ await writeFile(manifestPath,JSON.stringify({...manifest,buildProof:{kind:'tsc-reproduction-v1',sourceHead:identity.sourceHead,
+   compilerSha256:buildProof.compilerSha256,tsconfigSha256:buildProof.tsconfigSha256,runtimeFilesSha256:identity.runtimeFilesSha256}}));
+ const launched=spawnSync(process.execPath,[join(source,'dist/src/workbench-launch.js'),'--runtime',manifestPath],{encoding:'utf8',timeout:10000});
+ assert.equal(launched.status,0,launched.stderr);
+ const receipt=JSON.parse(launched.stdout).runtime;
+ assert.equal(receipt.sourceHead,verified.identity.sourceHead);
+ assert.equal(receipt.runtimeFilesSha256,identity.runtimeFilesSha256);
+ assert.equal(receipt.buildProofKind,'tsc-reproduction-v1');
+ assert.equal(receipt.reproducedRuntimeFilesSha256,undefined);
+ assert.equal(receipt.emittedModulesSha256,undefined);
+});
 test('one fixed runtime detects stale source, build, configuration and file additions before importing any selected program',async t=>{
  const root=await realpath(await mkdtemp(join(tmpdir(),'tongxu-launch-manifest-')));t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'composition');await mkdir(source);for(const d of ['dist/src','src','web/workbench'])await mkdir(join(source,d),{recursive:true});
  await cp(fileURLToPath(new URL('../../src/node-runtime.js',import.meta.url)),join(source,'dist/src/node-runtime.js'));
  await writeFile(join(source,'src/selected.ts'),'// explicit fixture source\n');await writeFile(join(source,'dist/src/workbench.js'),'throw new Error("must_never_import_other_composition");\n');await writeFile(join(source,'package.json'),'{"type":"module"}\n');for(const name of ['index.html','app.js','project-chat.js','project-work.js','project-owner.js','ai-settings.js','implementation.js','reception.js','formal-review.js','app.css','favicon.svg'])await writeFile(join(source,'web/workbench',name),'explicit fixture '+name+'\n');
  await cp(fileURLToPath(new URL('../../../prompts/',import.meta.url)),join(source,'prompts'),{recursive:true});
+ await copyCandidates(source);
  const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args],{encoding:'utf8'}).trim();git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','bounded launcher fixture');
  const plan=join(root,'plan.json');await writeFile(plan,'{"kind":"explicit fixture, never launched"}\n');const manifest=await prepareWorkbenchRuntime(source,plan),raw=Buffer.from(JSON.stringify(manifest)),runtimePath=join(root,'runtime.json');await writeFile(runtimePath,raw);
  for(const name of ['app.js','implementation.js','reception.js','formal-review.js']){
@@ -33,6 +89,18 @@ test('one fixed runtime detects stale source, build, configuration and file addi
  await writeFile(join(source,'src/selected.ts'),'modified source');await assert.rejects(inspectWorkbenchRuntime(raw),/source_changed/);await writeFile(join(source,'src/selected.ts'),'// explicit fixture source\n');
  await assert.rejects(inspectWorkbenchRuntime(Buffer.from(JSON.stringify({...manifest,files:[...manifest.files,{path:'../outside',sha256:hash('x')}]}))),/manifest_invalid/);
  assert.equal((await inspectWorkbenchRuntime(raw)).identity.planSha256,manifest.plan.sha256);
+ assert.ok(manifest.files.every(f=>!f.path.startsWith(candidateDirectory+'/')));
+ for(const name of candidateFiles){
+   const path=join(source,candidateDirectory,candidatePrompts,name),original=await readFile(path);
+   try{
+     await rm(path);
+     assert.match(git('status','--porcelain','--',candidateDirectory),/^D /);
+     assert.equal((await inspectWorkbenchRuntime(raw)).identity.sourceHead,manifest.sourceHead);
+     await writeFile(path,Buffer.concat([original,Buffer.from('\n')]));
+     assert.match(git('status','--porcelain','--',candidateDirectory),/^M /);
+     assert.equal((await inspectWorkbenchRuntime(raw)).identity.sourceHead,manifest.sourceHead);
+   }finally{await writeFile(path,original);}
+ }
 });
 
 test('Node admission has a minimum and actual transaction capability, without a release whitelist',async()=>{
@@ -90,6 +158,7 @@ test('generated entry loads the real application graph, serves the selected queu
  await cp(fileURLToPath(new URL('../../src/',import.meta.url)),join(source,'dist/src'),{recursive:true});await cp(fileURLToPath(new URL('../../../web/workbench/',import.meta.url)),join(source,'web/workbench'),{recursive:true});await writeFile(join(source,'package.json'),'{"type":"module"}\n');await writeFile(join(source,'src/selected.ts'),'// explicit installed graph fixture\n');
  await mkdir(join(source,'node_modules'));const dependencies=JSON.parse(await readFile(new URL('../../../package.json',import.meta.url),'utf8')).dependencies;for(const name of Object.keys(dependencies))await cp(fileURLToPath(new URL('../../../node_modules/'+name+'/',import.meta.url)),join(source,'node_modules',name),{recursive:true});await writeFile(join(source,'.gitignore'),'node_modules/\n');
  await cp(fileURLToPath(new URL('../../../prompts/',import.meta.url)),join(source,'prompts'),{recursive:true});
+ await copyCandidates(source);
  const git=(...args:string[])=>execFileSync('/usr/bin/git',['-C',source,...args]);git('init','--initial-branch=fixture');git('add','.');git('-c','user.name=fixture','-c','user.email=fixture@localhost','commit','-m','explicit real application graph');
  const plan=join(f.root,'workbench.json'),runtime=join(f.root,'runtime.json'),entry=join(f.root,'START.command');await writeFile(plan,JSON.stringify({schemaVersion:1,kind:'tongxu-local-workbench',title:'Explicit startup fixture',goal:'Read only; no model',sources:[{id:'selected',title:'Fixture',store:f.store,item:f.item}]}));await writeFile(runtime,JSON.stringify(await prepareWorkbenchRuntime(source,plan)));await writeFile(entry,await renderWorkbenchLauncher(runtime),{mode:0o700});
  const pageAssets=['app.js','implementation.js','reception.js','formal-review.js'];git('update-index','--assume-unchanged',...pageAssets.map(name=>'web/workbench/'+name));
@@ -100,10 +169,80 @@ test('generated entry loads the real application graph, serves the selected queu
      assert.equal(code,1,stderr);assert.match(stderr,/workbench_runtime_build_changed/);assert.equal(stdout,'');}
    finally{await writeFile(path,original);}
  }}finally{git('update-index','--no-assume-unchanged',...pageAssets.map(name=>'web/workbench/'+name));}
- const child=spawn('/bin/zsh',[entry,'--no-open'],{env:{...process.env,TONGXU_NODE:process.execPath},detached:true,stdio:['ignore','pipe','pipe']});let stderr='',stdout='';child.stderr.on('data',b=>stderr+=b);
- const ended=once(child,'close');t.after(async()=>{if(child.exitCode===null&&child.signalCode===null&&child.pid){try{process.kill(-child.pid,'SIGTERM');}catch{}await ended;}});
- const receipt:any=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('workbench_did_not_listen: '+stderr)),10000);child.once('close',code=>{clearTimeout(timer);reject(Error('workbench_exited_without_listening: '+code+' '+stderr));});child.stdout.on('data',b=>{stdout+=b;const line=stdout.split('\n').find(x=>x.startsWith('{'));if(line)try{const v=JSON.parse(line);if(v.status==='listening'){clearTimeout(timer);resolve(v);}}catch{}});});
+ const coldStart=async(extraEnv:NodeJS.ProcessEnv={})=>{
+   const child=spawn('/bin/zsh',[entry,'--no-open'],{env:{...process.env,...extraEnv,TONGXU_NODE:process.execPath},detached:true,stdio:['ignore','pipe','pipe']});
+   let stderr='',stdout='',serverPid:number|undefined;child.stderr.on('data',b=>stderr+=b);
+   const ended=once(child,'close');
+   const stop=async()=>{
+     if(child.exitCode===null&&child.signalCode===null&&child.pid)try{if(serverPid)process.kill(serverPid,'SIGINT');else process.kill(-child.pid,'SIGTERM');}catch{}
+     const [code]=await ended;return {code,stderr};
+   };
+   t.after(stop);
+   const receipt:any=await new Promise((resolve,reject)=>{
+     const timer=setTimeout(()=>reject(Error('workbench_did_not_listen: '+stderr)),10000);
+     child.once('close',code=>{clearTimeout(timer);reject(Error('workbench_exited_without_listening: '+code+' '+stderr));});
+     child.stdout.on('data',b=>{stdout+=b;const line=stdout.split('\n').find(x=>x.startsWith('{'));if(line)try{const v=JSON.parse(line);if(v.status==='listening'){clearTimeout(timer);resolve(v);}}catch{}});
+   });
+   serverPid=receipt.pid;
+   return {receipt,stop};
+ };
+ const {receipt,stop}=await coldStart();
  assert.equal(receipt.runtime.nodeVersion,process.version);assert.equal(receipt.modelCallsAtStart,0);const u=new URL(receipt.url),response=await fetch(u.origin+'/api/state',{headers:{Authorization:'Bearer '+u.hash.slice(1)}});assert.equal(response.status,200);const state=await response.json() as any;assert.equal(state.tasks.length,1);assert.equal(state.modelCallsStartedByWorkbench,0);assert.equal(await f.count(),0);
  const html=await(await fetch(u.origin+'/')).text();assert.ok(html.includes('src="/implementation.js"'));assert.ok(html.includes('src="/reception.js"'));assert.ok(html.includes('src="/formal-review.js"'));for(const name of pageAssets){const assetResponse=await fetch(u.origin+'/'+name);assert.equal(assetResponse.status,200);assert.equal(hash(await assetResponse.text()),hash(await readFile(join(source,'web/workbench',name))));}
- process.kill(receipt.pid,'SIGINT');const [code]=await ended;assert.equal(code,0,stderr);assert.equal(await f.count(),0);
+ const stopped=await stop();assert.equal(stopped.code,0,stopped.stderr);assert.equal(await f.count(),0);
+
+ const gh=join(f.root,'fixture-gh.mjs');
+ const repo={id:1,nodeId:'R_1',full_name:'fixture/project',description:null,private:true,archived:false,defaultBranchRef:null,updated_at:'2026-10-30T00:00:00Z'};
+ const account={id:7,login:'fixture',projects:{nodes:[repo],pageInfo:{hasNextPage:false,endCursor:null}}};
+ await writeFile(gh,`#!${process.execPath}
+ if(process.argv.includes('--version'))console.log('gh version fixture');
+ else if(process.argv.includes('--help'))console.log('--hostname --method --include --input --header --raw-field');
+ else {process.stdin.resume();process.stdin.on('end',()=>console.log('HTTP/1.1 200 OK\\r\\n\\r\\n'+${JSON.stringify(JSON.stringify({data:{account,repository:repo}}))}));}
+ `,{mode:0o700});
+ await writeFile(plan,JSON.stringify({schemaVersion:1,kind:'tongxu-local-workbench',title:'Project startup fixture',goal:'Check candidate source without model calls',sources:[],githubProjects:true,aiSettings:{root:join(f.root,'ai-settings'),configured:[],disabledMcpServers:[]}}));
+ const projectManifest=await prepareWorkbenchRuntime(source,plan);
+ await writeFile(runtime,JSON.stringify(projectManifest));
+ await writeFile(entry,await renderWorkbenchLauncher(runtime),{mode:0o700});
+
+ const checkProject=async(expectedError?:string)=>{
+   const app=await coldStart({TONGXU_GH:gh});
+   try{
+     assert.equal(app.receipt.modelCallsAtStart,0);
+     const url=new URL(app.receipt.url),auth={Authorization:'Bearer '+url.hash.slice(1)};
+     const headers={...auth,'X-Tongxu-Account':'7','X-Tongxu-Project':'1'};
+     const projects=await fetch(url.origin+'/api/github/projects',{headers:auth});
+     assert.equal(projects.status,200,await projects.text());
+     const active=await fetch(url.origin+'/api/ai-settings/prompts/reviewer',{headers});
+     assert.equal(active.status,200);
+     const prompt=await active.json() as any;
+     assert.ok(prompt.assembly.parts.some((part:any)=>part.source.includes('1772cd2c25bfc42b7a89cf38b35bf19d3dc22000')));
+     const candidate=await fetch(url.origin+'/api/ai-settings/workflow/engineering_owner',{headers});
+     const result=await candidate.json() as any;
+     if(expectedError){
+       assert.equal(candidate.status,503);
+       assert.deepEqual(result,{error:expectedError});
+     }else{
+       assert.equal(candidate.status,200);
+       assert.equal(result.status,'controls_pending');
+       assert.equal(result.modelInputs,0);
+     }
+     const settings=await fetch(url.origin+'/api/ai-settings',{headers});
+     assert.equal(settings.status,200);
+     assert.equal((await settings.json() as any).revision,0);
+   }finally{
+     const closed=await app.stop();assert.equal(closed.code,0,closed.stderr);
+   }
+ };
+ const candidateRoot=join(source,'workflow-candidates','11cf57b34698e6f7b38ee73468e84103cde8f963','zh','prompts');
+ await checkProject();
+ for(const name of ['coding_workflow.json','engineering_owner.md']){
+   const path=join(candidateRoot,name),original=await readFile(path);
+   try{
+     await rm(path);
+     await checkProject('coding_workflow_source_unavailable');
+     await writeFile(path,Buffer.concat([original,Buffer.from('\n')]));
+     await checkProject('coding_workflow_source_digest_mismatch');
+   }finally{await writeFile(path,original);}
+ }
+ await checkProject();
 });

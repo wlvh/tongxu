@@ -1,10 +1,10 @@
-import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, chmod, readdir, realpath, lstat, readFile, unlink } from 'node:fs/promises';
 import { join, resolve,dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { hash, privateDirectory } from './snapshot.js';
 import { save } from './live-process.js';
-import { git, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
+import { git, gitReadOnly, mutateGit, regular, exists, tree, treeHash, localCandidate, processState, projectTestNamespace, type Grant, type Tree } from './repair-workspace.js';
 import { parsePlan, fingerprint } from './verification.js';
 import { validateDependencies, dependencyDigest } from './sandbox.js';
 import { DockerRuntime, reconcileDocker,type DockerStartGate } from './docker-sandbox.js';
@@ -21,6 +21,7 @@ export type ProjectContract = {
   priorReview?: { operation: string; packet: number; judgmentId: string; bindingHash: string; inputSha256: string; report: string; findings: unknown[]; context: unknown;integrationMember?:unknown;continuation?:unknown };
   queueOperation?: { store: string; operation: string;sourceReviewOperation?:string;memberReturnSha256?:string };
   materialView?: 'selected_files';
+  projectFiles?:true;
 };
 export type ProjectRequest = {
   schemaVersion: 1; kind: 'tongxu-project-repair-request'; executionRoot: string; objects: string; candidate: Candidate;
@@ -31,12 +32,16 @@ export type ProjectRequest = {
   priorReview?: ProjectContract['priorReview'];
   queueOperation?: ProjectContract['queueOperation'];
   materialView?: 'selected_files';
+  projectFiles?:true;
 };
 export function validateProjectContract(p: ProjectContract, grant: Grant) {
   if(p.materialView!==undefined&&p.materialView!=='selected_files')throw new Error('invalid_project_material_view');
   const c = p?.sourceCandidate;
   if (!c || !/^[\w.-]+\/[\w.-]+$/.test(c.repository) || !commit.test(c.H) || !commit.test(c.B) || typeof c.target !== 'string' || !c.target || /[\x00-\x20]/.test(c.target) || !(c.kind === 'local-git' ? c.repository.startsWith('local/') && c.pr === null : (c.kind == null || c.kind === 'github-pr') && Number.isSafeInteger(c.pr) && c.pr! > 0)) throw new Error('invalid_project_source_candidate');
-  if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || !paths(grant.allowedPaths, 32) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
+  if(p.projectFiles!==undefined&&(p.projectFiles!==true||p.materialView||p.priorReview||p.queueOperation||
+    !grant.projectFiles||!Array.isArray(grant.allowedPaths)||grant.allowedPaths.length||canonical(grant.projectFiles.protectedPaths)!==canonical(p.protectedPaths)))throw new Error('invalid_project_file_scope');
+  if(!p.projectFiles&&grant.projectFiles)throw new Error('invalid_project_file_scope');
+  if (!paths(p.materialPaths, 64) || !paths(p.protectedPaths, 128) || (!p.projectFiles&&!paths(grant.allowedPaths, 32)) || grant.profile !== 'project-v1' || JSON.stringify(grant.materialPaths) !== JSON.stringify(p.materialPaths) || grant.allowedPaths.some(x => !p.materialPaths.includes(x) || p.protectedPaths.includes(x)) || typeof p.contract !== 'string' || !p.contract.trim() || p.contract.length > 16000 || !digest.test(p.testPlanSha256) || p.dependencyHash !== null && !digest.test(p.dependencyHash)) throw new Error('invalid_project_repair_scope');
   if (!Array.isArray(p.generatedDirectories) || p.generatedDirectories.length > 16 || p.generatedDirectories.some(x => !relative(x) || p.generatedDirectories.some(y => y !== x && (x.startsWith(y + '/') || y.startsWith(x + '/')))) || new Set(p.generatedDirectories).size !== p.generatedDirectories.length) throw new Error('invalid_project_output_directories');
   if (p.priorReview && (!digest.test(p.priorReview.bindingHash) || !digest.test(p.priorReview.inputSha256) || typeof p.priorReview.report !== 'string' || Buffer.byteLength(JSON.stringify(p.priorReview)) > 192 * 1024)) throw new Error('invalid_project_prior_review');
   if (p.queueOperation && (resolve(p.queueOperation.store) !== p.queueOperation.store || (p.queueOperation.sourceReviewOperation??p.queueOperation.operation) !== p.priorReview?.operation || (p.queueOperation.sourceReviewOperation!==undefined||p.queueOperation.memberReturnSha256!==undefined||p.priorReview?.integrationMember!==undefined)&&(!/^[a-f0-9-]{36}$/.test(p.queueOperation.sourceReviewOperation??'')||!digest.test(p.queueOperation.memberReturnSha256??'')||!p.priorReview?.integrationMember))) throw new Error('invalid_project_queue_binding');
@@ -135,6 +140,7 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
     return { plan: join(root, 'plan.json'), operation: join(root, 'operation'), candidate: plan.candidate, sourceCandidate: plan.project!.sourceCandidate };
   }
   if (r.schemaVersion !== 1 || r.kind !== 'tongxu-project-repair-request' || !r.candidate || typeof r.objects !== 'string' || resolve(r.objects) !== r.objects || await realpath(r.objects) !== r.objects || typeof r.demonstrationFixture !== 'boolean' || !Array.isArray(r.findings) || r.findings.length > 10 || r.findings.some(x => typeof x.id !== 'string' || !x.id || typeof x.description !== 'string' || !x.description.trim())) throw new Error('invalid_project_repair_request');
+  if(r.projectFiles!==undefined&&(r.projectFiles!==true||!implementationOnlyZeroRounds||r.findings.length))throw new Error('project_file_scope_requires_issue_implementation');
   const a = r.authorization;
   if (!a || typeof a.source !== 'string' || !a.source.trim() || typeof a.allowRepair !== 'boolean' || typeof a.allowReconcileEnded !== 'boolean' || !Number.isInteger(a.maxRepairRounds) || a.maxRepairRounds < (implementationOnlyZeroRounds&&r.findings.length===0?0:1) || a.maxRepairRounds > 3) throw new Error('project_authorization_required');
   const testBytes = await regular(r.testPlan); if (hash(testBytes) !== r.testPlanSha256) throw new Error('project_test_plan_changed');
@@ -142,8 +148,8 @@ export async function prepareProjectRepair(configPath: string, requestPath: stri
   if (test.schemaVersion !== 2 || !test.executor) throw new Error('project_test_requires_registered_docker');
   const dependencyHash = await dependencyDigest(await validateDependencies(test.dependencyDirectory));
   const workspace = join(root, 'workspace');
-  const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths };
-  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}),...(r.materialView?{materialView:r.materialView}:{}) };
+  const grant: Grant = { id: randomUUID(), source: a.source, workspace, H: r.candidate.H, treeSha256: '', allowedPaths: r.allowedPaths, allowRepair: a.allowRepair, allowReconcileEnded: a.allowReconcileEnded, maxRepairRounds: a.maxRepairRounds, profile: 'project-v1', materialPaths: r.materialPaths, ...(r.projectFiles?{projectFiles:{protectedPaths:r.protectedPaths}}:{}) };
+  const project: ProjectContract = { sourceCandidate: r.candidate, materialPaths: r.materialPaths, protectedPaths: r.protectedPaths, contract: r.contract, testPlan: join(root, 'test-plan.json'), testPlanSha256: hash(testBytes), dependencyHash, generatedDirectories: r.generatedDirectories, ...(r.priorReview ? { priorReview: r.priorReview } : {}), ...(r.queueOperation ? { queueOperation: r.queueOperation } : {}),...(r.materialView?{materialView:r.materialView}:{}),...(r.projectFiles?{projectFiles:true as const}:{}) };
   validateProjectContract(project, grant);
   for (const h of [r.candidate.H, r.candidate.B]) if (await git(r.objects, ['rev-parse', h + '^{commit}']) !== h) throw new Error('project_source_object_changed');
   const sourceMergeBase = await git(r.objects, ['merge-base', r.candidate.B, r.candidate.H]);
@@ -194,8 +200,63 @@ export async function testProject(workspace: string, directory: string, p: Proje
   await selectMaterialView(work,p,setupGit);
   await setupGit(['fetch', '--no-tags', '--no-recurse-submodules', workspace, await git(workspace, ['rev-parse', 'HEAD'])]);
   await setupGit(['checkout', '--detach', 'FETCH_HEAD']);
-  for (const [path, entry] of Object.entries(current)) { const full = join(work, path); await writeFile(full, entry.text, { mode: 0o600 }); await chmod(full, 0o600 | (entry.executable ?? 0)); }
+  if(p.projectFiles){
+    const checkout=await tree(work,true);
+    for(const path of Object.keys(checkout)){
+      if(!Object.hasOwn(current,path))await unlink(join(work,path));
+    }
+  }
+  const directories=new Set([work]);
+  for(const [path,entry] of Object.entries(current)){
+    const components=path.split('/');
+    const filename=components.pop()!;
+    let parent=work;
+    for(const component of components){
+      parent=join(parent,component);
+      if(directories.has(parent))continue;
+      if(await exists(parent)){
+        if(!(await lstat(parent)).isDirectory())throw new Error('project_test_candidate_path_conflict');
+      }else await mkdir(parent,{mode:0o700});
+      directories.add(parent);
+    }
+    const file=join(parent,filename);
+    if(await exists(file))await regular(file,256*1024);
+    const bytes=await regular(join(workspace,path),256*1024);
+    if(hash(bytes)!==entry.sha256)throw new Error('project_test_source_changed:'+path);
+    await writeFile(file,bytes,{mode:0o600});
+    await chmod(file,0o600|(entry.executable??0));
+  }
   await setupGit(['add', '--all']); await setupGit(['-c', 'user.name=Tongxu fixed test input', '-c', 'user.email=tests@localhost', '-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-m', 'fixed project test input']);
+  const H=await git(work,['rev-parse','HEAD']),T=await git(work,['rev-parse','HEAD^{tree}']);
+  const tracked=new Map((await gitReadOnly(work,['ls-tree','-r','-z',H])).split('\0').filter(Boolean).map(row=>{
+    const tab=row.indexOf('\t');
+    return [row.slice(tab+1),row.slice(0,tab)];
+  }));
+  const sourcePaths=Object.keys(current);
+  for(const [path,entry] of Object.entries(current)){
+    const record=tracked.get(path);
+    if(!record)throw new Error('project_test_worktree_file_missing_from_candidate:'+path);
+    const bytes=await regular(join(work,path),256*1024);
+    const object=createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
+    const executable=Boolean((entry.executable??0)&0o100);
+    const mode=executable?'100755':'100644';
+    if(hash(bytes)!==entry.sha256 || Boolean((await lstat(join(work,path))).mode&0o100)!==executable || record!==`${mode} blob ${object}`)
+      throw new Error('project_test_candidate_blob_or_mode_mismatch:'+path);
+  }
+  // A matching blob can still be transformed by Git on checkout.
+  const checkout=join(directory,'candidate-checkout');
+  if(sourcePaths.length||p.projectFiles){
+    await mkdir(checkout,{mode:0o700});
+    for(let start=0;start<sourcePaths.length;start+=32)
+      await setupGit(['checkout-index','--force','--ignore-skip-worktree-bits','--prefix='+checkout+'/', '--',...sourcePaths.slice(start,start+32)]);
+    for(const path of sourcePaths){
+      const file=join(checkout,path);
+      if(hash(await regular(file,256*1024))!==current[path]!.sha256 ||
+        Boolean((await lstat(file)).mode&0o100)!==Boolean((current[path]!.executable??0)&0o100))
+        throw new Error('project_test_candidate_checkout_mismatch:'+path);
+      if(p.projectFiles)await chmod(file,0o600|(current[path]!.executable??0));
+    }
+  }
   const generated = [];
   for (const [index, path] of p.generatedDirectories.entries()) {
     const source = join(directory, 'generated-' + index); await mkdir(source, { mode: 0o700 }); await mkdir(join(work, path), { recursive: true, mode: 0o700 }); generated.push({ path, source });
@@ -205,13 +266,16 @@ export async function testProject(workspace: string, directory: string, p: Proje
     // parent bind. This empty directory is a mount target, never a dependency.
     await mkdir(join(work, 'node_modules'), { mode: 0o700 });
   }
-  const H = await git(work, ['rev-parse', 'HEAD']), T = await git(work, ['rev-parse', 'HEAD^{tree}']), pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
+  const pre = await fingerprint(work, Object.keys(current), entries => save(join(directory, 'input-state.json'), entries));
   save(join(directory, 'input.json'), { candidateTreeSha256: inputHash, H, T, sourceCandidate: p.sourceCandidate, preFingerprint: pre, testPlanSha256: p.testPlanSha256, dependencyHash: p.dependencyHash, protectedPaths: p.protectedPaths });
   // Keep Git metadata in the host fingerprint, outside the candidate mount.
   // Tests see byte-identical selected files and cannot recover omitted blobs.
-  const executionWork=p.materialView?join(directory,'material-work'):work;
+  const executionWork=p.projectFiles?checkout:p.materialView?join(directory,'material-work'):work;
+  const separateMount=executionWork!==work;
   if(p.materialView){
-    await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,entry.text,{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
+    await mkdir(executionWork,{mode:0o700});for(const [path,entry] of Object.entries(current)){const full=join(executionWork,path);await mkdir(dirname(full),{recursive:true,mode:0o700});await writeFile(full,await regular(join(work,path),256*1024),{mode:0o600});await chmod(full,0o600|(entry.executable??0));}
+  }
+  if(separateMount){
     for(const path of p.generatedDirectories)await mkdir(join(executionWork,path),{recursive:true,mode:0o700});if(fixed.dependencies)await mkdir(join(executionWork,'node_modules'),{mode:0o700});
     if(treeHash(await tree(executionWork,true))!==inputHash)throw new Error('project_test_material_copy_changed');
   }
@@ -221,7 +285,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   for (const [index, tool] of fixed.plan.tools.entries()) {
     let observed: unknown[] = [];
     const currentInput = await fingerprint(work, Object.keys(current), entries => { observed = entries; }), currentDependencies = await dependencyDigest(fixed.dependencies);
-    if (currentInput !== pre || currentDependencies !== p.dependencyHash || p.materialView&&treeHash(await tree(executionWork,true))!==inputHash) {
+    if (currentInput !== pre || currentDependencies !== p.dependencyHash || separateMount&&treeHash(await tree(executionWork,true))!==inputHash) {
       const expected = new Map<string, unknown>(JSON.parse((await regular(join(directory, 'input-state.json'), 16 * 1024 * 1024)).toString()));
       const actual = new Map<string, unknown>(observed as Array<[string, unknown]>);
       const changed = [...new Set([...expected.keys(), ...actual.keys()])].filter(path => JSON.stringify(expected.get(path)) !== JSON.stringify(actual.get(path)));
@@ -236,7 +300,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
     const artifacts = await generatedEvidence(generated);
     save(join(directory, 'generated-state-' + index + '.json'), artifacts);
     const generatedArtifacts = { valid: artifacts.valid, count: artifacts.files.length, sha256: artifacts.sha256 };
-    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid&&(!p.materialView||treeHash(await tree(executionWork,true))===inputHash), dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
+    const inputUnchanged = await fingerprint(work, Object.keys(current)) === pre && generatedArtifacts.valid&&(!separateMount||treeHash(await tree(executionWork,true))===inputHash), dependenciesUnchanged = await dependencyDigest(fixed.dependencies) === p.dependencyHash;
     executionHealthy &&= inputUnchanged && dependenciesUnchanged && ['completed', 'failed'].includes(r.status);
     const resultFiles = await readdir(resultDirectory);
     if (resultFiles.some(name => name !== 'result.json')) executionHealthy = false;
@@ -253,7 +317,7 @@ export async function testProject(workspace: string, directory: string, p: Proje
   if (treeHash(await tree(workspace, true)) !== inputHash) throw new Error('repair_workspace_changed_during_tests');
   const passed = executionHealthy && tools.length === fixed.plan.tools.length && tools.every(t => t.status === 'completed' && t.exitCode === 0 && (!t.sampleSet || t.sampleSet.complete && t.sampleSet.samples.every(s => s.status === 'ok')));
   const result = { kind: 'registered-project-tests-v1', passed, executionHealthy, candidateTreeSha256: inputHash, H, T,
-    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding',...(p.materialView?{executionView:'selected_material_files',gitMetadataMounted:false,unselectedRuntimeBehavior:'not_executed'}:{}) },
+    sourceInput: { sourceHead, sourceHeadTree, frozenWorkingTreeSha256: inputHash, testedCommit: H, testedTree: T, matchesSourceHeadTree: sourceHeadTree === T, scope: 'frozen_working_files; uncommitted changes need a later committed-candidate binding',...(p.projectFiles?{executionView:'project_candidate_checkout',gitMetadataMounted:false}:p.materialView?{executionView:'selected_material_files',gitMetadataMounted:false,unselectedRuntimeBehavior:'not_executed'}:{}) },
     tools, failure: executionHealthy ? null : 'test_execution_or_input_unverified', exit: { code: passed ? 0 : 1, signal: null }, businessCorrectness: 'requires_independent_review', testPlanSha256: p.testPlanSha256 };
   save(join(directory, 'result.json'), result); save(join(directory, 'test-progress.json'), { phase: 'completed', toolsRequested: tools.length }); return result;
 }
@@ -265,7 +329,7 @@ export async function reconcileProjectTests(operation: string, p: ProjectContrac
       const intent = JSON.parse((await regular(join(directory, 'test-intent.json'))).toString());
       const progress = JSON.parse((await regular(join(directory, 'test-progress.json'))).toString());
       if (intent.directory !== directory || intent.testPlanSha256 !== p.testPlanSha256 || JSON.stringify(intent.generatedDirectories) !== JSON.stringify(p.generatedDirectories) || !['preparing_input', 'runtime_requested', 'tool_requested', 'completed'].includes(progress.phase)) throw new Error('project_test_intent_unverified');
-      testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');
+      testDataDirectories.add('work'); testDataDirectories.add('output');testDataDirectories.add('material-work');testDataDirectories.add('candidate-checkout');
       p.generatedDirectories.forEach((_, i) => testDataDirectories.add('generated-' + i));
       if (progress.phase !== 'preparing_input' && !await exists(join(directory, 'runtime/probe/execution.json'))) throw new Error('project_test_capture_missing');
       const requested = progress.phase === 'completed' ? progress.toolsRequested : progress.phase === 'tool_requested' ? progress.toolIndex + 1 : 0;

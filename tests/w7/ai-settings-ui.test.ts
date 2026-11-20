@@ -28,3 +28,21 @@ test('metadata scan refreshes the persistent secretary summary without sending o
   const source=await readFile(new URL('../../../web/workbench/ai-settings.js',import.meta.url),'utf8'),paths:string[]=[],context:any={gh:{epoch:1,account:{id:7},selected:{id:1}},key:'fixture',view:'ai-settings',render(){},chatReads:0,loadProjectChat(){context.chatReads++;},workspaceFetch:async(path:string)=>{paths.push(path);return {ok:true,json:async()=>({revision:0,roles:[],choices:{},catalog:[]})};}};
   runInNewContext(source+'\nthis.scan=()=>loadAISettings(true);',context);await context.scan();assert.equal(context.chatReads,1);assert.deepEqual(paths,['/api/ai-settings/scan']);
 });
+
+test('the candidate report displays readable reasons for missing files and mismatched bytes',async()=>{
+  const source=await readFile(new URL('../../../web/workbench/ai-settings.js',import.meta.url),'utf8');
+  const nodes=new Map<string,{textContent:string;open?:boolean;hidden?:boolean}>();
+  const get=(id:string)=>{
+    if(!nodes.has(id))nodes.set(id,{textContent:''});
+    return nodes.get(id)!;
+  };
+  let error='coding_workflow_source_unavailable';
+  const context:any={reportNonce:0,$:get,api:async()=>{throw new Error(error);},showWorkbenchReport:()=>{get('report-dialog').open=true;}};
+  runInNewContext(source+'\nthis.openSource=openCodingWorkflowSource;',context);
+  await context.openSource();
+  assert.equal(get('report-meta').textContent,'来源核对未完成');
+  assert.match(get('report-body').textContent,/候选源文件缺失/);
+  error='coding_workflow_source_digest_mismatch';
+  await context.openSource();
+  assert.match(get('report-body').textContent,/摘要不一致/);
+});

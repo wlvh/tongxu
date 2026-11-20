@@ -23,8 +23,8 @@ export class OwnerControls{
       if(!current.currentAdoption||body.adoption!==current.currentAdoption)throw new Error('current_adopted_scope_required');const q=await QueueStore.open(s.store);try{return q.withOwnerTask(s.item,current.scopeId,current.target,a=>{const latest=a.forScope(current.scopeId,{item:s.item,target:current.target});if(latest.currentAdoption!==body.adoption)throw new Error('current_adopted_scope_required');const p=a.baselineProposal(body.adoption,body.contents);return {...a.prepare('workbench-baseline-'+hash(canonical([s.item,p])).slice(0,48),Buffer.from(canonical(p))),baselineAccepted:false,modelStarted:false};});}finally{q.close();}
     }
     if(body?.kind==='goal'&&exactKeys(body,['kind','scopeVersion','body','previousAdoption'])){
-      if(body.previousAdoption!==current.currentAdoption)throw new Error('owner_scope_previous_version_changed');
-      proposal={kind:'adopt_scope',scopeId:current.scopeId,scopeVersion:body.scopeVersion,body:body.body,previousAdoption:current.currentAdoption};
+      if(body.previousAdoption!==current.latestAdoption)throw new Error('owner_scope_previous_version_changed');
+      proposal={kind:'adopt_scope',scopeId:current.scopeId,scopeVersion:body.scopeVersion,body:body.body,previousAdoption:current.latestAdoption};
     }else if(body?.kind==='delegate'&&exactKeys(body,['kind','adoption','roles','actions','paths','resourceRefs','expiresAt'])){
       if(body.adoption!==current.currentAdoption)throw new Error('current_adopted_scope_required');
       proposal={kind:'delegate',adoption:body.adoption,roles:body.roles,targets:[current.target],actions:body.actions,paths:body.paths,resourceRefs:body.resourceRefs,expiresAt:body.expiresAt};

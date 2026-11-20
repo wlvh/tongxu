@@ -6,12 +6,14 @@ import {isAbsolute,resolve,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {exactKeys} from './authority-contract.js';
 import {canonical} from './comparison.js';
+import {chatId} from './project-chat-contract.js';
 import {hash,privateDirectory} from './snapshot.js';
 import {discoverAIEntries,inspectAIProvider,requireModelChoice,validateModelChoice,type AIProvider,type AIModelChoice,type AICatalogConfig} from './ai-catalog.js';
 import {selectExternalExecutable} from './external-executable.js';
 import {externalExecutableFamily} from './external-executable.js';
 import type {MessageParticipant} from './message-contract.js';
-import {assembleRolePrompt} from './role-prompts.js';
+import {assembleRolePrompt, upstreamRevision} from './role-prompts.js';
+import {firstCodingWorkflowRevision,readCodingWorkflowSource,readCodingWorkflowUpstream} from './coding-workflow-source.js';
 
 export const aiRoles=[
   {id:'secretary',name:'工作秘书',need:'scopedTools',description:'读取项目原报告，或协调用户明确选定的已审定工作'},
@@ -39,6 +41,7 @@ export type AIRuntimeChoice=AIModelChoice&{tool:AIProgram;executable:string;reso
 export type AISettingsConfig=AICatalogConfig&{disabledMcpServers:string[]};
 export type AISettingsScope={account:{id:number};repository:{id:number;nodeId:string;fullName:string}};
 export type AIPreferenceSnapshot={revision:number;scope:AISettingsScope;roles:Partial<Record<AIRole,AIRuntimeChoice>>;errors?:Partial<Record<AIRole,string>>};
+export type WorkflowActivationEvidence={runtimeHead:string;runtimeFilesSha256:string;operation:string;materialSha256:string;testReport:string};
 const context=new AsyncLocalStorage<AIPreferenceSnapshot>();
 export const withAIPreferences=<T>(snapshot:AIPreferenceSnapshot,fn:()=>T):T=>context.run(structuredClone(snapshot),fn);
 export const currentAIPreferences=(roles?:AIRole[])=>{const snapshot=context.getStore();if(!snapshot)return null;const copy=structuredClone(snapshot);if(roles){copy.roles=Object.fromEntries(Object.entries(copy.roles).filter(([role])=>roles.includes(role as AIRole)));copy.errors=Object.fromEntries(Object.entries(copy.errors??{}).filter(([role])=>roles.includes(role as AIRole)));}return copy;};
@@ -81,8 +84,9 @@ const scopeKey=(s:AISettingsScope)=>{if(!Number.isSafeInteger(s.account.id)||s.a
  * supply tools, filesystem permissions, credentials, billing or merge rights. */
 export class AISettings{
   private scanning:Promise<AIProvider[]>|undefined;
+  private workflowRequests=new Map<string,{mode:string;result:Promise<unknown>}>();
   private constructor(private config:AISettingsConfig,private db:DatabaseSync,private probe:typeof inspectAIProvider,private secretaryExecutable?:string){}
-  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL)');return new AISettings(config,db,probe,secretaryExecutable);}
+  static async open(config:AISettingsConfig,probe=inspectAIProvider,secretaryExecutable?:string){validateAISettingsConfig(config);await mkdir(config.root,{recursive:true,mode:0o700});await privateDirectory(config.root,false);const file=join(config.root,'settings.sqlite');try{await writeFile(file,'',{flag:'wx',mode:0o600});}catch(e:any){if(e.code!=='EEXIST')throw e;}const db=new DatabaseSync(file);db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS catalogs(id INTEGER PRIMARY KEY AUTOINCREMENT,observed TEXT NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preferences(scope TEXT PRIMARY KEY,revision INTEGER NOT NULL,body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workflow_checks(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request)); CREATE TABLE IF NOT EXISTS workflow_observations(scope TEXT NOT NULL,request TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,request)); CREATE TABLE IF NOT EXISTS workflow_adoption(scope TEXT PRIMARY KEY,body TEXT NOT NULL)');return new AISettings(config,db,probe,secretaryExecutable);}
   private catalog(){const row=this.db.prepare('SELECT body FROM catalogs ORDER BY id DESC LIMIT 1').get() as {body:string}|undefined;return row?JSON.parse(row.body) as AIProvider[]:[];}
   private prefs(scope:AISettingsScope){const row=this.db.prepare('SELECT revision,body FROM preferences WHERE scope=?').get(scopeKey(scope)) as {revision:number;body:string}|undefined;return row?{revision:row.revision,choices:JSON.parse(row.body) as Partial<Record<AIRole,AISettingChoice>>}:{revision:0,choices:{}};}
   defaultSecretary(){
@@ -92,6 +96,101 @@ export class AISettings{
   }
   state(scope:AISettingsScope){return {defaults:{secretary:this.defaultSecretary()},roles:aiRoles.map(r=>({...r,...aiRoleUsage[r.id]})),catalog:this.catalog().map(({evidence,...p})=>p),...this.prefs(scope),project:scope.repository,scanning:!!this.scanning,modelInputsFromDiscovery:0,appliesTo:'new_unstarted_runs',historicalRunsUnchanged:true};}
   async prompt(role:string){if(!aiRoles.some(r=>r.id===role))throw new Error('ai_role_not_found');return {role,assembly:await assembleRolePrompt(role as AIRole),meaning:'当前公共边界、角色与固定上游提示全文。每次实际执行还会加入该任务的材料、工具和输出要求，并随原运行保存；此处不是某次历史运行的完整输入。',modelInputs:0};}
+  private workflowCheck(scope:AISettingsScope,request?:string){
+    const key=scopeKey(scope);
+    const result=request
+      ?this.db.prepare('SELECT body FROM workflow_checks WHERE scope=? AND request=?').get(key,request)
+      :this.db.prepare('SELECT body FROM workflow_checks WHERE scope=? ORDER BY rowid DESC LIMIT 1').get(key);
+    return result?JSON.parse(result.body as string):null;
+  }
+  async checkWorkflow(scope:AISettingsScope,input:unknown,verify:()=>Promise<void>,observe=readCodingWorkflowUpstream){
+    const b=input as {requestId:string;mode:string};
+    if(!exactKeys(b,['requestId','mode'])||!chatId(b.requestId)||!['first-adoption','upstream-main'].includes(b.mode))throw new Error('coding_workflow_request_invalid');
+    const key=canonical([scopeKey(scope),b.requestId]),active=this.workflowRequests.get(key);
+    if(active){
+      if(active.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return active.result;
+    }
+    const result=this.finishWorkflowCheck(scope,b,verify,observe).finally(()=>this.workflowRequests.delete(key));
+    this.workflowRequests.set(key,{mode:b.mode,result});
+    return result;
+  }
+  private async finishWorkflowCheck(scope:AISettingsScope,b:{requestId:string;mode:string},verify:()=>Promise<void>,observe:typeof readCodingWorkflowUpstream){
+    const current=()=>{
+      const saved=this.workflowCheck(scope,b.requestId);
+      if(saved&&saved.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return saved;
+    };
+    const original=current();if(original)return original;
+    const scopeId=scopeKey(scope);
+    const observation=()=>{
+      const row=this.db.prepare('SELECT body FROM workflow_observations WHERE scope=? AND request=?').get(scopeId,b.requestId);
+      if(!row)return null;
+      const value=JSON.parse(row.body as string) as {mode:string;main:string;firstMerged:boolean;observedAt:string};
+      if(value.mode!==b.mode)throw new Error('coding_workflow_request_changed');
+      return value;
+    };
+    let observed=observation();
+    if(!observed){
+      const upstream=await observe();
+      if(!/^[a-f0-9]{40}$/.test(upstream.main)||typeof upstream.firstMerged!=='boolean')throw new Error('coding_workflow_upstream_invalid');
+      this.db.prepare('INSERT OR IGNORE INTO workflow_observations VALUES (?,?,?)').run(scopeId,b.requestId,canonical({...upstream,mode:b.mode,observedAt:new Date().toISOString()}));
+      observed=observation()!;
+    }
+    const selected=b.mode==='first-adoption'?firstCodingWorkflowRevision:observed.main;
+    let packageSha256:string|null=null,reason:string;
+    if(b.mode==='first-adoption'&&!observed.firstMerged)reason='coding_workflow_first_revision_not_merged';
+    else if(selected!==firstCodingWorkflowRevision)reason='coding_workflow_candidate_package_unavailable';
+    else try{
+      const {identity}=await readCodingWorkflowSource();
+      packageSha256=identity.packageSha256;reason='coding_workflow_controls_pending';
+    }catch(error){reason=error instanceof Error?error.message:'coding_workflow_source_unavailable';}
+    await verify();
+    const record={requestId:b.requestId,mode:b.mode,selectedRevision:selected,observedMain:observed.main,
+      observedAt:observed.observedAt,packageSha256,reason,activeRevision:this.workflowRevision(scope),activated:false,modelInputs:0};
+    this.db.prepare('INSERT OR IGNORE INTO workflow_checks(scope,request,body) VALUES (?,?,?)').run(scopeKey(scope),b.requestId,canonical(record));
+    return current();
+  }
+  private adoptedWorkflow(scope:AISettingsScope){
+    const saved=this.db.prepare('SELECT body FROM workflow_adoption WHERE scope=?').get(scopeKey(scope));
+    return saved?JSON.parse(saved.body as string):null;
+  }
+  workflowRevision(scope:AISettingsScope){return (this.adoptedWorkflow(scope)?.revision??upstreamRevision) as string;}
+  async activateWorkflow(scope:AISettingsScope,input:unknown,verify:()=>Promise<void>,
+    proof:(revision:string)=>Promise<WorkflowActivationEvidence|null>){
+    const b=input as {checkRequestId:string;revision:string};
+    if(!exactKeys(b,['checkRequestId','revision'])||!chatId(b.checkRequestId)||b.revision!==firstCodingWorkflowRevision)
+      throw new Error('coding_workflow_request_invalid');
+    const check=this.workflowCheck(scope,b.checkRequestId);
+    const {identity}=await readCodingWorkflowSource();
+    if(!check||check.selectedRevision!==b.revision||check.packageSha256!==identity.packageSha256)
+      throw new Error('coding_workflow_checked_candidate_required');
+    const original=this.adoptedWorkflow(scope);
+    if(original?.revision===b.revision)return original;
+    await verify();
+    const evidence=await proof(b.revision);
+    if(!evidence||!/^[a-f0-9]{40}$/.test(evidence.runtimeHead)||!/^[a-f0-9]{64}$/.test(evidence.runtimeFilesSha256)||!chatId(evidence.operation)||
+       !/^[a-f0-9]{64}$/.test(evidence.materialSha256)||typeof evidence.testReport!=='string'||!evidence.testReport)
+      throw new Error('coding_workflow_activation_evidence_required');
+    await verify();
+    const adoption={revision:b.revision,previousRevision:upstreamRevision,packageSha256:identity.packageSha256,
+      checkRequestId:b.checkRequestId,evidence,activatedAt:new Date().toISOString()};
+    this.db.prepare('INSERT OR IGNORE INTO workflow_adoption VALUES (?,?)').run(scopeKey(scope),canonical(adoption));
+    return this.adoptedWorkflow(scope);
+  }
+  async workflow(use?: string,scope?:AISettingsScope) {
+    const {prompt,entrypointSource:_,...source} = await readCodingWorkflowSource();
+    const adopted=scope?this.adoptedWorkflow(scope):null;
+    return {
+      activeRevision: adopted?.revision??upstreamRevision,
+      candidate: source,
+      status: adopted?'active':'controls_pending',
+      ...(adopted?{adopted}:{}),
+      ...(scope?{check:this.workflowCheck(scope)}:{}),
+      ...(use ? {assembly: prompt(use)} : {}),
+      modelInputs: 0,
+    };
+  }
   async scan(scope:AISettingsScope){if(!this.scanning){this.scanning=(async()=>{const entries=await discoverAIEntries(this.config.configured),out:AIProvider[]=[];for(const entry of entries){const directory=join(this.config.root,'discovery',randomUUID());await mkdir(join(this.config.root,'discovery'),{recursive:true,mode:0o700});out.push(await this.probe(entry.tool,entry.path,directory,this.config.disabledMcpServers));}for(const tool of additionalPrograms)if(!entries.some(e=>e.tool===tool))out.push({id:'missing-'+tool,tool,path:'',installed:false,version:null,available:false,reason:'ai_program_not_installed',authentication:'unknown',models:[],observedAt:new Date().toISOString(),capabilities:{readonlyMessages:false,scopedTools:false,ownedControl:false,controlledReports:false,impactReports:false},evidence:''});this.db.prepare('INSERT INTO catalogs(observed,body) VALUES (?,?)').run(new Date().toISOString(),canonical(out));return out;})().finally(()=>{this.scanning=undefined;});}await this.scanning;return this.state(scope);}
   async change(scope:AISettingsScope,body:unknown){
     const b=body as any;if(!exactKeys(b,['revision','role','choice'])||!Number.isSafeInteger(b.revision)||b.revision<0||!aiRoles.some(r=>r.id===b.role)||!(b.choice===null||exactKeys(b.choice,['providerId','model','effort'])&&typeof b.choice.providerId==='string'))throw new Error('ai_settings_request_invalid');
@@ -104,5 +203,5 @@ export class AISettings{
     const provider=this.catalog().find(p=>p.id===choice.providerId);if(!provider?.available)throw new Error('ai_selected_provider_unavailable');if(role==='implementer'&&provider.tool!=='codex')throw new Error('ai_implementer_codex_required');const need=aiRoles.find(r=>r.id===role)!.need;if(!provider.capabilities[need])throw new Error('ai_role_tools_not_supported');const model=requireModelChoice(provider.models,{model:choice.model,effort:choice.effort});return {tool:provider.tool,executable:provider.path,model:choice.model,effort:choice.effort,resolvedModel:model.resolvedId,settingsRevision:revision,role,project:{account:scope.account.id,repository:scope.repository.id,nodeId:scope.repository.nodeId},catalogObservedAt:provider.observedAt};
   }
   snapshot(scope:AISettingsScope):AIPreferenceSnapshot{const p=this.prefs(scope),roles:AIPreferenceSnapshot['roles']={},errors:AIPreferenceSnapshot['errors']={};for(const [role,choice] of Object.entries(p.choices))try{roles[role as AIRole]=this.resolveChoice(scope,role as AIRole,choice,p.revision);}catch(e){errors[role as AIRole]=e instanceof Error?e.message:'ai_selected_provider_unavailable';}return {revision:p.revision,scope:structuredClone(scope),roles,errors};}
-  async close(){await this.scanning?.catch(()=>{});this.db.close();}
+  async close(){await this.scanning?.catch(()=>{});await Promise.allSettled([...this.workflowRequests.values()].map(r=>r.result));this.db.close();}
 }

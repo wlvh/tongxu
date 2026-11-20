@@ -5,11 +5,13 @@ import {hash} from './snapshot.js';
 import {regular} from './repair-workspace.js';
 import {readWorkProposal} from './project-work-preparation.js';
 type Row=Record<string,any>;
+export const projectValidationConstraint='Implementer may read only the frozen validation definition of each explicitly started project work';
 export const readableValidationConstraint=(sha:string)=>'Implementer may read this frozen validation definition; no write permission: '+sha;
 /** Only the product-created work catalogue can identify this material. A
  * matching test hash alone, or an arbitrary installed catalogue, cannot. */
 export async function workValidationDefinition(entry:Row,request:Row){
- if(entry.materialView!=='selected_files'||!entry.workRequestId||!/^work-[a-f0-9-]{36}-v[1-9]\d*$/.test(entry.id)||!([request.id,request.continuation?.originalTarget?.requestId].includes(entry.workRequestId)))throw new Error('work_validation_definition_not_product_work');
+ const project=entry.projectFiles===true&&request.workspaceRequest.projectFiles===true;
+ if(!project&&entry.materialView!=='selected_files'||!entry.workRequestId||!/^work-[a-f0-9-]{36}-v[1-9]\d*$/.test(entry.id)||!([request.id,request.continuation?.originalTarget?.requestId].includes(entry.workRequestId)))throw new Error('work_validation_definition_not_product_work');
  const root=dirname(entry.root);if(entry.root!==join(root,'executions')||entry.testPlan!==join(root,'tests.json'))throw new Error('work_validation_definition_source_changed');
  const current=entry.currentCheck?assertWorkCurrent(entry.currentCheck):null,preparation=current?.binding.preparationDirectory??join(root,'preparation');
  if(current){const match=/^work-([a-f0-9-]{36})-v([1-9]\d*)$/.exec(entry.id)!;if(current.binding.work!==match[1]||current.binding.version!==Number(match[2])||current.binding.requestId!==entry.workRequestId||current.binding.H!==entry.H0||current.binding.issueBodySha256!==request.issue.bodySha256||!current.files[join(preparation,'input.json')])throw new Error('work_validation_definition_source_changed');
@@ -18,7 +20,7 @@ export async function workValidationDefinition(entry:Row,request:Row){
  const prepared=await readWorkProposal(preparation,{path:entry.objects,H:entry.H0,repository:entry.repository}),bytes=await regular(entry.testPlan),p=JSON.parse(bytes.toString()),script=prepared.proposal.validation.script;
  if(current&&(prepared.captureSha256!==current.binding.preparationCaptureSha256||prepared.inputSha256!==current.binding.preparationInputSha256||prepared.proposalDigest!==current.binding.proposalSha256))throw new Error('work_validation_definition_source_changed');
  if(prepared.validationProblem)throw new Error(prepared.validationProblem);
- if(input.issue?.bodySha256!==request.issue.bodySha256||canonical(entry.allowedPaths)!==canonical(prepared.proposal.allowedPaths)||canonical(entry.materialPaths)!==canonical(prepared.proposal.materialPaths)||canonical(entry.protectedPaths)!==canonical(prepared.proposal.protectedPaths)||!prepared.ready||hash(bytes)!==entry.testPlanSha256||request.workspaceRequest.testPlanSha256!==entry.testPlanSha256||p.tools?.length!==1||p.dependencyDirectory||canonical(p.tools[0])!==canonical({id:'work-acceptance',argv:[p.executor?.node,'--input-type=module','--eval',script],timeoutMs:30000}))throw new Error('work_validation_definition_source_changed');
+ if(input.issue?.bodySha256!==request.issue.bodySha256||canonical(entry.allowedPaths)!==canonical(project?[]:prepared.proposal.allowedPaths)||canonical(entry.materialPaths)!==canonical(prepared.proposal.materialPaths)||canonical(entry.protectedPaths)!==canonical(prepared.proposal.protectedPaths)||!prepared.ready||hash(bytes)!==entry.testPlanSha256||request.workspaceRequest.testPlanSha256!==entry.testPlanSha256||p.tools?.length!==1||p.dependencyDirectory||canonical(p.tools[0])!==canonical({id:'work-acceptance',argv:[p.executor?.node,'--input-type=module','--eval',script],timeoutMs:30000}))throw new Error('work_validation_definition_source_changed');
  return {kind:'work-frozen-validation-definition' as const,source:entry.id,workRequestId:entry.workRequestId,adoption:request.adoptedScope.adoption,preparationSha256:prepared.captureSha256,testPlanSha256:entry.testPlanSha256,scriptSha256:hash(script),description:prepared.proposal.validation.description,script,readOnly:true as const};
 }
 /** These are actual goals, material rules and evidence limits, not an action
@@ -28,4 +30,4 @@ export function definitionConsentContents(d:Row){return {
  rules:canonical({kind:'work-validation-material-rules',source:d.source,adoption:d.adoption,scriptSha256:d.scriptSha256,testPlanSha256:d.testPlanSha256,readableBy:'original_work_implementer',readOnly:true,executionPermissionGranted:false,additionalPathsGranted:false,logsReadable:false}),
  capabilities:canonical({kind:'work-validation-material-evidence',preparationSha256:d.preparationSha256,scriptSha256:d.scriptSha256,testPlanSha256:d.testPlanSha256,technicalPass:false,userOutcomeAccepted:false,description:'Only this exact frozen definition is readable; no capability or result acceptance.'})
 };}
-export function definitionScopeAllows(request:Row,d:Row){return request.adoptedScope.body.constraints.includes(readableValidationConstraint(d.scriptSha256));}
+export function definitionScopeAllows(request:Row,d:Row){const constraints=request.adoptedScope.body.constraints;return constraints.includes(readableValidationConstraint(d.scriptSha256))||request.workspaceRequest.projectFiles===true&&constraints.includes(projectValidationConstraint);}

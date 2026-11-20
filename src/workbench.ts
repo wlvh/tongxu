@@ -1,7 +1,7 @@
 import {ReceptionControls} from './reception-controls.js';
 import {FormalReviewControls,type FormalSourceReader,type FormalWorkbenchProject} from './formal-review-controls.js';
 import {IssueImplementationControls} from './issue-implementation-controls.js';
-import {ProjectChat} from './project-chat.js';
+import {ProjectChat,repairPredecessorMatches} from './project-chat.js';
 import {ProjectWork} from './project-work.js';
 import {ProjectWorkOwner,workOwnerPage} from './project-work-owner.js';
 import {AISettings,validateAISettingsConfig,withAIPreferences,type AISettingsConfig,type AIPreferenceSnapshot} from './ai-settings.js';
@@ -15,7 +15,9 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { QueueStore } from './queue-store.js';
 import { regular } from './repair-workspace.js';
 import { hash } from './snapshot.js';
+import {canonical} from './comparison.js';
 import type {OriginalImplementationContactHost} from './task-contact-choice.js';
+import type {FormalProjectWork,ReadRepairInbox} from './formal-repair-inbox.js';
 import {TaskControls,TaskControlRegistrationError} from './task-controls.js';
 import {exactKeys,isAuthorityDigest} from './authority-contract.js';
 import {messagePath} from './message-contract.js';
@@ -33,6 +35,7 @@ import {SecretaryControls} from './secretary-controls.js';
 import {ReturnControls} from './return-controls.js';
 
 type Row = Record<string, any>;
+const supplementLineagePending='formal_repair_supplement_lineage_pending';
 export type WorkbenchPlan = {
   schemaVersion: 1; kind: 'tongxu-local-workbench'|'tongxu-controlled-workbench'; title: string; goal: string;
   sources: Array<{ id: string; title: string; store: string; item: string }>;
@@ -157,14 +160,14 @@ export async function workbenchMessageReport(p:WorkbenchPlan,source:string,run:s
   const selected=p.sources.find(s=>s.id===source);if(!selected||!/^[a-f0-9]{64}$/.test(run)||!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(messageId))throw new Error('report_not_found');
   return QueueStore.observeMessageReport(selected.store,selected.item,run,messageId);
 }
-export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider;formalSourceReader?:FormalSourceReader;ownerWindowOpen?:(url:string)=>Promise<void>}) {
+export async function startWorkbench(planPath: string,runtimeIdentity?:WorkbenchRuntimeIdentity,dependencies?:{githubReader?:GitHubReaderFactory;aiProbe?:typeof inspectAIProvider;formalSourceReader?:FormalSourceReader;ownerWindowOpen?:(url:string)=>Promise<void>;workflowUpstream?:typeof import('./coding-workflow-source.js').readCodingWorkflowUpstream}) {
   const planBytes=await regular(planPath);if(runtimeIdentity&&hash(planBytes)!==runtimeIdentity.planSha256)throw new Error('workbench_runtime_plan_changed');
   const p = parseWorkbenchPlan(planBytes), token = randomBytes(32).toString('hex');
   const github=p.githubProjects?new GitHubProjects(dependencies?.githubReader):null;
   const ai=p.aiSettings?await AISettings.open(p.aiSettings,dependencies?.aiProbe,p.projectSecretary?.codexExecutable):null;
   let closing=false,host='';
   const workOwner=new ProjectWorkOwner(()=>host,dependencies?.ownerWindowOpen);
-  type ContactContext={sources:WorkbenchPlan['sources'];originalImplementation?:OriginalImplementationContactHost};
+  type ContactContext={sources:WorkbenchPlan['sources'];originalImplementation?:OriginalImplementationContactHost;scope?:ReturnType<GitHubProjects['selection']>};
   const loadLocal=async(plan:WorkbenchPlan,selectedSources?:ReadonlySet<string>,verify:()=>Promise<void>=async()=>{},project?:FormalWorkbenchProject,readPreferences?:()=>AIPreferenceSnapshot,contactContext?:ContactContext)=>{
     // Catalogue hashes still cover the original complete files. Only entries
     // belonging to this project's original sources load templates or controls.
@@ -180,7 +183,28 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
     const secretary=plan.secretary?await SecretaryControls.load(plan.secretary.path,plan.secretary.sha256,p.sources,selectedSources):null;
     const returns=plan.returnControls?await ReturnControls.load(plan.returnControls.path,plan.returnControls.sha256,p.sources,selectedSources):null;
     const receptions=plan.receptionControls?await ReceptionControls.load(plan.receptionControls.path,plan.receptionControls.sha256,p.sources,selectedSources,readPreferences):null;
-    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences):null;
+    const scope=contactContext?.scope;
+    const readInbox:ReadRepairInbox|undefined=scope&&p.projectSecretary?async(work,operation,round,H,executionKind,recheck)=>{
+      if(work.account!==scope.account.id||work.repository!==scope.repository.id||work.nodeId!==scope.repository.nodeId)
+        throw new Error('formal_original_project_work_changed');
+      const chat=await openProjectChat(),compiled=chat.compiledRepairSupplements(scope,work.target);
+      const settled:string[]=[];
+      if(compiled.length){
+        const controls=await openImplementation(scope);
+        for(const row of compiled){
+          const result=await controls.readSupplement(work.target,row.compiled,row.text,row.id);
+          if(result.ordinaryRepairSettled&&result.coveringCandidate===H)settled.push(row.compiled);
+        }
+      }
+      const receipts=chat.repairInbox(scope,work.target,operation,round,recheck,settled);
+      const projectWork=await openProjectWork();
+      return Promise.all(receipts.map(async receipt=>{
+        const approved=await projectWork.supplementReview({repository:scope.repository.fullName,target:work.target,H1:H,
+          requestId:'supplement-'+receipt.requestId,text:receipt.text},executionKind);
+        return {...receipt,...(approved?{revision:approved}:{})};
+      }));
+    }:undefined;
+    const formal=plan.formalReview?await FormalReviewControls.load(plan.formalReview.path,plan.formalReview.sha256,p.sources,selectedSources,dependencies?.formalSourceReader,verify,project,readPreferences,readInbox):null;
     return {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions};
   };
   type Local=Awaited<ReturnType<typeof loadLocal>>;
@@ -216,7 +240,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
   };
   const verifyProject=async(scope:ReturnType<GitHubProjects['selection']>)=>{if(closing)throw new Error('workbench_closing');await github!.confirmSelection(scope.account.id,scope.repository.id);github!.assertSelection(scope);};
   const implementations=new Map<string,Promise<IssueImplementationControls>>();
-  const openImplementation=async(scope:NonNullable<Awaited<ReturnType<GitHubProjects['confirmSelection']>>>)=>{
+  const openImplementation=async(scope:NonNullable<Awaited<ReturnType<GitHubProjects['confirmSelection']>>>):Promise<IssueImplementationControls>=>{
     if((!p.issueImplementation&&!p.projectWork)||!github)throw new Error('implementation_not_configured');
     const key=scope.account.id+':'+scope.repository.id;let selected=implementations.get(key);
     if(!selected){const ref=p.issueImplementation??await(await openProjectWork()).emptyCatalog();selected=IssueImplementationControls.load(ref.path,ref.sha256,scope.repository.fullName,async number=>{
@@ -233,17 +257,26 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       ]);
       for(const result of results)if(result.status==='rejected')throw result.reason;
     });return controls;});implementations.set(key,selected);selected.catch(()=>implementations.delete(key));}
-    const controls=await selected;if(p.projectWork){const work=await openProjectWork();await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
+    const controls=await selected;if(p.projectWork){const work=await openProjectWork();controls.setSupplementReview((input,kind)=>work.supplementReview(input,kind),input=>work.supplementReviewState(input));controls.setEndedRepair(async(target,id,text,operation,onPublished)=>(await formalForSupplement(scope,target,id,text,operation,onPublished))?.endedRepair);await controls.includeGenerated(work.catalogs(scope));controls.markGeneratedCurrent(work.currentSources(scope));}return controls;
   };
   let projectWork:Promise<ProjectWork>|undefined;
-  const openProjectWork=()=>{
+  const openProjectWork=():Promise<ProjectWork>=>{
     if(!p.projectWork||!github)throw new Error('project_work_not_configured');
     return projectWork??=ProjectWork.open(p.projectWork,async(scope,number)=>{
       const result=await github.read(new URL('http://127.0.0.1/api/github/repositories/'+scope.repository.id+'/issues/'+number+'?account='+scope.account.id)) as Row;return {...result.item,defaultHead:result.repository.defaultHead};
-    },verifyProject,openImplementation).catch(error=>{projectWork=undefined;throw error;});
+    },verifyProject,openImplementation,scope=>ai?.workflowRevision(scope)).catch(error=>{projectWork=undefined;throw error;});
   };
   let projectChat:Promise<ProjectChat>|undefined;
-  const openProjectChat=()=>{
+  const formalForSupplement=async(scope:ReturnType<GitHubProjects['selection']>,...args:Parameters<FormalReviewControls['workRepairInbox']>)=>{
+    if(!p.formalReview||!p.projectWork)return null;
+    const loaded=await locals.get('project:'+scope.repository.id)?.value;
+    if(loaded?.formal)return loaded.formal.workRepairInbox(...args);
+    const context=await projectPlan(scope);
+    const ref=context.plan.formalReview;if(!ref)return null;
+    const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+    return formal.workRepairInbox(...args);
+  };
+  const openProjectChat=():Promise<ProjectChat>=>{
     if(!p.projectSecretary||!github)throw new Error('project_chat_not_configured');
     return projectChat??=ProjectChat.open(p.projectSecretary,async(scope,tool,args)=>{
       if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('project_chat_tool_arguments_invalid');
@@ -269,8 +302,80 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       throw new Error('project_chat_tool_not_allowed');
     },verifyProject,p.issueImplementation||p.projectWork?{
       targets:async scope=>(await openImplementation(scope)).supplementTargets(),
-      read:async(scope,target,compiled,text)=>(await openImplementation(scope)).readSupplement(target,compiled,text),
-      work:async(scope,target,id,text,before)=>(await openImplementation(scope)).workSupplement(target,id,text,before),
+      read:async(scope,target,compiled,text,receivedId)=>{
+        const original=()=>openImplementation(scope).then(controls=>controls.readSupplement(target,compiled,text,receivedId));
+        let compiledProblem:Error|undefined;
+        const compiledState=compiled?await original().catch(error=>{
+          if(!(error instanceof Error)||error.message!=='implementation_validation_capture_changed')throw error;
+          compiledProblem=error;return null;
+        }):null;
+        if(compiledState&&!compiledState.endedRepair&&!compiledState.resumable&&!compiledState.unregistered)return compiledState;
+        const repair=await formalForSupplement(scope,target,receivedId,text,compiledState?.endedRepair?.operation);
+        if(compiledProblem){
+          if(!repair?.delivered)throw compiledProblem;
+          return {...repair,ready:false,resumable:false,successful:false,coveringCandidate:null,
+            originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
+            reason:compiledProblem.message};
+        }
+        if(!repair)return compiledState??original();
+        if('repairedH' in repair&&repair.repairedH&&(!compiled||compiledState?.unregistered||'supersededBase' in repair)){
+          const pending=compiledState??await original();
+          if(pending.H1&&pending.H1!==repair.H1&&(!repair.endedRepair||!repairPredecessorMatches(repair.endedRepair,pending.H1))){
+            const controls=await openImplementation(scope);
+            if(await controls.ordinarySupplementContainsRepair(target,pending.H1,repair.repairedH))return pending;
+            return {...repair,H1:null,endedRepair:undefined,resumable:false,reason:supplementLineagePending};
+          }
+        }
+        if('supersededBase' in repair)return {...repair,H1:null,resumable:false};
+        if(compiled&&!repair.delivered&&!repair.endedRepair?.published)return compiledState??original();
+        if(repair.adopted)return repair;
+        const pending=repair.endedRepair?.published&&(!compiledState||compiledState.unregistered)
+          ?await (await openImplementation(scope)).readSupplement(target,compiled,text,receivedId,repair.endedRepair).catch(error=>({reason:(error as Error).message}) as Row)
+          :compiledState??await original().catch(()=>null);
+        if(compiled&&pending?.endedRepair){
+          return {...pending,resumable:pending.resumable&&!!repair.endedRepair,
+            endedRepair:pending.endedRepair,originalFormalDelivery:'recipient' in repair?{recipient:repair.recipient,report:repair.report}:null,
+            reason:pending.resumable&&!repair.endedRepair?repair.reason:pending.reason};
+        }
+        if(repair.endedRepair){
+          if(pending?.H1!==repair.endedRepair.H)return {...repair,endedRepair:undefined,reason:pending?.reason??'formal_repair_supplement_current_base_required'};
+          return {...repair,ready:!compiled&&pending.ready,resumable:!!compiled&&pending.resumable,
+            canRequestReview:pending.canRequestReview,planning:pending.planning,continuationBase:repair.endedRepair.H,
+            reason:pending.ready||pending.resumable?'formal_repair_supplement_ordinary_ready':pending.reason??repair.reason};
+        }
+        if(!repair.owned)return repair;
+        return {...repair,canRequestReview:pending?.H1===repair.H1&&pending?.canRequestReview,planning:pending?.H1===repair.H1?pending?.planning:undefined};
+      },
+      work:async(scope,target,id,text,before,endedRepair)=>{
+        const controls=await openImplementation(scope);
+        if(!endedRepair){
+          if((await formalForSupplement(scope,target))?.owned)throw new Error('formal_repair_supplement_waiting_checkpoint');
+          const receivedId=id.slice('supplement-'.length),repair=await formalForSupplement(scope,target,receivedId,text);
+          if(repair&&'repairedH' in repair&&repair.repairedH){
+            const {H1}=await controls.readSupplement(target,null,text,receivedId);
+            if(!H1||!await controls.ordinarySupplementContainsRepair(target,H1,repair.repairedH))throw new Error(supplementLineagePending);
+          }
+        }
+        return controls.workSupplement(target,id,text,before,endedRepair);
+      },
+      ...(p.projectWork?{review:async(scope:Parameters<ProjectChat['list']>[0],target:import('./project-chat.js').SupplementTarget,id:string,text:string,stillCurrent:()=>void)=>{
+        const repair=await formalForSupplement(scope,target,id,text),ended=repair?.endedRepair;
+        if(repair&&'changedBase' in repair&&repair.changedBase&&!ended?.published)throw new Error(repair.reason??'formal_repair_supplement_review_current_required');
+        const controls=await openImplementation(scope);
+        let published=ended?.published?ended:undefined;
+        if(repair&&(!ended||published&&!repair.delivered)){
+          const H=(await controls.readSupplement(target,null,text,id)).H1;
+          if('repairedH' in repair&&repair.repairedH&&H&&H!==repair.H1&&(!published||!repairPredecessorMatches(published,H))){
+            if(!await controls.ordinarySupplementContainsRepair(target,H,repair.repairedH))throw new Error(supplementLineagePending);
+            published=undefined;
+          }else if(!ended&&('supersededBase' in repair||H!==repair.H1))throw new Error('formal_repair_supplement_current_base_required');
+        }
+        const prepared=await controls.supplementPlanningInput(target,id,text,published);
+        return (await openProjectWork()).reviewSupplement(scope,prepared,stillCurrent,published?async()=>{
+          const proof=(await formalForSupplement(scope,target,id,text,published.operation))?.endedRepair;
+          if(!proof||canonical(proof)!==canonical(published))throw new Error('formal_repair_supplement_current_base_required');
+        }:undefined);
+      }}:{}),
       cancel:async(scope,target,id,text)=>{await(await openImplementation(scope)).cancelSupplement(target,id,text);}
     }:undefined,p.issueImplementation||p.projectWork?{
       options:async scope=>(await openImplementation(scope)).options().flatMap(entry=>entry.issues.map(issue=>({source:entry.id,issueNumber:issue.number,title:'Issue #'+issue.number+' · '+issue.goal}))),
@@ -305,7 +410,7 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
         if(!exactKeys(JSON.parse(Buffer.concat(chunks).toString()),[]))throw new Error('project_work_confirmation_invalid');
         if(url.pathname.endsWith('/decline'))json(res,200,workOwner.decline(capability[1]!));
-        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();if(payload.purpose==='validation')return work.approveValidationMaterial(scope,id,payload);return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload)):work.start(scope,id,payload);}));return;
+        else json(res,202,await workOwner.approve(capability[1]!,async(scope,id,payload)=>{const work=await openProjectWork();if(payload.purpose==='validation')return work.approveValidationMaterial(scope,id,payload);return ai?withAIPreferences(ai.snapshot(scope),()=>work.start(scope,id,payload,true)):work.start(scope,id,payload,true);}));return;
       }
       if(url.pathname==='/api/entry'||url.pathname.startsWith('/api/github/')){
         if(!authorized(req)){json(res,401,{error:'viewer_key_required'});return;}
@@ -330,8 +435,13 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
       if(url.pathname==='/api/project-secretary/stop'&&req.method==='POST'){
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'project_chat_stop_invalid'});return;}chunks.push(Buffer.from(chunk));}
-        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');
-        const chat=await openProjectChat();json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId));return;
+        const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
+        const withdrawQueued=body?.withdrawQueued===true;
+        if(!exactKeys(body,withdrawQueued?['requestId','withdrawQueued']:['requestId']))throw new Error('project_chat_stop_invalid');
+        const chat=await openProjectChat();
+        try{json(res,200,await chat.stopSelected(Number(req.headers['x-tongxu-account']),Number(req.headers['x-tongxu-project']),body.requestId,withdrawQueued));}
+        catch(e){if(!(e instanceof Error)||e.message!=='project_chat_withdrawal_state_changed')throw e;json(res,409,{error:e.message});}
+        return;
       }
       const formalStop=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/stop$/.exec(url.pathname);
       if(formalStop&&req.method==='POST'){
@@ -350,20 +460,69 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!selection)throw new Error('project_work_requires_project');
         if(!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/project-work'){json(res,200,{available:false,works:[]});return;}throw new Error('project_work_not_configured');}
         const work=await openProjectWork(),detail=/^\/api\/project-work\/([0-9a-f-]{36})$/.exec(url.pathname);
-        if(req.method==='GET'){if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});else if(detail)json(res,200,await work.detail(selection,detail[1]!));else json(res,404,{error:'route_not_found'});return;}
-        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|recheck|restart-failure)$/.exec(url.pathname);
-        if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
+        if(req.method==='GET'){
+          if(url.pathname==='/api/project-work')json(res,200,{...await work.state(selection),ownerPending:workOwner.pendingFor(selection)});
+          else if(detail){
+            const result=await work.detail(selection,detail[1]!),delivery=result.draft.delivery;
+            const combination=result.integrationValidation;
+            const formalWork=async()=>{
+              const context=await projectPlan(selection),ref=context.plan.formalReview;
+              if(!ref||context.selectedSourcesUnknown)return null;
+              const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+              const [work,combined]=await Promise.all([
+                formal.forWork(result.draft.issue,delivery!.H),
+                combination?.state==='tested'?formal.forWork(result.draft.issue,combination.H):null
+              ]);
+              return {work,combined:combined?.candidate.B===combination?.B?combined:null};
+            };
+            const reviews=p.formalReview&&result.resultStatus.current?await formalWork().catch(()=>null):null;
+            json(res,200,{...result,formalWork:reviews?.work?{...reviews.work,projectWorkId:result.draft.id}:null,
+              integrationFormalWork:reviews?.combined?{...reviews.combined,projectWorkId:result.draft.id}:null});
+          }else json(res,404,{error:'route_not_found'});
+          return;
+        }
+        const action=/^\/api\/project-work\/([0-9a-f-]{36})\/(prepare|start|receive|continue-first-input|correct-validation|reconcile-validation|recheck|restart-failure|explain|review-issue|integration-preview|integration-verify|integration-review)$/.exec(url.pathname);
+        if(req.method!=='POST'||!action&&!['/api/project-work/settings','/api/project-work/create','/api/project-work/draft-issue'].includes(url.pathname)){json(res,405,{error:'project_work_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('project_work_request_limit');chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
         if(url.pathname.endsWith('/settings'))json(res,200,await work.settings(selection,body));
+        else if(url.pathname.endsWith('/draft-issue'))json(res,202,await work.draftIssue(selection,body));
         else if(url.pathname.endsWith('/create')){const draft=await work.create(selection,body);(await openProjectChat()).ensureWorkConversation(selection,draft.conversationId,'工作：Issue #'+draft.issue.number+' '+draft.issue.title);json(res,200,draft);}
         else if(action?.[2]==='prepare')json(res,202,await withAI(()=>work.prepare(selection,action[1]!,body)));
         else if(action?.[2]==='start'){try{const preview=await withAI(()=>work.confirmation(selection,action[1]!,body)),payload={...body,...(preview.currentCheckSha256?{currentCheckSha256:preview.currentCheckSha256}:{})},result=preview.active?{id:action[1]!,active:true,originalRetained:true}:preview.alreadyAuthorized?await withAI(()=>work.start(selection,action[1]!,payload)):await workOwner.request(selection,action[1]!,payload,preview);if(!preview.active&&!preview.alreadyAuthorized)work.recordActionProblem(selection,action[1]!,body.version,null);json(res,202,result);}catch(e){work.recordActionProblem(selection,action[1]!,body.version,safeError(e));throw e;}}
         else if(action?.[2]==='recheck'||action?.[2]==='restart-failure'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,action[2]==='recheck'?await withAI(()=>work.recheck(selection,action[1]!)):await withAI(()=>work.restartFailure(selection,action[1]!)));}
-        else if(action?.[2]==='correct-validation'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
-        else if(action?.[2]==='continue-first-input'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!)));}
-        else if(action?.[2]==='receive'){if(!exactKeys(body,[]))throw new Error('project_work_request_invalid');json(res,200,await work.receive(selection,action[1]!));}
+        else if(action?.[2]==='correct-validation'){if(!exactKeys(body,body?.requestId===undefined?[]:['requestId'])||body?.requestId!==undefined&&typeof body.requestId!=='string')throw new Error('project_work_request_invalid');const preview=await work.validationConfirmation(selection,action[1]!,body.requestId);json(res,202,preview.alreadyAuthorized?await work.correctValidation(selection,action[1]!,preview.requestId):await workOwner.request(selection,action[1]!,{version:preview.version!,proposalSha256:preview.proposalSha256!,purpose:'validation'},preview));}
+        else if(action?.[2]==='continue-first-input'){
+          if(!exactKeys(body,[])&&(!exactKeys(body,['requestId'])||typeof body.requestId!=='string'))throw new Error('project_work_request_invalid');
+          json(res,202,await withAI(()=>work.continueFirstInput(selection,action[1]!,body.requestId)));
+        }
+        else if(action?.[2]==='review-issue')json(res,202,await withAI(()=>work.reviewIssue(selection,action[1]!,body)));
+        else if(action?.[2]==='reconcile-validation'){
+          if(!exactKeys(body,['requestId'])||typeof body.requestId!=='string')throw new Error('project_work_request_invalid');
+          const {draft}=await work.detail(selection,action[1]!);
+          if(!draft.source||draft.stopRequested)throw new Error('project_work_original_not_registered');
+          const controls=await openImplementation(selection),request=await controls.validationRequest(draft.source,draft.requestId,body.requestId);
+          json(res,200,await controls.reconcileValidation(draft.source,request));
+        }
+        else if(action?.[2]==='integration-preview'||action?.[2]==='integration-verify')json(res,200,await work.integrationPreview(selection,action[1]!,body,action[2]==='integration-verify'));
+        else if(action?.[2]==='integration-review'){
+          if(p.formalReview){
+            const result=await work.detail(selection,action[1]!),context=await projectPlan(selection),ref=context.plan.formalReview;
+            if(ref&&result.integrationValidation?.state==='tested'){
+              const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed);
+              const original=await formal.forWork(result.draft.issue,result.integrationValidation.H);
+              if(original?.candidate.B===result.integrationValidation.B)throw new Error('project_work_integration_use_original_review');
+            }
+          }
+          json(res,202,await withAI(()=>work.reviewIntegration(selection,action[1]!,body)));
+        }
+        else if(action?.[2]==='explain')json(res,202,await work.explain(selection,action[1]!,body));
+        else if(action?.[2]==='receive'){
+          const exact=exactKeys(body,['H','requestId'])&&typeof body.H==='string'&&/^[a-f0-9]{40}$/.test(body.H)&&typeof body.requestId==='string';
+          if(!exact&&!exactKeys(body,[]))throw new Error('project_work_request_invalid');
+          json(res,200,await work.receive(selection,action[1]!,exact?body:undefined));
+        }
         return;
       }
       if(url.pathname.startsWith('/api/implementation')){
@@ -371,25 +530,55 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!p.issueImplementation&&!p.projectWork){if(req.method==='GET'&&url.pathname==='/api/implementation'){json(res,200,{available:false,options:[],entries:[]});return;}throw new Error('implementation_not_configured');}
         const controls=await openImplementation(selection);
         if(req.method==='GET'&&url.pathname==='/api/implementation'){json(res,200,{available:true,options:controls.options(),entries:await controls.state()});return;}
-        const report=/^\/api\/implementation-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$/.exec(url.pathname);
-        if(req.method==='GET'&&report){json(res,200,await controls.report(report[1]!,report[2]!));return;}
+        const report=/^\/api\/implementation-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})(?:\/logs\/([A-Za-z0-9_-]{1,64})\/(stdout|stderr))?$/.exec(url.pathname);
+        if(req.method==='GET'&&report){
+          const [,entry,request,tool,stream]=report;
+          if(tool&&(stream==='stdout'||stream==='stderr'))reply(res,200,'application/octet-stream',await controls.failureLog(entry!,request!,{tool,stream}));
+          else json(res,200,await controls.report(entry!,request!));
+          return;
+        }
         const action=/^\/api\/implementation\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|cancel|stop|continue-first-input)$/.exec(url.pathname);
         if(req.method!=='POST'||!action){json(res,405,{error:'implementation_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'implementation_request_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
-        if(action[2]==='prepare'){json(res,200,await controls.prepare(action[1]!,body));return;}
+        const observe=()=>github!.repositoryObservation(selection.account.id,selection.repository.id);
+        if(action[2]==='prepare'){
+          const result=await controls.prepare(action[1]!,body);
+          json(res,200,{...result,repositoryObservation:observe()});return;
+        }
         if(!exactKeys(body,['requestId']))throw new Error('implementation_request_invalid');
-        json(res,['start','continue-first-input'].includes(action[2]!)?202:200,action[2]==='continue-first-input'?await controls.continueFirstInput(action[1]!,body.requestId):action[2]==='start'?await controls.begin(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
+        if(action[2]==='start'){
+          const result=await controls.begin(action[1]!,body.requestId);
+          json(res,202,{...result,repositoryObservation:observe()});return;
+        }
+        json(res,action[2]==='continue-first-input'?202:200,action[2]==='continue-first-input'?await controls.continueFirstInput(action[1]!,body.requestId):action[2]==='stop'?await controls.stop(action[1]!,body.requestId):await controls.cancel(action[1]!,body.requestId));return;
       }
       if(url.pathname.startsWith('/api/ai-settings')){
         if(!ai||!selection)throw new Error('ai_settings_not_configured');
+        const workflow=/^\/api\/ai-settings\/workflow(?:\/([a-z_]+))?$/.exec(url.pathname);
+        if(req.method==='GET'&&workflow){json(res,200,await ai.workflow(workflow[1],selection));return;}
         const prompt=/^\/api\/ai-settings\/prompts\/([a-z_]+)$/.exec(url.pathname);if(req.method==='GET'&&prompt){json(res,200,await ai.prompt(prompt[1]!));return;}
         if(req.method==='GET'&&url.pathname==='/api/ai-settings'){json(res,200,ai.state(selection));return;}
-        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/ai-settings/scan','/api/ai-settings/role','/api/ai-settings/workflow/check','/api/ai-settings/workflow/activate'].includes(url.pathname)){json(res,405,{error:'ai_settings_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>8192){json(res,413,{error:'ai_settings_request_invalid'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
+        if(url.pathname.endsWith('/workflow/check')){json(res,200,await ai.checkWorkflow(selection,body,()=>verifyProject(selection),dependencies?.workflowUpstream));return;}
+        if(url.pathname.endsWith('/workflow/activate')){
+          const activation=await ai.activateWorkflow(selection,body,()=>verifyProject(selection),async revision=>{
+            if(runtimeIdentity?.buildProofKind!=='tsc-complete-modules-v2'||!runtimeIdentity.emittedModulesSha256||
+               runtimeIdentity.reproducedRuntimeFilesSha256!==runtimeIdentity.runtimeFilesSha256||
+               !p.projectWork||!p.projectSecretary||!p.formalReview)return null;
+            const context=await projectPlan(selection);
+            if(context.selectedSourcesUnknown)return null;
+            const ref=context.plan.formalReview;if(!ref)return null;
+            const formal=await FormalReviewControls.load(ref.path,ref.sha256,p.sources,context.allowed,dependencies?.formalSourceReader,()=>verifyProject(selection));
+            const evidence=await formal.workflowReleaseProof(revision,runtimeIdentity.sourceHead,runtimeIdentity.runtimeFilesSha256);
+            return evidence?{...evidence,buildProofKind:runtimeIdentity.buildProofKind,emittedModulesSha256:runtimeIdentity.emittedModulesSha256}:null;
+          });
+          json(res,200,activation);return;
+        }
         if(url.pathname.endsWith('/scan')){if(!exactKeys(body,[]))throw new Error('ai_settings_request_invalid');const result=await ai.scan(selection);await verifyProject(selection);json(res,200,result);}else json(res,200,await ai.change(selection,body));return;
       }
       if(url.pathname.startsWith('/api/project-secretary')){
@@ -400,21 +589,33 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
           if(url.pathname==='/api/project-secretary'){const settings=ai?.state(selection),choice=settings?.choices.secretary,provider=settings?.catalog.find(p=>p.id===choice?.providerId);json(res,200,{...await chat.list(selection),...(p.projectWork?{projectWorks:(await(await openProjectWork()).state(selection)).works}:{}),timeoutMs:p.projectSecretary.timeoutMs,aiDefault:ai?.defaultSecretary()??{tool:'codex',path:p.projectSecretary.codexExecutable,source:'project_secretary_startup',observed:null,observedAt:null},aiChoice:choice?{tool:provider?.tool??null,model:choice.model,resolvedModel:provider?.models.find(m=>m.id===choice.model)?.resolvedId??null,effort:choice.effort,configured:true}:null});}
           else if(conversation)json(res,200,await chat.conversation(selection,conversation[1]!));else json(res,404,{error:'route_not_found'});return;
         }
-        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/continue-supplements','/api/project-secretary/continue-work','/api/project-secretary/cancel-work','/api/project-secretary/stop-work'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
+        if(req.method!=='POST'||!['/api/project-secretary/ask','/api/project-secretary/continue-question','/api/project-secretary/stop','/api/project-secretary/supplement','/api/project-secretary/cancel-supplement','/api/project-secretary/review-supplement','/api/project-secretary/continue-supplements','/api/project-secretary/continue-work','/api/project-secretary/cancel-work','/api/project-secretary/stop-work'].includes(url.pathname)){json(res,405,{error:'project_chat_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}
         const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>64*1024){json(res,413,{error:'project_chat_question_limit'});return;}chunks.push(Buffer.from(chunk));}
         const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));await verifyProject(selection);
-        if(url.pathname.endsWith('/supplement')){const result=await chat.receiveSupplement(selection,body);json(res,202,result);void chat.processSupplements(selection,body.target).catch(()=>{});return;}
+        if(url.pathname.endsWith('/continue-question')){
+          if(!exactKeys(body,['requestId']))throw new Error('project_chat_id_invalid');
+          json(res,202,await withAI(()=>chat.continueQuestion(selection,body.requestId)));return;
+        }
+        if(url.pathname.endsWith('/supplement')){
+          const result=await chat.receiveSupplement(selection,body);json(res,202,result);
+          for(const target of ('targets' in result?result.targets:[body.target])??[])void chat.processSupplements(selection,target).catch(()=>{});
+          return;
+        }
+        if(url.pathname.endsWith('/review-supplement')){
+          if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');
+          json(res,202,await withAI(()=>chat.reviewSupplement(selection,body.requestId)));return;
+        }
         if(url.pathname.endsWith('/cancel-supplement')){if(!exactKeys(body,['requestId']))throw new Error('project_supplement_invalid');json(res,200,await chat.cancelSupplement(selection,body.requestId));return;}
-        if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target));return;}
+        if(url.pathname.endsWith('/continue-supplements')){if(!exactKeys(body,['target']))throw new Error('project_supplement_invalid');json(res,202,await chat.processSupplements(selection,body.target,true));return;}
         if(url.pathname.endsWith('/continue-work')||url.pathname.endsWith('/cancel-work')||url.pathname.endsWith('/stop-work')){if(!exactKeys(body,['requestId']))throw new Error('project_work_request_invalid');json(res,200,url.pathname.endsWith('/cancel-work')?await chat.cancelWork(selection,body.requestId):url.pathname.endsWith('/stop-work')?await chat.stopWork(selection,body.requestId):await withAI(()=>chat.coordinateWork(selection,body.requestId)));return;}
-        if(url.pathname.endsWith('/ask'))json(res,202,await withAI(()=>chat.begin(selection,body)));else{if(!exactKeys(body,['requestId']))throw new Error('project_chat_stop_invalid');json(res,200,await chat.stopSelected(selection.account.id,selection.repository.id,body.requestId));}return;
+        json(res,202,await withAI(()=>chat.begin(selection,body)));return;
       }
       const context=selection?await projectPlan(selection):null,plan=context?.plan??p;
       const deferred=!!context?.project.unresolvedSourceCount&&!locals.has('project:'+selection?.repository.id);
       if(req.method!=='GET'&&(context?.selectedSourcesUnknown||deferred))throw new Error('workbench_project_sources_unknown');
       const localPlan:WorkbenchPlan={...plan,sources:plan.sources.filter(source=>p.sources.some(original=>original.id===source.id))};
-      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined,{sources:plan.sources,...(selection&&(p.issueImplementation||p.projectWork)?{originalImplementation:{
+      const {controls,deliveryControls,deliveryExecution,ownerControls,scopeFollowups,organization,overall,queueActions,polling,secretary,returns,formal,receptions}=await openLocal(localPlan,selection?'project:'+selection.repository.id:'legacy',context?.allowed,!deferred,selection?()=>verifyProject(selection):async()=>{},selection?{account:selection.account.id,repository:selection.repository.id,fullName:selection.repository.fullName}:undefined,ai&&selection?()=>ai.snapshot(selection):undefined,{sources:plan.sources,scope:selection??undefined,...(selection&&(p.issueImplementation||p.projectWork)?{originalImplementation:{
         target:async(store,target)=>(await openImplementation(selection)).ownerFeedbackTarget(store,target),
         proof:async(store,target)=>(await openImplementation(selection)).ownerFeedbackProof(store,target)
       }}:{})});
@@ -423,10 +624,35 @@ export async function startWorkbench(planPath: string,runtimeIdentity?:Workbench
         if(!formal){if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:false,entries:[]});return;}throw new Error('formal_review_not_configured');}
         if(req.method==='GET'&&url.pathname==='/api/formal-review'){json(res,200,{available:true,entries:await formal.state()});return;}
         const report=/^\/api\/formal-review-report\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/([a-f0-9-]{36})$/.exec(url.pathname);if(req.method==='GET'&&report){json(res,200,await formal.report(report[1]!,report[2]!));return;}
-        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
+        const action=/^\/api\/formal-review\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\/(prepare|start|check|replace-ended)$/.exec(url.pathname);if(req.method!=='POST'||!action){json(res,405,{error:'formal_route_not_allowed'});return;}
         if(req.headers.origin!=='http://'+host||req.headers['content-type']!=='application/json'){json(res,403,{error:'same_origin_json_required'});return;}const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>4096){json(res,413,{error:'formal_request_limit'});return;}chunks.push(Buffer.from(chunk));}const body=JSON.parse(new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks)));
-        if(action[2]==='prepare'){if(!exactKeys(body,['requestId']))throw new Error('formal_request_invalid');json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId)));return;}
+        if(action[2]==='prepare'){
+          const expected=body?.expectedCandidate;
+          const workId=body?.projectWorkId;
+          let projectWork:FormalProjectWork|undefined;
+          if(!exactKeys(body,['requestId',...(Object.hasOwn(body??{},'expectedCandidate')?['expectedCandidate']:[]),...(Object.hasOwn(body??{},'projectWorkId')?['projectWorkId']:[])])||
+             Object.hasOwn(body,'expectedCandidate')&&(!exactKeys(expected,['repository','pr','H','B','target'])||
+                !Number.isSafeInteger(expected.pr)||expected.pr<1||!['repository','H','B','target'].every(key=>typeof expected[key]==='string')))
+            throw new Error('formal_request_invalid');
+          if(Object.hasOwn(body,'projectWorkId')){
+            if(!selection||!expected||typeof workId!=='string'||!p.projectWork)throw new Error('formal_request_invalid');
+            const work=await(await openProjectWork()).detail(selection,workId);
+            const combination=work.integrationValidation;
+            const matchesCombined=combination?.state==='tested'&&combination.H===expected.H&&combination.B===expected.B;
+            const binding=work.resultStatus.current&&(work.draft.delivery?.H===expected.H||matchesCombined)?await formal.forWork(work.draft.issue,expected.H):null;
+            if(!binding||binding.entry!==action[1]||canonical(binding.candidate)!==canonical(expected))throw new Error('formal_candidate_or_requirements_changed');
+            if(p.projectSecretary){
+              const targets=await(await openImplementation(selection)).supplementTargets();
+              const original=targets.find(t=>t.source===work.draft.source&&t.requestId===work.draft.requestId);
+              if(!original)throw new Error('formal_original_project_work_changed');
+              const {title:_,...target}=original;
+              projectWork={id:workId,account:selection.account.id,repository:selection.repository.id,nodeId:selection.repository.nodeId,target};
+            }
+          }
+          json(res,200,await withAI(()=>formal.prepare(action[1]!,body.requestId,undefined,true,expected,projectWork)));return;
+        }
         if(action[2]==='check'){if(!exactKeys(body,[]))throw new Error('formal_request_invalid');await withAI(()=>formal.advance());json(res,200,{entries:await formal.state(),remotePublicationNotInferred:true});return;}
+        if(action[2]==='replace-ended'){if(!exactKeys(body,['operation','round']))throw new Error('formal_request_invalid');json(res,200,await formal.replaceEndedDual(action[1]!,body.operation,body.round));return;}
         if(!exactKeys(body,['operation']))throw new Error('formal_request_invalid');json(res,202,await withAI(()=>formal.begin(action[1]!,body.operation)));return;
       }
       if(req.method!=='GET'){

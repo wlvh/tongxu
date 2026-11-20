@@ -2,11 +2,11 @@
  * permission grants. Each program has an explicit local restriction profile. */
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {readFile,mkdir,access,readdir} from 'node:fs/promises';
+import {readFile,mkdir,access,readdir,lstat,realpath,symlink,unlink} from 'node:fs/promises';
 import {readFileSync,readdirSync,existsSync} from 'node:fs';
 import {join,dirname,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
-import {parse as parseToml} from 'smol-toml';
+import {parse as parseToml,stringify as stringifyToml} from 'smol-toml';
 import {parse as parseJavaScript} from 'acorn';
 import {LiveProcess,newStage,save,checkCapture} from './live-process.js';
 import {selectExternalExecutable,assertExternalExecutable} from './external-executable.js';
@@ -26,6 +26,43 @@ export function readConfigJson(b:Buffer):any{
 const read=async(p:string)=>{const b=await readFile(p);if(b.length>1024*1024)throw Error('external_cli_configuration_limit');return b;};
 const overrides=['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_APPLICATION_CREDENTIALS','GOOGLE_CLOUD_PROJECT','GOOGLE_CLOUD_LOCATION','GOOGLE_GENAI_USE_VERTEXAI','GOOGLE_GEMINI_BASE_URL','KIMI_MODEL_NAME','KIMI_CODE_BASE_URL','KIMI_CODE_OAUTH_HOST','KIMI_OAUTH_HOST','KIMI_CODE_CUSTOM_HEADERS','OPENCODE_API_KEY'];
 export type ExtraProfile={tool:AdditionalProgram;args:string[];env:Record<string,string>;files:Record<string,string>;configurationSha256:string;auth:'subscription'|'existing_account';allowedModelPrefixes:string[]};
+const kimiData='kimi-home',kimiDataConfig=kimiData+'/config.toml';
+const kimiModelFields=['provider','model','max_context_size','capabilities','display_name','support_efforts','default_effort'];
+
+async function isolateKimiData(home:string,directory:string,config:Record<string,any>,models:string[]){
+  const credentials=join(home,'credentials'),st=await lstat(credentials);
+  if(!st.isDirectory()||await realpath(credentials)!==credentials||st.uid!==process.getuid?.()||(st.mode&0o077))
+    throw Error('kimi_managed_credentials_storage_unverified');
+  if(!models.length||models.length>128||models.some(id=>!word(id)||['__proto__','prototype','constructor'].includes(id)))
+    throw Error('ai_subscription_not_confirmed');
+  const selected=models.includes(config.default_model)?config.default_model:models[0],provider=config.providers['managed:kimi-code'];
+  const retained=Object.fromEntries(models.map(id=>{
+    const model=config.models[id];
+    if(!word(model.model))throw Error('external_cli_configuration_invalid');
+    const defaults=Object.fromEntries(kimiModelFields.flatMap(key=>{
+      const value=model[key];
+      if(typeof value==='string'||Number.isSafeInteger(value)||Array.isArray(value)&&value.every(s=>typeof s==='string'))
+        return [[key,value]];
+      return [];
+    }));
+    return [id,defaults];
+  }));
+  const generated=stringifyToml({default_model:selected,providers:{'managed:kimi-code':{type:'kimi',
+    base_url:provider.base_url,oauth:{storage:'file',key:'oauth/kimi-code'}}},models:retained});
+  const isolated=join(directory,kimiData);
+  await mkdir(isolated,{mode:0o700});
+  await symlink(credentials,join(isolated,'credentials'),'dir');
+  return generated;
+}
+
+export async function retainKimiDataConfig(directory:string,profile:ExtraProfile,originals:Record<string,Buffer>){
+  if(!profile.env?.KIMI_CODE_HOME)return;
+  const source=await read(join(directory,kimiDataConfig));
+  if(profile.tool!=='kimi'||profile.env.KIMI_CODE_HOME!==join(directory,kimiData)||
+     profile.configurationSha256!==hash(source)||profile.files[kimiDataConfig]!==profile.configurationSha256)
+    throw Error('external_cli_configuration_changed');
+  originals[kimiDataConfig]=source;
+}
 export const extraProfileArgs=(tool:AdditionalProgram,directory:string)=>tool==='gemini'?['--acp','--admin-policy',join(directory,'deny-tools.toml'),'--extensions']:tool==='opencode'?['--pure','acp']:['acp'];
 export const extraInitializeParams=()=>({protocolVersion:1,clientInfo:{name:'tongxu-readonly',version:'0.1.0'},clientCapabilities:{fs:{readTextFile:true,writeTextFile:true},terminal:true}});
 export function extraProfileFiles(tool:AdditionalProgram,directory:string,system:string):Record<string,string>{
@@ -44,12 +81,18 @@ export async function prepareExtraProfile(tool:AdditionalProgram,directory:strin
   if(tool==='kimi'){
     if(!fixture){
       const home=process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code');if(!isAbsolute(home))throw Error('external_cli_configuration_invalid');const raw=await read(join(home,'config.toml')),config=parseToml(raw.toString()) as any;
-      if(config.hooks?.length||config.plugins||config.extra_agent_dirs?.length)throw Error('kimi_custom_startup_not_isolated');
-      for(const p of ['mcp.json','hooks.json','plugins'])if(await present(join(home,p)))throw Error('kimi_custom_startup_not_isolated');
       const provider=config.providers?.['managed:kimi-code'];
       if(!provider||provider.type!=='kimi'||provider.api_key||provider.api_key_env||provider.env||provider.custom_headers||provider.oauth?.storage!=='file'||provider.oauth?.key!=='oauth/kimi-code'||!['https://api.kimi.com/coding/v1','https://api.kimi.ai/coding/v1'].includes(String(provider.base_url).replace(/\/$/,'')))throw Error('ai_subscription_not_confirmed');
       allowedModelPrefixes=Object.entries(config.models??{}).filter(([,m]:any)=>m.provider==='managed:kimi-code').map(([id])=>id);
       configurationSha256=hash(raw);
+      const custom=(await Promise.all(['mcp.json','hooks.json','plugins','AGENTS.md'].map(path=>present(join(home,path))))).some(Boolean)||
+        config.hooks?.length||config.plugins||config.extra_agent_dirs?.length;
+      if(custom){
+        const isolated=await isolateKimiData(home,directory,config,allowedModelPrefixes);
+        env.KIMI_CODE_HOME=join(directory,kimiData);
+        files[kimiDataConfig]=isolated;
+        configurationSha256=hash(isolated);
+      }
     }
     Object.assign(env,{KIMI_CODE_NO_AUTO_UPDATE:'1',KIMI_DISABLE_TELEMETRY:'1',KIMI_DISABLE_CRON:'1',KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT:'0',KIMI_CODE_BACKGROUND_PRINT_BACKGROUND_MODE:'exit'});
   }else if(tool==='gemini'){
@@ -136,8 +179,13 @@ export class ExtraCliSession{
     for(const [p,sha]of Object.entries(this.profile.files)){const b=readFileSync(join(this.directory,p));if(b.length>1024*1024||hash(b)!==sha)throw Error('external_cli_profile_changed');}
     this.verifyProfileSync();this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');const index=this.rpc.events.length;
     const result=await this.rpc.request('session/prompt',{sessionId:this.session.sessionId,prompt:[{type:'text',text:input}]},timeoutMs,()=>{this.assertCanForward();if(this.rpc.exit)throw Error('executor_closed_before_input');beforeSendSync?.();},dispatchGate);
-    const window=this.rpc.events.slice(index);const parsed=parseAcpPrompt(window,this.session.sessionId,result,this.choice);if(this.rpc.failure)throw Error(this.rpc.failure);await this.verifyProfile();this.assertCanForward();
-    const requestId=this.rpc.events.find(m=>!m.method&&m.result===result)?.id;if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');return {final:parsed,requestId};
+    this.assertCanForward();
+    const terminal=this.rpc.events.findIndex((m,i)=>i>=index&&!m.method&&m.result===result);
+    const requestId=this.rpc.events[terminal]?.id;
+    if(!Number.isInteger(requestId))throw Error('external_cli_response_ambiguous');
+    const final=parseAcpPrompt(this.rpc.events.slice(index,terminal+1),this.session.sessionId,result,this.choice);
+    await this.verifyProfile();this.assertCanForward();
+    return {final,requestId};
   }
   private async verifyProfile(bootstrap=false){
     const deadline=Date.now()+2000;
@@ -150,21 +198,30 @@ export class ExtraCliSession{
    * configuration changes and any tool/agent admission still fail immediately. */
   private verifyProfileSync(allowPending=false){
     if(this.fixture||this.tool!=='kimi')return true;
-    const home=process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code');
+    const home=this.profile.env.KIMI_CODE_HOME||process.env.KIMI_CODE_HOME||join(homedir(),'.kimi-code');
     const configuration=readFileSync(join(home,'config.toml'));if(configuration.length>1024*1024)throw Error('external_cli_configuration_limit');
     if(hash(configuration)!==this.profile.configurationSha256)throw Error('external_cli_configuration_changed');
     const id=this.session.sessionId;if(!/^session_[a-zA-Z0-9-]+$/.test(id))throw Error('external_cli_readonly_profile_missing');
     const paths:string[]=[];if(existsSync(join(home,'sessions')))for(const entry of readdirSync(join(home,'sessions'),{withFileTypes:true})){if(entry.isDirectory()){const p=join(home,'sessions',entry.name,id,'agents/main/wire.jsonl');if(existsSync(p))paths.push(p);}}
     if(!paths.length&&allowPending)return false;
     if(paths.length!==1)throw Error('external_cli_readonly_profile_missing');const raw=readFileSync(paths[0]!);if(raw.length>16*1024*1024)throw Error('external_cli_profile_limit');
-    const rows=raw.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)),profile=rows.filter(r=>r.type==='profile.bind'&&r.agentId==='main').at(-1);
+    const rows=raw.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)),profiles=rows.filter(r=>r.type==='profile.bind'),profile=profiles.at(-1);
     if(!profile&&allowPending)return false;
-    if(!profile||profile.systemPrompt?.trim()!==this.system.trim()||!Array.isArray(profile.activeToolNames)||profile.activeToolNames.length||!Array.isArray(profile.subagents)||profile.subagents.length||!Array.isArray(profile.agentsMdPaths)||profile.agentsMdPaths.length)throw Error('external_cli_readonly_profile_missing');
+    if(!profile||profiles.some(p=>p.agentId!=='main'||p.systemPrompt?.trim()!==this.system.trim()||
+       !Array.isArray(p.activeToolNames)||p.activeToolNames.length||!Array.isArray(p.subagents)||p.subagents.length||
+       !Array.isArray(p.agentsMdPaths)||p.agentsMdPaths.length))throw Error('external_cli_readonly_profile_missing');
     save(join(this.directory,'profile-observed.json'),{source:paths[0],profileName:profile.profileName,systemPromptSha256:hash(profile.systemPrompt.trim()),activeToolNames:profile.activeToolNames,subagents:profile.subagents,agentsMdPaths:profile.agentsMdPaths,modelAlias:profile.modelAlias,thinkingEffort:profile.thinkingEffort});
     if(this.choice&&(profile.modelAlias!==this.choice.model||this.choice.effort!==null&&profile.thinkingEffort!==this.choice.effort))throw Error('ai_selected_model_not_applied');
     return true;
   }
-  async close(){if(!this.rpc)return;try{if(this.session?.sessionId&&this.initial?.agentCapabilities?.sessionCapabilities?.close)await this.rpc.request('session/close',{sessionId:this.session.sessionId},3000);}catch{}await this.rpc.close();}
+  async close(){
+    if(this.rpc){
+      try{if(this.session?.sessionId&&this.initial?.agentCapabilities?.sessionCapabilities?.close)await this.rpc.request('session/close',{sessionId:this.session.sessionId},3000);}catch{}
+      await this.rpc.close();
+    }
+    if(this.profile?.env.KIMI_CODE_HOME===join(this.directory,kimiData))
+      try{await unlink(join(this.directory,kimiData,'credentials'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  }
 }
 /** Session-wide safety/state events are checked independently from per-input
  * text windows. Moving a text boundary must never hide a tool or foreign run. */

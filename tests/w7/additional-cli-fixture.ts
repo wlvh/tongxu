@@ -35,9 +35,16 @@ if(m.method==='session/prompt'){
  if(responseKind==='message')output={messageId:envelope.messageId,consumed:envelope.replyReferences,report:'Explicit '+tool+' fixture complete material report '+turn};
  else if(responseKind.startsWith('receiver')){const {verdict,report,findings,...shape}=envelope.responseShape;output={...shape,verdict:mode==='return'?'RETURN_FOR_WORK':'ACCEPT_WITHIN_SCOPE',report:'完整Kimi协议样例接收报告；已读取所给固定材料，不声称真实模型、重跑测试或本人接受。',findings:mode==='return'||mode==='invalid-judgment'&&!envelope.data.evidence.correction?[{priority:1,description:'Explicit fixture concern for bounded return/correction'}]:[]};if(mode==='bad-binding')output.bindingHash='f'.repeat(64);}
  else output={candidateH:envelope.material.candidate.H,batchSha256:envelope.batch.sha256,report:'Complete actual ACP fixture impact report: retained full text',assessments:(mode==='missing-finding'?[]:envelope.batch.findings).map(f=>({id:f.id,decision:'refuted',report:'Explicit code and test counterevidence for '+f.id,evidence:['sample.js','test.mjs']}))};
- if(!(mode==='unsolicited-between-inputs'&&turn===2))emit({method:'session/update',params:{sessionId:mode==='wrong-session'?'wrong':session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:mode==='invalid-json'?'Explicit invalid structured reply':JSON.stringify(output)}}}});
+ const chunk=text=>({method:'session/update',params:{sessionId:mode==='wrong-session'?'wrong':session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text}}}});
+ const outputText=mode==='invalid-json'?'Explicit invalid structured reply':JSON.stringify(output);
+ if(mode==='after-terminal-text'){
+  process.stdout.write([chunk(outputText.slice(0,-1)),{id:m.id,result:{stopReason:'end_turn'}},chunk(outputText.slice(-1))].map(frame=>JSON.stringify({jsonrpc:'2.0',...frame})).join('\\n')+'\\n');
+  return;
+ }
+ if(!(mode==='unsolicited-between-inputs'&&turn===2))emit(chunk(outputText));
  result={stopReason:mode==='cancelled'?'cancelled':'end_turn'};
  }emit({id:m.id,result});
+ if(m.method==='session/close'&&mode==='text-during-close'&&turn>0)emit({method:'session/update',params:{sessionId:session,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Unexpected text during shutdown'}}}});
  if(m.method==='session/prompt'&&mode==='duplicate-response')emit({id:m.id,error:{code:-1,message:'conflicting response'}});
  if(m.method==='session/prompt'&&mode==='late-duplicate')setTimeout(()=>emit({id:m.id,error:{code:-1,message:'late conflicting response'}}),100);
  if(m.method==='session/prompt'&&turn===1&&mode==='gated-late-duplicate'){

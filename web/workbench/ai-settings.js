@@ -33,12 +33,89 @@ async function openAIRolePrompt(role){
   try{const result=await api('/api/ai-settings/prompts/'+role.id);if(nonce!==reportNonce||!$('report-dialog').open)return;$('report-meta').textContent=result.meaning;$('report-body').textContent=result.assembly.system;}
   catch(e){if(nonce===reportNonce)$('report-body').textContent='提示词读取未完成：'+aiError(e);}
 }
+const workflowCheckReasons={
+  coding_workflow_controls_pending:'源包已验证，配套执行和正式采用仍待完成。',
+  coding_workflow_first_revision_not_merged:'已选的首次采用提交无法证明在上游 main 中。',
+  coding_workflow_candidate_package_unavailable:'已固定上游 main 的提交，本机尚无该提交的兼容源包。',
+  coding_workflow_upstream_unavailable:'本次无法读取上游 main，请保留原请求并重试。',
+  coding_workflow_source_unavailable:'本机源文件缺失或无法读取。',
+  coding_workflow_source_digest_mismatch:'本机源文件与固定提交的摘要不一致。',
+  coding_workflow_checked_candidate_required:'请先核对本轮要采用的准确提交。',
+  coding_workflow_activation_evidence_required:'当前安装还缺准确候选的验证记录或独立双审，启用待完成。',
+};
+async function checkCodingWorkflow(mode,nonce,button,other){
+  const page=aiPage(),epoch=gh.epoch;
+  page.workflowRequests??=new Map();
+  const requestId=page.workflowRequests.get(mode)??crypto.randomUUID();
+  page.workflowRequests.set(mode,requestId);button.disabled=true;other.disabled=true;
+  try{
+    const response=await workspaceFetch('/api/ai-settings/workflow/check',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({requestId,mode}),cache:'no-store'}),record=await response.json();
+    if(!response.ok)throw Error(record.error);
+    if(epoch!==gh.epoch||nonce!==reportNonce||!$('report-dialog').open)return;
+    page.workflowRequests.delete(mode);await openCodingWorkflowSource();
+  }catch(error){if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)$('report-meta').append(el('p',workflowCheckReasons[error.message]||aiError(error),'github-error'));}
+  finally{button.disabled=false;other.disabled=false;}
+}
+async function activateCodingWorkflow(check,nonce,button){
+  const epoch=gh.epoch;button.disabled=true;
+  try{
+    const response=await workspaceFetch('/api/ai-settings/workflow/activate',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},
+      body:JSON.stringify({checkRequestId:check.requestId,revision:check.selectedRevision}),cache:'no-store'});
+    const result=await response.json();
+    if(!response.ok)throw Error(result.error);
+    if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)await openCodingWorkflowSource();
+  }catch(error){if(epoch===gh.epoch&&nonce===reportNonce&&$('report-dialog').open)$('report-meta').append(el('p',workflowCheckReasons[error.message]||aiError(error),'github-error'));}
+  finally{button.disabled=false;}
+}
+async function openCodingWorkflowSource(){
+  const nonce=++reportNonce;
+  $('report-title').textContent='编程工作流来源';
+  $('report-meta').textContent='正在核对固定提交和源文件…';
+  $('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;$('report-original').open=false;
+  showWorkbenchReport();
+  try{
+    const {activeRevision,candidate,assembly,check,adopted}=await api('/api/ai-settings/workflow/engineering_owner');
+    if(nonce!==reportNonce||!$('report-dialog').open)return;
+    const {identity,manifest}=candidate;
+    const upstream='https://github.com/'+identity.repository+'/blob/';
+    const link=(name,revision,path)=>{const a=el('a',name+' '+revision.slice(0,7));a.href=upstream+revision+'/'+path;a.target='_blank';a.rel='noopener noreferrer';return a;};
+    $('report-meta').replaceChildren(link('当前提示来源',activeRevision,candidate.entrypoint),document.createTextNode(' · '),link('候选来源',identity.revision,candidate.entrypoint),document.createTextNode(' · '),link('采用说明',identity.revision,candidate.adoption));
+    const first=el('button','核对首次采用的固定版本','outline'),latest=el('button','核对上游 main 当前版本','outline');
+    first.type=latest.type='button';
+    first.onclick=()=>checkCodingWorkflow('first-adoption',nonce,first,latest);
+    latest.onclick=()=>checkCodingWorkflow('upstream-main',nonce,latest,first);
+    $('report-meta').append(first,latest);
+    if(!adopted&&check?.selectedRevision===identity.revision&&check.packageSha256===identity.packageSha256){
+      const activate=el('button','启用这个固定版本','outline');
+      activate.type='button';activate.onclick=()=>activateCodingWorkflow(check,nonce,activate);
+      $('report-meta').append(activate);
+    }
+    const checked=check?'已选定 '+check.selectedRevision+'\n本次观察到的上游 main '+check.observedMain+'\n'+(workflowCheckReasons[check.reason]||check.reason)+'\n\n':'';
+    const adoption=adopted?'已从安装提交 '+adopted.evidence.runtimeHead+' 启用，新建工作采用此版本。':'候选来源已核对，正式启用待完成。';
+    $('report-body').textContent=checked+adoption+'\n执行契约 '+identity.executionContract+'\n源包 SHA-256 '+identity.packageSha256+'\n\n'+manifest.map(({use,promptPaths})=>use+'\n'+promptPaths.map(path=>'  '+path).join('\n')).join('\n\n')+'\n\n工程负责人候选提示原文\n\n'+assembly.system;
+  }catch(e){
+    if(nonce!==reportNonce||!$('report-dialog').open)return;
+    const reasons={
+      coding_workflow_source_unavailable:'候选源文件缺失、不可读取或不是受支持的普通文件。',
+      coding_workflow_source_digest_mismatch:'候选源文件与固定提交的摘要不一致。',
+      coding_workflow_source_invalid:'候选源文件内容无效。',
+      coding_workflow_index_invalid:'候选源索引无法解析。',
+      coding_workflow_index_unsupported:'候选源索引的格式或执行契约不受支持。',
+      coding_workflow_uses_mismatch:'候选源索引缺少所需角色或包含未知角色。',
+      coding_workflow_use_invalid:'候选源索引中的角色配置无效。',
+      coding_workflow_source_path_invalid:'候选源索引包含无效文件路径。',
+    };
+    $('report-meta').textContent='来源核对未完成';
+    $('report-body').textContent=reasons[e.message]||aiError(e);
+  }
+}
 function renderAISettings(){
   renderGithub();const page=aiPage(),root=el('div',null,'ai-settings');root.append(intro('AI 与角色设置','为 '+gh.selected.fullName+' 的不同角色选择调用程序、模型与推理强度。调用程序是本机的 Codex CLI、Claude Code CLI、Kimi Code CLI、Gemini CLI、OpenCode 等入口，负责发送问题和收取回答。'));
   const scan=el('button',page.loading?'正在读取本机工具…':'检测本机 AI','refresh');scan.type='button';scan.disabled=page.loading||!!page.saving;scan.onclick=()=>loadAISettings(true);root.append(scan);
   if(page.error)root.append(el('p',page.error,'notice'));else if(page.notice)root.append(el('p',page.notice,'notice'));
   root.append(el('p','模型和强度来自当前 CLI 返回的目录。检测与保存不发送模型问题；服务端认证和额度以实际请求结果为准，执行仍检查任务范围和权限。','small'));
   if(!page.value){root.append(el('p',page.loading?'正在读取设置…':'尚未读取设置。','empty'));$('content').replaceChildren(root);$('refresh').disabled=page.loading;return;}
+  const workflow=el('button','查看编程工作流来源','outline');workflow.type='button';workflow.onclick=openCodingWorkflowSource;root.append(workflow);
   const providers=page.value.catalog||[],list=el('details',null,'ai-provider-list');list.append(el('summary','本机调用程序 · '+providers.filter(p=>p.available).length+' 个可用入口 · '+providers.filter(p=>!p.available).length+' 个待处理（展开查看路径与版本）'));list.append(el('p','同一个程序的不同安装路径会分别列出；入口数量不代表模型数量。','small'));
   if(!providers.length)list.append(el('p','点击“检测本机 AI”，查找已有的 Codex、Claude、Kimi、Gemini、OpenCode 及其当前模型。','empty'));
   for(const provider of providers){const card=el('article',null,'note-card');append(card,el('h3',aiProgramName(provider.tool)+' · '+(provider.installed===false?'未安装':provider.available?'可选择':'尚不可用')),el('p',provider.path||'本机尚未检测到该程序；安装并登录后重新检测。','wrap small'),el('p',(provider.version||'版本尚未取得')+' · '+(provider.authentication==='subscription'?'本机报告订阅登录':provider.authentication==='existing_account'?'现有账号入口':provider.authentication==='not_logged_in'?'未登录':provider.authentication==='other'?'其他认证路线':'认证待核'),'small'));if(provider.reason)card.append(el('p',aiError(provider.reason),'small'));card.append(el('p',provider.models.length+' 个模型选项 · 检测于 '+date(provider.observedAt),'small'));list.append(card);}root.append(list);

@@ -1,12 +1,16 @@
+import type {SupplementPlanningSource} from './project-supplement-planning.js';
+import type {ReviewedSupplement,SupplementReviewInput} from './project-supplement-review.js';
+import {retainedProjectAdditions} from './implementation-edits.js';
+import {readCodingWorkflowSource,type CodingWorkflowPrompt} from './coding-workflow-source.js';
 import {readEndedReadonlyImplementationFailure,requireEndedReadonlyProof,readHostReadonlyFailure,observeReadonlyWorkspace,type EndedReadonlyProof} from './implementation-readonly-failure.js';
 import {captureImplementationAI,parseImplementationAI,type ImplementationAI} from './implementation-ai.js';
 import {assertWorkCurrent,type CurrentCheckRef} from './project-work-current.js';
 import {fixedGit} from './project-work-preparation.js';
-import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,readRecordedValidationFailure,type ValidationFailureProof} from './implementation-validation.js';
+import {observeValidationFailure,checkValidationWorkspace,checkValidationTree,checkCorrectionBootstraps,readRecordedValidationFailure,validationResultCapture,type ValidationFailureProof,type ValidationLogSelection} from './implementation-validation.js';
 import {workValidationDefinition,definitionConsentContents,definitionScopeAllows} from './work-validation-definition.js';
 import {projectWorkOrigin,type ProjectWorkOrigin} from './project-chat-contract.js';
 import {readRepairSession} from './repair-native.js';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,readdir,stat,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {QueueStore} from './queue-store.js';
@@ -17,23 +21,53 @@ import {messageId} from './message-contract.js';
 import {exactKeys,isAuthorityDigest,type ActionRequest} from './authority-contract.js';
 import {parseDevelopmentTask,developmentTaskId} from './task-contract.js';
 import {parseQueueContext,type QueueContext} from './queue-evidence.js';
-import {observeTaskWorkspace} from './task-source.js';
+import {assertTaskObservationCurrentSync,observeTaskWorkspace} from './task-source.js';
 import {readOwnerSource,type OwnerObservation} from './authority-source.js';
 import {prepareResourceRequest,resourceAction} from './resource-claims.js';
 import {withQueueRepairLock} from './queue-repair.js';
 import {prepareIssueImplementation,runIssueImplementation,runValidationCorrection,validationCorrectionInput,type ImplementationRequest} from './issue-implementation.js';
-import type {ProjectRequest} from './project-repair.js';
-import type {SupplementTarget,ProjectWorkRequest,ProjectWorkLink} from './project-chat.js';
-import {readFirstSendProof} from './implementation-first-send.js';
+import type {ProjectContract,ProjectRequest} from './project-repair.js';
+import type {DockerStartGate} from './docker-sandbox.js';
+import {repairPredecessorMatches,type EndedRepairSupplement,type PublishedRepairPredecessor,type SupplementTarget,type ProjectWorkRequest,type ProjectWorkLink} from './project-chat.js';
+import type {PublishedHandoffLocation} from './formal-review-controls.js';
+import {assertFirstSendCurrent,readFirstSendProof} from './implementation-first-send.js';
 import {releaseWorkspace} from './repair-workspace.js';
 import {readImplementationResult,readImplementationOwnerProof,implementationOwnerTarget,type ImplementationOwnerTarget,type ImplementationOwnerProof} from './implementation-owner-feedback.js';
 type Row=Record<string,any>;
-export type ImplementationEntry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean;materialView?:'selected_files';workRequestId?:string;currentCheck?:CurrentCheckRef;initialRepairRounds?:0};
+export type ImplementationEntry={id:string;repository:string;store:string;root:string;objects:string;H0:string;base:string;target:string;context:QueueContext;config:{path:string;sha256:string};allowedPaths:string[];materialPaths:string[];protectedPaths:string[];testPlan:string;testPlanSha256:string;approvedIssues:Array<{number:number;bodySha256:string;adjudication:string;goal:string;acceptance:string[]}>;authorization:{implement:string;test:string};budgets:Array<{action:'implement'|'test';ledgerId:string;resourceRef:string;unit:string;quantity:number}>;executionKind:'fixture'|'native_capture';demonstrationFixture:boolean;materialView?:'selected_files';projectFiles?:true;workflowPrompt?:CodingWorkflowPrompt;workRequestId?:string;currentCheck?:CurrentCheckRef;initialRepairRounds?:0};
 type Entry=ImplementationEntry;
 type ReadEntry=Pick<Entry,'id'|'repository'|'store'|'target'>;
 type HistorySource={store:string;item:string};
 type Issue={number:number;title:string;body:string;url:string};
 type Reader=(number:number)=>Promise<Issue>;
+const supplementTestId=(amendment:ReviewedSupplement)=>'supplement-'+amendment.inputSha256.slice(0,20);
+const supplementBase=(continuation:NonNullable<ImplementationRequest['continuation']>)=>continuation.endedRepair?.H??continuation.predecessor.H1;
+const formalRequirements=(ended:EndedRepairSupplement)=>[ended.published!.contract,...ended.published!.revisions.flatMap(item=>[item.requirement,...item.acceptance])].join('\n');
+function supplementReviewInput(repository:string,target:SupplementTarget,H1:string,requestId:string,text:string,ended?:EndedRepairSupplement):SupplementReviewInput{
+  return {repository,target,H1,requestId,text,...(ended?.published?{formalBase:hash(canonical(ended.published))}:{})};
+}
+export async function supplementTestPlan(original:{testPlan:string;testPlanSha256:string},amendment:ReviewedSupplement,published?:PublishedRepairPredecessor){
+  const registered=await regular(original.testPlan).catch(()=>{throw new Error('implementation_original_plan_changed');});
+  if(hash(registered)!==original.testPlanSha256)throw new Error('implementation_original_plan_changed');
+  const {tools:ordinaryTools,...ordinaryConfig}=JSON.parse(registered.toString());
+  if(!ordinaryTools?.length||ordinaryTools[0].id!=='work-acceptance')throw new Error('project_supplement_validation_not_product_work');
+  const tools=[...ordinaryTools];
+  for(const ref of published?.testPlans??[]){
+    const raw=await regular(ref.path).catch(()=>{throw new Error('formal_repair_supplement_evidence_missing');});
+    if(hash(raw)!==ref.sha256)throw new Error('formal_repair_supplement_evidence_missing');
+    const {tools:formalTools,...formalConfig}=JSON.parse(raw.toString());
+    const comparable=ordinaryConfig.executor.image===published?.image
+      ?{...ordinaryConfig,executor:{...ordinaryConfig.executor,image:formalConfig.executor.image}}:ordinaryConfig;
+    if(canonical(formalConfig)!==canonical(comparable))throw new Error('formal_repair_supplement_test_config_changed');
+    for(const tool of formalTools){
+      const prior=tools.find(item=>item.id===tool.id);
+      if(tool.writableOutputs?.length||prior&&canonical(prior)!==canonical(tool))throw new Error('formal_repair_supplement_test_config_changed');
+      if(!prior)tools.push(tool);
+    }
+  }
+  const executor=published?{...ordinaryConfig.executor,image:published.image}:ordinaryConfig.executor;
+  return canonical({...ordinaryConfig,executor,tools:[...tools,{id:supplementTestId(amendment),argv:[executor.node,'--input-type=module','--eval',amendment.validation.script],timeoutMs:30000}]});
+}
 
 /** Trusted installation fixes the project, source, adopted Issue, tests and
  * scope. The browser supplies only an option and a stable request identity. */
@@ -41,6 +75,13 @@ export class IssueImplementationControls{
   private active=new Map<string,Promise<unknown>>();private accepting=true;private finished?: (target:SupplementTarget)=>Promise<void>;
   private generated=new Map<string,{path:string;sha256:string}>();
   private retired=new Set<string>();
+  private supplementReview?: (input:SupplementReviewInput,executionKind:string)=>Promise<ReviewedSupplement|null>;
+  private supplementReviewStatus?: (input:SupplementReviewInput)=>Promise<Row|null>;
+  private endedRepair?: (target:SupplementTarget,id:string,text:string,operation:string,onPublished?:(location:PublishedHandoffLocation)=>void)=>Promise<EndedRepairSupplement|undefined>;
+  setSupplementReview(read:NonNullable<IssueImplementationControls['supplementReview']>,inspect?:IssueImplementationControls['supplementReviewStatus']){
+    this.supplementReview=read;this.supplementReviewStatus=inspect;
+  }
+  setEndedRepair(read:NonNullable<IssueImplementationControls['endedRepair']>){this.endedRepair=read;}
   onFinished(callback:(target:SupplementTarget)=>Promise<void>){this.finished=callback;}
   private constructor(private path:string,private sha256:string,private entries:Entry[],private read:Reader,private verify:()=>Promise<void>,private repository:string,private historySources:()=>Promise<readonly HistorySource[]>){}
   static async load(path:string,sha256:string,repository:string,read:Reader,verify:()=>Promise<void>,historySources:()=>Promise<readonly HistorySource[]>=async()=>[]){
@@ -48,7 +89,13 @@ export class IssueImplementationControls{
     if(hash(bytes)!==sha256||!exactKeys(p,['schemaVersion','kind','entries'])||p.schemaVersion!==1||p.kind!=='tongxu-issue-implementation-catalog'||!Array.isArray(p.entries)||p.entries.length>8)throw new Error('implementation_catalog_invalid');
     const entries=p.entries.filter((e:Entry)=>e.repository?.toLowerCase()===repository.toLowerCase()) as Entry[];
     for(const e of entries){
-      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture',...(e.materialView!==undefined?['materialView']:[]),...(e.workRequestId!==undefined?['workRequestId']:[]),...(e.currentCheck!==undefined?['currentCheck']:[]),...(e.initialRepairRounds!==undefined?['initialRepairRounds']:[])])||e.initialRepairRounds!==undefined&&e.initialRepairRounds!==0||e.currentCheck!==undefined&&(!exactKeys(e.currentCheck,['path','sha256'])||typeof e.currentCheck.path!=='string'||resolve(e.currentCheck.path)!==e.currentCheck.path||!isAuthorityDigest(e.currentCheck.sha256))||e.materialView!==undefined&&e.materialView!=='selected_files'||e.workRequestId!==undefined&&!messageId(e.workRequestId)||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
+      if(!exactKeys(e,['id','repository','store','root','objects','H0','base','target','context','config','allowedPaths','materialPaths','protectedPaths','testPlan','testPlanSha256','approvedIssues','authorization','budgets','executionKind','demonstrationFixture',...(e.materialView!==undefined?['materialView']:[]),...(e.projectFiles!==undefined?['projectFiles']:[]),...(e.workflowPrompt!==undefined?['workflowPrompt']:[]),...(e.workRequestId!==undefined?['workRequestId']:[]),...(e.currentCheck!==undefined?['currentCheck']:[]),...(e.initialRepairRounds!==undefined?['initialRepairRounds']:[])])||e.initialRepairRounds!==undefined&&e.initialRepairRounds!==0||e.currentCheck!==undefined&&(!exactKeys(e.currentCheck,['path','sha256'])||typeof e.currentCheck.path!=='string'||resolve(e.currentCheck.path)!==e.currentCheck.path||!isAuthorityDigest(e.currentCheck.sha256))||e.materialView!==undefined&&e.materialView!=='selected_files'||e.projectFiles!==undefined&&(e.projectFiles!==true||e.materialView!==undefined||e.initialRepairRounds!==undefined||!Array.isArray(e.allowedPaths)||e.allowedPaths.length!==0)||e.workRequestId!==undefined&&!messageId(e.workRequestId)||!messageId(e.id)||![e.store,e.root,e.objects,e.config?.path,e.testPlan].every(path=>typeof path==='string'&&resolve(path)===path)||!isAuthorityDigest(e.config.sha256)||!isAuthorityDigest(e.testPlanSha256)||![e.H0,e.base].every(x=>/^[a-f0-9]{40}$/.test(x))||typeof e.demonstrationFixture!=='boolean'||!['fixture','native_capture'].includes(e.executionKind)||!Array.isArray(e.approvedIssues)||!e.approvedIssues.length||e.approvedIssues.length>32||!exactKeys(e.authorization,['implement','test'])||!Object.values(e.authorization).every(isAuthorityDigest)||!Array.isArray(e.budgets)||e.budgets.length>16||e.budgets.some(b=>!exactKeys(b,['action','ledgerId','resourceRef','unit','quantity'])||!['implement','test'].includes(b.action)))throw new Error('implementation_entry_invalid');
+      if(e.workflowPrompt&&(!e.workRequestId||e.workflowPrompt.use!=='engineering_owner'||
+        e.workflowPrompt.executionContract!=='coding-loop-v2'||!isAuthorityDigest(e.workflowPrompt.packageSha256)||
+        !/^[a-f0-9]{40}$/.test(e.workflowPrompt.revision)||typeof e.workflowPrompt.system!=='string'||
+        hash(e.workflowPrompt.system)!==e.workflowPrompt.sha256||!Array.isArray(e.workflowPrompt.parts)||
+        e.workflowPrompt.parts.map(p=>p.text).join('\n\n')!==e.workflowPrompt.system||
+        e.workflowPrompt.parts.some(p=>typeof p.text!=='string'||hash(p.text)!==p.sha256)))throw new Error('implementation_workflow_prompt_invalid');
       e.context=parseQueueContext(e.context);if(new Set(e.approvedIssues.map(issue=>issue.number)).size!==e.approvedIssues.length)throw new Error('implementation_duplicate_adopted_issue');
       for(const issue of e.approvedIssues)if(!exactKeys(issue,['number','bodySha256','adjudication','goal','acceptance'])||!Number.isSafeInteger(issue.number)||issue.number<1||!isAuthorityDigest(issue.bodySha256)||!issue.adjudication?.trim()||!issue.goal?.trim()||!Array.isArray(issue.acceptance)||!issue.acceptance.length)throw new Error('implementation_adopted_issue_required');
     }
@@ -93,7 +140,7 @@ export class IssueImplementationControls{
   markGeneratedCurrent(ids:ReadonlySet<string>){this.retired=new Set([...this.generated.keys()].filter(id=>!ids.has(id)));}
   private catalogHash(id:string){return this.generated.get(id)?.sha256??this.sha256;}
   private async catalog(){for(const ref of [{path:this.path,sha256:this.sha256},...this.generated.values()])if(hash(await regular(ref.path,128*1024))!==ref.sha256)throw new Error('implementation_catalog_changed');}
-  options(){return this.entries.filter(e=>!this.generated.has(e.id)).map(e=>({id:e.id,issues:e.approvedIssues.map(i=>({number:i.number,goal:i.goal,adjudication:i.adjudication,bodySha256:i.bodySha256})),H0:e.H0,allowedPaths:e.allowedPaths,executionKind:e.executionKind,demonstrationFixture:e.demonstrationFixture}));}
+  options(){return this.entries.filter(e=>!this.generated.has(e.id)).map(e=>({id:e.id,issues:e.approvedIssues.map(i=>({number:i.number,goal:i.goal,adjudication:i.adjudication,bodySha256:i.bodySha256})),H0:e.H0,allowedPaths:e.allowedPaths,...(e.projectFiles?{projectFiles:true,protectedPaths:e.protectedPaths}:{}),executionKind:e.executionKind,demonstrationFixture:e.demonstrationFixture}));}
   async prepare(id:string,body:Row){
     try{return await this.prepareSelected(id,body);}catch(error){
       const entry=this.entries.find(e=>e.id===id);if(entry&&messageId(body?.requestId)){
@@ -105,7 +152,7 @@ export class IssueImplementationControls{
   private async prepareSelected(id:string,body:Row,followup?:{entry:Entry;continuation:NonNullable<ImplementationRequest['continuation']>;beforeRegistration:()=>void},work?:{origin?:ProjectWorkOrigin;beforeRegistration:()=>void;afterRegistration:()=>void;uniqueFirst?:boolean}){
     if(!this.accepting||!exactKeys(body,['requestId','issueNumber'])||!messageId(body.requestId)||!Number.isSafeInteger(body.issueNumber))throw new Error('implementation_start_request_invalid');
     await this.catalog();await this.verify();let entry=followup?.entry??this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');if(entry.workRequestId&&body.requestId!==entry.workRequestId&&!followup)throw new Error('implementation_prepared_work_identity_required');if(entry.initialRepairRounds!==undefined&&!this.generated.has(entry.id))throw new Error('implementation_rounds_host_required');if(entry.currentCheck)assertWorkCurrent(entry.currentCheck);const adopted=entry.approvedIssues.find(i=>i.number===body.issueNumber);if(!adopted)throw new Error('implementation_issue_not_adopted');
-    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined,originalPaths:string[]|undefined,inheritedAI:ImplementationAI|undefined,inheritedEdit:ImplementationRequest['editProfile'];
+    const previousQueue=await QueueStore.open(entry.store);let original:ImplementationRequest|undefined,originalTitle:string|undefined,originalPaths:string[]|undefined,inheritedAI:ImplementationAI|undefined,inheritedPrompt:ImplementationRequest['workflowPrompt'],inheritedEdit:ImplementationRequest['editProfile'];
     try{const previous=previousQueue.issueImplementations().requests(id).find(r=>r.id===body.requestId);if(previous){
       if(previous.issue!==body.issueNumber)throw new Error('implementation_request_id_is_fixed');
       original=previousQueue.issueImplementations().original(id,body.requestId);
@@ -114,27 +161,47 @@ export class IssueImplementationControls{
       if(previous.phase!=='registered'||previous.stopped)return this.publicState(previous);
       if(original.continuation)entry={...entry,H0:original.workspaceRequest.candidate.H,objects:original.workspaceRequest.objects};
       const savedDefinition=previousQueue.tasks().definition(original.task);originalTitle=savedDefinition.title;originalPaths=savedDefinition.paths;
-    }if(!original&&followup){const prior=previousQueue.issueImplementations().original(id,followup.continuation.originalTarget.requestId);inheritedAI=prior.implementationAI;inheritedEdit=prior.editProfile;}}finally{previousQueue.close();}
+    }if(!original&&followup){const prior=previousQueue.issueImplementations().original(id,followup.continuation.originalTarget.requestId);inheritedAI=prior.implementationAI;inheritedPrompt=prior.workflowPrompt;inheritedEdit=prior.editProfile;}}finally{previousQueue.close();}
     const issue=await this.read(adopted.number);if(issue.number!==adopted.number||hash(issue.body)!==adopted.bodySha256)throw new Error('implementation_issue_source_changed');
+    const continuation=original?.continuation??followup?.continuation;
+    const amendment=continuation?.amendment;
+    if(entry.projectFiles&&continuation&&(!amendment||!entry.workRequestId||!this.generated.has(id)))throw new Error('project_supplement_review_required');
+    if(amendment){
+      const checked=await this.reviewAmendment(entry,continuation!.originalTarget,supplementBase(continuation!),continuation!.supplement.id,continuation!.supplement.text,continuation!.endedRepair);
+      if(canonical(checked)!==canonical(amendment))throw new Error('project_supplement_review_binding_changed');
+      const q=await QueueStore.open(entry.store);
+      let previous:ImplementationRequest;
+      try{previous=q.issueImplementations().original(entry.id,continuation!.predecessor.requestId);}finally{q.close();}
+      const published=continuation!.endedRepair?.published,bytes=await supplementTestPlan(previous.workspaceRequest,amendment,published);
+      const path=join(entry.root,body.requestId+'-supplement-tests.json');
+      try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}
+      catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path)).toString()!==bytes)throw error;}
+      entry={...entry,testPlan:path,testPlanSha256:hash(bytes),protectedPaths:[...new Set([...entry.protectedPaths,...previous.workspaceRequest.protectedPaths,...(published?.protectedPaths??[])])]};
+    }
     const root=join(entry.root,body.requestId),workspace=join(root,'workspace');
+    const formal=continuation?.endedRepair?.published?continuation.endedRepair:undefined;
+    const goal=adopted.goal+(formal?'\nRequirements retained from the verified formal repair:\n'+formalRequirements(formal):'')+(amendment?'\nAdopted revision: '+amendment.requirement:'');
+    const acceptance=[...adopted.acceptance,...(formal?.published?.revisions.flatMap(item=>item.acceptance)??[]),...(amendment?.acceptance??[])];
     let observedPaths=originalPaths??entry.materialPaths;
-    if(!originalPaths&&entry.materialView==='selected_files'){
-      const candidates=await Promise.all(entry.allowedPaths.map(async path=>({path,bytes:Number((await fixedGit({path:entry.objects,H:entry.H0,repository:entry.repository},['cat-file','-s',entry.H0+':'+path])).toString().trim()),protected:false})));
+    if(!originalPaths&&(entry.materialView==='selected_files'||entry.projectFiles&&entry.workRequestId)){
+      const seeds=entry.projectFiles?entry.materialPaths:entry.allowedPaths;
+      const candidates=await Promise.all(seeds.map(async path=>({path,bytes:Number((await fixedGit({path:entry.objects,H:entry.H0,repository:entry.repository},['cat-file','-s',entry.H0+':'+path])).toString().trim()),protected:false})));
       candidates.sort((a,b)=>a.bytes-b.bytes||a.path.localeCompare(b.path));if(!candidates.length||!Number.isSafeInteger(candidates[0]!.bytes)||candidates[0]!.bytes>64*1024)throw new Error('implementation_observation_material_missing');observedPaths=[candidates[0]!.path];
     }
-    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal:adopted.goal,acceptance:adopted.acceptance,source:issue.url+' body sha256 '+adopted.bodySha256,issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:observedPaths})));
+    const definition=parseDevelopmentTask(Buffer.from(canonical({schemaVersion:1,kind:'tongxu-development-task',id:'implementation-'+body.requestId,repository:entry.repository,title:originalTitle??issue.title,goal,acceptance,source:issue.url+' body sha256 '+adopted.bodySha256+(amendment?' reviewed revision '+amendment.inputSha256:''),issue:issue.number,context:entry.context,workspace,base:entry.base,target:entry.target,paths:observedPaths})));
     const task=developmentTaskId(definition);
     const scopeQueue=await QueueStore.open(entry.store);let adoptedScope:ImplementationRequest['adoptedScope'],executorAccount:number;try{const authority=scopeQueue.authority();executorAccount=authority.configuration().profile.executorId;const adoption=authority.forScope(entry.context.scope.id,{item:task,target:entry.target}).currentAdoption;if(!adoption)throw new Error('implementation_scope_adoption_required');const original=authority.inspectRecordedDecision(adoption);if(original.proposal.kind!=='adopt_scope')throw new Error('implementation_scope_adoption_required');adoptedScope={adoption,body:original.proposal.body,bodySha256:hash(canonical(original.proposal.body)),source:original.source.sourceUrl};}finally{scopeQueue.close();}
-    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:adopted.goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:followup?1:entry.initialRepairRounds??1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{})};
-    const continuation=original?.continuation??followup?.continuation;
+    const workspaceRequest:ProjectRequest={schemaVersion:1,kind:'tongxu-project-repair-request',executionRoot:root,objects:entry.objects,candidate:{kind:'local-git',repository:'local/issue-implementation-source',pr:null,H:entry.H0,B:entry.base,target:entry.target},allowedPaths:entry.allowedPaths,materialPaths:entry.materialPaths,protectedPaths:entry.protectedPaths,contract:goal,testPlan:entry.testPlan,testPlanSha256:entry.testPlanSha256,findings:[],authorization:{source:issue.url+' adopted requirement; actual implement/test permission checked by original authority consumer',allowRepair:true,allowReconcileEnded:false,maxRepairRounds:followup?1:entry.initialRepairRounds??1},demonstrationFixture:entry.demonstrationFixture,generatedDirectories:[],...(entry.materialView?{materialView:entry.materialView}:{}),...(entry.projectFiles?{projectFiles:true as const}:{})};
     const checked=entry.currentCheck?assertWorkCurrent(entry.currentCheck):null,selectedAI=original?original.implementationAI:followup?inheritedAI:checked?checked.binding.implementationAI??undefined:captureImplementationAI(entry.repository);if(selectedAI){const snapshot=parseImplementationAI(selectedAI,entry.repository);if(snapshot.scope.account.id!==executorAccount)throw new Error('ai_settings_outside_project');}
-    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...((original?original.editProfile:followup?inheritedEdit:'literal-edits-v1')?{editProfile:original?original.editProfile:followup?inheritedEdit:'literal-edits-v1' as const}:{}),...(selectedAI?{implementationAI:selectedAI}:{}),...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
+    const workflowPrompt=original?original.workflowPrompt:followup?inheritedPrompt:entry.workflowPrompt??(entry.projectFiles?(await readCodingWorkflowSource()).prompt('engineering_owner'):undefined);
+    const request:ImplementationRequest={schemaVersion:1,kind:'tongxu-issue-implementation',id:body.requestId,task,adoptedScope,issue:{number:issue.number,body:issue.body,bodySha256:adopted.bodySha256,adjudication:adopted.adjudication},workspaceRequest,...(workflowPrompt?{workflowPrompt}:{}),...((original?original.editProfile:followup?inheritedEdit:'literal-edits-v1')?{editProfile:original?original.editProfile:followup?inheritedEdit:'literal-edits-v1' as const}:{}),...(selectedAI?{implementationAI:selectedAI}:{}),...(continuation?{continuation}:{}),...((original?.origin??work?.origin)?{origin:original?.origin??work?.origin}:{})};
     if(original&&canonical(request)!==canonical(original))throw new Error('implementation_request_id_is_fixed');
     const executorBytes=await regular(entry.config.path);if((JSON.parse(executorBytes.toString()).executionKind??'native_capture')!==entry.executionKind)throw new Error('implementation_executor_kind_mismatch');
     if(hash(executorBytes)!==entry.config.sha256)throw new Error('implementation_executor_changed');
     await mkdir(entry.root,{recursive:true,mode:0o700});await privateDirectory(entry.root,false);const prepared=await prepareIssueImplementation(entry.config.path,request,root),planBytes=await regular(prepared.plan),observation=await observeTaskWorkspace(definition);
     const q=await QueueStore.open(entry.store);
     try{
+      if(formal)await this.checkEndedRepair(continuation!.originalTarget,body.requestId,continuation!.supplement.text,entry.H0,formal);
       followup?.beforeRegistration();q.registerIssueImplementation(id,request,definition,observation,work?currentAdoption=>{
         work.beforeRegistration();if(currentAdoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');if(work.uniqueFirst){const existing=this.projectWorkOriginal(q,id,entry,body.issueNumber,currentAdoption!);if(existing&&existing.id!==body.requestId)throw new Error('implementation_project_work_original_exists');}
       }:undefined);
@@ -143,7 +210,7 @@ export class IssueImplementationControls{
       if(!adoption||adoption!==request.adoptedScope.adoption)throw new Error('implementation_scope_adoption_changed');
       const adoptedScope=authority.inspectRecordedDecision(adoption).proposal as Row,scopeBodySha256=hash(canonical(adoptedScope.body));
       const prefix='implementation-'+hash(canonical([id,body.requestId])).slice(0,40),implementIntent=prefix+'-implement',testIntent=prefix+'-test';
-      const action=(kind:'implement'|'test'):ActionRequest=>({schemaVersion:1,scopeId:current.context.scope.id,scopeVersion:current.context.scope.version,scopeBodySha256,repository:entry.repository,target:definition.target,action:kind,item:task,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},paths:kind==='implement'?entry.allowedPaths:entry.materialPaths,resourceRefs:entry.budgets.filter(b=>b.action===kind).map(b=>b.resourceRef),...(kind==='test'?{payloadSha256:entry.testPlanSha256}:{})});
+      const action=(kind:'implement'|'test'):ActionRequest=>({schemaVersion:1,scopeId:current.context.scope.id,scopeVersion:current.context.scope.version,scopeBodySha256,repository:entry.repository,target:definition.target,action:kind,item:task,candidate:{H:candidate.H,B:candidate.B,subjectSha256:null},paths:entry.projectFiles?[]:kind==='implement'?entry.allowedPaths:entry.materialPaths,...(entry.projectFiles?{projectFiles:true as const}:{}),resourceRefs:entry.budgets.filter(b=>b.action===kind).map(b=>b.resourceRef),...(kind==='test'?{payloadSha256:entry.testPlanSha256}:{})});
       const actions={implement:action('implement'),test:action('test')};
       work?.beforeRegistration();return this.publicState(q.issueImplementations().bind(id,body.requestId,{catalogSha256:this.catalogHash(entry.id),path:prepared.plan,sha256:hash(planBytes),operationRoot:prepared.operation,workspace,executionKind:entry.executionKind,actions,implementIntent,testIntent,budgets:entry.budgets,authorization:entry.authorization,request,...(entry.currentCheck?{currentCheck:entry.currentCheck}:{})}));
     }finally{q.close();}
@@ -200,10 +267,10 @@ export class IssueImplementationControls{
     return {cancelled:true,originalRegistered:true,original:await this.cancel(id,s.id),newModelInputs:0};
   }
   async stopProjectWork(id:string,issueNumber:number,request:ProjectWorkRequest){const entry=this.entry(id),q=await QueueStore.open(entry.store);let s:Row|null;try{s=this.projectWorkState(q,entry,issueNumber,request);}finally{q.close();}if(!s)throw new Error('project_work_original_not_registered');return this.stop(id,s.id);}
-  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,hostEvidenceComplete:s.result?.hostEvidenceComplete===true,failureKind:s.result?.failureKind??null,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
+  private publicState(s:Row){return {sourceId:'implementation-'+hash(canonical([s.source,s.id])).slice(0,32),id:s.id,task:s.task,logicalOwner:s.logicalOwner,supplement:s.supplement,issue:s.issue,workflow:s.workflow,lastRecordedAt:s.lastRecordedAt,H0:s.H0,H1:s.result?.H1??null,phase:s.phase,reason:s.reason,controllerActive:this.active.has(s.source+':'+s.id),status:s.result?.status??(s.validationFailure&&!s.validationCorrection?'validation_failed':null),stopped:s.stopped,hostEvidenceComplete:s.result?.hostEvidenceComplete===true,failureKind:s.result?.failureKind??null,completeCapture:s.result?.completeCapture===true||!!s.validationFailure};}
   async taskSources(){const sources:Array<{id:string;title:string;store:string;item:string}>=[];for(const entry of this.entries){const q=await QueueStore.open(entry.store);try{for(const state of q.issueImplementations().requests(entry.id)){if(q.issueImplementations().original(entry.id,state.id).continuation)continue;const definition=q.tasks().definition(state.task);if(definition.repository.toLowerCase()!==entry.repository.toLowerCase())throw new Error('implementation_project_binding_changed');sources.push({id:'implementation-'+hash(canonical([entry.id,state.id])).slice(0,32),title:'Issue #'+state.issue+' · '+definition.title,store:entry.store,item:state.task});}}finally{q.close();}}return sources;}
   async state(){return Promise.all(this.entries.map(async entry=>{const q=await QueueStore.open(entry.store);try{return {id:entry.id,requests:q.issueImplementations().requests(entry.id).map(s=>this.publicState(s))};}finally{q.close();}}));}
-  async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
+  async firstInputContinuation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{if(this.active.has(id+':'+requestId))throw new Error('implementation_original_controller_active_or_unknown');const candidate=q.issueImplementations().firstSendCandidate(id,requestId);await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true,candidate.checkpoint);return {eligible:true};}catch(e){return {eligible:false,reason:e instanceof Error?e.message:'implementation_first_send_unknown'};}finally{q.close();}}
   async continueFirstInput(id:string,requestId:string){return this.beginSelected(id,requestId,true);}
   async begin(id:string,requestId:string){return this.beginSelected(id,requestId,false);}
   private async beginSelected(id:string,requestId:string,firstSend:boolean){
@@ -213,11 +280,19 @@ export class IssueImplementationControls{
   }
   private async execute(id:string,requestId:string,firstSend=false){
     const entry=this.entry(id),q=await QueueStore.open(entry.store);let observations:OwnerObservation[]=[];
+    let handoff:Awaited<ReturnType<IssueImplementationControls['openPublishedHandoff']>>;
     try{
       const original=q.issueImplementations().state(id,requestId);if(original.result||(original.phase==='active_or_unknown'||original.validationFailure)&&!firstSend)return original;
       if(!original.plan)throw new Error('implementation_preparation_incomplete');const fixed=original.plan;
       return await withQueueRepairLock(entry.store,original.operation,async()=>{
+        const continuation=fixed.request.continuation;
+        handoff=await this.openPublishedHandoff(q,fixed.request);
+        if(continuation?.amendment){
+          const review=await this.reviewAmendment(entry,continuation.originalTarget,supplementBase(continuation),continuation.supplement.id,continuation.supplement.text,continuation.endedRepair);
+          if(canonical(review)!==canonical(continuation.amendment))throw new Error('project_supplement_review_binding_changed');
+        }
         const refresh=async()=>{
+          if(this.retired.has(id))throw new Error('implementation_stopped');
           if(fixed.currentCheck)assertWorkCurrent(fixed.currentCheck);if(fixed.request.continuation)await this.checkSupplementPredecessor(entry,fixed.request);await this.catalog();if(fixed.catalogSha256!==this.catalogHash(entry.id))throw new Error('implementation_original_catalog_changed');await this.verify();const issue=await this.read(original.issue);if(hash(issue.body)!==fixed.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
           const authority=q.authority(),profile=authority.configuration().profile,refs=new Map<string,ReturnType<typeof authority.sourceRequests>[number]>();
           for(const authorization of [...Object.values(fixed.authorization),...(this.definitionConsentBaseline(q,entry,original)?[this.definitionConsentBaseline(q,entry,original)!]:[])] as string[])for(const ref of authority.sourceRequests(authorization))refs.set(ref.proposalSha256,ref);
@@ -225,7 +300,7 @@ export class IssueImplementationControls{
           for(const ref of refs.values())observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,ref.proposalSha256)));
           for(const resource of fixed.resourceRequests as string[]){let state:Row;try{state=q.resources().status(resource);}catch(error){if((error as Error).message==='original_resource_request_required')continue;throw error;}if(!['prepared_not_sent','refused'].includes(state.state))await resourceAction(entry.store,resource,'lookup','implementer');}
         };
-        const candidate=firstSend?q.issueImplementations().firstSendCandidate(id,requestId):null,proof=candidate?await readFirstSendProof(candidate.plan,candidate.dispatchEvent):null;
+        const candidate=firstSend?q.issueImplementations().firstSendCandidate(id,requestId):null,proof=candidate?await readFirstSendProof(candidate.plan,candidate.dispatchEvent,true,candidate.checkpoint):null;
         await refresh();const authority=q.authority();
         if(!firstSend){
         authority.reserveAction(fixed.implementIntent,fixed.actions.implement,'implementer',fixed.authorization.implement,observations);authority.reserveAction(fixed.testIntent,fixed.actions.test,'implementer',fixed.authorization.test,observations);
@@ -233,17 +308,23 @@ export class IssueImplementationControls{
         }
         await refresh();
         const validationDefinition=await this.readableDefinition(entry,original,observations,false);
-        const continuation=proof?q.issueImplementations().firstInput(id,requestId,proof,observations):null;
-        if(proof){await mkdir(join(fixed.operationRoot,'first-input'),{mode:0o700});await releaseWorkspace(fixed.workspace,proof.lease,'verified_unstarted_metadata');}
+        if(proof)assertFirstSendCurrent(proof,fixed.request.workspaceRequest.executionRoot,{validationDefinition});
+        const firstInput=proof?q.issueImplementations().firstInput(id,requestId,proof,observations):null;
+        if(proof){
+          if(proof.currentLease)await releaseWorkspace(fixed.workspace,proof.currentLease,proof.released?'verified_unstarted_replacement':
+            proof.record.dispatchIntentSha256?'verified_unstarted_dispatch':'verified_unstarted_metadata',true);
+          const directory=join(fixed.operationRoot,'first-input');
+          if(!await exists(directory))await mkdir(directory,{mode:0o700});
+        }
         q.issueImplementations().problem(id,requestId,'');
         const accepting=()=>{if(!this.accepting)throw new Error('implementation_controller_closing');};
-        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:continuation!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
+        let result;try{result=await runIssueImplementation(fixed.path,fixed.sha256,fixed.request,fixed.operationRoot,{refresh,validationDefinition,dispatchGate:handoff?.dispatch,unsent:()=>{accepting();if(firstSend)q.issueImplementations().check(id,requestId,observations);else q.issueImplementations().unsent(id,requestId,observations);},check:effect=>{accepting();q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{if(firstSend)q.issueImplementations().firstInputDispatch(id,requestId,firstInput!,observations);else q.issueImplementations().dispatch(id,requestId,observations);} },...(proof?[{proof,reference:firstInput!}]:[]));}catch(e){if((e as Error).message==='implementation_registered_tests_failed'&&(!fixed.request.workspaceRequest.projectFiles||this.generated.has(id))){const failed=await observeValidationFailure(q.issueImplementations().state(id,requestId));await this.persistValidationFailure(q,id,requestId,failed);if(fixed.request.workspaceRequest.authorization.maxRepairRounds===0){await this.knownFailureSource(q,q.issueImplementations().state(id,requestId));await checkValidationWorkspace(failed,true);const closed=q.issueImplementations().closeValidationFailure(id,requestId,failed);await this.releaseClosedFailure(closed);return closed;}return q.issueImplementations().state(id,requestId);}throw e;}
         const state=q.issueImplementations().complete(id,requestId,result);
         if(result.status==='completed'){const definition=q.tasks().definition(fixed.request.task);q.tasks().observe(definition,await observeTaskWorkspace(definition));}
         for(const resource of fixed.resourceRequests as string[])await resourceAction(entry.store,resource,'record-result','implementer');
         return state;
       });
-    }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{q.close();}
+    }catch(error){q.issueImplementations().problem(id,requestId,error instanceof Error?error.message:'implementation_unknown');throw error;}finally{handoff?.close();q.close();}
   }
   private async persistValidationFailure(q:QueueStore,id:string,requestId:string,p:ValidationFailureProof){
     const path=join(p.record.operationRoot,'validation-failure.json'),bytes=canonical(p.record);try{await writeFile(path,bytes,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST'||(await regular(path,32*1024*1024)).toString()!==bytes)throw e;}q.issueImplementations().recordValidationFailure(id,requestId,p);
@@ -316,8 +397,19 @@ export class IssueImplementationControls{
     }finally{q.close();}
   }
   private definitionConsentBaseline(q:QueueStore,entry:Entry,s:Row){return (s.plan.request.continuation&&entry.workRequestId?q.issueImplementations().state(entry.id,entry.workRequestId):s).definitionConsent?.baseline as string|undefined;}
+  private async validationDefinition(entry:Entry,state:Row){
+    if(!this.generated.has(entry.id)||!entry.workRequestId)throw new Error('work_validation_definition_not_product_work');
+    const amendment=state.plan.request.continuation?.amendment;
+    if(!amendment)return workValidationDefinition(entry,state.plan.request);
+    const q=await QueueStore.open(entry.store);
+    try{
+      const original=q.issueImplementations().original(entry.id,entry.workRequestId);
+      return {...await workValidationDefinition(entry,original),supplement:{...amendment.validation,requirementSha256:amendment.inputSha256,readOnly:true}};
+    }finally{q.close();}
+  }
   private async readableDefinition(entry:Entry,state:Row,observations:OwnerObservation[],required:boolean){
-    if(entry.workRequestId&&!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(!entry.workRequestId){if(required)throw new Error('work_validation_definition_not_product_work');return undefined;}const d=await workValidationDefinition(entry,state.plan.request);
+    if(!entry.workRequestId){if(required)throw new Error('work_validation_definition_not_product_work');return undefined;}
+    const d=await this.validationDefinition(entry,state);
     if(definitionScopeAllows(state.plan.request,d))return d;
     const q=await QueueStore.open(entry.store);try{
       const root=state.plan.request.continuation?q.issueImplementations().state(entry.id,entry.workRequestId!):state,ref=root.definitionConsent;if(!ref){if(required)throw new Error('work_validation_material_consent_required');return undefined;}
@@ -325,14 +417,74 @@ export class IssueImplementationControls{
       q.authority().adoptionBaseline(d.adoption,observations);q.authority().acceptedBaseline(ref.baseline,contents.material.map(({name,sha256})=>({name,sha256})),observations);return {...d,materialConsent:ref.baseline};
     }finally{q.close();}
   }
+  async validationRequest(id:string,rootId:string,expected?:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),root=records.state(id,rootId);
+      const latest=entry.projectFiles
+        ?records.requests(id).findLast(r=>r.logicalOwner===root.task&&r.result?.status!=='cancelled_unstarted')
+        :root;
+      if(!latest||expected!==undefined&&expected!==latest.id)throw new Error('implementation_validation_request_changed');
+      return latest.id as string;
+    }finally{q.close();}
+  }
   async validationState(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const s=q.issueImplementations().state(id,requestId);if(s.result||s.validationCorrection)return null;const p=await observeValidationFailure(s);let reason:string|null=null;
-    try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');await workValidationDefinition(entry,s.plan.request);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
-    return {eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
+    try{if(this.active.has(id+':'+requestId))throw new Error('implementation_validation_request_active');q.issueImplementations().requireValidationBudget(id,requestId);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.validationDefinition(entry,s);if(s.stopped)throw new Error('implementation_stopped');}catch(e){reason=(e as Error).message;}
+    return {requestId,eligible:reason===null,reason,report:p.record.report,tests:p.record.tests,changed:p.record.changed,completeCapture:true};
   }catch{return null;}finally{q.close();}}
+  private async releasedCorrection(s:Row){
+    const operation=s.plan?.operationRoot,reference=s.validationCorrection;
+    if(!operation||!reference||!s.validationFailure||s.result)throw new Error('implementation_validation_recovery_evidence_required');
+    const directory=join(operation,'validation-correction'),json=async(path:string)=>JSON.parse((await regular(path,32*1024*1024)).toString());
+    const result=await json(join(directory,'result.json'));
+    if(!['completed','failed'].includes(result.status)||result.requestId!==s.id||result.task!==s.task||result.H0!==s.H0||
+       canonical(result.validationCorrection)!==canonical(reference)||canonical(result.firstInputContinuation??null)!==canonical(s.firstInputContinuation??null)||
+       result.status==='failed'&&result.H1!==null)throw new Error('implementation_validation_recovery_result_changed');
+    const workspace=s.plan.workspace;
+    if(await exists(join(workspace,'.git','tongxu-writer.json')))throw new Error('implementation_validation_writer_active_or_unknown');
+    const handoffs=(await readdir(directory)).filter(name=>/^handoff-[0-9a-f-]{36}-1\.json$/.test(name));
+    if(handoffs.length!==1)throw new Error('implementation_validation_recovery_writer_changed');
+    const handoff=await json(join(directory,handoffs[0]!)),generation=handoffs[0]!.slice(8,-7),lease=handoff.lease;
+    const plan=await json(s.plan.path);
+    const release=await json(join(operation,'ownership-history',generation+'-released.json'));
+    const retained=await json(join(operation,'ownership-history',generation+'-lock.json'));
+    if(lease?.generation!==generation||lease.operation!==operation||lease.status!=='held'||handoff.to!==result.sessionId||
+       handoff.sessionContinuity!=='new_implementer_context'||handoff.verifiedTreeSha256!==s.validationFailure.treeSha256||canonical(handoff.grant)!==canonical(await json(plan.grant))||
+       release.outcome!==result.status||!Number.isFinite(Date.parse(release.at))||canonical(release.lease)!==canonical(lease)||canonical(retained)!==canonical(lease))
+      throw new Error('implementation_validation_recovery_writer_changed');
+    await readImplementationResult({...s,result});
+    if(await git(workspace,['rev-parse','HEAD'])!==(result.H1??s.H0)||treeHash(await tree(workspace,true))!==result.treeSha256||
+       await exists(join(workspace,'.git','tongxu-writer.json')))throw new Error('implementation_validation_recovery_workspace_changed');
+    return result;
+  }
+  async validationRecovery(id:string,requestId:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      if(this.active.has(id+':'+requestId))return null;
+      const s=q.issueImplementations().state(id,requestId);
+      if(!s.validationCorrection||s.result)return null;
+      const result=await this.releasedCorrection(s);
+      return {requestId,H:result.H1,status:result.status};
+    }catch{return null;}finally{q.close();}
+  }
+  async reconcileValidation(id:string,requestId:string){
+    const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),original=records.state(id,requestId);
+      if(!original.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_recovery_evidence_required');
+      return await withQueueRepairLock(entry.store,original.operation,async()=>{
+        const state=records.state(id,requestId);
+        if(state.result)return {...this.publicState(state),newModelInputs:0};
+        const result=await this.releasedCorrection(state),ended=records.complete(id,requestId,result);
+        if(result.status==='completed')q.tasks().observe(q.tasks().definition(state.task),await observeTaskWorkspace(q.tasks().definition(state.task)));
+        return {...this.publicState(ended),newModelInputs:0};
+      });
+    }finally{q.close();}
+  }
   async definitionConsentPreview(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);
-    const d=await workValidationDefinition(entry,s.plan.request);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
+    const s=q.issueImplementations().state(id,requestId);if(!this.generated.has(entry.id))throw new Error('work_validation_definition_not_product_work');if(s.result||s.validationCorrection||this.active.has(id+':'+requestId))throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);const p=await observeValidationFailure(s);await checkValidationWorkspace(p,true);await checkCorrectionBootstraps(p.record.operationRoot);await this.persistValidationFailure(q,id,requestId,p);
+    const d=await this.validationDefinition(entry,s);if(definitionScopeAllows(s.plan.request,d)||s.definitionConsent)return {alreadyAuthorized:true};
     const proposal=q.authority().baselineProposal(d.adoption,definitionConsentContents(d)),prepared=q.authority().prepare('work-validation-material-'+hash(canonical(proposal)),Buffer.from(canonical(proposal)));
     return {proposalSha256:prepared.proposalSha256,definition:d,adoption:d.adoption};
   }finally{q.close();}}
@@ -344,20 +496,35 @@ export class IssueImplementationControls{
     if(!this.accepting||!messageId(requestId))throw new Error('implementation_request_invalid');await this.catalog();this.entry(id);if(this.retired.has(id))throw new Error('implementation_prepared_work_retired');const key=id+':'+requestId;if(this.active.has(key))return {id:requestId,controllerActive:true,duplicate:true};
     const work=this.executeValidation(id,requestId).then(async s=>{if(s.result?.status==='completed'&&this.finished){const q=await QueueStore.open(this.entry(id).store);try{const r=q.issueImplementations().original(id,requestId);await this.finished(r.continuation?.originalTarget??{source:id,requestId,task:r.task,operation:s.operation});}finally{q.close();}}return s;});this.active.set(key,work);work.catch(()=>{}).finally(()=>this.active.delete(key));return {id:requestId,controllerActive:true,registrationIsNotExecution:true};
   }
-  private async executeValidation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+  private async executeValidation(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);
+    let handoff:Awaited<ReturnType<IssueImplementationControls['openPublishedHandoff']>>;
+    try{
     const original=q.issueImplementations().state(id,requestId);return await withQueueRepairLock(entry.store,original.operation,async()=>{
       const current=q.issueImplementations().state(id,requestId);if(current.result)return current;if(current.validationCorrection)throw new Error('implementation_validation_correction_consumed');q.issueImplementations().requireValidationBudget(id,requestId);
       const p=await observeValidationFailure(current);await checkValidationWorkspace(p,true);await this.persistValidationFailure(q,id,requestId,p);let observations:OwnerObservation[]=[];
-      const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==current.plan.request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+      const request=current.plan.request as ImplementationRequest,continuation=request.continuation;
+      handoff=await this.openPublishedHandoff(q,request);
+      if(continuation?.amendment&&canonical(await this.reviewAmendment(entry,continuation.originalTarget,supplementBase(continuation),continuation.supplement.id,continuation.supplement.text,continuation.endedRepair))!==canonical(continuation.amendment))throw new Error('project_supplement_review_binding_changed');
+      const refresh=async()=>{if(!this.accepting)throw new Error('implementation_controller_closing');await this.catalog();if(current.plan.catalogSha256!==this.catalogHash(id))throw new Error('implementation_original_catalog_changed');await this.verify();if(hash((await this.read(current.issue)).body)!==request.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+        if(continuation)await this.checkSupplementPredecessor(entry,request);
         const a=q.authority(),profile=a.configuration().profile,refs=new Map<string,ReturnType<typeof a.sourceRequests>[number]>(),s=q.issueImplementations().state(id,requestId);for(const auth of [...Object.values(current.plan.authorization),...(s.definitionConsent?[s.definitionConsent.baseline]:[])] as string[])for(const r of a.sourceRequests(auth))refs.set(r.proposalSha256,r);
         const root=join(entry.store,'implementation-authority',randomUUID());await mkdir(root,{recursive:true,mode:0o700});observations=[];for(const r of refs.values())observations.push(await readOwnerSource(profile,r.proposalSha256,r.commentId,join(root,r.proposalSha256)));q.issueImplementations().check(id,requestId,observations);
       };
       await refresh();const definition=await this.readableDefinition(entry,q.issueImplementations().state(id,requestId),observations,true),input=validationCorrectionInput(p,current.plan.request,definition);await checkValidationWorkspace(p,true);await refresh();
-      const ref=q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,observations);await mkdir(join(current.plan.operationRoot,'validation-correction'),{mode:0o700});await releaseWorkspace(current.plan.workspace,p.lease as any,'verified_known_validation_failure');
-      const result=await runValidationCorrection(p,current.plan.request,ref,input,current.firstInputContinuation,{refresh,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{q.issueImplementations().check(id,requestId,observations);}});
+      const retry=await checkCorrectionBootstraps(p.record.operationRoot),directory=join(p.record.operationRoot,'validation-correction');
+      await mkdir(directory,{mode:0o700,recursive:true});
+      const nativeDirectory=join(directory,retry?'native-retry-'+randomUUID():'native');
+      const ref={failureSha256:hash(canonical(p.record)),inputSha256:hash(input),definition:definition!,nativeDirectory};
+      q.issueImplementations().problem(id,requestId,'');
+      const result=await runValidationCorrection(p,request,ref,input,current.firstInputContinuation,{refresh,dispatchGate:handoff?.dispatch,unsent:()=>{},check:effect=>{if(!this.accepting)throw new Error('implementation_controller_closing');q.issueImplementations().check(id,requestId,observations,effect);},dispatch:()=>{
+        q.issueImplementations().reserveValidationCorrection(id,requestId,p,input,definition!,nativeDirectory,observations);
+      }},async()=>{
+        await checkValidationWorkspace(p,true);await refresh();
+        await releaseWorkspace(current.plan.workspace,p.lease as any,'verified_known_validation_failure');
+      });
       const state=q.issueImplementations().complete(id,requestId,result);if(result.status==='completed')q.tasks().observe(q.tasks().definition(current.task),await observeTaskWorkspace(q.tasks().definition(current.task)));return state;
     });
-  }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{q.close();}}
+  }catch(e){q.issueImplementations().problem(id,requestId,(e as Error).message);throw e;}finally{handoff?.close();q.close();}}
   async cancel(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
     const request=q.issueImplementations().original(id,requestId);if(request.continuation)await this.checkSupplementPredecessor(entry,request,false);
     q.issueImplementations().cancel(id,requestId);const state=q.issueImplementations().state(id,requestId);
@@ -365,9 +532,71 @@ export class IssueImplementationControls{
     return this.publicState(q.issueImplementations().state(id,requestId));
   }finally{q.close();}}
   async stop(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{return this.publicState(q.issueImplementations().stop(id,requestId));}finally{q.close();}}
+  async stopWorkFamily(id:string,requestId:string){
+    const q=await QueueStore.open(this.entry(id).store);
+    try{
+      const records=q.issueImplementations(),original=records.state(id,requestId);
+      for(const request of records.requests(id))if(request.logicalOwner===original.task)records.stop(id,request.id);
+    }finally{q.close();}
+  }
+  async testIntegration<T>(source:string,requestId:string,input:{H:string;B:string;target:string},
+    check:()=>Promise<void>,admit:()=>void,
+    run:(project:ProjectContract,authorize:(workspace:string,H:string)=>Promise<DockerStartGate>)=>Promise<T>){
+    const entry=this.entry(source),q=await QueueStore.open(entry.store);
+    try{
+      const records=q.issueImplementations(),state=records.state(source,requestId),fixed=state.plan;
+      if(!this.generated.has(source)||!entry.projectFiles||state.stopped||state.result?.status!=='completed'||
+         state.result.H1!==input.H||fixed.resourceRequests.length)throw new Error('project_work_integration_test_authority_required');
+      const report=await readImplementationResult(state),bytes=await regular(fixed.path);
+      if(report.tests?.passed!==true||hash(bytes)!==fixed.sha256)throw new Error('project_work_integration_preview_evidence_required');
+      const project=JSON.parse(bytes.toString()).project as ProjectContract,base=q.tasks().definition(state.task);
+      const authority=q.authority(),authorization=fixed.authorization.test,profile=authority.configuration().profile;
+      const authorize=async(workspace:string,H:string):Promise<DockerStartGate>=>{
+        const definition=parseDevelopmentTask(Buffer.from(canonical({...base,id:'integration-'+H,workspace,base:input.B,target:input.target})));
+        const observed=await observeTaskWorkspace(definition);
+        if(observed.head!==H)throw new Error('project_work_integration_commit_unverified');
+        const {item}=q.tasks().observe(definition,observed),action:ActionRequest={...fixed.actions.test,
+          item,target:input.target,candidate:{H,B:input.B,subjectSha256:null}};
+        let observations:OwnerObservation[]=[];
+        const refresh=async()=>{
+          await check();
+          const root=join(entry.store,'integration-authority',randomUUID());
+          await mkdir(root,{recursive:true,mode:0o700});observations=[];
+          for(const ref of authority.sourceRequests(authorization))observations.push(await readOwnerSource(profile,ref.proposalSha256,ref.commentId,join(root,ref.proposalSha256)));
+          admit();authority.checkAction(action,'implementer',authorization,observations);
+        };
+        return {refresh,start:effect=>{
+          const latest=records.requests(source).findLast(row=>row.result?.status!=='cancelled_unstarted');
+          admit();if(!this.accepting||this.retired.has(source)||latest?.id!==requestId||latest.stopped)
+            throw new Error('project_work_integration_test_authority_required');
+          assertTaskObservationCurrentSync(definition,observed);
+          authority.checkAction(action,'implementer',authorization,observations);effect();
+        }};
+      };
+      return await run(project,authorize);
+    }finally{q.close();}
+  }
   async report(id:string,requestId:string){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
-    const state=q.issueImplementations().state(id,requestId);if(!state.result){try{const record=state.validationFailure?await readRecordedValidationFailure(state):(await observeValidationFailure(state)).record;return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};}catch{}if(!state.plan)throw new Error('implementation_original_report_not_available');return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...state.plan.request.workspaceRequest.allowedPaths]),observationOnly:true,originalExecutionRetained:true};}
-    return readImplementationResult(state);
+    const state=q.issueImplementations().state(id,requestId);
+    if(state.result)return readImplementationResult(state);
+    const projectFiles=state.plan?.request.workspaceRequest.projectFiles===true;
+    try{
+      const proof=projectFiles||!state.validationFailure?await observeValidationFailure(state,projectFiles):null;
+      const record=proof?.record??await readRecordedValidationFailure(state);
+      return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'validation_failed',completeCapture:true,H0:state.H0,H1:null,report:record.report,tests:record.tests,changed:record.changed,validationFailed:true,...proof?.readback,...(state.validationCorrection?{correctionState:'sent_or_unknown'}:{})};
+    }catch{/* Incomplete originals remain an observation. */}
+    if(!state.plan)throw new Error('implementation_original_report_not_available');
+    const {workspaceRequest}=state.plan.request;
+    const diff=await git(state.plan.workspace,['diff','--no-ext-diff','--no-textconv',state.H0,'--',...workspaceRequest.allowedPaths]);
+    const added=projectFiles?await retainedProjectAdditions(state.plan.workspace,state.plan.operationRoot,state.H0,{protectedPaths:workspaceRequest.protectedPaths},state.plan.request.editProfile).catch(()=>null):null;
+    return {id:state.id,task:state.task,issue:state.issue,operation:state.operation,status:'partial_or_unknown',completeCapture:false,H0:state.H0,H1:null,report:null,reason:state.reason,diff:[diff,added?.diff].filter(Boolean).join('\n'),...(added?{retainedAdditions:added.additions}:projectFiles?{evidenceGap:'retained_additions_unverified'}:{}),observationOnly:true,originalExecutionRetained:true};
+  }finally{q.close();}}
+  async failureLog(id:string,requestId:string,selection:ValidationLogSelection){const entry=this.entry(id),q=await QueueStore.open(entry.store);try{
+    const state=q.issueImplementations().state(id,requestId);
+    if(state.result||state.plan?.request.workspaceRequest.projectFiles!==true)throw new Error('report_not_found');
+    const {log}=await observeValidationFailure(state,true,selection);
+    if(!log)throw new Error('report_not_found');
+    return log;
   }finally{q.close();}}
   async ownerFeedbackTarget(store:string,target:ImplementationOwnerTarget){
     if(!implementationOwnerTarget(target))throw new Error('owner_feedback_target_invalid');await this.catalog();await this.verify();const entry=this.entry(target.source);if(entry.store!==store)throw new Error('owner_feedback_target_queue_mismatch');
@@ -384,13 +613,57 @@ export class IssueImplementationControls{
     const continuation=request.continuation!;
     const target=continuation.originalTarget,source=entry.id,q=await QueueStore.open(entry.store);try{
       const records=q.issueImplementations(),fixed=records.original(source,request.id),root=records.state(source,target.requestId),rootRequest=records.original(source,target.requestId),parent=records.state(source,continuation.predecessor.requestId),parentRequest=records.original(source,parent.id);
-      if(target.source!==source||canonical(fixed)!==canonical(request)||rootRequest.continuation||root.task!==continuation.logicalOwner||root.task!==target.task||root.operation!==target.operation||request.id!==continuation.supplement.id||request.issue.number!==root.issue||request.workspaceRequest.candidate.H!==continuation.predecessor.H1||request.workspaceRequest.objects!==parent.plan?.workspace||parent.operation!==continuation.predecessor.operation||parent.result?.status!=='completed'||!parent.result.completeCapture||parent.result.H1!==continuation.predecessor.H1||hash(canonical(parent.result))!==continuation.predecessor.resultSha256||parent.id!==root.id&&(parentRequest.continuation?.logicalOwner!==root.task||canonical(parentRequest.continuation.originalTarget)!==canonical(target)))throw new Error('project_supplement_predecessor_changed');
+      const ended=continuation.endedRepair,published=ended?.published;
+      if(target.source!==source||canonical(fixed)!==canonical(request)||rootRequest.continuation||root.task!==continuation.logicalOwner||root.task!==target.task||root.operation!==target.operation||request.id!==continuation.supplement.id||request.issue.number!==root.issue||request.workspaceRequest.candidate.H!==supplementBase(continuation)||request.workspaceRequest.objects!==(published?.workspace??parent.plan?.workspace)||parent.operation!==continuation.predecessor.operation||parent.result?.status!=='completed'||!parent.result.completeCapture||parent.result.H1!==continuation.predecessor.H1||hash(canonical(parent.result))!==continuation.predecessor.resultSha256||parent.id!==root.id&&(parentRequest.continuation?.logicalOwner!==root.task||canonical(parentRequest.continuation.originalTarget)!==canonical(target)))throw new Error('project_supplement_predecessor_changed');
+      if(ended&&!repairPredecessorMatches(ended,parent.result.H1))throw new Error('formal_repair_supplement_current_base_required');
       await readImplementationResult(parent);
       if(current){
+        if(ended){
+          const family=records.requests(source).filter(row=>row.logicalOwner===root.task&&row.id!==request.id&&row.result?.status!=='cancelled_unstarted');
+          const latest=family.findLast(row=>row.result?.status!=='no_change');
+          if(root.stopped||parent.stopped||latest?.id!==parent.id)throw new Error('project_supplement_predecessor_changed');
+          await this.checkEndedRepair(target,request.id,continuation.supplement.text,supplementBase(continuation),ended);
+          if(!('executionKind' in entry)||!continuation.amendment||canonical(await this.reviewAmendment(entry as Entry,target,supplementBase(continuation),request.id,continuation.supplement.text,ended))!==canonical(continuation.amendment))
+            throw new Error('project_supplement_review_binding_changed');
+        }
         for(const resource of parent.plan.resourceRequests as string[])if(!q.resources().settledOutcome(resource))throw new Error('implementation_original_resources_unresolved');
         if(await exists(join(parent.plan.workspace,'.git','tongxu-writer.json'))||await git(parent.plan.workspace,['rev-parse','HEAD'])!==parent.result.H1||treeHash(await tree(parent.plan.workspace,true))!==parent.result.treeSha256||await git(parent.plan.workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('project_supplement_committed_result_changed');
       }
     }finally{q.close();}
+  }
+  private async checkEndedRepair(target:SupplementTarget,id:string,text:string,H:string,ended:EndedRepairSupplement,onPublished?:(location:PublishedHandoffLocation)=>void){
+    if(ended.H!==H)throw new Error('formal_repair_supplement_current_base_required');
+    const original=await this.endedRepair?.(target,id.slice('supplement-'.length),text,ended.operation,onPublished);
+    if(!original||canonical(original)!==canonical(ended))throw new Error('formal_repair_supplement_writer_unresolved');
+  }
+  private async openPublishedHandoff(ordinary:QueueStore,request:ImplementationRequest){
+    const continuation=request.continuation,ended=continuation?.endedRepair;
+    if(!continuation||!ended?.published)return;
+    const {originalTarget,supplement}=continuation;
+    let location:PublishedHandoffLocation|undefined;
+    await this.checkEndedRepair(originalTarget,supplement.id,supplement.text,supplementBase(continuation),ended,found=>{location=found;});
+    if(!location)throw new Error('formal_repair_supplement_writer_unresolved');
+    const {entry,store}=location;
+    let sameQueue=store===ordinary.directory;
+    if(!sameQueue){
+      const [formalDirectory,ordinaryDirectory]=await Promise.all([stat(store,{bigint:true}),stat(ordinary.directory,{bigint:true})]);
+      sameQueue=formalDirectory.dev===ordinaryDirectory.dev&&formalDirectory.ino===ordinaryDirectory.ino;
+    }
+    const formal=sameQueue?ordinary:await QueueStore.open(store);
+    const fence=<T>(effect:()=>T)=>formal.formalReviews().publishedHandoffEffect(entry,originalTarget,ended,effect);
+    return {
+      dispatch:<T>(record:()=>void,send:()=>T):T=>{
+        if(formal===ordinary){
+          // Commit the durable ordinary intent before the native write. Recheck
+          // inside a fresh transaction so the shared queue never nests writes.
+          fence(()=>{});
+          record();
+          return fence(send);
+        }
+        return fence(()=>{record();return send();});
+      },
+      close:()=>{if(formal!==ordinary)formal.close();}
+    };
   }
   private async boundSupplement(target:SupplementTarget,id:string,text:string,entry:ReadEntry=this.entry(target.source)){
     const q=await QueueStore.open(entry.store);let request:ImplementationRequest;
@@ -408,22 +681,70 @@ export class IssueImplementationControls{
     await this.boundSupplement(target,id,text);return this.cancel(target.source,id);
   }
   async supplementTargets(){const targets:Array<SupplementTarget&{title:string}>=[];for(const entry of this.entries){if(this.retired.has(entry.id))continue;const q=await QueueStore.open(entry.store);try{for(const s of q.issueImplementations().requests(entry.id)){const request=q.issueImplementations().original(entry.id,s.id);if(!request.continuation&&s.operation)targets.push({source:entry.id,requestId:s.id,task:s.task,operation:s.operation,title:'Issue #'+s.issue+' · '+q.tasks().definition(s.task).title});}}finally{q.close();}}return targets;}
+  async supplementPlanningInput(target:SupplementTarget,receivedId:string,text:string,ended?:EndedRepairSupplement):Promise<SupplementPlanningSource>{
+    const source=await this.supplementSource(target);
+    if(!source.ready||!source.entry.projectFiles||!source.entry.workRequestId||!this.generated.has(source.entry.id))
+      throw new Error(source.reason??'project_supplement_review_required');
+    const issue=await this.read(source.root.issue);
+    if(hash(issue.body)!==source.rootRequest.issue.bodySha256)throw new Error('implementation_issue_source_changed');
+    const workflowPrompt=source.request.workflowPrompt;
+    if(!workflowPrompt)throw new Error('coding_workflow_source_unavailable');
+    const originalH=source.latest.result.H1 as string,published=ended?.published;
+    if(ended&&!repairPredecessorMatches(ended,originalH))throw new Error('formal_repair_supplement_current_base_required');
+    const H=ended?.H??originalH,requestId='supplement-'+receivedId;
+    if(ended)await this.checkEndedRepair(target,requestId,text,H,ended);
+    const body=issue.body+(published?'\n\n## Requirements retained on the formally reviewed candidate\n'+formalRequirements(ended!):'');
+    return {input:supplementReviewInput(source.entry.repository,target,H,requestId,text,ended),
+      source:{path:published?.workspace??source.latest.plan.workspace,H,repository:source.entry.repository},workflowPrompt,
+      issue:{number:issue.number,body,bodySha256:hash(body),url:issue.url}};
+  }
+  private async reviewAmendment(entry:ReadEntry&{executionKind:string},target:SupplementTarget,H1:string,requestId:string,text:string,ended?:EndedRepairSupplement){
+    return this.supplementReview?.(supplementReviewInput(entry.repository,target,H1,requestId,text,ended),entry.executionKind)??null;
+  }
   private async supplementSource(target:SupplementTarget){
     await this.catalog();await this.verify();const entry=this.entry(target.source),q=await QueueStore.open(entry.store);
     try{const records=q.issueImplementations(),root=records.state(entry.id,target.requestId),rootRequest=records.original(entry.id,target.requestId);if(root.task!==target.task||root.operation!==target.operation||rootRequest.continuation)throw new Error('project_supplement_original_target_changed');
       const family=records.requests(entry.id).filter(s=>(s.id===root.id||records.original(entry.id,s.id).continuation?.logicalOwner===root.task)&&s.result?.status!=='cancelled_unstarted'),last=family.at(-1)??root,latest=last.result?.status==='no_change'?[...family].reverse().find(s=>s.result?.status==='completed')??last:last,request=records.original(entry.id,latest.id);
-      if(latest.stopped||latest.result?.status!=='completed'||!latest.result?.H1||!latest.result.completeCapture)return {entry,root,rootRequest,latest,request,ready:false,reason:latest.reason??(latest.stopped?'implementation_stopped':latest.result?'project_supplement_requires_successful_commit':'project_supplement_original_pending_or_unknown')};
+      if(this.retired.has(entry.id)||root.stopped||latest.stopped||latest.result?.status!=='completed'||!latest.result?.H1||!latest.result.completeCapture)return {entry,root,rootRequest,latest,request,ready:false,reason:latest.reason??(root.stopped||latest.stopped||this.retired.has(entry.id)?'implementation_stopped':latest.result?'project_supplement_requires_successful_commit':'project_supplement_original_pending_or_unknown')};
       await this.report(entry.id,latest.id);for(const resource of latest.plan.resourceRequests as string[])if(!q.resources().settledOutcome(resource))return {entry,root,rootRequest,latest,request,ready:false,reason:'implementation_original_resources_unresolved'};
       const workspace=latest.plan.workspace;if(await exists(join(workspace,'.git','tongxu-writer.json'))||await git(workspace,['rev-parse','HEAD'])!==latest.result.H1||treeHash(await tree(workspace,true))!==latest.result.treeSha256||await git(workspace,['status','--porcelain','--untracked-files=all','--ignored']))throw new Error('project_supplement_committed_result_changed');
       return {entry,root,rootRequest,latest,request,ready:true,reason:null};
     }finally{q.close();}
   }
-  async readSupplement(target:SupplementTarget,compiled:string|null,text:string):Promise<Row>{
-    if(!compiled){const original=await this.supplementSource(target);return {ready:original.ready,reason:original.reason,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:original.latest.result?.H1??null};}
+  async ordinarySupplementContainsRepair(target:SupplementTarget,H:string,repairedH:string){
+    if(!/^[a-f0-9]{40}$/.test(repairedH))return false;
+    const source=await this.supplementSource(target);
+    if(!source.ready||source.latest.result.H1!==H)return false;
+    return await git(source.latest.plan.workspace,['merge-base',repairedH,H]).catch(()=>null)===repairedH;
+  }
+  async readSupplement(target:SupplementTarget,compiled:string|null,text:string,receivedId?:string,ended?:EndedRepairSupplement):Promise<Row>{
+    if(!compiled){
+      const original=await this.supplementSource(target);
+      const H=original.latest.result?.H1;
+      if(ended&&original.ready&&!repairPredecessorMatches(ended,H))
+        return {ready:false,H1:H,reason:'formal_repair_supplement_current_base_required'};
+      const input=original.ready&&original.entry.projectFiles&&receivedId&&original.entry.workRequestId
+        ?supplementReviewInput(original.entry.repository,target,ended?.H??H,'supplement-'+receivedId,text,ended):null;
+      const review=input?await this.supplementReview?.(input,original.entry.executionKind):null;
+      const reviewRequired=original.ready&&original.entry.projectFiles&&!review;
+      const planning=input?await this.supplementReviewStatus?.(input):null;
+      if(ended?.published&&review){
+        try{await supplementTestPlan(original.request.workspaceRequest,review,ended.published);}
+        catch(error){return {ready:false,H1:ended.H,planning,reason:(error as Error).message};}
+      }
+      return {ready:original.ready&&!reviewRequired&&(!ended||!!review),...(reviewRequired&&original.entry.workRequestId&&(!planning||planning.state==='ready_to_retry')?{canRequestReview:true}:{}),
+        ...(planning?{planning}:{}),reason:reviewRequired?'project_supplement_review_required':original.reason,issue:original.root.issue,originalOperation:original.root.operation,predecessorOperation:original.latest.operation,H1:ended?.H??H??null,
+        ...(original.entry.projectFiles?{delivered:false,adopted:false,coveringCandidate:null}:{})};
+    }
     const {entry,historical}=await this.readEntry(target.source,target.requestId);
-    const request=await this.boundSupplement(target,compiled,text,entry);
     const q=await QueueStore.open(entry.store);
     try{
+      const registered=q.issueImplementations().findState(target.source,compiled);
+      if(!registered&&!historical&&'projectFiles' in entry&&entry.projectFiles){
+        const pending=await this.readSupplement(target,null,text,compiled.slice('supplement-'.length),ended);
+        return {...pending,ready:false,resumable:pending.ready,unregistered:true,reason:pending.reason};
+      }
+      const request=await this.boundSupplement(target,compiled,text,entry);
       let original:{ready:boolean;reason:string|null}={ready:false,reason:null};
       if(!historical)try{original=await this.supplementSource(target);}catch(error){original={ready:false,reason:error instanceof Error?error.message:'project_supplement_original_pending_or_unknown'};}
       const state=q.issueImplementations().state(target.source,compiled);
@@ -433,24 +754,54 @@ export class IssueImplementationControls{
         if(!['completed','no_change'].includes(state.result?.status)||!state.result.completeCapture)throw new Error('implementation_history_incomplete');
       }
       const report=state.result?.completeCapture?await readImplementationResult(state):null;
-      return {ready:false,successful:!historical&&['completed','no_change'].includes(state.result?.status)&&original.ready,status:state.phase,reason:state.reason||original.reason,operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
+      const continuation=request.continuation!,amendment=continuation.amendment;
+      const planning=amendment&&!historical?await this.supplementReviewStatus?.(supplementReviewInput(entry.repository,
+        target,supplementBase(continuation),compiled,text,continuation.endedRepair)):null;
+      let recipient:null|{role:string;work:string;sessionId:string}=null;
+      if(amendment&&(report||state.phase==='active_or_unknown'))try{
+        const native=report?await validationResultCapture(state):join(state.plan.operationRoot,'implementer');
+        const capture=await readRepairSession(native);
+        const sent=(await regular(join(native,'stdin.ndjson'),16*1024*1024)).toString().trim().split('\n').map(line=>JSON.parse(line)).filter(message=>message.method==='turn/start');
+        const input=sent.length===1?JSON.parse(sent[0].params.input[0].text):null;
+        const {workflowPrompt:_,...expected}=request;
+        if(!input||capture.binding.run!==state.plan.operationRoot||canonical(input.request)!==canonical(report?.validationCorrection?request:expected))throw new Error('project_supplement_original_delivery_changed');
+        recipient={role:'implementer',work:target.source,sessionId:capture.binding.sessionId};
+      }catch(error){if(report)throw error;}
+      const coveringCandidate=amendment&&report?.status==='completed'&&report?.tests?.passed===true&&report.tests.tools?.some((tool:Row)=>tool.id===supplementTestId(amendment)&&tool.exitCode===0)?report.H1:null;
+      const resumable=!!amendment&&!historical&&!state.stopped&&!this.active.has(target.source+':'+compiled)&&['registered','prepared'].includes(state.phase);
+      const successful=!historical&&(amendment?!!coveringCandidate:['completed','no_change'].includes(state.result?.status)&&!!report);
+      const endedRepair=continuation.endedRepair;
+      const approvalVerified=!!endedRepair&&!!amendment&&!historical&&'executionKind' in entry&&
+        canonical(await this.reviewAmendment(entry as Entry,target,supplementBase(continuation),compiled,text,endedRepair))===canonical(amendment);
+      const ordinaryRepairSettled=approvalVerified&&successful&&!!recipient&&!this.active.has(target.source+':'+compiled)&&
+        !await exists(join(state.plan.workspace,'.git','tongxu-writer.json'))&&state.plan.resourceRequests.every((resource:string)=>!!q.resources().settledOutcome(resource));
+      const adopted=!!amendment&&(!endedRepair||approvalVerified&&!!recipient);
+      return {ready:false,resumable:resumable&&(!endedRepair||approvalVerified),successful:endedRepair?ordinaryRepairSettled:successful,...(endedRepair?{endedRepair,ordinaryRepairSettled}:{}),...(planning?{planning}:{}),...(amendment?{issue:state.issue,delivered:!!recipient,recipient,adopted,dispatchRecorded:state.phase==='active_or_unknown'||!!report,requirementSha256:amendment.inputSha256,reviewRun:amendment.reviewRun,coveringCandidate:adopted?coveringCandidate:null}:{}),status:state.phase,reason:state.reason||(endedRepair&&!approvalVerified?'project_supplement_review_required':successful?null:original.reason),operation:state.operation,task:state.task,H0:state.H0,H1:state.result?.H1??null,completeCapture:state.result?.completeCapture===true,report:report?.report??null,sessionId:report?.sessionId??null,newNativeContext:true,nativeSessionResumed:false,...(historical?{historical:true}:{})};
     }finally{q.close();}
   }
-  async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void){
+  async workSupplement(target:SupplementTarget,id:string,text:string,beforeRegistration:()=>void,endedRepair?:EndedRepairSupplement){
     await this.catalog();await this.verify();if(this.retired.has(target.source))throw new Error('implementation_prepared_work_retired');const entry=this.entry(target.source),q=await QueueStore.open(entry.store);let existing:ImplementationRequest|undefined;
     try{if(q.issueImplementations().requests(target.source).some(r=>r.id===id))existing=q.issueImplementations().original(target.source,id);}finally{q.close();}
     if(existing){
+      if(canonical(existing.continuation?.endedRepair??null)!==canonical(endedRepair??null))throw new Error('formal_repair_inbox_binding_changed');
       await this.boundSupplement(target,id,text);beforeRegistration();
       await this.prepareSelected(target.source,{requestId:id,issueNumber:existing.issue.number},{entry,continuation:existing.continuation!,beforeRegistration});
     }else{
       const source=await this.supplementSource(target);if(!source.ready)throw new Error(source.reason??'project_supplement_original_pending_or_unknown');
+      const originalH=source.latest.result.H1,published=endedRepair?.published,H=endedRepair?.H??originalH;
+      if(endedRepair){
+        if(!repairPredecessorMatches(endedRepair,originalH))throw new Error('formal_repair_supplement_current_base_required');
+        await this.checkEndedRepair(target,id,text,H,endedRepair);
+      }
+      const amendment=entry.projectFiles&&entry.workRequestId?await this.reviewAmendment(entry,target,H,id,text,endedRepair):null;
+      if(entry.projectFiles&&!amendment)throw new Error('project_supplement_review_required');
       const queue=await QueueStore.open(entry.store),history:NonNullable<ImplementationRequest['continuation']>['history']=[];
       try{
         // Keep reports flat and supplement strings opaque; never copy request envelopes.
         for(const s of queue.issueImplementations().requests(target.source)){const request=queue.issueImplementations().original(target.source,s.id);if(s.id!==source.root.id&&request.continuation?.logicalOwner!==target.task)continue;if(s.result?.status==='cancelled_unstarted')continue;if(!['completed','no_change'].includes(s.result?.status))throw new Error('project_supplement_original_pending_or_unknown');const result=await this.report(target.source,s.id);history.push({requestId:s.id,operation:s.operation,H0:s.H0,H1:result.H1??result.H0,sessionId:result.sessionId,report:result.report,...(request.continuation?{supplement:request.continuation.supplement}:{})});}
       }finally{queue.close();}
-      const continuation:NonNullable<ImplementationRequest['continuation']>={logicalOwner:target.task,originalTarget:target,predecessor:{requestId:source.latest.id,operation:source.latest.operation,H1:source.latest.result.H1,resultSha256:hash(canonical(source.latest.result))},supplement:{id,text},history};if(Buffer.byteLength(canonical(continuation))>192*1024||history.length>32)throw new Error('project_supplement_context_limit');
-      await this.prepareSelected(target.source,{requestId:id,issueNumber:source.root.issue},{entry:{...entry,H0:source.latest.result.H1,objects:source.latest.plan.workspace},continuation,beforeRegistration});
+      const continuation:NonNullable<ImplementationRequest['continuation']>={logicalOwner:target.task,originalTarget:target,predecessor:{requestId:source.latest.id,operation:source.latest.operation,H1:source.latest.result.H1,resultSha256:hash(canonical(source.latest.result))},supplement:{id,text},...(amendment?{amendment}:{}),...(endedRepair?{endedRepair}:{}),history};if(Buffer.byteLength(canonical(continuation))>192*1024||history.length>32)throw new Error('project_supplement_context_limit');
+      await this.prepareSelected(target.source,{requestId:id,issueNumber:source.root.issue},{entry:{...entry,H0:H,objects:published?.workspace??source.latest.plan.workspace},continuation,beforeRegistration});
     }
     await this.boundSupplement(target,id,text);
     try{beforeRegistration();}catch(error){await this.cancelSupplement(target,id,text);throw error;}await this.begin(target.source,id);return id;

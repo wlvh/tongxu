@@ -4,6 +4,7 @@ const key = location.hash.slice(1);
 const $ = id => document.getElementById(id);
 let state = null, view = 'overview', selected = null, reportNonce = 0,controlRefresh=null;
 let entryInfo=null,githubDetailEpoch=null,entryLoading=false;
+let githubRepositorySequence=0;
 const gh={account:null,projects:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,checkedAt:null,filter:'',selected:null,epoch:0,listRequest:0,issues:null,pulls:null};
 const pendingControls=new Set();
 const pendingScopeControls=new Set();
@@ -52,7 +53,7 @@ async function workspaceFetch(path,options={}){
   const current=()=>epoch===gh.epoch&&gh.selected?.id===project.id&&gh.account?.id===account.id;
   const check=()=>{if(!current())throw new Error('workbench_project_changed');};
   const response=await fetch(path,{...options,headers:{...options.headers,'X-Tongxu-Project':String(project.id),'X-Tongxu-Account':String(account.id)}});check();
-  return {ok:response.ok,status:response.status,json:async()=>{const value=await response.json();check();if(!response.ok&&handleGithubError(new Error(value.error||'')))render();return value;}};
+  return {ok:response.ok,status:response.status,json:async()=>{const value=await response.json();check();if(!response.ok&&handleGithubError(new Error(value.error||'')))render();return value;},blob:async()=>{const value=await response.blob();check();return value;}};
 }
 async function api(path) {
   const response = await workspaceFetch(path, { headers: { Authorization: 'Bearer ' + key }, cache: 'no-store' });
@@ -216,7 +217,18 @@ const acceptedOutcomeLabel=batch=>batch.outcomes.at(-1)?.ownerApprovalMode==='sh
 function ownerRequests(entry,kind,send=ownerAction){
   const box=el('section'),shared=sharedAccountNote(entry);if(shared)box.append(shared);for(const r of [...entry.requests].reverse().filter(r=>kind==='goals'?['adopt_scope','accept_baseline'].includes(r.proposal.kind):['delegate','confirm_action','revoke','control'].includes(r.proposal.kind))){
     const detail=append(el('details',null,'outcome-request'),el('summary',(r.applied?'已记录决定':'待本人确认')+' · '+date(r.createdAt)+(r.revoked?' · 已撤销':'')));
-    const p=r.proposal;detail.append(el('p',r.appliesTo==='whole_scope'?'此决定适用于整个范围及其相关任务。':r.appliesTo==='selected_target'?'此委托适用于当前范围中所选目标分支。':'此请求只适用于准确选定的任务与候选。','small'));if(p.kind==='adopt_scope'){for(const [field,label] of [['goals','目标'],['nonGoals','不做的事'],['preserve','必须保留'],['acceptance','验收结果'],['constraints','限制']]){detail.append(el('h3',label));const list=el('ul');p.body[field].forEach(v=>list.append(el('li',v)));detail.append(list);}}else if(p.kind==='accept_baseline'){append(detail,el('h3','接受这三类固定基线材料'),el('p','这里记录本人接受的对照依据，不等于代码正确、授权执行或合入。','small'));for(const [role,ref] of Object.entries(p.material))append(detail,el('p',baselineLabels[role]+' · '+ref.name),el('p',ref.sha256,'mono wrap'));const read=el('button','阅读三类完整基线原文','outline');read.type='button';read.onclick=()=>openOwnerBaseline(entry,r);detail.append(read);}else if(p.kind==='delegate'){append(detail,el('p','角色：'+p.roles.map(role=>({background:'后台执行',implementer:'实现者',receiver:'接收审核',secretary:'秘书',coordinator:'协调者'}[role]||role)).join('、')),el('p','动作：'+p.actions.map(a=>({implement:'修改',test:'测试',receive:'接收',publish:'发布',merge:'合入',coordinate:'协调'}[a]||a)).join('、')),el('p','目标分支：'+p.targets.join('、')),el('p','允许路径：'+(p.paths.join('、')||'未授予文件修改')),el('p','资源引用：'+(p.resourceRefs.join('、')||'无')),el('p','截止：'+p.expiresAt));}else if(p.kind==='control'){const action=({investment:'新增投入',implementation:'新增实施',merge:'新合入'}[p.control]||p.control);append(detail,el('h3',(p.state==='stopped'?'停止':'恢复')+action),el('p',p.state==='open'?'解除这一个范围停止项；不会恢复其他已撤销权限，也不会重发未知任务。':'停止后续对应动作；已发生执行和原结果继续保留。'));}else if(p.kind==='confirm_action'){const a=p.request;append(detail,el('h3','确认一次准确动作'),el('p','动作：'+({implement:'修改',test:'测试',receive:'接收',publish:'发布',merge:'合入',coordinate:'协调'}[a.action]||a.action)),el('p','角色：'+p.performerRole+' · 目标：'+a.target),el('p','允许路径：'+(a.paths.join('、')||'无')),el('p','资源引用：'+(a.resourceRefs.join('、')||'无')),el('p','截止：'+p.expiresAt));}else detail.append(el('p','撤销原委托或单次授权；原执行和结果仍保留。'));
+    const p=r.proposal,projectFiles=r.appliesTo==='project_files';
+    const scopeText={project_files:'此委托适用于已采用范围内的项目文件，具体目标由任务与候选核对。',whole_scope:'此决定适用于整个范围及其相关任务。',selected_target:'此委托适用于当前范围中所选目标分支。'}[r.appliesTo]??'此请求只适用于准确选定的任务与候选。';
+    detail.append(el('p',scopeText,'small'));
+    if(p.kind==='adopt_scope'){for(const [field,label] of [['goals','目标'],['nonGoals','不做的事'],['preserve','必须保留'],['acceptance','验收结果'],['constraints','限制']]){detail.append(el('h3',label));const list=el('ul');p.body[field].forEach(v=>list.append(el('li',v)));detail.append(list);}}else if(p.kind==='accept_baseline'){append(detail,el('h3','接受这三类固定基线材料'),el('p','这里记录本人接受的对照依据，不等于代码正确、授权执行或合入。','small'));for(const [role,ref] of Object.entries(p.material))append(detail,el('p',baselineLabels[role]+' · '+ref.name),el('p',ref.sha256,'mono wrap'));const read=el('button','阅读三类完整基线原文','outline');read.type='button';read.onclick=()=>openOwnerBaseline(entry,r);detail.append(read);}
+    else if(p.kind==='delegate'){
+      const roleLabels={background:'后台执行',implementer:'实现者',receiver:'接收审核',secretary:'秘书',coordinator:'协调者'};
+      const actionLabels={implement:'修改',test:'测试',receive:'接收',publish:'发布',merge:'合入',coordinate:'协调'};
+      append(detail,el('p','角色：'+p.roles.map(role=>roleLabels[role]||role).join('、')),el('p','动作：'+p.actions.map(action=>actionLabels[action]||action).join('、')));
+      if(projectFiles)detail.append(el('p',p.actions.includes('implement')?'允许读写项目内普通文件，受保护对象与工作区边界仍适用。':'允许按项目文件范围执行已登记的测试。'));
+      else append(detail,el('p','目标分支：'+p.targets.join('、')),el('p','允许路径：'+(p.paths.join('、')||'未授予文件修改')));
+      append(detail,el('p','资源引用：'+(p.resourceRefs.join('、')||'无')),el('p','截止：'+p.expiresAt));
+    }else if(p.kind==='control'){const action=({investment:'新增投入',implementation:'新增实施',merge:'新合入'}[p.control]||p.control);append(detail,el('h3',(p.state==='stopped'?'停止':'恢复')+action),el('p',p.state==='open'?'解除这一个范围停止项；不会恢复其他已撤销权限，也不会重发未知任务。':'停止后续对应动作；已发生执行和原结果继续保留。'));}else if(p.kind==='confirm_action'){const a=p.request;append(detail,el('h3','确认一次准确动作'),el('p','动作：'+({implement:'修改',test:'测试',receive:'接收',publish:'发布',merge:'合入',coordinate:'协调'}[a.action]||a.action)),el('p','角色：'+p.performerRole+' · 目标：'+a.target),el('p','允许路径：'+(a.paths.join('、')||'无')),el('p','资源引用：'+(a.resourceRefs.join('、')||'无')),el('p','截止：'+p.expiresAt));}else detail.append(el('p','撤销原委托或单次授权；原执行和结果仍保留。'));
     detail.append(append(el('details'),el('summary','核对完整固定请求'),el('pre',JSON.stringify(p,null,2),'outcome-original')));
     if(r.sourceUrl){const link=el('a','查看原决定 ↗');link.href=r.sourceUrl;link.target='_blank';link.rel='noreferrer noopener';detail.append(link);}
     if(r.applied&&['delegate','confirm_action'].includes(p.kind)&&!r.revoked){const button=el('button','准备撤销此委托','outline');button.type='button';button.disabled=pendingOwner.has(entry.source);button.onclick=()=>send(entry,'prepare',{kind:'revoke',decision:r.proposalSha256});detail.append(button);}
@@ -263,7 +275,8 @@ function ownerView(kind){
     if(entry.executionKind==='fixture')card.append(pill('隔离测试来源，不代表本人采用','neutral'));
     if(entry.currentScope&&entry.currentScope.scopeVersion!==entry.taskScope.version)card.append(el('p','已采用目标与任务当前范围版本不同；执行仍需按原后端核对安排与权限。','small'));
     if(!ownerSourceIdentityAllowed(entry))card.append(el('p','当前执行身份与本人来源未分开，不能据此签署新权限；仍可准备请求和查看原结果。','small'));
-    const draftKey=kind+':'+entry.source,draft=ownerDrafts.get(draftKey)||{body:structuredClone(entry.currentScope?.body||{goals:[],nonGoals:[],preserve:[],acceptance:[],constraints:[]}),scopeVersion:'S-'+Date.now(),basedOn:entry.currentAdoption,expiresAt:new Date(Date.now()+3600000).toISOString(),role:'implementer',actions:['test'],paths:'',resourceRefs:'',hours:1};ownerDrafts.set(draftKey,draft);const draftStale=draft.basedOn!==entry.currentAdoption;if(draftStale){const reload=el('button','载入当前目标后重新准备','outline');reload.type='button';reload.onclick=()=>{ownerDrafts.delete(draftKey);render();};append(card,el('p','目标已被另一决定更新，当前草稿暂不提交；原内容保留在本页。','small'),reload);}
+    const basedOn=kind==='goals'?(entry.latestAdoption??entry.currentAdoption):entry.currentAdoption;
+    const draftKey=kind+':'+entry.source,draft=ownerDrafts.get(draftKey)||{body:structuredClone(entry.currentScope?.body||{goals:[],nonGoals:[],preserve:[],acceptance:[],constraints:[]}),scopeVersion:'S-'+Date.now(),basedOn,expiresAt:new Date(Date.now()+3600000).toISOString(),role:'implementer',actions:['test'],paths:'',resourceRefs:'',hours:1};ownerDrafts.set(draftKey,draft);const draftStale=draft.basedOn!==basedOn;if(draftStale){const reload=el('button','载入当前目标后重新准备','outline');reload.type='button';reload.onclick=()=>{ownerDrafts.delete(draftKey);render();};append(card,el('p','目标已被另一决定更新，当前草稿暂不提交；原内容保留在本页。','small'),reload);}
     if(kind==='authority'){if(task?.available)card.append(scopeControlPanel(task)||el('p','此入口尚未配置本机停止操作；当前停止记录仍显示在任务页。','small'));if(!entry.currentAdoption){card.append(el('p','目标尚未采用；委托须等准确目标成立。','small'));card.append(ownerRequests(entry,kind));continue;}
       const panel=append(el('section',null,'note-card'),el('h3','准备本人停止或恢复决定'),el('p','适用于整个范围。准备只固定请求，须读取本人原来源后才生效；恢复一项不会恢复其他限制、撤销的权限或重发原任务。','small'));
       for(const c of entry.controls||[]){const name={implementation:'新增实施',investment:'新增投入',merge:'新合入'}[c.control],row=el('div',null,'report-row'),action=c.state==='stopped'?'open':'stopped',button=el('button','准备'+(action==='open'?'恢复':'停止')+name,'outline');button.type='button';button.disabled=pendingOwner.has(entry.source)||draftStale;button.onclick=()=>ownerAction(entry,'prepare',{kind:'control',adoption:entry.currentAdoption,control:c.control,state:action,expectedRevision:c.revision});append(row,append(el('div'),el('strong',name),el('p',(c.state==='stopped'?(c.verifiedOwnerStop?'本人已确认停止':'本机已登记停止'):'当前未停止；不等于动作已获授权')+' · 修订 '+c.revision,'small')),button);panel.append(row);}card.append(panel);
@@ -633,14 +646,18 @@ function clearProjectView(){
   if(controlRefresh!==null){clearTimeout(controlRefresh);controlRefresh=null;}notice('');
 }
 function chooseGithubProject(repo,restoreConversationId=null){
-  clearProjectView();gh.epoch++;gh.selected=repo;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};chatData().restoreConversationId=restoreConversationId;rememberWorkbenchPosition(restoreConversationId);view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
+  clearProjectView();gh.epoch++;gh.selected=repo;githubRepositorySequence=0;gh.issues={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};gh.pulls={items:[],page:0,nextCursor:null,hasNext:false,loading:false,error:null,state:'open',request:0};chatData().restoreConversationId=restoreConversationId;rememberWorkbenchPosition(restoreConversationId);view='github';render();void loadGithubItems('issues');void loadGithubItems('pulls');void loadProjectChat();
+}
+function observeSelectedGithubRepository(repository,sequence){
+  if(repository.id!==gh.selected?.id||!Number.isSafeInteger(sequence)||sequence<=githubRepositorySequence)return false;
+  githubRepositorySequence=sequence;gh.selected=repository;return true;
 }
 async function loadGithubItems(kind,more=false){
   const pane=gh[kind],repo=gh.selected,account=gh.account,epoch=gh.epoch;if(!pane||!repo||!account||pane.loading)return;
   const request=++pane.request,page=more?pane.page+1:1;pane.loading=true;pane.error=null;if(view==='github'&&gh.selected?.id===repo.id)render();
   try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'?account='+account.id+'&state='+pane.state+'&page='+page+(more?'&cursor='+encodeURIComponent(pane.nextCursor):''));
-    if(epoch!==gh.epoch||request!==pane.request||gh.selected?.id!==repo.id)return;
-    gh.selected=data.repository;pane.items=more?[...new Map([...pane.items,...data.items].map(item=>[item.number,item])).values()]:data.items;pane.page=page;pane.hasNext=data.hasNext;pane.nextCursor=data.nextCursor??null;pane.checkedAt=data.connection.checkedAt;
+    if(epoch!==gh.epoch||gh.account?.id!==account.id||request!==pane.request||gh.selected?.id!==repo.id)return;
+    observeSelectedGithubRepository(data.repository,data.connection?.sequence);pane.items=more?[...new Map([...pane.items,...data.items].map(item=>[item.number,item])).values()]:data.items;pane.page=page;pane.hasNext=data.hasNext;pane.nextCursor=data.nextCursor??null;pane.checkedAt=data.connection.checkedAt;
   }catch(error){if(epoch!==gh.epoch||request!==pane.request)return;if(handleGithubError(error))render();else pane.error=error;}
   finally{pane.loading=false;if(epoch===gh.epoch&&request===pane.request&&view==='github'&&gh.selected?.id===repo.id)render();}
 }
@@ -685,10 +702,29 @@ function selectedGithubView(){
 }
 async function openGithubItem(kind,item){
   const repo=gh.selected,account=gh.account,epoch=gh.epoch,nonce=++reportNonce;gh.selectedIssue=null;githubDetailEpoch=epoch;$('report-title').textContent='#'+item.number+' '+item.title;$('report-meta').textContent='正在读取 GitHub 原文…';$('report-body').textContent='';$('report-raw').textContent='';$('report-original').hidden=true;showWorkbenchReport();
-  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(nonce!==reportNonce||epoch!==gh.epoch||!$('report-dialog').open)return;
+  const current=()=>nonce===reportNonce&&epoch===gh.epoch&&gh.account?.id===account.id&&gh.selected?.id===repo.id&&$('report-dialog').open;
+  try{const data=await githubApi('/api/github/repositories/'+repo.id+'/'+kind+'/'+item.number+'?account='+account.id);if(!current())return;
+    if(observeSelectedGithubRepository(data.repository,data.connection?.sequence)&&view==='github')render();
     $('report-meta').replaceChildren(el('span',data.repository.fullName+' · '+(kind==='issues'?'Issue':'PR')+' · 更新于 '+date(data.item.updatedAt)+' · '),githubLink('在 GitHub 查看原条目',data.item.url));$('report-body').textContent=data.item.body||'这个条目没有填写正文。';
-    if(kind==='issues'&&entryInfo?.projectWork){gh.selectedIssue={epoch,number:item.number};const work=el('button','交给同序准备','outline');work.onclick=()=>{if(epoch===gh.epoch&&gh.selected?.id===repo.id)openProjectWork(item.number);};$('report-meta').append(work);}
-  }catch(error){if(nonce!==reportNonce||epoch!==gh.epoch||gh.selected?.id!==repo.id||!$('report-dialog').open)return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
+    if(kind!=='issues')return;
+    const direct=entryInfo?.issueImplementation?await projectFileIssueChoice(data.item):null;
+    if(!current())return;
+    if(direct){
+      const work=el('button','开始实施','outline'),project=implementationKey();
+      work.disabled=implementationEntryBusy(implementationData(),direct.option);
+      work.onclick=()=>{
+        if(!current()||implementationEntryBusy(implementationData(),direct.option))return;
+        $('report-dialog').close();
+        return startIssueWork(direct.option,direct.issue,project);
+      };
+      $('report-meta').append(work);
+    }else if(entryInfo?.projectWork){
+      gh.selectedIssue={epoch,number:item.number};
+      const work=el('button','交给同序准备','outline');
+      work.onclick=()=>{if(current())openProjectWork(item.number);};
+      $('report-meta').append(work);
+    }
+  }catch(error){if(!current())return;$('report-body').textContent=githubError(error);if(handleGithubError(error))render();}
 }
 function renderGithub(){
   const focused=document.activeElement,filterSelection=view==='projects'&&focused?.id==='github-project-filter'?{start:focused.selectionStart,end:focused.selectionEnd}:null;
@@ -763,6 +799,7 @@ async function refresh() {
   finally { if(!current())return;$('refresh').disabled = false;if(!githubView()&&((state?.receptions||[]).some(r=>r.controllerActive)||(state?.returnWork||[]).some(r=>r.active)||(state?.secretaries||[]).some(s=>s.questions.some(q=>q.active))||(state?.sourcePolling||[]).some(p=>p.accepting&&!p.limitReached)||(state?.deliveryExecution||[]).some(c=>(c.executions||[]).some(e=>e.active))||(state?.taskControls||[]).some(c=>c.controllerActive)||(state?.overallReviews||[]).some(c=>c.active)||(state?.scopeFollowups||[]).some(s=>(s.followups||[]).some(f=>f.controllerActive))))controlRefresh=setTimeout(refresh,2000); }
 }
 function showWorkbenchReport(){
+  const logs=$('implementation-report-logs');logs.hidden=true;logs.replaceChildren();
   const dialog=$('report-dialog');if(dialog.open)return;
   if(entryInfo?.githubProjects){dialog.dataset.projectPanel='true';if(typeof secretaryMedia!=='undefined'&&secretaryMedia?.matches)setSecretaryOpen(false,false);dialog.show();}
   else{delete dialog.dataset.projectPanel;dialog.showModal();}

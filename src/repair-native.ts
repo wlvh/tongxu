@@ -1,6 +1,6 @@
 import {parseEditProfile,type EditProfile} from './repair-edits.js';
 import {projectChatToolsFor,projectChatInstructionsFor} from './project-chat-contract.js';
-import {preparationToolSpecs,workPreparationInstructions,workPreparationVersion,workPreparationSchema,preparationSchemaFamily,isWorkPreparationSchema,parseWorkPreparationOutput} from './project-work-contract.js';
+import {preparationToolsFor,workPreparationInstructions,workPreparationVersion,workPreparationSchema,preparationSchemaFamily,isWorkPreparationSchema,parseWorkPreparationOutput} from './project-work-contract.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,capturedCodexModels,recordedCodexTurnChoice} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
 import {assertExternalExecutable,type ExternalExecutable} from './external-executable.js';
@@ -15,7 +15,7 @@ import { hash } from './snapshot.js';
 import { parseCodexResult, currentCodexProtocol, resultCliVersion, type ResultBinding, type ReconciledToolCall } from './codex-results.js';
 import { executable, LiveProcess, newStage, save, checkCapture } from './live-process.js';
 import { disabledFeatures, checkConfig, type Candidate } from './live-codex.js';
-import { repairToolSpecs, projectRepairToolSpecs,projectRepairToolsFor, exists,regular,processState } from './repair-workspace.js';
+import { repairToolSpecs, projectRepairToolSpecs,projectRepairToolsFor, exists,regular,processState,type projectFileMovesVersion } from './repair-workspace.js';
 import {selectedSecretaryTools} from './secretary-tools.js';
 import {isMessageReplySchema} from './message-contract.js';
 import {formalReviewSchema,formalVerificationSchema,validateFormalReview,validateFormalVerificationReport} from './formal-review-contract.js';
@@ -27,12 +27,13 @@ export const boundedRoleDeveloperInstructions='Only the supplied role and fixed 
 export type NativeOptions = {
   aiModel?:AIModelChoice;
   editProfile?:EditProfile;
+  projectFileToolsVersion?:typeof projectFileMovesVersion;
   executable: string; directory: string; operation: string; candidate: Candidate;
   role: 'implementer' | 'verifier_fact' | 'reviewer' | 'secretary' | 'issue_owner' | 'acceptance'; system: string; inputManifestSha256: string;
   readonlyMessage?:true;
   projectSecretary?:true;
   projectSecretaryWork?:true;
-  projectPreparation?:true;
+  projectPreparation?:true|'file-slices'|'file-search';
   dispatchGate?:<T>(effect:()=>T)=>T;
   expectedExecutable?:{sha256:string;realpath?:string;version?:string};
   afterTurnStarted?:(turnId:string)=>void;
@@ -40,7 +41,7 @@ export type NativeOptions = {
   persistent?: boolean;
   resumeFrom?: string;
   allowedInstructionSources: Array<{ path: string; sha256: string }>;
-  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; secretaryContacts?:boolean; secretaryDeliveries?:boolean; secretaryDeliveryReports?:boolean; secretaryWorkbench?:boolean; secretaryScopeFollowupReports?:boolean; secretaryQueueActions?:boolean;secretaryReceptionReports?:boolean;secretaryTaskSources?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;control?:NativeControlPolicy;gate?: { editProfile?:EditProfile; check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
+  timeoutMs: number; executionKind: 'fixture' | 'native_capture'; projectRepair?: boolean; projectFiles?:true; secretaryContacts?:boolean; secretaryDeliveries?:boolean; secretaryDeliveryReports?:boolean; secretaryWorkbench?:boolean; secretaryScopeFollowupReports?:boolean; secretaryQueueActions?:boolean;secretaryReceptionReports?:boolean;secretaryTaskSources?:boolean; beforeTurn?: () => Promise<void>; beforeSendSync?:()=>void;control?:NativeControlPolicy;gate?: { editProfile?:EditProfile; check(): Promise<unknown>; call(p: { tool: string; arguments: any; callId: string },beforeRegistration?:()=>void): Promise<unknown> };
 };
 export const findingSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, decision: { type: 'string', enum: ['confirmed', 'refuted', 'needs_owner', 'repaired', 'no_change'] }, report: { type: 'string' } }, required: ['candidateH', 'decision', 'report'], additionalProperties: false
@@ -50,6 +51,16 @@ export const implementationSchema = {
 };
 export const implementationOutputSchema=(candidateH:string)=>({...implementationSchema,properties:{...implementationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
 const isImplementationOutputSchema=(schema:unknown,candidateH:string)=>isDeepStrictEqual(schema,implementationSchema)||isDeepStrictEqual(schema,implementationOutputSchema(candidateH));
+export const projectIssueDraftSchema={
+  type:'object',properties:{candidateH:{type:'string'},title:{type:'string'},report:{type:'string'}},
+  required:['candidateH','title','report'],additionalProperties:false
+};
+export const deliveryExplanationSchema={
+  type:'object',properties:{candidateH:{type:'string'},report:{type:'string'}},
+  required:['candidateH','report'],additionalProperties:false
+};
+export const deliveryExplanationOutputSchema=(candidateH:string)=>({...deliveryExplanationSchema,
+  properties:{...deliveryExplanationSchema.properties,candidateH:{type:'string',enum:[candidateH]}}});
 export const reviewSchema = {
   type: 'object', properties: { candidateH: { type: 'string' }, verdict: { type: 'string', enum: ['PASS', 'REWORK_REQUIRED', 'OWNER_DECISION_REQUIRED'] }, report: { type: 'string' }, findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, priority: { type: 'integer', enum: [0, 1, 2] }, description: { type: 'string' } }, required: ['id', 'priority', 'description'], additionalProperties: false } } }, required: ['candidateH', 'verdict', 'report', 'findings'], additionalProperties: false
 };
@@ -93,6 +104,15 @@ function validateNativeReport(report: any, candidate: Candidate, schema: unknown
   // manifest/batch. Here the common native transport checks the actual schema
   // and candidate before recording this turn as a complete structured result.
   if(preparationSchemaFamily(schema)){if(!isWorkPreparationSchema(schema,candidate.H))throw new Error('native_project_preparation_output_required');parseWorkPreparationOutput(report,candidate.H);return;}
+  if(isDeepStrictEqual(schema,projectIssueDraftSchema)){
+    if(!report||Object.keys(report).sort().join()!=='candidateH,report,title'||report.candidateH!==candidate.H||
+      typeof report.title!=='string'||!report.title.trim()||report.title.length>4096||typeof report.report!=='string'||!report.report.trim())throw new Error('project_issue_draft_invalid');
+    return;
+  }
+  if(isDeepStrictEqual(schema,deliveryExplanationSchema)||isDeepStrictEqual(schema,deliveryExplanationOutputSchema(candidate.H))){
+    if(!report||Object.keys(report).sort().join()!=='candidateH,report'||report.candidateH!==candidate.H||typeof report.report!=='string'||!report.report.trim())throw new Error('invalid_delivery_explanation');
+    return;
+  }
   if(isDeepStrictEqual(schema,formalReviewSchema)){validateFormalReview(report,candidate.H,report?.reviewedInputSha256);return;}
   if(isDeepStrictEqual(schema,formalVerificationSchema)){validateFormalVerificationReport(report,candidate.H,report?.batchSha256);return;}
   if(isMessageReplySchema(schema)){
@@ -138,12 +158,14 @@ export class BoundedCodexSession {
     if(o.projectPreparation&&(o.role!=='verifier_fact'||!o.gate||o.projectRepair||o.projectSecretary||o.persistent||!o.beforeTurn||!o.arrangementSource))throw new Error('native_project_preparation_boundary_required');
     if(o.projectSecretary&&(o.role!=='secretary'||o.candidate.kind!=='project-conversation'||!o.gate)||o.candidate.kind==='project-conversation'&&!o.projectSecretary)throw new Error('native_project_secretary_boundary_required');
     if(o.editProfile!==undefined){parseEditProfile(o.editProfile);if(o.role!=='implementer'||!o.projectRepair||o.gate?.editProfile!==o.editProfile)throw new Error('native_edit_profile_invalid');}
+    if(o.projectFiles&&(o.role!=='implementer'||!o.projectRepair))throw new Error('native_project_file_scope_invalid');
     if(o.role==='implementer'&&(!o.gate||!o.projectRepair||o.persistent||o.readonlyMessage||!o.arrangementSource))throw new Error('native_implementation_profile_required');
     const session = new BoundedCodexSession(o);try{await session.initialize();return session;}catch(e){await session.close();throw e;}
   }
   get sessionId() { return this.binding.sessionId; }
   get executionBinding(){return structuredClone(this.binding);}
   get exercisedTools() { return this.pairs.map(x => x.request.params.tool); }
+  canContinueTurn(){return !!this.rpc&&!this.closed&&!this.rpc.exit&&!this.rpc.failure&&!this.boundaryFailure&&!this.activeTurn&&!this.pendingTurn&&!this.turnRunning;}
   /** A completed bounded turn can be retained while the same owned fact
    * context waits for synthesis or an explicit write handoff. These are copies
    * of original frames, not a fake whole-process completion receipt. Later
@@ -189,7 +211,8 @@ export class BoundedCodexSession {
       entry.receipt=receipt;entry.phase='acknowledged';save(join(this.o.directory,prefix+'-ack.json'),receipt);return structuredClone(receipt);
     }catch(e){pending?.catch(()=>{});const reason=e instanceof Error?e.message:'native_control_unknown';entry.problem=reason;if(entry.phase!=='sent')entry.phase='held';save(join(this.o.directory,prefix+'-problem.json'),{requestSha256,reason,phase:entry.phase,automaticResend:false});throw e;}
   }
-  private get toolSpecs() { return this.o.projectPreparation?preparationToolSpecs:this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile) : repairToolSpecs; }
+  private get preparationLookup() {return this.o.projectPreparation==='file-search'?'search':this.o.projectPreparation==='file-slices';}
+  private get toolSpecs() { return this.o.projectPreparation?preparationToolsFor(this.preparationLookup):this.o.projectSecretary?projectChatToolsFor(!!this.o.projectSecretaryWork):this.o.role === 'secretary' ? selectedSecretaryTools(!!this.o.secretaryContacts,!!this.o.secretaryDeliveries,!!this.o.secretaryDeliveryReports,!!this.o.secretaryWorkbench,!!this.o.secretaryScopeFollowupReports,!!this.o.secretaryQueueActions,!!this.o.secretaryReceptionReports,!!this.o.secretaryTaskSources) : this.o.projectRepair ? projectRepairToolsFor(this.o.editProfile,this.o.projectFiles,this.o.projectFileToolsVersion) : repairToolSpecs; }
   private async request(method: string, params: any) {
     this.contract.push({ id: ++this.requestId, method, params }); save(join(this.o.directory, 'expected-requests.json'), this.contract);
     return this.rpc.request(method, params);
@@ -314,7 +337,8 @@ export class BoundedCodexSession {
     const typed=preparationSchemaFamily(schema);
     if(typed&&!this.o.projectPreparation)throw new Error('native_project_preparation_output_profile_mismatch');
     if(this.o.projectPreparation){
-      const version=workPreparationVersion(this.o.system,JSON.parse(input),candidate.H),expected=version===4?workPreparationSchema(candidate.H):findingSchema;
+      const original=JSON.parse(input),version=workPreparationVersion(this.o.system,original,candidate.H),expected=version>=4?workPreparationSchema(candidate.H):findingSchema;
+      if((original.repositoryFileSlices??false)!==this.preparationLookup)throw new Error('native_project_preparation_output_profile_mismatch');
       if(!isDeepStrictEqual(schema,expected)||version<4&&this.o.executionKind!=='fixture')throw new Error('native_project_preparation_output_required');
     }
     if(Boolean(this.o.readonlyMessage)!==isMessageReplySchema(schema))throw new Error('native_message_output_profile_mismatch');
@@ -462,9 +486,9 @@ export async function readRepairSession(directory: string) {
   const starts=sent.filter(m=>m.method==='thread/start'),turns=sent.filter(m=>m.method==='turn/start');
   if(binding.candidate?.repository==='local/project-work-preparation'||starts.some(m=>m.params?.baseInstructions===workPreparationInstructions)||turns.some(m=>preparationSchemaFamily(m.params?.outputSchema))){
     const inputs=await read('inputs.json'),c=binding.candidate,start=starts[0],turn=turns[0];
-    if(binding.role!=='verifier_fact'||c.kind!=='local-git'||c.repository!=='local/project-work-preparation'||c.pr!==null||c.B!==c.H||c.target!=='preparation'||starts.length!==1||turns.length!==1||parsed.turns.length!==1||inputs.length!==1||binding.run!==dirname(directory)||binding.workspace!==join(directory,'workspace')||!isDeepStrictEqual(start.params.dynamicTools,preparationToolSpecs)||turn.params.input?.length!==1||turn.params.input[0].type!=='text')throw new Error('native_project_preparation_capture_changed');
-    const text=turn.params.input[0].text,version=workPreparationVersion(start.params.baseInstructions,JSON.parse(text),c.H),schema=version===4?workPreparationSchema(c.H):findingSchema;
-    if(!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
+    if(binding.role!=='verifier_fact'||c.kind!=='local-git'||c.repository!=='local/project-work-preparation'||c.pr!==null||c.B!==c.H||c.target!=='preparation'||starts.length!==1||turns.length!==1||parsed.turns.length!==1||inputs.length!==1||binding.run!==dirname(directory)||binding.workspace!==join(directory,'workspace')||turn.params.input?.length!==1||turn.params.input[0].type!=='text')throw new Error('native_project_preparation_capture_changed');
+    const text=turn.params.input[0].text,original=JSON.parse(text),version=workPreparationVersion(start.params.baseInstructions,original,c.H),schema=version>=4?workPreparationSchema(c.H):findingSchema;
+    if(!isDeepStrictEqual(start.params.dynamicTools,preparationToolsFor(original.repositoryFileSlices??false))||!isDeepStrictEqual(turn.params.outputSchema,schema)||!isDeepStrictEqual(inputs,[{input:text,subjectCandidate:c,schema}])||binding.inputManifestSha256!==hash(text)||binding.promptSha256!==hash(JSON.stringify({system:start.params.baseInstructions,inputs})))throw new Error('native_project_preparation_capture_changed');
     validateNativeReport(JSON.parse(parsed.turns[0]!.final!.text),c,schema);
   }
   return parsed;

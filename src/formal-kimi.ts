@@ -1,5 +1,5 @@
 import {join} from 'node:path';
-import {ExtraCliSession,extraProfileFiles,extraProfileArgs,extraInitializeParams,acpOptions,checkAcpSessionEvents,parseAcpPrompt} from './additional-cli.js';
+import {ExtraCliSession,extraProfileFiles,extraProfileArgs,extraInitializeParams,acpOptions,checkAcpSessionEvents,parseAcpPrompt,retainKimiDataConfig} from './additional-cli.js';
 import {checkCapture,save} from './live-process.js';
 import {capturedExecutableMatches} from './cli-capabilities.js';
 import {regular} from './repair-workspace.js';
@@ -28,6 +28,7 @@ async function inspect(o:FormalKimiRequest,p:Profile){
   if(exit.code!==0||exit.signal!==null||!Number.isSafeInteger(process.pid)||process.pid<1||process.status!=='spawn_attempted')throw invalid(p,'formal_kimi_process_unresolved');
   if(!capturedExecutableMatches(identity,o.executable,identity.sha256)||canonical(identity.externalSelection)!==canonical(launch.executableSelection)||launch.command!==o.executable||launch.cwd!==join(o.directory,'workspace')||canonical(launch.args)!==canonical(extraProfileArgs('kimi',o.directory))||canonical(selection.requested)!==canonical(o.aiModel)||profile.tool!=='kimi'||profile.auth!=='subscription')throw invalid(p,'formal_kimi_execution_binding_changed');
   for(const [path,text]of Object.entries(extraProfileFiles('kimi',o.directory,o.system)))if(originals[path]!.toString()!==text||profile.files[path]!==hash(text))throw Error('external_cli_profile_changed');
+  await retainKimiDataConfig(o.directory,profile,originals);
   if(o.executionKind==='native_capture'){
     const observed=read('profile-observed.json');
     if(observed.systemPromptSha256!==hash(o.system.trim())||!Array.isArray(observed.activeToolNames)||observed.activeToolNames.length||!Array.isArray(observed.subagents)||observed.subagents.length||!Array.isArray(observed.agentsMdPaths)||observed.agentsMdPaths.length||observed.modelAlias!==o.aiModel.model||o.aiModel.effort!==null&&observed.thinkingEffort!==o.aiModel.effort||!profile.allowedModelPrefixes.includes(o.aiModel.model))throw Error('external_cli_readonly_profile_missing');

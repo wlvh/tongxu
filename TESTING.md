@@ -21,7 +21,7 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 | `npm run test:authority`、`npm run test:resources`、`npm run test:merge` | 对应 authority/resources/merge 目录；校验本人来源、资源及受管合并的样例，不能证明生产配置已启用。 |
 | `npm run test:events`、`npm run test:coordination` | 对应 events/coordination 目录，校验来源、排序、阶段依赖、反馈与恢复。events 的 normal-entry 场景以原接收/来源/本人/资源协议样例走真实本机 HTTP/SQLite/子进程；不等于真实模型或浏览器验收。 |
 | `npm run test:composition`、`npm run test:review-records`、`npm run test:project-repair` | 对应 composition/review-records/project-repair 目录，分别检查材料组合、判断原记录和受控修复接收。三者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；composition、project-repair 的测试文件在加载阶段检查配置，review-records 的 queue-repair 测试也导入强制要求配置的准备文件。 |
-| `npm run test:sessions` | w4 role-prompts 与 session-* 子集。 |
+| `npm run test:sessions` | w4 role-prompts 与 session-* 子集。包含固定候选提示源的缺件、摘要变化、路径越界及不支持协议的反例。w7 的 project-chat 覆盖 AI 设置只读入口，workbench-launch 覆盖候选缺件或损坏时冷启动、现行提示读取、候选失败与恢复，以及运行文件完整性。 |
 | `npm run test:integration`、`npm run test:integration-member` | 对应 integration/integration-member 目录；固定 Git 候选、接续、成员修复/重组/反证等。二者完整套件均需 `TONGXU_TEST_DOCKER_CONFIG`、可用 Docker 和已有本地镜像；integration 及成员修复都使用 `tests/integration/fixture.ts` 的共享准备流程，在进入该流程时强制检查配置并执行真实隔离验证，不能只按少数文件判断环境要求。 |
 | `npm run test:delivery-validation`、`npm run test:delivery-assessment` | 对应 delivery-validation/delivery-assessment 目录，二者均导入真实 Docker 验证 fixture，需 `TONGXU_TEST_DOCKER_CONFIG`、已有镜像和可用引擎；模型判断另用明确样例，不能把它称为真实模型验收。 |
 
@@ -90,6 +90,8 @@ macOS 测试的临时目录也须是真实规范路径：若当前临时路径�
 
 实施报告的 `candidateH` 固定最初 H0，临时受测提交与宿主 H1 分开。`tests/w5/implementation-native-profile.test.ts` 核单值输出约束、旧捕获兼容，以及错误角色/H0、额外字段和扩大决定范围在发送前拒绝；真实实施/测试/提交和秘书、原负责人组合继续沿 `tests/project-repair/integration.test.ts`，不以该协议组代替真实模型结果。
 
+项目级文件实施沿原组合场景覆盖旧工具定义的原成果和负责人证明冷读、合法根路径重命名、损坏写入回执的拒绝，以及停止或验证失败后保留未提交的删改名现场。`tests/w5/repair-edits.test.ts` 核工具版本与完整声明、路径回放和未暂存目标观察。`tests/w7/github-projects-ui.test.ts` 核 Issue／PR 详情读到新默认分支后，较早列表响应及前一项目的详情都不能回写该观察。
+
 该组合还覆盖两处确证未发等待：席位忙登记后释放、最终来源刷新失败只留下原输入；热重试/冷重开均沿原 ID、任务和材料到 H1，原资源只领取/结算一次。补准备前取消/停止、输入或文件/暂存变化、原生启动证据和竞争写者仍须零派发；已发未知继续只查原现场。页面脚本核 registered 的同 ID 补准备、重复点击和项目切换。扩展原 fixture，不另建恢复测试框架。 同一忙席位场景参数化普通请求/补充请求，核 H1/原责任/补充原文、热/新服务实例补准备和原会话完整回流；同名普通请求碰撞时开始与取消均拒绝、原请求与输入计数不变。正确绑定读回及同 ID 改目标/原文的拒绝沿该场景验证。
 
 同一场景覆盖配置资源但尚未 start 即取消，热/新服务实例的新请求可至 H1，原项保持零资源登记/领取/模型输入；已领取取消沿原结果结算，未知及损坏资源原件仍阻下一项。新消费者的两次写入/H1 场景参数化测试打印未选定文件：原日志保留全文，工具回复与全部模型输入均不含原文；旧 project repair 的同类隐私场景继续回归。
@@ -130,6 +132,10 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 
 `formal-workbench` 的新候选场景从正常项目 HTTP 入口保存 AI 选择，启动原生产10秒定时器并与手工核对对照；检查新轮三个角色使用当时项目设置，覆盖控制器启动后保存、准备前变更、合法默认、不可用等待及其他项目设置不串用。reviewer/fact 的模型与强度核实际原生请求；impact 核新轮冻结选择，旧影响协议样例没有 live 模型目录，不称已验证所选 Claude 模型执行。旧轮请求保持原字节，查看完整报告不新增模型输入。
 
+`formal-workbench` 的 `fix-late-approved` 场景走原工作台路由、Git、SQLite 和双席协议样例。正式修复不改代码时，检查点后的批准可显式交回原实施。用例模拟普通实施边界，检查准确候选、进程原件缺失拒绝、重复点击及原快照保留。
+
+`fix-late-published` 用真实 Git 生成修复提交，通过远端读取和双席协议样例建立本地发布及复审记录，再从项目对话显式接续。Docker 协议样例运行夹具的 Node 验证命令并保留原捕获，普通实施边界使用样例。用例检查旧审批不足以接续、候选退回、写者释放或测试及原生证据缺失、快照保留和重复操作只登记一次。H2 交接另参数化目标替换与撤销无替代：共享／独立队列均在最后发送前拒绝已失效采用，保留原接收者与报告；Owner 页面回归同时核撤销后的空现行授权、历史链接和新目标请求。
+
 同一 formal-round 场景还覆盖真实 AuthorityRecords 在途采用变化：直接 PASS、P2-only、全批反证后新正式 reviewer 三个出口均保留旧报告并等待，重复/冷读不多发；未采用提案及采用不变仍正常结束，发送前采用变化为零输入。formal-review-store 用真实冻结采用材料核新请求，并在已结束阶段/原资源结算后改变采用记录，验证较早的有效检查不能代替最终 PASS 事务的当前性复核；普通 receiver 共存与新候选采集/导入仍沿原场景回归。
 
 同一发布后完整再审场景还参数化覆盖父轮在接续前、异步材料准备中、子轮已登记未派发及 reviewer 已发时停止；停止后不新增角色，已发报告保留，冷读不重发。原 store 场景沿两代 previousOperation 验证停止祖先在原效果事务阻回调且不登记派发，未停止的已完成父轮仍合法。反证回流参数化 PASS、合法 owner 和真实覆盖缺口；同会话修复的 needs_owner/no_change 分别保留业务决定/待补证，页面脚本核原问题与原 Issue 交接提示。
@@ -153,7 +159,7 @@ W2 需真实隔离设施；macOS 显式输出路径应使用真实规范路径�
 V3准备回归核固定ESM eval/cwd/no-args调用和预算输入绑定；旧完整不兼容require/argv方案仍可读但确认／开始前拒绝。大editable场景以真实Git/Docker使改后总量超过384KiB，保留全部Grant/material写范围，同时小TaskObservation、owner proof、补充／接回可用；改变未被代表观察的获准路径仍由完整树当前性门拒绝。
 
 
-V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；模型及Owner为协议样例，实际真实准备另记。
+V4准备沿`tests/w5/implementation-native-profile.test.ts`核手写raw JSON正则／反斜杠golden、非法outer JSON、V1—V3完整legacy tuple fixture、live/cold profile双向隔离和交叉元组；通用生产新准备不接受legacy schema。`tests/w7/project-work.test.ts`核旧完整坏inner JSON仍拒绝、原报告／hash只读连续性、源／目标变化和UTF-8的64KiB／512KiB精确边界。原integration新增正常HTTP显式同工作重新准备场景，以真实Docker环境事实、合法旧V3完整捕获、坏内层JSON到V4新proposal，核旧原件不变、零批准／零实施、最近版本不被跳过；固定大文件搜索和UTF-8分段场景还核缺失路径恢复、800,000字节非法查询的有界响应及后续读取。模型及Owner为协议样例，实际真实准备另记。
 
 过期与已结束只读超时恢复沿原 `project-repair` fixtures：旧准备宿主重核零模型／零thread，固定时限和真实元数据；已知健康失败或专用严格只读失败先结清准确原claim与lease历史，同work唯一干净H0后继request/Grant0。覆盖显式新check保留raw-index拒绝、GET不换签、语义flags／坏wire／noop replace永久拒绝、terminal/release/check崩溃冷续、后继0成功及再次失败、普通prepare/repair0拒绝和成功后原补充。模型与Owner为协议程序；Git、HTTP、SQLite和登记Docker实际执行。
 

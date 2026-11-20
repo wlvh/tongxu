@@ -12,7 +12,20 @@ import type {OwnerObservation} from './authority-source.js';
 import type {ResourceRecords,ResourceOutcome} from './resource-store.js';
 import {resourceRequestHash,type ResourceRequest} from './resource-contract.js';
 import {sameFormalCandidate,validateFormalCandidate,validateFormalReview,type FormalCandidate} from './formal-review-contract.js';
+import type {EndedRepairSupplement,SupplementTarget} from './project-chat.js';
 type Row=Record<string,any>;
+export function conflictingFormalRepair(requests:Row[],operation:string,target:SupplementTarget,continuing:boolean,active:(id:string)=>boolean){
+  return requests.some(other=>{
+    if(other.operation===operation)return false;
+    const fixDispatched=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched);
+    const unknown=other.stages.some((row:Row)=>row.stage.role==='fix'&&row.dispatched&&!row.returned);
+    const guarded=continuing&&other.request.projectWork&&canonical(other.request.projectWork.target)===canonical(target);
+    return unknown||fixDispatched&&(!other.terminal||active(other.operation))||
+      (!other.stopped&&other.terminal?.result.status==='awaiting_publication'&&
+        !requests.some(next=>next.request.previousOperation===other.operation))||
+      ((!guarded||fixDispatched)&&!other.stopped&&(!other.terminal||active(other.operation)));
+  });
+}
 export type FormalStage={key:string;role:'reviewer'|'verifier_fact'|'verifier_impact'|'test'|'fix';candidate:FormalCandidate;inputSha256:string;systemSha256:string;materialSha256:string;actorRole:'background'|'receiver'|'implementer';directory:string;authorityIntent:string;budgetIntent:string;action:ActionRequest;authorization:string;resources:ResourceRequest[]};
 export const formalOperationGuard=`CREATE TRIGGER formal_review_operation_guard BEFORE UPDATE ON operations
 WHEN json_type(OLD.result,'$.formalReview')='object' AND ((OLD.status='running' AND json_extract(OLD.result,'$.formalReview.controllerReturned') IS NOT 1 AND (NEW.status!=OLD.status OR NEW.result!=OLD.result)) OR json_extract(NEW.result,'$.formalReview.recordSha256') IS NOT json_extract(OLD.result,'$.formalReview.recordSha256'))
@@ -30,6 +43,9 @@ export class FormalReviews{
   private event(kind:string,object:string,value:Row){const sha256=this.blob(value);this.db.prepare('INSERT INTO events(kind,object,data,observed_at) VALUES(?,?,?,?)').run('formal_review_'+kind,object,canonical({value,sha256}),now());}
   private events(id:string):Row[]{return (this.db.prepare("SELECT * FROM events WHERE object=? AND kind LIKE 'formal_review_%' ORDER BY id").all(id) as Row[]).map(e=>{const d=JSON.parse(e.data);if(this.bytes(d.sha256).toString()!==canonical(d.value))throw new Error('formal_history_changed');return {...e,data:d.value};});}
   private fixed(id:string){const events=this.events(id),registration=events.find(e=>e.kind==='formal_review_registered')?.data;if(!registration)throw new Error('formal_original_request_required');return {events,registration,request:JSON.parse(this.bytes(registration.requestSha256).toString())};}
+  private replacement(f:ReturnType<FormalReviews['fixed']>){return f.events.findLast(e=>e.kind==='formal_review_dual_replaced')?.data;}
+  private executionRound(f:ReturnType<FormalReviews['fixed']>){return (this.replacement(f)?.round??f.request.round) as number;}
+  private workSha256(f:ReturnType<FormalReviews['fixed']>){return (this.replacement(f)?.workSha256??f.request.workSha256) as string;}
   private ancestorsStopped(request:Row){
     const seen=new Set<string>();let parent=request.previousOperation;
     while(parent!=null){
@@ -69,35 +85,141 @@ export class FormalReviews{
   forEntry(entry:string){const rows=this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' ORDER BY id").all() as Row[];if(rows.length>512)throw new Error('formal_history_bound');return rows.map(e=>this.state(e.object)).filter(s=>s.request.entry===entry);}
   requests(item:string){return (this.db.prepare("SELECT object FROM events WHERE kind='formal_review_registered' AND json_extract(data,'$.value.item')=? ORDER BY id").all(item) as Row[]).map(e=>this.state(e.object));}
   currentSource(item:string){return this.source(item);}
-  state(id:string){const f=this.fixed(id),op=this.operation(id),last=f.events.filter(e=>e.kind==='formal_review_progress').at(-1)?.data,stages=f.events.filter(e=>e.kind==='formal_review_stage_prepared').map(e=>this.stage(id,e.data.stage.key));return {operation:id,...f.registration,request:f.request,phase:last?.phase??op.result.formalReview.phase,detail:last?.detail??null,stopped:f.events.some(e=>e.kind==='formal_review_stopped')||this.ancestorsStopped(f.request),stages,terminal:f.events.findLast(e=>e.kind==='formal_review_terminal')?.data??null,resourcesSettled:stages.every(s=>s.stage.resources.every((r:ResourceRequest)=>{try{return !!this.resources().settledOutcome(resourceRequestHash(r));}catch(error){if((error as Error).message==='original_resource_request_required')return false;throw error;}}))};}
+  requireCurrentHandoffReview(reviewed:Row){
+    const {repository,pr,H,B,target}=reviewed.request.candidate,current=this.source(reviewed.item);
+    if(reviewed.stopped||!reviewed.resourcesSettled||reviewed.terminal?.result.status!=='pass'||
+       !current.current||current.prerequisites.length||current.candidate.H!==H||current.candidate.B!==B||
+       current.candidate.targetRef!==target||current.candidate.repository!==repository||current.candidate.pr!==pr)
+      throw new Error('formal_repair_supplement_current_base_required');
+    const authority=this.authority.forScope(current.context.scope.id,{item:reviewed.item,target});
+    if(authority.currentAdoption!==reviewed.request.material.adoptedScope.adoption||
+       authority.controls.some(control=>['implementation','investment'].includes(control.control)&&control.state==='stopped'))
+      throw new Error('formal_repair_supplement_current_base_required');
+  }
+  publishedHandoffEffect<T>(entry:string,target:SupplementTarget,ended:EndedRepairSupplement,effect:()=>T):T{
+    return this.transaction(()=>{
+      const proof=ended.published,requests=this.forEntry(entry);
+      const repair=requests.find(state=>state.operation===ended.operation);
+      const reviewed=requests.findLast(state=>state.request.previousOperation===ended.operation);
+      if(!proof||!repair||!reviewed||repair.stopped||repair.executionRound!==ended.round||
+         repair.terminal?.result.status!=='awaiting_publication'||repair.request.candidate.H!==proof.previousH||
+         repair.terminal.result.fix.H1!==ended.H||repair.terminal.result.fix.recordSha256!==proof.fixSha256||
+         !repair.request.projectWork||canonical(repair.request.projectWork.target)!==canonical(target)||
+         canonical(reviewed.request.projectWork)!==canonical(repair.request.projectWork)||
+         reviewed.operation!==proof.reviewOperation||reviewed.request.candidate.H!==ended.H||
+         reviewed.request.candidate.requirementsSha256!==proof.requirementsSha256||reviewed.request.material.sha256!==proof.reviewMaterialSha256||
+         conflictingFormalRepair(requests,repair.operation,target,true,()=>false)||
+         this.sourceForReviewRecords(repair.operation).published?.captureSha256!==proof.publicationSha256)
+        throw new Error('formal_repair_supplement_current_base_required');
+      this.requireCurrentHandoffReview(reviewed);
+      return effect();
+    });
+  }
+  private closedReviewEvidence(result:Row,stages:Row[]){
+    try{
+      const closure=result.originalClosure;
+      if(!exactKeys(closure,['openai','moonshot']))return false;
+      for(const [seat,key] of [['openai',result.reviewKey],['moonshot',result.peerReviewKey]] as const){
+        const lane=closure[seat],stage=stages.find(item=>item.stage.key===key)?.returned;
+        const streams=['stdin.ndjson','stdout.ndjson','stderr.txt'];
+        if(!stage||!exactKeys(lane,['sessionId','files'])||lane.sessionId!==stage.proof.native.sessionId||
+           !exactKeys(lane.files,[...streams,'exit.json','capture-status.json',...(seat==='moonshot'?['prompt-boundaries.ndjson']:[])]))return false;
+        for(const digest of Object.values(lane.files)){if(!isAuthorityDigest(digest))return false;this.bytes(digest);}
+        const exit=JSON.parse(this.bytes(lane.files['exit.json']).toString()),capture=JSON.parse(this.bytes(lane.files['capture-status.json']).toString());
+        if(exit.code!==0||exit.signal!==null||capture.status!=='complete'||capture.failure!==null||streams.some(name=>capture.files?.[name]!==lane.files[name]))return false;
+        for(const name of streams.slice(0,2)){
+          const previous=this.bytes(stage.proof.originals[name].sha256),closed=this.bytes(lane.files[name]);
+          if(!closed.subarray(0,previous.length).equals(previous))return false;
+        }
+      }
+      return true;
+    }catch{return false;}
+  }
+  state(id:string){const f=this.fixed(id),op=this.operation(id),last=f.events.filter(e=>e.kind==='formal_review_progress').at(-1)?.data,stages=f.events.filter(e=>e.kind==='formal_review_stage_prepared').map(e=>this.stage(id,e.data.stage.key));const stored=f.events.findLast(e=>e.kind==='formal_review_terminal')?.data??null;
+    const terminal=stored?.result.status==='pass'&&f.request.workflowReview&&!this.closedReviewEvidence(stored.result,stages)?
+      {result:{...stored.result,status:'needs_evidence',recordedStatus:'pass',reason:'formal_dual_terminal_capture_missing'}}:stored;
+    return {operation:id,...f.registration,request:f.request,executionRound:this.executionRound(f),workSha256:this.workSha256(f),replacement:this.replacement(f)??null,phase:last?.phase??op.result.formalReview.phase,detail:last?.detail??null,stopped:f.events.some(e=>e.kind==='formal_review_stopped')||this.ancestorsStopped(f.request),stages,terminal,resourcesSettled:stages.every(s=>s.stage.resources.every((r:ResourceRequest)=>{try{return !!this.resources().settledOutcome(resourceRequestHash(r));}catch(error){if((error as Error).message==='original_resource_request_required')return false;throw error;}}))};}
+  replaceEndedDual(id:string,round:number,keys:string[],ended:Row[],workspace:Row|null,observations:OwnerObservation[]){return this.transaction(()=>{
+    const f=this.check(id,observations),state=this.state(id),prefix='round-'+round+'/';
+    const stages=(state.stages as ReturnType<FormalReviews['stage']>[]).filter(s=>s.stage.key.startsWith(prefix));
+    if(!f.request.workflowReview||round!==state.executionRound||round>=32||!stages.some(s=>s.returned)||
+       stages.some(s=>s.dispatched&&(!s.returned||s.stage.role==='fix'))||!state.resourcesSettled||
+       canonical(stages.map(s=>s.stage.key))!==canonical(keys))throw new Error('formal_dual_replacement_not_verified');
+    const endedCaptureSha256=this.blob({ended,workspace});
+    const workSha256=hash(canonical({previousWorkSha256:this.workSha256(f),round:round+1,endedCaptureSha256}));
+    this.event('dual_replaced',id,{round:round+1,replacedRound:round,keys,endedCaptureSha256,workSha256,originalsRetained:true});
+    this.event('progress',id,{phase:'prepared',detail:{replacedRound:round,originalsRetained:true}});
+    return this.state(id);
+  });}
   stage(id:string,key:string){const f=this.fixed(id),prepared=f.events.find(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.key===key)?.data;if(!prepared)throw new Error('formal_original_stage_required');const returned=f.events.find(e=>e.kind==='formal_review_stage_returned'&&e.data.key===key)?.data;if(returned)for(const ref of Object.values(returned.proof.originals) as Row[])if(this.bytes(ref.sha256).length!==ref.bytes)throw new Error('formal_original_capture_changed');if(returned?.proof.evidenceIndexSha256){const refs=JSON.parse(this.bytes(returned.proof.evidenceIndexSha256).toString());for(const ref of refs)if(this.bytes(ref.sha256).length!==ref.bytes)throw new Error('formal_original_evidence_changed');}return {stage:prepared.stage as FormalStage,dispatched:f.events.some(e=>e.kind==='formal_review_stage_dispatched'&&e.data.key===key),returned:returned??null};}
+  originalStageInputIncludes(id:string,key:string,match:(input:Row)=>boolean){
+    const {stage,returned}=this.stage(id,key);
+    if(!returned)return false;
+    const stdin=this.bytes(returned.proof.originals['stdin.ndjson'].sha256);
+    const turns=stdin.toString().split('\n').filter(Boolean).map(line=>JSON.parse(line)).filter(frame=>frame.method==='turn/start');
+    const matches=turns.filter(frame=>typeof frame.params?.input?.[0]?.text==='string'&&hash(frame.params.input[0].text)===stage.inputSha256);
+    return matches.length===1&&match(JSON.parse(matches[0].params.input[0].text));
+  }
   prepareStage(id:string,stage:FormalStage){return this.transaction(()=>{
-    this.mode();validateFormalCandidate(stage.candidate);if(!exactKeys(stage,['key','role','candidate','inputSha256','systemSha256','materialSha256','actorRole','directory','authorityIntent','budgetIntent','action','authorization','resources'])||!/^round-[1-9]\d*\/(?:review|refutation-review|fact|synthesis-[0-3]|impact-[0-3]|test-[1-9]\d*|fix)$/.test(stage.key)||!isAuthorityDigest(stage.inputSha256)||!isAuthorityDigest(stage.systemSha256)||!isAuthorityDigest(stage.materialSha256)||!['background','receiver','implementer'].includes(stage.actorRole)||!isAuthorityDigest(stage.action.formalWorkSha256)||!['reviewer','verifier_fact','verifier_impact','test','fix'].includes(stage.role)||!Array.isArray(stage.resources)||stage.resources.length>16||stage.resources.some(r=>r.operation!==id||r.authorityIntent!==stage.budgetIntent||r.actionSha256!==hash(canonical(stage.action))))throw new Error('formal_stage_binding_invalid');
-    const f=this.fixed(id),old=f.events.find(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.key===stage.key);if(old){if(canonical(old.data.stage)!==canonical(stage))throw new Error('formal_stage_input_is_fixed');return this.stage(id,stage.key);}
-    this.check(id);if(stage.action.action==='receive'&&stage.action.formalWorkSha256!==f.request.workSha256)throw new Error('formal_work_binding_changed');if(f.events.some(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===stage.budgetIntent))throw new Error('formal_original_resource_phase_ended');if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!stage.resources.length)throw new Error('formal_resource_binding_required');if(f.events.filter(e=>e.kind==='formal_review_stage_prepared').length>=128)throw new Error('formal_stage_bound');
+    this.mode();validateFormalCandidate(stage.candidate);if(!exactKeys(stage,['key','role','candidate','inputSha256','systemSha256','materialSha256','actorRole','directory','authorityIntent','budgetIntent','action','authorization','resources'])||!/^round-[1-9]\d*\/(?:review|refutation-review|fact|(?:synthesis|fact|impact)-[0-3]|(?:correctness|impact)-(?:initial|exchange|final)|test-[1-9]\d*|fix(?:-supplement)?)$/.test(stage.key)||!isAuthorityDigest(stage.inputSha256)||!isAuthorityDigest(stage.systemSha256)||!isAuthorityDigest(stage.materialSha256)||!['background','receiver','implementer'].includes(stage.actorRole)||!isAuthorityDigest(stage.action.formalWorkSha256)||!['reviewer','verifier_fact','verifier_impact','test','fix'].includes(stage.role)||!Array.isArray(stage.resources)||stage.resources.length>16||stage.resources.some(r=>r.operation!==id||r.authorityIntent!==stage.budgetIntent||r.actionSha256!==hash(canonical(stage.action))))throw new Error('formal_stage_binding_invalid');
+    const f=this.fixed(id);
+    if(!f.request.workflowReview&&/\/(?:fix-supplement|fact-[0-3]|(?:correctness|impact)-(?:initial|exchange|final))$/.test(stage.key))throw new Error('formal_stage_binding_invalid');
+    if(f.request.workflowReview&&!stage.key.startsWith('round-'+this.executionRound(f)+'/'))throw new Error('formal_original_round_replaced');
+    const old=f.events.find(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.key===stage.key);if(old){if(canonical(old.data.stage)!==canonical(stage))throw new Error('formal_stage_input_is_fixed');return this.stage(id,stage.key);}
+    this.check(id);if((f.request.workflowReview||stage.action.action==='receive')&&stage.action.formalWorkSha256!==this.workSha256(f))throw new Error('formal_work_binding_changed');if(f.events.some(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===stage.budgetIntent))throw new Error('formal_original_resource_phase_ended');if(this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get()&&!stage.resources.length)throw new Error('formal_resource_binding_required');if(f.events.filter(e=>e.kind==='formal_review_stage_prepared').length>=128)throw new Error('formal_stage_bound');
     this.event('stage_prepared',id,{stage,planSha256:hash(canonical(stage)),resourceRequests:stage.resources.map(resourceRequestHash)});
     return this.stage(id,stage.key);
   });}
   check(id:string,observations?:OwnerObservation[]){this.mode();const f=this.fixed(id),op=this.operation(id),claim=this.db.prepare('SELECT * FROM claims WHERE operation=?').get(id) as Row|undefined;if(f.events.some(e=>e.kind==='formal_review_stopped')||this.ancestorsStopped(f.request)||f.events.some(e=>e.kind==='formal_review_terminal')||op.status!=='running'||!claim||claim.generation!==op.generation)throw new Error('formal_original_execution_stopped_or_unknown');const source=this.source(f.registration.item);if(!source.current||source.prerequisites.length||source.packet!==op.packet||source.candidate.H!==f.request.candidate.H||source.candidate.B!==f.request.candidate.B||source.candidate.targetRef!==f.request.candidate.target)throw new Error('formal_candidate_no_longer_current');this.requirements(f.request,f.registration.scope,f.registration.item,observations);if(this.db.prepare("SELECT 1 FROM controls WHERE scope=? AND kind='investment' AND stopped=1").get(f.registration.scope.id))throw new Error('formal_new_investment_stopped');return f;}
   checkStage(id:string,key:string,observations:OwnerObservation[],effect?:()=>void){return this.transaction(()=>this.checkStageValue(id,key,observations,effect));}
   private checkStageValue(id:string,key:string,observations:OwnerObservation[],effect?:()=>void){
-    const f=this.check(id);const s=this.stage(id,key),action=this.authority.refreshReservedAction(s.stage.authorityIntent,observations);if(s.returned&&s.stage.role!=='fix'||f.events.some(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===s.stage.budgetIntent)||canonical(action.request)!==canonical(s.stage.action)||action.authorization!==s.stage.authorization||action.role!==s.stage.actorRole||(action.executionKind==='fixture')!==(f.request.executionKind==='fixture'))throw new Error('formal_exact_stage_authority_required');for(const request of s.stage.resources)this.resources().requireHeldForExecution(resourceRequestHash(request),id,s.stage.budgetIntent);effect?.();return s;
+    const f=this.check(id);
+    if(f.request.workflowReview&&!key.startsWith('round-'+this.executionRound(f)+'/'))throw new Error('formal_original_round_replaced');
+    const s=this.stage(id,key),action=this.authority.refreshReservedAction(s.stage.authorityIntent,observations);if(s.returned&&s.stage.role!=='fix'||f.events.some(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===s.stage.budgetIntent)||canonical(action.request)!==canonical(s.stage.action)||action.authorization!==s.stage.authorization||action.role!==s.stage.actorRole||(action.executionKind==='fixture')!==(f.request.executionKind==='fixture'))throw new Error('formal_exact_stage_authority_required');for(const request of s.stage.resources)this.resources().requireHeldForExecution(resourceRequestHash(request),id,s.stage.budgetIntent);effect?.();return s;
   }
   dispatched(id:string,key:string,observations:OwnerObservation[]){return this.transaction(()=>{const s=this.checkStageValue(id,key,observations);if(s.dispatched)throw new Error('formal_original_sent_or_unknown_no_resend');this.event('stage_dispatched',id,{key,inputSha256:s.stage.inputSha256});return this.stage(id,key);});}
   effect<T>(id:string,key:string,observations:OwnerObservation[],effect:()=>T,firstInput=false):T{return this.transaction(()=>{const s=this.checkStageValue(id,key,observations);if(firstInput){if(s.dispatched)throw new Error('formal_original_sent_or_unknown_no_resend');this.event('stage_dispatched',id,{key,inputSha256:s.stage.inputSha256});}return effect();});}
-  returned(id:string,key:string,result:Row,proof:Row,originals:Record<string,Buffer>){return this.transaction(()=>{const refs:Row={};if(!Object.keys(originals).length||Object.keys(originals).length>20)throw new Error('formal_original_capture_required');for(const [name,bytes] of Object.entries(originals)){const sha256=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256,bytes);if(this.bytes(sha256).length!==bytes.length)throw new Error('formal_original_capture_changed');refs[name]={sha256,bytes:bytes.length};}proof={...proof,originals:refs};const s=this.stage(id,key);if(!s.dispatched||proof.inputSha256!==s.stage.inputSha256||proof.systemSha256!==s.stage.systemSha256||!sameFormalCandidate(proof.candidate,s.stage.candidate)||proof.completeCapture!==true||proof.role!==(s.stage.role==='fix'?'verifier_fact':s.stage.role)||proof.executionKind!==this.fixed(id).request.executionKind)throw new Error('formal_complete_original_capture_required');const value={key,result,proof};if(s.returned){if(canonical(s.returned)!==canonical(value))throw new Error('formal_original_result_is_fixed');return s.returned;}this.event('stage_returned',id,value);return value;});}
+  returned(id:string,key:string,result:Row,proof:Row,originals:Record<string,Buffer>){return this.transaction(()=>{const refs:Row={};if(!Object.keys(originals).length||Object.keys(originals).length>20)throw new Error('formal_original_capture_required');for(const [name,bytes] of Object.entries(originals)){const sha256=hash(bytes);this.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?)').run(sha256,bytes);if(this.bytes(sha256).length!==bytes.length)throw new Error('formal_original_capture_changed');refs[name]={sha256,bytes:bytes.length};}proof={...proof,originals:refs};const s=this.stage(id,key),request=this.fixed(id).request;
+    const role=s.stage.role==='fix'?(request.workflowReview?'reviewer':'verifier_fact'):s.stage.role;
+    if(!s.dispatched||proof.inputSha256!==s.stage.inputSha256||proof.systemSha256!==s.stage.systemSha256||!sameFormalCandidate(proof.candidate,s.stage.candidate)||proof.completeCapture!==true||proof.role!==role||proof.executionKind!==request.executionKind)throw new Error('formal_complete_original_capture_required');
+    if(request.workflowReview&&s.stage.role==='verifier_impact'&&
+       (proof.native?.company!=='Moonshot'||proof.native.promptBoundaryVerified!==true||!refs['prompt-boundaries.ndjson']))throw new Error('formal_original_impact_capture_unbound');
+    if(s.stage.role==='fix'&&request.workflowReview){
+      const original=this.stage(id,'round-'+this.executionRound(this.fixed(id))+'/correctness-initial').returned?.proof.native;
+      if(!original||proof.native?.company!=='OpenAI'||proof.native.sessionId!==original.sessionId||proof.native.threadId!==original.threadId)throw new Error('formal_original_reviewer_context_changed');
+    }
+    const value={key,result,proof};if(s.returned){if(canonical(s.returned)!==canonical(value))throw new Error('formal_original_result_is_fixed');return s.returned;}this.event('stage_returned',id,value);return value;});}
   progress(id:string,phase:string,detail:Row){return this.transaction(()=>{this.fixed(id);this.event('progress',id,{phase,detail});});}
   stop(id:string){return this.transaction(()=>{this.fixed(id);this.event('stopped',id,{source:'explicit_user_stop',originalsRetained:true});return this.state(id);});}
-  finish(id:string,result:Row){return this.transaction(()=>{const f=this.fixed(id);if(result.status==='pass'){this.check(id);const review=this.stage(id,result.reviewKey);if(review.stage.role!=='reviewer'||!review.returned||!sameFormalCandidate(review.stage.candidate,result.candidate)||validateFormalReview(review.returned.result,review.stage.candidate.H,review.stage.materialSha256).verdict!=='PASS')throw new Error('formal_pass_requires_its_complete_reviewer');}const old=f.events.find(e=>e.kind==='formal_review_terminal');if(old){if(canonical(old.data.result)!==canonical(result))throw new Error('formal_terminal_is_fixed');return this.state(id);}if(f.events.some(e=>e.kind==='formal_review_stage_dispatched'&&!f.events.some(r=>r.kind==='formal_review_stage_returned'&&r.data.key===e.data.key)))throw new Error('formal_original_stage_unknown');this.event('terminal',id,{result});this.update(id,{...this.operation(id).result.formalReview,phase:result.status,controllerReturned:true,resultSha256:this.blob(result)},true);return this.state(id);});}
+  finish(id:string,result:Row){return this.transaction(()=>{const f=this.fixed(id);if(result.status==='pass'){this.check(id);const review=this.stage(id,result.reviewKey);if(review.stage.role!=='reviewer'||!review.returned||!sameFormalCandidate(review.stage.candidate,result.candidate)||validateFormalReview(review.returned.result,review.stage.candidate.H,review.stage.materialSha256).verdict!=='PASS')throw new Error('formal_pass_requires_its_complete_reviewer');
+    if(f.request.workflowReview){
+      if(!this.closedReviewEvidence(result,[this.stage(id,result.reviewKey),this.stage(id,result.peerReviewKey)]))throw new Error('formal_dual_terminal_capture_missing');
+      const prefix='round-'+this.executionRound(f)+'/',a=this.stage(id,prefix+'correctness-initial'),b=this.stage(id,prefix+'impact-initial');
+      const peer=this.stage(id,result.peerReviewKey),suffix=result.reviewKey===prefix+'correctness-exchange'?'exchange':result.reviewKey===prefix+'correctness-final'?'final':null;
+      if(!suffix||result.peerReviewKey!==prefix+'impact-'+suffix||peer.stage.role!=='verifier_impact'||!peer.returned||
+        !sameFormalCandidate(peer.stage.candidate,result.candidate)||
+        review.returned.proof.native.company!=='OpenAI'||peer.returned.proof.native.company!=='Moonshot'||peer.returned.proof.native.promptBoundaryVerified!==true||
+        b.returned?.proof.native?.promptBoundaryVerified!==true||
+        !a.returned||!b.returned||review.returned.proof.native.sessionId!==a.returned.proof.native.sessionId||
+        peer.returned.proof.native.sessionId!==b.returned.proof.native.sessionId||a.returned.proof.native.sessionId===b.returned.proof.native.sessionId||
+        validateFormalReview(peer.returned.result.report,peer.stage.candidate.H,peer.stage.materialSha256).verdict!=='PASS')throw new Error('formal_pass_requires_two_complete_original_reviewers');
+    }
+  }const old=f.events.find(e=>e.kind==='formal_review_terminal');if(old){if(canonical(old.data.result)!==canonical(result))throw new Error('formal_terminal_is_fixed');return this.state(id);}if(f.events.some(e=>e.kind==='formal_review_stage_dispatched'&&!f.events.some(r=>r.kind==='formal_review_stage_returned'&&r.data.key===e.data.key)))throw new Error('formal_original_stage_unknown');this.event('terminal',id,{result});this.update(id,{...this.operation(id).result.formalReview,phase:result.status,controllerReturned:true,resultSha256:this.blob(result)},true);return this.state(id);});}
   candidateContinuation(id:string,packet:Packet,currentPacket:number){const f=this.fixed(id),op=this.operation(id),s=this.state(id);if(f.request.candidateMaterialOnly!==true||op.packet!==currentPacket||op.status!=='complete'||s.terminal?.result.status!=='candidate_material_recorded'||!s.resourcesSettled)throw new Error('formal_original_candidate_continuation_required');const stage=s.stages[0];if(!stage?.returned||stage.stage.role!=='test'||stage.stage.inputSha256!==packet.manifestHash||stage.returned.result.reportSha256!==packet.reportHash||stage.returned.result.run!==packet.summary.reportId||!stage.returned.proof.evidenceIndexSha256||canonical(packet.context.scope)!==canonical(f.registration.scope)||packet.candidate.H!==f.request.candidate.H||packet.candidate.B!==f.request.candidate.B||packet.candidate.targetRef!==f.request.candidate.target||packet.candidate.repository.toLowerCase()!==f.request.candidate.repository.toLowerCase()||packet.candidate.pr!==f.request.candidate.pr)throw new Error('formal_original_candidate_continuation_changed');return true;}
   sourceForReviewRecords(id:string){const f=this.fixed(id),state=this.state(id),published=f.events.find(e=>e.kind==='formal_review_publication_verified')?.data??null;if(published){const original=JSON.parse(this.bytes(published.captureSha256).toString()),records=original.records.map((r:Row)=>({...r,body:Buffer.from(r.bodyBase64,'base64')})),result=interpretEventSource(original.profile,original.pr,records,original.transportGap,original.knownPublished);if(canonical(result)!==canonical(original.result)||!result.complete||result.candidate?.H!==state.terminal?.result.fix?.H1||!records.filter((r:Row)=>r.kind==='pr').every((r:Row)=>JSON.parse(r.body.toString()).body?.includes(state.terminal!.result.fix.publicRecord)))throw new Error('formal_publication_original_changed');}return {candidate:f.request.candidate,context:{scope:f.registration.scope},state,published};}
   admitPublication(id:string,observation:EventSourceObservation,profile:EventProfile){return this.transaction(()=>{const f=this.fixed(id),s=this.state(id),fix=s.terminal?.result.fix;if(s.stopped||s.terminal?.result.status!=='awaiting_publication'||!fix?.testCandidateBinding||fix.H1===f.request.candidate.H)throw new Error('formal_completed_fix_required');requireEventSource(observation,profile,f.request.candidate.pr);const c=observation.result.candidate;if(!observation.result.complete||!c||c.repository.toLowerCase()!==f.request.candidate.repository.toLowerCase()||c.H!==fix.H1||c.B!==f.request.candidate.B||c.targetRef!==f.request.candidate.target||!observation.records.filter(r=>r.kind==='pr').every(r=>JSON.parse(r.body.toString()).body?.includes(fix.publicRecord)))throw new Error('formal_remote_fix_and_record_not_verified');const capture={...observation,profile,records:observation.records.map(({body,...r})=>({...r,bodyBase64:body.toString('base64')}))},value={H:fix.H1,beforeH:f.request.candidate.H,recordSha256:fix.recordSha256,captureSha256:this.blob(capture),observedAt:observation.observedAt};const old=f.events.find(e=>e.kind==='formal_review_publication_verified');if(old){if(old.data.H!==value.H||old.data.recordSha256!==value.recordSha256)throw new Error('formal_publication_is_fixed');return old.data;}this.event('publication_verified',id,value);return value;});}
   resourceGate(action:Row,request:ResourceRequest){const f=this.fixed(request.operation),entry=f.events.find(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.authorityIntent===request.authorityIntent),s=entry?this.stage(request.operation,entry.data.stage.key):null;if(!s||s.dispatched||s.returned||action.role!==s.stage.actorRole||canonical(s.stage.action)!==canonical(action.request)||!s.stage.resources.some(r=>resourceRequestHash(r)===resourceRequestHash(request)))throw new Error('formal_resource_exact_consumer_required');this.check(request.operation);return {key:s.stage.key,planSha256:hash(canonical(s.stage)),authorityIntent:s.stage.authorityIntent};}
-  completeResourcePhase(id:string,authorityIntent:string){return this.transaction(()=>{
+  completeResourcePhase(id:string,authorityIntent:string,endedDualRound?:number){return this.transaction(()=>{
     const f=this.fixed(id),old=f.events.find(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===authorityIntent);if(old)return old.data;
     const stages=f.events.filter(e=>e.kind==='formal_review_stage_prepared'&&e.data.stage.budgetIntent===authorityIntent).map(e=>this.stage(id,e.data.stage.key));
-    if(!stages.length||stages.some(s=>!s.dispatched||!s.returned))throw new Error('formal_original_resource_outcome_unknown');
-    const value={authorityIntent,keys:stages.map(s=>s.stage.key),originals:stages.map(s=>({key:s.stage.key,returnedSha256:this.blob(s.returned!)}))};this.event('resource_phase_completed',id,value);return value;
+    const returned=stages.filter(s=>s.dispatched);
+    if(!returned.length||returned.some(s=>!s.returned)||
+       (endedDualRound===undefined?returned.length!==stages.length:!f.request.workflowReview||
+        endedDualRound!==this.executionRound(f)||stages.some(s=>s.stage.role==='fix'||!s.stage.key.startsWith('round-'+endedDualRound+'/'))))
+      throw new Error('formal_original_resource_outcome_unknown');
+    const value={authorityIntent,keys:returned.map(s=>s.stage.key),originals:returned.map(s=>({key:s.stage.key,returnedSha256:this.blob(s.returned!)})),
+      ...(endedDualRound===undefined?{}:{unsentKeys:stages.filter(s=>!s.dispatched).map(s=>s.stage.key)})};
+    this.event('resource_phase_completed',id,value);return value;
   });}
   outcome(operation:string,action:Row):ResourceOutcome{
     const f=this.fixed(operation),end=f.events.find(e=>e.kind==='formal_review_resource_phase_completed'&&e.data.authorityIntent===action.requestId)?.data;if(!end)throw new Error('formal_original_resource_outcome_unknown');

@@ -76,8 +76,8 @@ test('the original synchronous authority check runs after asynchronous profile i
 test('a premature second answer cannot become a complete second result during live execution or closed replay',async t=>{
  const f=await fixture(t,'kimi','unsolicited-between-inputs');f.plan.messages[1]!.replies=[];await f.write();
  const original=ExtraCliSession.prototype.prompt;t.mock.method(ExtraCliSession.prototype,'prompt',async function(this:ExtraCliSession,...args:Parameters<ExtraCliSession['prompt']>){if(JSON.parse(args[0]).messageId==='second')await this.rpc.waitFor(m=>m.params?.update?.content?.text?.includes('Unsolicited text before second input'),1000);return original.apply(this,args);});
- const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.ok(result.problems.some(p=>p.reason==='external_cli_final_missing'));assert.equal(result.messages.find(m=>m.id==='second')?.reply??null,null);
- const calls=await f.calls();assert.equal(calls.length,2);const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,false);assert.equal(again.messages.find(m=>m.id==='second')?.reply??null,null);assert.deepEqual(await f.calls(),calls);
+ const result=await runMessages(f.store,f.path);assert.equal(result.completed,false);assert.ok(result.problems.some(p=>p.reason==='external_cli_text_outside_prompt'));assert.equal(result.messages.find(m=>m.id==='second')?.reply??null,null);
+ const calls=await f.calls();assert.equal(calls.length,1);const again=await runMessages(f.store,f.path,true);assert.equal(again.completed,false);assert.equal(again.messages.find(m=>m.id==='second')?.reply??null,null);assert.deepEqual(await f.calls(),calls);
 });
 
 for(const tool of ['gemini','opencode'] as const)test(tool+' rejects a model changed by the effort response before any input',async t=>{

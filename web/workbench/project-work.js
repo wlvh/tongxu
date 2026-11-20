@@ -2,7 +2,7 @@
 // describe preparation; actual execution and reports come from the old consumer.
 const projectWorkProjects=new Map();
 const projectWorkLabels={draft:'工作草案已保存',preparing:'同序正在调查并准备',prepared:'工程准备已完成，等待确认',authorizing:'正在核对本次批准',needs_input:'等待补齐条件',execution:'已交给原实施流程',waiting_return:'实施已有结果，等待接回项目',delivered:'完整成果已接回项目',no_change:'原核对未产生新提交'};
-const projectWorkError=code=>({implementation_readonly_prior_substantive_rejection:'原检查已发现实质性不一致，这条只读失败收尾不适用；原件和占用保留。',repair_index_changed_during_observation:'本次观察窗口内索引发生变化，未签发证明；原拒绝保留，后续须明确新的检查。',implementation_readonly_observation_changed:'原证明的当前状态已变化，本次不结清；旧观察保留，不在后台重扫重签。',implementation_readonly_child_active_or_unknown:'原生程序或已观察子过程尚未正面证明结束，不释放或重发。',implementation_readonly_controller_active_or_unknown:'原请求的控制权尚未核清，不释放或重发。',project_work_authorizing_current_check_fixed:'本次批准仍须查回原来源；请使用核对原批准入口，不更换条件或重新发送。',project_work_preparation_expired_recheck:'原准备的时效依据已过期；可显式重新核对当前条件，再请本人确认原方案。不会自动重新调查或执行。',project_work_current_check_expired:'这次当前条件核对已过期；请明确重新核对后办理新的有限批准。',project_work_current_check_changed:'当前核对原件或执行器已变化，保留原件，暂不执行。',project_work_restart_limit:'本工作的这一次重做已使用；原失败与报告保留，不再增加修正机会。可明确新建一项任务。',project_work_restart_requires_current_check:'原失败后继不通过普通重新准备增加机会；请使用当前条件核对或原记录继续入口。',project_work_current_check_incomplete:'上次当前核对尚不能完整核清；原件保留，不自动替换或执行。',project_work_proposal_json_invalid:'上次准备已完整结束，但方案中的 JSON 字符串无法读取；原报告保留，请沿同一工作重新准备。',project_work_previous_preparation_changed:'上次准备原件在发送前发生变化，当前准备已停止；请核对原记录。',project_work_preparation_input_limit:'本次准备输入超过原有完整材料上限，原工作保留；不会截断或自动重发。',project_work_observation_material_limit:'本次获准文件无法装配有余量的任务观察，原方案保留。请沿原工作重新核对工程范围，不扩大写权或关闭预算检查。',implementation_observation_material_missing:'本次获准材料不能在原观察预算内装配，原件保留，尚未发送实施。',project_work_validation_esm_syntax_required:'冻结验证定义不是登记的 ESM 脚本语法；原方案保留，请沿本工作重新准备。',project_work_validation_esm_import_required:'登记验证使用 ESM import，没有全局 require；原方案保留，请沿本工作重新准备。',project_work_validation_no_script_arguments:'登记验证从当前目录读取材料，不附加脚本参数；原方案保留，请沿本工作重新准备。',implementation_validation_tree_changed:'原工作文件或索引已变化，原报告与改动保留，暂不发送修正。',implementation_validation_original_changed:'原验证证据已变化，暂不发送修正。',implementation_validation_correction_consumed:'原工作的一次验证修正已经登记，请查看原结果；不会再次发送。',implementation_validation_empty_budget_required:'这条有界修正只支持原条件性空预算且无账本的工作，当前配置不满足。',work_validation_material_consent_required:'需要在本机本人窗口确认这份准确验收定义可只读提供给原实施者。',implementation_validation_writer_active_or_unknown:'原写者或控制程序仍活跃或状态未明，暂不接续修正。',implementation_validation_request_active:'原请求仍在运行，请等待原执行返回。',implementation_original_controller_active_or_unknown:'原控制程序仍在运行或状态未明，暂不发送实施任务。',implementation_first_send_baseline_not_unique:'原测试基线不能唯一核清，原件保留，暂不发送实施任务。',repair_index_file_type_unsupported:'原工作区的完整 Git 索引未通过检查；已有记录保留，不自动重新发送。','controlled_result_not_final:non_terminal_agent_message':'本次准备未通过严格的最终结果核验；原问题和捕获保留，不代表已形成可执行方案。',project_work_environment_changed_prepare_again:'登记的验证环境已变化，请沿原工作明确重新准备；原方案和捕获保留。',project_work_environment_probe_failed:'登记的隔离验证环境探测未完成，请先核对原环境；不会发送实施。',project_work_environment_original_unknown:'原验证环境探测是否结束尚未核清，保留原件，暂不新增准备。',project_work_stopped:'原工作已停止，原件保留。继续处理需明确重新核对这项工作。',project_work_repository_location_required:'先填写并保存这个项目的本机文件夹。草案已经保留。',project_work_repository_identity_mismatch:'这个文件夹的 GitHub 仓库与当前项目不符，请选择正确的项目文件夹。',project_work_repository_path_invalid:'没有找到有效的本机 Git 仓库，请核对文件夹位置。',project_work_source_fetch_failed:'尚未取得这次固定主干资料。请检查网络与现有 GitHub 登录后，继续准备同一工作。',project_work_repository_commit_required:'当前仓库没有可核对的固定提交，草案仍然保留。',project_work_local_owner_window_unavailable:'本机确认窗口未能打开，尚未批准或执行。请检查本机浏览器后重试。',project_work_source_changed_prepare_again:'Issue 或代码起点已变化，请重新准备这项工作。原材料和结果继续保留。',project_work_original_active_or_unknown:'原执行仍在处理或状态未明，先查看原执行；不会另发一次。',project_work_preparation_active_or_unknown:'原准备仍在运行或状态未明，请先刷新查回原记录。',project_work_preparation_interrupted:'前次准备没有完整结束，原件已保留。确认后可重新准备一个版本。',project_work_requirements_need_clarification:'准备发现尚待明确的事项，请看下方问题，补充目标后继续。',project_work_result_branch_changed:'成果分支已被其他操作移动，原成果仍保留；需要先核对该分支。',project_work_result_branch_in_use:'这条成果分支正在其他工作区使用，尚未改动它。',project_work_result_workspace_changed:'成果工作区有外部修改，已保留，尚未覆盖。',project_work_result_git_unknown:'上次成果接回是否结束仍未核清，原现场已保留，暂不新增接回动作。',project_work_owner_source_unknown:'批准评论发送结果尚未核清。继续只查回原评论，不会重复发布。',project_work_preparation_changed:'准备内容已变化，请刷新后核对当前版本。',project_work_owner_identity_not_configured:'当前账号与已登记的批准身份不符，尚未开始执行。',project_work_preparation_stopped:'已停止本次准备；原话与捕获保留。',project_work_previous_result_not_received:'请先接回原完整成果，再核对下一次准备。'}[code]||implementationReason(code));
+const projectWorkError=code=>({project_work_result_receipt_changed:'原成果记录已经变化，请刷新后核对要接回的准确候选。',project_issue_review_approval_pending:'这版 Issue 的双公司审核尚未通过，等待保留的本版审查结果。',project_issue_review_second_company_required:'请先在本项目的 AI 设置中选择可用的 Moonshot 影响核实席位。',project_issue_review_binding_changed:'Issue 正文或采用的验收版本发生变化，请按原入口读取并审查新版本。',implementation_readonly_prior_substantive_rejection:'原检查已发现实质性不一致，这条只读失败收尾不适用；原件和占用保留。',repair_index_changed_during_observation:'本次观察窗口内索引发生变化，未签发证明；原拒绝保留，后续须明确新的检查。',implementation_readonly_observation_changed:'原证明的当前状态已变化，本次不结清；旧观察保留，不在后台重扫重签。',implementation_readonly_child_active_or_unknown:'原生程序或已观察子过程尚未正面证明结束，不释放或重发。',implementation_readonly_controller_active_or_unknown:'原请求的控制权尚未核清，不释放或重发。',project_work_authorizing_current_check_fixed:'本次批准仍须查回原来源；请使用核对原批准入口，不更换条件或重新发送。',project_work_preparation_expired_recheck:'原准备的时效依据已过期；可显式重新核对当前条件，再请本人确认原方案。不会自动重新调查或执行。',project_work_current_check_expired:'这次当前条件核对已过期；请明确重新核对后办理新的有限批准。',project_work_current_check_changed:'当前核对原件或执行器已变化，保留原件，暂不执行。',project_work_restart_limit:'本工作的这一次重做已使用；原失败与报告保留，不再增加修正机会。可明确新建一项任务。',project_work_restart_requires_current_check:'原失败后继不通过普通重新准备增加机会；请使用当前条件核对或原记录继续入口。',project_work_current_check_incomplete:'上次当前核对尚不能完整核清；原件保留，不自动替换或执行。',project_work_proposal_json_invalid:'上次准备已完整结束，但方案中的 JSON 字符串无法读取；原报告保留，请沿同一工作重新准备。',project_work_previous_preparation_changed:'上次准备原件在发送前发生变化，当前准备已停止；请核对原记录。',project_work_preparation_input_limit:'本次准备输入超过原有完整材料上限，原工作保留；不会截断或自动重发。',project_work_observation_material_limit:'本次获准文件无法装配有余量的任务观察，原方案保留。请沿原工作重新核对工程范围，不扩大写权或关闭预算检查。',implementation_observation_material_missing:'本次获准材料不能在原观察预算内装配，原件保留，尚未发送实施。',project_work_validation_esm_syntax_required:'冻结验证定义不是登记的 ESM 脚本语法；原方案保留，请沿本工作重新准备。',project_work_validation_esm_import_required:'登记验证使用 ESM import，没有全局 require；原方案保留，请沿本工作重新准备。',project_work_validation_no_script_arguments:'登记验证从当前目录读取材料，不附加脚本参数；原方案保留，请沿本工作重新准备。',implementation_validation_tree_changed:'原工作文件或索引已变化，原报告与改动保留，暂不发送修正。',implementation_validation_original_changed:'原验证证据已变化，暂不发送修正。',implementation_validation_correction_consumed:'原工作的一次验证修正已经登记，请查看原结果；不会再次发送。',implementation_validation_empty_budget_required:'这条有界修正只支持原条件性空预算且无账本的工作，当前配置不满足。',work_validation_material_consent_required:'需要在本机本人窗口确认这份准确验收定义可只读提供给原实施者。',implementation_validation_writer_active_or_unknown:'原写者或控制程序仍活跃或状态未明，暂不接续修正。',implementation_validation_request_active:'原请求仍在运行，请等待原执行返回。',implementation_original_controller_active_or_unknown:'原控制程序仍在运行或状态未明，暂不发送实施任务。',implementation_first_send_baseline_not_unique:'原测试基线不能唯一核清，原件保留，暂不发送实施任务。',repair_index_file_type_unsupported:'原工作区的完整 Git 索引未通过检查；已有记录保留，不自动重新发送。','controlled_result_not_final:non_terminal_agent_message':'本次准备未通过严格的最终结果核验；原问题和捕获保留，不代表已形成可执行方案。',project_work_environment_changed_prepare_again:'登记的验证环境已变化，请沿原工作明确重新准备；原方案和捕获保留。',project_work_environment_probe_failed:'登记的隔离验证环境探测未完成，请先核对原环境；不会发送实施。',project_work_environment_original_unknown:'原验证环境探测是否结束尚未核清，保留原件，暂不新增准备。',project_work_stopped:'原工作已停止，原件保留。继续处理需明确重新核对这项工作。',project_work_repository_location_required:'先填写并保存这个项目的本机文件夹。草案已经保留。',project_work_repository_identity_mismatch:'这个文件夹的 GitHub 仓库与当前项目不符，请选择正确的项目文件夹。',project_work_repository_path_invalid:'没有找到有效的本机 Git 仓库，请核对文件夹位置。',project_work_source_fetch_failed:'尚未取得这次固定主干资料。请检查网络与现有 GitHub 登录后，继续准备同一工作。',project_work_repository_commit_required:'当前仓库没有可核对的固定提交，草案仍然保留。',project_work_local_owner_window_unavailable:'本机确认窗口未能打开，尚未批准或执行。请检查本机浏览器后重试。',project_work_source_changed_prepare_again:'Issue 或代码起点已变化，请重新准备这项工作。原材料和结果继续保留。',project_work_original_active_or_unknown:'原执行仍在处理或状态未明，先查看原执行；不会另发一次。',project_work_preparation_active_or_unknown:'原准备仍在运行或状态未明，请先刷新查回原记录。',project_work_preparation_interrupted:'前次准备没有完整结束，原件已保留。确认后可重新准备一个版本。',project_work_requirements_need_clarification:'准备发现尚待明确的事项，请看下方问题，补充目标后继续。',project_work_result_branch_changed:'成果分支已被其他操作移动，原成果仍保留；需要先核对该分支。',project_work_result_branch_in_use:'这条成果分支正在其他工作区使用，尚未改动它。',project_work_result_workspace_changed:'成果工作区有外部修改，已保留，尚未覆盖。',project_work_result_git_unknown:'上次成果接回是否结束仍未核清，原现场已保留，暂不新增接回动作。',project_work_owner_source_unknown:'批准评论发送结果尚未核清。继续只查回原评论，不会重复发布。',project_work_preparation_changed:'准备内容已变化，请刷新后核对当前版本。',project_work_owner_identity_not_configured:'当前账号与已登记的批准身份不符，尚未开始执行。',project_work_preparation_stopped:'已停止本次准备；原话与捕获保留。',project_work_previous_result_not_received:'请先接回原完整成果，再核对下一次准备。'}[code]||implementationReason(code));
 function projectWorkKey(){return gh.account&&gh.selected?gh.account.id+':'+gh.selected.id+':'+gh.selected.nodeId:null;}
 function projectWorkData(){const id=projectWorkKey();if(!id)return null;let d=projectWorkProjects.get(id);if(!d||d.epoch!==gh.epoch){d={epoch:gh.epoch,ready:false,loading:false,pending:false,works:[],settings:null,selected:null,detail:null,error:null,actionError:null,issue:'',goal:'',repositoryPath:'',createId:crypto.randomUUID(),newWork:false,requestedIssue:null,composing:false};projectWorkProjects.set(id,d);}return d;}
 async function projectWorkPost(path,body){const r=await workspaceFetch('/api/project-work'+path,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'}),j=await r.json();if(!r.ok)throw new Error(j.error||'project_work_unavailable');return j;}
@@ -12,10 +12,10 @@ async function loadProjectWorks(detail=false){
     if(!d.repositoryPath&&value.settings)d.repositoryPath=value.settings.repositoryPath;
     if(!d.selected&&!d.newWork){const conversation=chatData()?.conversationId;d.selected=d.requestedIssue!==null?value.works.find(w=>w.issue.number===d.requestedIssue)?.id??null:value.works.find(w=>w.conversationId===conversation)?.id??value.works[0]?.id??null;}
     const summary=value.works.find(w=>w.id===d.selected),signature=JSON.stringify([summary?.updatedAt,summary?.execution?.phase,summary?.execution?.status,summary?.execution?.H1]);
-    if(d.selected&&(detail||signature!==d.detailSignature)){const result=await api('/api/project-work/'+d.selected);if(!current()||d.selected!==result.draft.id)return;d.detail=result;d.detailSignature=signature;if(!d.goalEdited)d.goal=result.draft.draftGoal??result.draft.goal;}
+    if(d.selected&&(detail||signature!==d.detailSignature||d.detail?.explanation?.state==='running'||d.detail?.issueReview?.state==='running')){const result=await api('/api/project-work/'+d.selected);if(!current()||d.selected!==result.draft.id)return;d.detail=result;d.detailSignature=signature;if(!d.goalEdited)d.goal=result.draft.draftGoal??result.draft.goal;}
   }catch(e){if(current()){d.error=projectWorkError(e.message);d.ready=true;}}
   finally{d.loading=false;if(current()&&!d.composing)render();}
-  if(current()&&(d.works.some(w=>w.active||w.execution?.controllerActive)||(d.ownerPending||[]).length))setTimeout(()=>{if(current())void loadProjectWorks();},1500);
+  if(current()&&(d.works.some(w=>w.active||w.execution?.controllerActive)||(d.ownerPending||[]).length||d.detail?.explanation?.state==='running'||d.issueProposal?.state==='running'||d.detail?.issueReview?.state==='running'))setTimeout(()=>{if(current())void loadProjectWorks();},1500);
 }
 async function projectWorkAction(action){
   const d=projectWorkData(),identity=projectWorkKey(),epoch=gh.epoch,current=()=>identity===projectWorkKey()&&epoch===gh.epoch;if(!d||d.pending)return;d.pending=true;d.actionError=null;render();
@@ -39,7 +39,7 @@ function projectWorkLauncher(){
 }
 function renderProjectWork(){
   const d=projectWorkData();if(!d||d.composing)return;
-  const focus=document.activeElement,caret=focus&&['work-goal','work-repository','work-issue'].includes(focus.id)?{id:focus.id,start:focus.selectionStart,end:focus.selectionEnd}:null;
+  const focus=document.activeElement,caret=focus&&['work-goal','work-repository','work-issue','work-issue-proposal-goal'].includes(focus.id)?{id:focus.id,start:focus.selectionStart,end:focus.selectionEnd}:null;
   renderGithub();const page=append(el('div'),intro(gh.selected.fullName+' · 项目工作','保存准备、实际执行和完整成果分别保留；切换或刷新不会重复发送。'));
   const back=el('button','返回 Issues 与 PR','outline');back.onclick=()=>enterView('github');page.append(back);
   if(!d.ready){page.append(el('p','正在读取原工作…'));$('content').replaceChildren(page);if(!d.loading)queueMicrotask(()=>loadProjectWorks(true));return;}
@@ -47,32 +47,151 @@ function renderProjectWork(){
   if(d.actionError||d.error)page.append(el('p',d.actionError||d.error,'github-error'));
   const setup=append(el('section',null,'panel'),el('h2',d.settings?.verified===false?'项目位置已保存，等待核对':d.settings?'项目设置（已保存，可复用）':'首次设置：本机项目文件夹'),el('p','只需为这个项目设置一次。同序核对仓库身份，使用固定提交准备独立工作区，不覆盖你当前未提交的工作。','small'));
   const path=el('input');path.id='work-repository';path.value=d.repositoryPath;path.placeholder='填写本机 Git 项目文件夹的绝对路径';path.oninput=()=>{d.repositoryPath=path.value;};const save=el('button','保存并核对项目位置');save.disabled=d.pending;save.onclick=()=>projectWorkAction(x=>projectWorkPost('/settings',{repositoryPath:x.repositoryPath}));setup.append(append(el('label','本机项目文件夹'),path),save);if(d.settings?.problem)setup.append(el('p',projectWorkError(d.settings.problem),'github-error'));page.append(setup);
+  if(d.development)page.append(el('p','项目开发授权已登记，后续工作启动时会核对原批准。','note-card'));
+  const proposal=append(el('details',null,'panel'),el('summary','从目标拟定新的 Issue'));
+  proposal.open=!!d.issueProposalOpen;
+  proposal.ontoggle=()=>{d.issueProposalOpen=proposal.open;};
+  const originalProposal=d.issueProposal;
+  const proposalGoal=el('textarea');proposalGoal.id='work-issue-proposal-goal';proposalGoal.rows=3;proposalGoal.maxLength=2048;
+  proposalGoal.value=d.issueProposalGoal??originalProposal?.goal??'';
+  proposalGoal.oninput=()=>{d.issueProposalGoal=proposalGoal.value;d.issueProposalId=crypto.randomUUID();};
+  proposal.append(append(el('label','说明希望项目实现的行为'),proposalGoal));
+  const createProposal=el('button','拟定 Issue 和验收计划','outline');
+  createProposal.disabled=d.pending||originalProposal?.state==='running';
+  createProposal.onclick=()=>projectWorkAction(()=>projectWorkPost('/draft-issue',{requestId:d.issueProposalId??(d.issueProposalId=crypto.randomUUID()),goal:proposalGoal.value}));
+  proposal.append(createProposal);
+  if(originalProposal?.state==='running')proposal.append(el('p','正在拟定 Issue 和验收计划。','small'));
+  else if(originalProposal?.state==='ready'){
+    proposal.append(el('h3',originalProposal.title),el('pre',originalProposal.body),el('p','草案已包含独立对话制定的验收计划，等待在 GitHub 提交并进行正式需求审核。','small'));
+    const destination=new URL('https://github.com/'+gh.selected.fullName+'/issues/new');
+    destination.searchParams.set('title',originalProposal.title);destination.searchParams.set('body',originalProposal.body);
+    const githubDraft=el('a','在 GitHub 打开待提交的 Issue');githubDraft.href=destination.href;githubDraft.target='_blank';githubDraft.rel='noopener noreferrer';
+    proposal.append(githubDraft);
+  }else if(originalProposal)proposal.append(el('p','原草案请求已保存，完整结果待核。','small'));
+  page.append(proposal);
   const choose=append(el('section',null,'panel'),el('h2','选择一项 Issue 工作')),number=el('input');number.id='work-issue';number.type='number';number.min='1';number.value=d.issue;number.oninput=()=>{d.issue=number.value;};choose.append(append(el('label','Issue 编号'),number));
   const create=el('button',d.newWork?'保存一次新的工作':'保存或打开这项工作');create.disabled=d.pending;create.onclick=()=>projectWorkAction(async(x,current)=>{const chat=chatData(),conversationId=chat?.conversationId||crypto.randomUUID(),work=await projectWorkPost('/create',{requestId:x.createId,conversationId,issueNumber:Number(x.issue),goal:x.newWork?'':x.goal,newWork:x.newWork});if(!current())return;x.selected=work.id;x.newWork=false;x.createId=crypto.randomUUID();x.goalEdited=false;if(chat&&chat.conversationId!==work.conversationId)chooseProjectConversation(work.conversationId);});choose.append(create);
   for(const w of d.works){const open=el('button','打开 #'+w.issue.number+' '+w.issue.title,'quiet');open.onclick=()=>openProjectWork(null,w.id);choose.append(open);}page.append(choose);
   const item=d.detail?.draft;
   if(item&&item.id===d.selected){
-    const current=d.works.find(w=>w.id===item.id),active=!!(current?.active||current?.execution?.controllerActive),section=append(el('section',null,'panel'),el('h2','Issue #'+item.issue.number+' · '+item.issue.title),el('p',projectWorkLabels[current?.stage||item.stage]||item.stage));
+    const resultStatus=d.detail.resultStatus,current=d.works.find(w=>w.id===item.id),active=!!(current?.active||current?.issueReviewActive||current?.execution?.controllerActive),section=append(el('section',null,'panel'),el('h2','Issue #'+item.issue.number+' · '+item.issue.title),el('p',item.delivery?.status==='received'&&resultStatus?.latest&&!resultStatus.current?'此工作有更新一轮，成果状态待核':projectWorkLabels[current?.stage||item.stage]||item.stage));
+    const issueReview=d.detail.issueReview;
+    if(/^#{1,6} 用户视角验收计划/m.test(item.issue.body)&&!item.catalog&&!item.stopRequested){
+      const source=el('a','打开 GitHub 上的 Issue 和验收计划');
+      source.href=item.issue.url;source.target='_blank';source.rel='noopener noreferrer';section.append(source);
+      if(!issueReview){
+        const review=el('button','对这版 Issue 发起双公司审查','outline');review.disabled=d.pending||active;
+        review.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/review-issue',{issueBodySha256:item.issue.bodySha256}));section.append(review);
+      }else if(issueReview.state==='returned'){
+        section.append(el('p',issueReview.approved?'两家公司已对本版需求交换并通过。':'本版需求尚待返工或确认。','small'));
+        for(const [company,record] of [['OpenAI',issueReview.correctness],['Moonshot',issueReview.minimality]]){
+          if(record)section.append(append(el('details',null,'panel'),el('summary',company+' · '+record.exchanged.verdict),el('p',record.initial.report,'chat-text'),el('p',record.exchanged.report,'chat-text')));
+        }
+      }else{
+        section.append(el('p',issueReview.state==='running'?'正在进行本版 Issue 的独立审查和交流。':'本版 Issue 的原审查保留，完整结论待核。','small'));
+        if(issueReview.reason==='formal_pass_has_unresolved_work')
+          section.append(el('p','原审查的通过结论和它列出的未解决项冲突。需要核实该审查结论。','github-error'));
+      }
+    }
     if(current?.problem||item.problem)section.append(el('p',projectWorkError(current?.problem||item.problem),'github-error'));
     const goal=el('textarea');goal.id='work-goal';goal.rows=4;goal.maxLength=2048;goal.value=d.goal;goal.placeholder='补充希望得到的结果或必须保留的行为；无需列出工程文件和命令。';goal.oninput=()=>{d.goal=goal.value;d.goalEdited=true;};goal.oncompositionstart=()=>{d.composing=true;};goal.oncompositionend=()=>{d.composing=false;};section.append(append(el('label','本次目标与必要补充'),goal));if(item.draftGoal!=null)section.append(el('p','补充原话已保留为待准备草案；下方范围仍属于原版本，重新准备完成前不会采用这些补充。','small'));
     const prepare=el('button',item.preparation?'重新核对并准备':'让同序准备这项工作');prepare.disabled=d.pending||active;prepare.onclick=()=>projectWorkAction(x=>projectWorkPost('/'+item.id+'/prepare',{goal:x.goal}));section.append(prepare);if(item.preparation?.proposal&&!item.catalog&&!item.stopRequested){const recheck=el('button','只重新核对当前条件，不重做模型调查');recheck.disabled=d.pending||active;recheck.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/recheck',{}));section.append(recheck);}if(item.restart){section.append(el('p','原失败及原改动、报告保留；后继从原代码起点（H0）在同一工作新版本重做一次，不迁移旧改动，不再增加修正。','small'));if(item.version===item.restart.predecessor.version&&!item.stopRequested){const resume=el('button','继续结清原失败并准备一次新版本');resume.disabled=d.pending||active;resume.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(resume);}}
     const showDiagnostic=(diagnostic,label)=>{if(!diagnostic)return;const box=append(el('section',null,'note-card'),el('h3',label+' · 未接受的准备问题'),el('p','原准备未通过严格解析；以下仅为原过程提出的问题，不是已接受方案或批准。'));for(const q of diagnostic.questions)box.append(el('p',q,'github-error'));if(diagnostic.source)box.append(append(el('details'),el('summary','查看原问题来源（只读）'),el('p','原输入：'+diagnostic.source.inputSha256),el('p','原输出：'+diagnostic.source.stdoutSha256),el('p','原轮次：'+diagnostic.source.turnId)));box.append(el('p',diagnostic.nextStep,'small'));section.append(box);};
     showDiagnostic(d.detail.preparationDiagnostic,'本版本');for(const old of d.detail.history||[])showDiagnostic(old.preparationDiagnostic,'历史版本 '+old.version);
     if(d.detail.validationProblem)section.append(el('p',projectWorkError(d.detail.validationProblem),'github-error'));
-    const proposal=item.preparation?.proposal;
+    const proposal=item.preparation?.proposal,workflow=item.preparation?.workflowPrompt;
+    if(workflow){
+      const link=el('a','本工作准备时固定的实施提示 '+workflow.revision.slice(0,7));
+      link.href='https://github.com/'+workflow.repository+'/commit/'+workflow.revision;link.target='_blank';link.rel='noopener noreferrer';
+      section.append(link);
+    }
     if(proposal){section.append(el('h3','同序提出的工作范围'),el('p',proposal.goal),el('p','验证目标：'+proposal.validation.description));for(const line of proposal.acceptance)section.append(el('p','完成标准：'+line));for(const q of proposal.questions)section.append(el('p','需要明确：'+q,'github-error'));
       const details=append(el('details'),el('summary','查看文件范围、验证建议和准备依据'),el('p','拟修改：'+proposal.allowedPaths.join('、')),el('p','只读材料与测试：'+proposal.protectedPaths.join('、')),el('pre',proposal.validation.script),el('p',proposal.report));section.append(details);
-      if(!item.catalog&&!item.stopRequested&&!d.detail.validationProblem&&!proposal.questions.length&&['prepared','authorizing'].includes(item.stage)){section.append(el('p','确认后，程序将把本次范围及实施／测试批准记录到这条 Issue，核对来源后执行。使用现有订阅；不包含合并、部署或重置。','small'));const start=el('button',item.stage==='authorizing'?'核对原批准并继续原工作':'请本人确认范围并开始');start.disabled=d.pending||active;start.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/start',{version:item.version,proposalSha256:item.preparation.proposalSha256||item.preparation.proposalDigest}));section.append(start);}
+      if(!item.catalog&&!item.stopRequested&&!d.detail.validationProblem&&(!item.issueReviewRequired||issueReview?.approved)&&!proposal.questions.length&&['prepared','authorizing'].includes(item.stage)){section.append(el('p','使用现有 GitHub 批准来源和订阅。每项工作保留独立目录、固定的代码起点和验收定义。','small'));const confirmation={version:item.version,proposalSha256:item.preparation.proposalSha256||item.preparation.proposalDigest};
+        const addStart=(label,projectDevelopment)=>{const start=el('button',label);start.disabled=d.pending||active;start.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/start',{...confirmation,...(projectDevelopment?{projectDevelopment:true}:{})}));section.append(start);};
+        if(item.stage==='authorizing')addStart('核对原批准并继续原工作',item.projectDevelopment);
+        else if(item.restart)addStart('确认本次重做的原文件范围',false);
+        else if(d.development)addStart('使用项目授权开始这项工作',true);
+        else{addStart('授权本项目并开始',true);addStart('仅确认这项工作的文件范围',false);}}
     }
     if(current?.execution?.status==='failed')section.append(el('p',current.execution.failureKind==='ended_readonly_timeout'?'本次实施超时已结束；受控本机仅发生读取，没有完整模型报告、改动或成功提交。':'本次修正已明确失败；完整报告与改动保留，没有成功提交，原操作已结束。','github-error'));
     if(current?.execution?.reason&&!active)section.append(el('p',projectWorkError(current.execution.reason),'github-error'));
-    if(d.detail.validationFailure){const failure=d.detail.validationFailure;section.append(el('h3','验证明确失败，原改动和完整报告保留'),el('pre',failure.report.report),el('p','原始测试输出保持私有；同范围修正只读取准确同意的冻结验收定义。失败不产生成功提交。','small'));if(failure.reason)section.append(el('p',projectWorkError(failure.reason),'github-error'));if(failure.eligible&&!active&&!item.stopRequested){const fix=el('button','按原范围修正验证');fix.disabled=d.pending;fix.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/correct-validation',{}));section.append(fix);const restart=el('button','结清原失败，从原代码起点重做一次','outline');restart.disabled=d.pending;restart.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(restart);}}
+    if(d.detail.validationFailure){const failure=d.detail.validationFailure;section.append(el('h3','验证明确失败，原改动和完整报告保留'),el('pre',failure.report.report),el('p','原始测试输出保持私有；同范围修正只读取准确同意的冻结验收定义。失败不产生成功提交。','small'));if(failure.reason)section.append(el('p',projectWorkError(failure.reason),'github-error'));if(failure.eligible&&!active&&!item.stopRequested){const fix=el('button','按原范围修正验证');fix.disabled=d.pending;fix.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/correct-validation',failure.requestId?{requestId:failure.requestId}:{}));section.append(fix);if(!item.projectDevelopment){const restart=el('button','结清原失败，从原代码起点重做一次','outline');restart.disabled=d.pending;restart.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(restart);}}}
     if(item.catalog&&!item.stopRequested&&!active&&current?.execution?.reason==='executor_wait_timeout'){const ended=el('button',item.restart?'核对并结清已结束的只读超时':'核对只读超时，结清后从原起点重做一次','outline');ended.disabled=d.pending;ended.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/restart-failure',{}));section.append(ended,el('p','先严格核对完整原件、所有受控进程与只读效果；条件不足时保留原未知，不释放或重发。','small'));}
-    if(item.catalog&&!item.stopRequested&&!active&&d.detail.firstInputContinuation?.eligible){const first=el('button','继续原工作的首次输入');first.disabled=d.pending;first.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/continue-first-input',{}));section.append(first);}
+    if(item.catalog&&!item.stopRequested&&!active&&d.detail.firstInputContinuation?.eligible){const first=el('button','继续原工作的首次输入');first.disabled=d.pending;first.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/continue-first-input',{requestId:d.detail.firstInputContinuation.requestId}));section.append(first);}
+    if(d.detail.validationRecovery&&!active&&!item.stopRequested){
+      const recovery=el('button','核对并记录原验证修正','outline');recovery.disabled=d.pending;
+      recovery.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/reconcile-validation',{requestId:d.detail.validationRecovery.requestId}));
+      section.append(recovery);
+    }
     if(item.catalog&&!item.stopRequested&&!active&&['registered','prepared'].includes(current?.execution?.phase)){const resume=el('button','继续原工作');resume.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/start',{version:item.version,proposalSha256:item.preparation.proposalSha256||item.preparation.proposalDigest}));section.append(resume);}
     if(active){const stop=el('button','停止这项工作的后续动作','outline');stop.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/stop',{}));section.append(stop);}
-    if((current?.stage||item.stage)==='waiting_return'){const receive=el('button','继续接回原成果');receive.disabled=d.pending;receive.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/receive',{}));section.append(receive);}
-    const delivery=current?.delivery||item.delivery;if(delivery){section.append(el('h3',delivery.status==='received'?'真实项目成果':'成果接回状态'),el('p','分支：'+delivery.branch),el('p','提交：'+delivery.H),el('p','成果工作区：'+delivery.workspace));if(delivery.status==='received')section.append(el('p','实现与测试结果已接回；正式审核、合并、启用和本人成果接受仍分别办理。','small'));}
+    const receipt=resultStatus?.receipt;
+    if(receipt||(current?.stage||item.stage)==='waiting_return'){
+      const receive=el('button','继续接回原成果');receive.disabled=d.pending;
+      receive.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/receive',receipt||{}));
+      section.append(receive);
+    }
+    const reportGaps=d.detail.execution?.reportGaps||[],delivery=current?.delivery||item.delivery,currentDelivery=resultStatus?.current===true;
+    if(delivery){
+      const title=delivery.status==='pending'?'成果接回状态':currentDelivery?'真实项目成果':'已接回的历史候选';
+      section.append(el('h3',title),el('p','分支：'+delivery.branch),el('p','提交：'+delivery.H),el('p','成果工作区：'+delivery.workspace));
+      if(currentDelivery)section.append(el('p','实现与测试结果已接回。正式审核、合并、启用和本人成果接受分别办理。','small'));
+      else if(delivery.status==='received')section.append(el('p','这份记录可查看。本轮结果以更新的实施和验证记录为准。','small'));
+    }
+    const formalWork=d.detail.formalWork;
+    if(currentDelivery&&formalWork)section.append(formalReviewPanel(formalWork.source,formalWork));
+    const integration=d.detail.integrationSource,preview=d.detail.integrationPreview,validation=d.detail.integrationValidation;
+    if(currentDelivery&&integration){
+      section.append(el('h3','与当前默认分支整合'),el('p','原工作起点 '+integration.H0+' · 当前 '+integration.target+' '+integration.B,'small'));
+      if(preview?.state==='clean'){
+        section.append(el('p','Git 已在隔离目录生成组合文件树 '+preview.tree,'small'));
+        if(validation?.state==='tested'){
+          section.append(el('p','组合提交 '+validation.H+' 通过本工作登记的测试。','small'));
+          const review=d.detail.integrationFormalWork;
+          if(review)section.append(formalReviewPanel(review.source,review));
+          else{
+            const localReview=d.detail.integrationReview;
+            if(localReview?.state==='returned'){
+              section.append(el('p',localReview.approved?'两家公司已交换并通过该组合的变更审查。':'该组合的变更仍待返工或确认。','small'));
+              for(const [company,seat] of [['OpenAI',localReview.correctness],['Moonshot',localReview.minimality]]){
+                section.append(append(el('details',null,'panel'),el('summary',company+' · '+seat.exchanged.verdict),
+                  el('p',seat.initial.report,'chat-text'),el('p',seat.exchanged.report,'chat-text')));
+              }
+            }else if(localReview)section.append(el('p',localReview.state==='running'?'正在审查该组合的变更。':'该组合的原审查记录待核。','small'));
+            else if(!item.stopRequested){
+              const start=el('button','对组合变更发起双公司审查','outline');start.disabled=d.pending;
+              start.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-review',{H:validation.H,B:validation.B}));
+              section.append(start);
+            }
+          }
+        }
+        else if(validation?.state==='failed')section.append(el('p','组合提交 '+validation.H+' 的登记测试失败。','github-error'));
+        else if(validation)section.append(el('p','本次组合验证的原始结果待核。','small'));
+        else if(current?.projectDevelopment&&!item.stopRequested){
+          const test=el('button','生成组合提交并运行登记测试','outline');test.disabled=d.pending;
+          test.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-verify',{H:integration.H,B:integration.B}));
+          section.append(test);
+        }
+      }
+      else if(preview?.state==='conflicts')section.append(el('p','Git 在这些文件检测到冲突','github-error'),el('pre',preview.paths.join('\n')));
+      else if(preview)section.append(el('p',preview.state==='git_failed'?'本次 Git 整合检查没有得到可用结果。':'整合检查原件待核。','small'));
+      else if(!item.stopRequested&&!reportGaps.some(gap=>gap.H1===delivery?.H)){
+        const check=el('button','检查与当前默认分支能否整合','outline');check.disabled=d.pending;
+        check.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/integration-preview',{H:integration.H,B:integration.B}));
+        section.append(check);
+      }
+    }
+    if(d.detail.explanation?.state==='returned'||currentDelivery&&d.detail.execution?.requests.some(r=>r.H1===delivery?.H&&r.workflow)){
+      const explanation=d.detail.explanation;
+      if(explanation?.state==='returned')section.append(append(el('details',null,'panel'),el('summary','Tech Lead 交付解读'),el('p','候选 '+explanation.H+' · 工作流 '+explanation.workflowRevision,'small'),el('div',explanation.report,'chat-text')));
+      else if(explanation)section.append(el('p',explanation.state==='running'?'正在生成此候选的交付解读。':'原交付解读请求已保留，完整结果待核。','small'));
+      else if(currentDelivery&&!item.stopRequested){
+        const explain=el('button','生成交付解读','outline');explain.disabled=d.pending||active;
+        explain.onclick=()=>projectWorkAction(()=>projectWorkPost('/'+item.id+'/explain',{H:d.detail.explanationHead||delivery.H}));section.append(explain);
+      }
+    }
+    for(const gap of reportGaps)section.append(el('p','验证原件待核'+(gap.H1?' · '+gap.H1:'')+'，当前无法确认注册测试通过。','github-error'));
     for(const result of d.detail.execution?.reports||[]){const report=append(el('details',null,'panel'),el('summary',(result.requestId===item.requestId?'原实施':'原任务补充')+(result.hostEvidenceComplete?' · 宿主失败证据（无完整模型报告）':' · 完整报告与实际改动')),el('div',result.hostReport||result.report?.report||'','chat-text'),el('pre',result.diff||''),el('p',result.tests?'实际注册测试：'+(result.tests.passed?'通过':'未通过'):'本记录没有成功测试声明'));section.append(report);}
     for(const old of d.detail.history||[]){for(const result of old.execution?.reports||[]){section.append(append(el('details',null,'panel'),el('summary','历史版本 '+old.version+' · '+(result.hostEvidenceComplete?'只读超时宿主证据（无完整模型报告）':'原失败与完整报告')),el('p',result.H1?'原提交：'+result.H1:'原结果没有成功提交。','small'),el('div',result.hostReport||result.report?.report||'','chat-text'),el('pre',result.diff||'')));}}
     if(d.detail.execution?.reports?.some(r=>r.status==='completed'&&r.H1||r.status==='no_change')){const supplement=el('button','在原对话中提出补充','outline');supplement.onclick=()=>openWorkSupplement(item);section.append(supplement);}

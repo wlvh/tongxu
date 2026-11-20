@@ -16,6 +16,22 @@ const A='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',B='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbb
 const list={available:true,conversations:[{id:A,title:'A'},{id:B,title:'B'}],busy:[],executionKind:'fixture'};
 const messages=(id:string)=>[{id:id+'-answer',question:'question '+id,status:'completed',answer:'answer '+id,receipt:{reportSha256:id},active:false}];
 const flush=()=>new Promise(r=>setImmediate(r));
+test('a delivered late supplement offers explicit ordinary continuation without showing adoption or coverage',async()=>{
+  const p=await page(),target={source:'A',requestId:A,task:'task-A',operation:A};
+  const row={id:B,target,text:'Late validated change',original:{formalRepair:true,completeCapture:true,delivered:true,adopted:false,
+    coveringCandidate:null,ready:true,endedRepair:{operation:A},recipient:{sessionId:'original-review'},issue:72,report:{report:'Original reply'}}};
+  p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,supplements:[row]})});renderProjectChat()`);
+  const children=p.nodes.get('project-chat-supplements')!.children[0]!.children;
+  assert.ok(children.some(el=>el.textContent.includes('original-review')));
+  assert.ok(children.some(el=>el.textContent==='Original reply'));
+  assert.equal(children.some(el=>/已采用需求|验证通过的候选/.test(el.textContent)),false);
+  assert.equal(p.sends.length,0);
+  const action=children.find(el=>el.textContent==='交回原实施并继续补充')!.onclick();
+  assert.equal(p.sends[0]!.path,'/api/project-secretary/continue-supplements');
+  assert.deepEqual(JSON.parse(p.sends[0]!.options.body),{target});
+  p.sends[0]!.resolve({ok:true,status:202,json:async()=>({})});await flush();
+  p.calls[0]!.resolve(list);await flush();p.calls[1]!.resolve({messages:[],supplements:[row]});await action;
+});
 test('the real conversation selector queues a new read and never paints a delayed A reply under B',async()=>{
   const p=await page();p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:messages(A)})});renderProjectChat()`);
   const pending=p.run('loadProjectChat()');p.calls[0]!.resolve(list);await flush();assert.ok(p.calls[1]!.path.endsWith(A));
@@ -43,6 +59,41 @@ test('active progress continues on another main page and while folded, without t
   p.run('setSecretaryOpen(false)');assert.match(p.nodes.get('secretary-toggle')!.textContent,/处理中/);const poll=p.fireTimer();p.calls[2]!.resolve(list);await flush();p.calls[3]!.resolve({messages:messages(A)});await poll;
   assert.equal(p.run('view'),'tasks');assert.equal(p.run('chatData().messages[0].status'),'completed');assert.equal(p.timers.size,0);p.run('setSecretaryOpen(true)');assert.equal(p.nodes.get('project-chat-send')!.disabled,false);assert.equal(p.mainRenders(),0);assert.ok(p.calls.every(c=>c.path.startsWith('/api/project-secretary')));
 });
+for(const settlesAs of ['completed','queued'])test('an in-flight queue check keeps reading until it settles as '+settlesAs,async()=>{
+  const p=await page(),queued={id:'queued',question:'saved question',status:'queued'},nextQuestion={conversationId:A,requestId:queued.id,checking:true};
+  p.run(`Object.assign(chatData(),${JSON.stringify({ready:true,initialLoaded:true,conversationId:A})})`);
+  const checking=p.run('loadProjectChat()');
+  p.calls[0]!.resolve({...list,nextQuestion});await flush();
+  p.calls[1]!.resolve({messages:[queued]});await checking;
+  assert.equal(p.timers.size,1);
+  const poll=p.fireTimer();
+  p.calls[2]!.resolve({...list,nextQuestion:settlesAs==='queued'?{...nextQuestion,checking:false}:null});await flush();
+  p.calls[3]!.resolve({messages:[settlesAs==='queued'?queued:{...queued,status:'completed',answer:'saved answer',receipt:{reportSha256:'fixture'}}]});
+  await poll;
+  assert.equal(p.run('chatData().messages[0].status'),settlesAs);
+  assert.equal(p.timers.size,0);
+  assert.equal(p.sends.length,0);
+});
+test('a stale withdrawal asks to withdraw only and reads back the running turn after a conflict',async()=>{
+  const p=await page(),message={id:'queued',question:'saved question',status:'queued'};
+  p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:[message]})});renderProjectChat()`);
+  const findButton=(text:string)=>p.nodes.get('project-chat-lines')!.children.flatMap(m=>m.children).find(el=>el.textContent===text);
+  const clicked=findButton('撤回待处理消息')!.onclick();
+  const withdrawal=p.sends[0]!;
+  assert.equal(withdrawal.path,'/api/project-secretary/stop');
+  assert.deepEqual(JSON.parse(withdrawal.options.body),{requestId:message.id,withdrawQueued:true});
+  withdrawal.resolve({status:409,ok:false,json:async()=>({error:'project_chat_withdrawal_state_changed'})});
+  await flush();p.calls[0]!.resolve({...list,busy:[{status:'running'}]});await flush();
+  p.calls[1]!.resolve({messages:[{...message,status:'running',active:true,owned:true}]});await clicked;
+  assert.match(p.nodes.get('project-chat-notice')!.textContent,/撤回没有停止本轮/);
+  assert.equal(findButton('撤回待处理消息'),undefined);
+  assert.equal(p.sends.length,1);
+  const stop=findButton('停止本轮')!.onclick();
+  assert.deepEqual(JSON.parse(p.sends[1]!.options.body),{requestId:message.id});
+  p.sends[1]!.resolve({ok:true,json:async()=>({stopRequested:true})});
+  await flush();p.calls[2]!.resolve(list);await flush();
+  p.calls[3]!.resolve({messages:[{...message,status:'interrupted',problem:'native_turn_interrupted'}]});await stop;
+});
 test('an interrupted owned turn is readable in the companion and never presented as a final answer',async()=>{
   const p=await page();p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:[{id:'stopped',question:'q',status:'interrupted',problem:'native_turn_interrupted',answer:null,active:false,owned:false}]})});renderProjectChat()`);
   const text=(e:any):string=>e.textContent+e.children.map(text).join('');const result=text(p.nodes.get('project-chat-lines'));assert.match(result,/本轮已中断，未形成完整回答/);assert.doesNotMatch(result,/native_turn_interrupted|停止本轮/);assert.equal(p.calls.length,0);
@@ -56,7 +107,7 @@ test('a late reply from another project cannot replace the visible conversation 
 test('a busy secretary keeps the bounded task supplement composer available and posts only a saved intent',async()=>{
  const p=await page(),target={source:'implementation',requestId:'original',task:'a'.repeat(64),operation:'12345678-1234-4234-8234-123456789abc'},receipt={id:'new',text:'保留原结果补充',target,cancelled:false,compiledRequest:null,original:{ready:false,reason:'project_supplement_original_pending_or_unknown'}};
  p.run(`Object.assign(chatData(),${JSON.stringify({...list,ready:true,initialLoaded:true,conversationId:A,messages:[],busy:[{requestId:'secretary-busy',status:'running'}],supplementTargets:[{...target,title:'原任务A'}]})});renderProjectChat()`);
- assert.equal(p.nodes.get('project-chat-send')!.disabled,true);const choose=p.nodes.get('project-chat-recipient')!;choose.value=JSON.stringify(target);choose.onchange();assert.equal(p.nodes.get('project-chat-send')!.disabled,false);const input=p.nodes.get('project-chat-input')!;input.value=receipt.text;input.oninput();p.run('loadProjectChat=async()=>{}');const pending=p.run('sendProjectChat()');assert.equal(p.sends.length,1);assert.equal(p.sends[0]!.path,'/api/project-secretary/supplement');const body=JSON.parse(p.sends[0]!.options.body);assert.deepEqual(body.target,target);assert.equal(body.text,receipt.text);assert.equal(body.conversationId,A);assert.equal(Object.hasOwn(body,'parent'),false);p.sends[0]!.resolve({ok:true,json:async()=>({received:true,newModelInputs:0})});await pending;
+ assert.equal(p.nodes.get('project-chat-send')!.disabled,false);const choose=p.nodes.get('project-chat-recipient')!;choose.value=JSON.stringify(target);choose.onchange();assert.equal(p.nodes.get('project-chat-send')!.disabled,false);const input=p.nodes.get('project-chat-input')!;input.value=receipt.text;input.oninput();p.run('loadProjectChat=async()=>{}');const pending=p.run('sendProjectChat()');assert.equal(p.sends.length,1);assert.equal(p.sends[0]!.path,'/api/project-secretary/supplement');const body=JSON.parse(p.sends[0]!.options.body);assert.deepEqual(body.target,target);assert.equal(body.text,receipt.text);assert.equal(body.conversationId,A);assert.equal(Object.hasOwn(body,'parent'),false);p.sends[0]!.resolve({ok:true,json:async()=>({received:true,newModelInputs:0})});await pending;
  p.run(`chatData().supplements=[${JSON.stringify(receipt)}];renderProjectChat()`);assert.equal(p.nodes.get('project-chat-supplements')!.children[0]!.children[0]!.textContent,'补充已收件');assert.equal(p.mainRenders(),0);
 });
 

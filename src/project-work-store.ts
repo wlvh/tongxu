@@ -1,3 +1,4 @@
+import type {CodingWorkflowPrompt} from './coding-workflow-source.js';
 import type {CurrentCheckRef} from './project-work-current.js';
 import {DatabaseSync} from 'node:sqlite';
 import {writeFile} from 'node:fs/promises';
@@ -9,8 +10,9 @@ import type {ProjectChatScope} from './project-chat.js';
 import type {DockerConfig} from './docker-sandbox.js';
 import type {WorkProposal} from './project-work-contract.js';
 type Row=Record<string,any>;
-export type ProjectWorkDraft={id:string;issue:{number:number;title:string;body:string;url:string;bodySha256:string};conversationId:string;goal:string;draftGoal?:string;createdAt:string;updatedAt:string;revision:number;version:number;requestId:string;stage:string;problem:string|null;stopRequested?:boolean;currentCheck?:CurrentCheckRef;checking?:{directory:string;implementationAI?:import('./implementation-ai.js').ImplementationAI};restart?:{predecessor:{version:number;source:string;requestId:string;operation:string;requestSha256:string;planSha256:string;failureSha256:string;failureKind?:'ended_readonly_timeout'};successor:{version:number;requestId:string}};preparation?:{verification?:DockerConfig;directory:string;H:string;repositoryPath:string;inputSha256:string;proposal?:WorkProposal;captureSha256?:string;pid?:number;observedAt?:string};catalog?:{path:string;sha256:string};source?:string;delivery?:{H:string;previous:string|null;branch:string;workspace:string;status:'pending'|'received';problem:string|null};prior?:Array<Pick<ProjectWorkDraft,'version'|'requestId'|'source'|'catalog'|'preparation'|'delivery'>>;events:Array<{at:string;kind:string;detail:string}>};
+export type ProjectWorkDraft={id:string;issue:{number:number;title:string;body:string;url:string;bodySha256:string};conversationId:string;goal:string;draftGoal?:string;issueReviewRequired?:true;createdAt:string;updatedAt:string;revision:number;version:number;requestId:string;stage:string;problem:string|null;stopRequested?:boolean;projectDevelopment?:true;currentCheck?:CurrentCheckRef;checking?:{directory:string;implementationAI?:import('./implementation-ai.js').ImplementationAI};restart?:{predecessor:{version:number;source:string;requestId:string;operation:string;requestSha256:string;planSha256:string;failureSha256:string;failureKind?:'ended_readonly_timeout'};successor:{version:number;requestId:string}};preparation?:{verification?:DockerConfig;workflowPrompt?:CodingWorkflowPrompt;workflowActive?:true;workflowProblem?:string;directory:string;H:string;repositoryPath:string;inputSha256:string;proposal?:WorkProposal;captureSha256?:string;pid?:number;observedAt?:string};catalog?:{path:string;sha256:string};source?:string;delivery?:{H:string;previous:string|null;branch:string;workspace:string;status:'pending'|'received';problem:string|null};prior?:Array<Pick<ProjectWorkDraft,'version'|'requestId'|'source'|'catalog'|'preparation'|'delivery'>>;events:Array<{at:string;kind:string;detail:string}>};
 export const workProjectKey=(scope:ProjectChatScope)=>canonical([scope.account.id,scope.repository.id,scope.repository.nodeId,scope.repository.fullName.toLowerCase()]);
+export type ProjectDevelopment={work:string;version:number;issue:number;expiresAt:string;approval?:{adoption:string;delegation:string}};
 /** Only preparation/settings and references live here. Execution, authority,
  * resource and report facts continue to belong to their existing queue. */
 export class ProjectWorkStore{
@@ -21,12 +23,62 @@ export class ProjectWorkStore{
     await regular(path,64*1024*1024);const db=new DatabaseSync(path);
     db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS settings(project TEXT PRIMARY KEY,body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS development(project TEXT PRIMARY KEY,body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS issue_proposals(project TEXT NOT NULL,id TEXT NOT NULL,goal TEXT NOT NULL,head TEXT NOT NULL,body_sha256 TEXT,PRIMARY KEY(project,id));
       CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY,project TEXT NOT NULL,issue INTEGER NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS project_work_drafts ON drafts(project,issue);`);
+    const issueColumns=db.prepare('PRAGMA table_info(issue_proposals)').all();
+    if(!issueColumns.some(column=>column.name==='head'))db.exec('ALTER TABLE issue_proposals ADD COLUMN head TEXT');
+    if(!issueColumns.some(column=>column.name==='body_sha256'))db.exec('ALTER TABLE issue_proposals ADD COLUMN body_sha256 TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS issue_proposals_body ON issue_proposals(project,body_sha256)');
     return new ProjectWorkStore(db);
+  }
+  issueProposal(scope:ProjectChatScope,id?:string){
+    const project=workProjectKey(scope);
+    const row=id?this.db.prepare('SELECT id,goal,head FROM issue_proposals WHERE project=? AND id=?').get(project,id)
+      :this.db.prepare('SELECT id,goal,head FROM issue_proposals WHERE project=? ORDER BY rowid DESC LIMIT 1').get(project);
+    return row as {id:string;goal:string;head:string|null}|undefined;
+  }
+  registerIssueProposal(scope:ProjectChatScope,id:string,goal:string,head:string){
+    this.db.prepare('INSERT OR IGNORE INTO issue_proposals (project,id,goal,head) VALUES (?,?,?,?)').run(workProjectKey(scope),id,goal,head);
+    const stored=this.issueProposal(scope,id);
+    if(stored?.goal!==goal)throw new Error('project_issue_draft_request_is_fixed');
+    if(!stored.head)throw new Error('project_issue_draft_original_changed');
+    return stored.head;
+  }
+  sealIssueProposal(scope:ProjectChatScope,id:string,bodySha256:string){
+    const result=this.db.prepare('UPDATE issue_proposals SET body_sha256=? WHERE project=? AND id=? AND (body_sha256 IS NULL OR body_sha256=?)')
+      .run(bodySha256,workProjectKey(scope),id,bodySha256);
+    if(result.changes!==1)throw new Error('project_issue_draft_original_changed');
+  }
+  originatedFromProposal(scope:ProjectChatScope,bodySha256:string){
+    return !!this.db.prepare('SELECT 1 FROM issue_proposals WHERE project=? AND body_sha256=? LIMIT 1').get(workProjectKey(scope),bodySha256);
   }
   settings(scope:ProjectChatScope):{repositoryPath:string;verified?:boolean;problem?:string|null}|null{const r=this.db.prepare('SELECT body FROM settings WHERE project=?').get(workProjectKey(scope)) as Row|undefined;return r?JSON.parse(r.body):null;}
   setSettings(scope:ProjectChatScope,value:{repositoryPath:string;verified?:boolean;problem?:string|null}){this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(project) DO UPDATE SET body=excluded.body').run(workProjectKey(scope),canonical(value));}
+  development(scope:ProjectChatScope):ProjectDevelopment|null{
+    const row=this.db.prepare('SELECT body FROM development WHERE project=?').get(workProjectKey(scope)) as Row|undefined;
+    return row?JSON.parse(row.body):null;
+  }
+  reserveDevelopment(scope:ProjectChatScope,value:ProjectDevelopment){
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      const old=this.development(scope);
+      if(old&&!old.approval&&Date.parse(old.expiresAt)>Date.now()){
+        if(old.work!==value.work||old.version!==value.version)throw new Error('project_development_owner_pending');
+        this.db.exec('COMMIT');return old;
+      }
+      if(old?.approval&&Date.parse(old.expiresAt)>Date.now()){this.db.exec('COMMIT');return old;}
+      this.db.prepare('INSERT INTO development VALUES(?,?) ON CONFLICT(project) DO UPDATE SET body=excluded.body').run(workProjectKey(scope),canonical(value));
+      this.db.exec('COMMIT');return value;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
+  confirmDevelopment(scope:ProjectChatScope,original:ProjectDevelopment,approval:NonNullable<ProjectDevelopment['approval']>){
+    const next={...original,approval};
+    const changed=this.db.prepare('UPDATE development SET body=? WHERE project=? AND body=?').run(canonical(next),workProjectKey(scope),canonical(original));
+    if(changed.changes!==1&&canonical(this.development(scope))!==canonical(next))throw new Error('project_development_approval_changed');
+    return next;
+  }
   list(scope:ProjectChatScope){return (this.db.prepare('SELECT body FROM drafts WHERE project=? ORDER BY rowid DESC LIMIT 128').all(workProjectKey(scope)) as Row[]).map(r=>JSON.parse(r.body) as ProjectWorkDraft);}
   get(scope:ProjectChatScope,id:string){const r=this.db.prepare('SELECT project,body FROM drafts WHERE id=?').get(id) as Row|undefined;if(!r||r.project!==workProjectKey(scope))throw new Error('project_work_outside_project');return JSON.parse(r.body) as ProjectWorkDraft;}
   cleanupScope(account:number,repository:number,id:string):ProjectChatScope{

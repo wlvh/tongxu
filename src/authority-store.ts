@@ -126,7 +126,8 @@ export class AuthorityRecords {
     return {proposalSha256:sha,adoption:p.adoption,scopeId:a.proposal.scopeId,scopeVersion:a.proposal.scopeVersion,material,contentsAreNotAcceptance:true,permissionsGranted:false};
   });}
   forScope(scopeId:string,selection:{item:string;target:string}){return this.transaction(()=>{
-    const {profile}=this.profile(),current=this.currentScope(scopeId),requests=this.all('authority_proposal_prepared').flatMap(e=>{
+    const {profile}=this.profile(),latest=this.latestScope(scopeId);
+    const current=latest&&!this.revoked(latest.proposalSha256)?latest:null,requests=this.all('authority_proposal_prepared').flatMap(e=>{
       const p=this.prepared(e.data.proposalSha256),proposal=p.proposal;
       if(!['adopt_scope','accept_baseline','delegate','confirm_action','control','revoke'].includes(proposal.kind))return [];
       const selected=proposal.kind==='revoke'?this.decision(proposal.decision).proposal:proposal;
@@ -136,13 +137,14 @@ export class AuthorityRecords {
       const scope=selected.kind==='adopt_scope'?selected.scopeId:adoption?.kind==='adopt_scope'?adoption.scopeId:null;
       if(scope!==scopeId)return [];
       const applied=this.events('authority-decision:'+e.data.proposalSha256,'authority_decision_applied')[0]?.data;
-      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo:selected.kind==='delegate'?'selected_target':selected.kind==='confirm_action'?'selected_task':'whole_scope',createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
+      const appliesTo=selected.kind==='delegate'?(selected.projectFiles===true?'project_files':'selected_target'):selected.kind==='confirm_action'?'selected_task':'whole_scope';
+      return [{proposalSha256:e.data.proposalSha256,proposal,appliesTo,createdAt:p.createdAt,applied:Boolean(applied),sourceUrl:applied?.source.sourceUrl??null,revoked:this.revoked(e.data.proposalSha256),ownerComment:ownerDecisionText(e.data.proposalSha256)}];
     });
     const controls=(['implementation','investment','merge'] as const).map(control=>{
       const row=this.db.prepare('SELECT * FROM controls WHERE scope=? AND kind=?').get(scopeId,control) as Row|undefined,owner=this.events(scopeId,'authority_control_applied').filter(e=>e.data.control===control).at(-1)?.data;
       return {control,state:row?.stopped?'stopped' as const:'open' as const,revision:row?.revision??0,recorded:!!row,verifiedOwnerStop:owner?.state==='stopped',effectiveAt:row?.effective_at??null};
     });
-    return {scopeId,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,...sharedAccountApprovalProjection(profile),sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
+    return {scopeId,latestAdoption:latest?.proposalSha256??null,currentAdoption:current?.proposalSha256??null,currentScope:current?this.prepared(current.proposalSha256).proposal:null,controls,requests,repository:profile.repository,issue:profile.issue,executionKind:profile.executionKind,ownerDistinctFromExecutor:profile.ownerId!==profile.executorId,...sharedAccountApprovalProjection(profile),sourceFreshness:'recorded_only_recheck_before_action',permissionsGranted:false};
   });}
   inspectRecordedDecision(sha:string){return this.transaction(()=>{
     const {profile}=this.profile(),d=this.decision(sha),{originalCommentSha256,originalEditorSha256,...saved}=d.source;
@@ -152,11 +154,11 @@ export class AuthorityRecords {
   });}
   private decision(sha:string){const e=this.events('authority-decision:'+sha,'authority_decision_applied')[0];if(!e)throw new Error('verified_owner_decision_missing');return {...e.data,proposal:this.prepared(sha).proposal};}
   private revoked(sha:string){return this.all('authority_revoked').some(e=>e.data.decision===sha);}
-  private currentScope(id:string){return this.events('authority-scope:'+id,'authority_scope_adopted').at(-1)?.data??null;}
-  private adoption(sha:string,current=true){const d=this.decision(sha);if(d.proposal.kind!=='adopt_scope'||this.revoked(sha)||(current&&this.currentScope(d.proposal.scopeId)?.proposalSha256!==sha))throw new Error('current_adopted_scope_required');return d;}
+  private latestScope(id:string){return this.events('authority-scope:'+id,'authority_scope_adopted').at(-1)?.data??null;}
+  private adoption(sha:string,current=true){const d=this.decision(sha);if(d.proposal.kind!=='adopt_scope'||this.revoked(sha)||(current&&this.latestScope(d.proposal.scopeId)?.proposalSha256!==sha))throw new Error('current_adopted_scope_required');return d;}
   private proposalContext(p:OwnerProposal){
     if(p.kind==='adopt_scope'){
-      const old=this.currentScope(p.scopeId);
+      const old=this.latestScope(p.scopeId);
       if((old?.proposalSha256??null)!==p.previousAdoption)throw new Error('owner_scope_previous_version_changed');
       if(this.events('authority-scope:'+p.scopeId,'authority_scope_adopted').some(e=>e.data.scopeVersion===p.scopeVersion))throw new Error('owner_scope_new_version_required');
     }else if(p.kind==='revoke'){this.decision(p.decision);}
@@ -169,8 +171,19 @@ export class AuthorityRecords {
   private observe(value:OwnerObservation){
     const {profile,profileSha256}=this.profile();requireOwnerObservation(value,profile,profileSha256,Date.now());
     const object='authority-comment:'+value.commentId,previous=this.events(object,'authority_source_observed').at(-1)?.data;
-    if(previous&&(Date.parse(value.updatedAt)<Date.parse(previous.updatedAt)||Date.parse(value.readAt)<Date.parse(previous.readAt)||value.updatedAt===previous.updatedAt&&value.sourceBodySha256!==previous.sourceBodySha256))throw new Error('owner_source_order_conflict');
-    const {commentRaw,graphRaw,...data}=value;
+    const {commentRaw,graphRaw,readAt,...facts}=value;
+    if(previous){
+      const {readAt:previousReadAt,originalCommentSha256:_comment,originalEditorSha256:_editor,...previousFacts}=previous;
+      if(Date.parse(value.updatedAt)<Date.parse(previous.updatedAt)||
+        value.updatedAt===previous.updatedAt&&value.sourceBodySha256!==previous.sourceBodySha256)
+        throw new Error('owner_source_order_conflict');
+      if(Date.parse(readAt)<Date.parse(previousReadAt)){
+        // Concurrent work can finish reading the same unchanged approval in a different order.
+        if(canonical(facts)!==canonical(previousFacts))throw new Error('owner_source_order_conflict');
+        return previous;
+      }
+    }
+    const data={...facts,readAt};
     const entry={...data,originalCommentSha256:this.blob(commentRaw),originalEditorSha256:this.blob(graphRaw)};
     if(!previous||canonical(entry)!==canonical(previous))this.event('authority_source_observed',object,entry);return entry;
   }
@@ -216,8 +229,8 @@ export class AuthorityRecords {
     const a=this.adoption(p.adoption),scope=a.proposal;this.freshDecision(p.adoption,observations);
     if(request.scopeId!==scope.scopeId||request.scopeVersion!==scope.scopeVersion||request.scopeBodySha256!==scopeBodyHash(scope.body))throw new Error('owner_request_scope_mismatch');
     if(p.kind==='confirm_action'&&(role!==p.performerRole||actionHash(request)!==actionHash(p.request)))throw new Error('owner_confirmation_exact_action_mismatch');
-    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.targets.includes(request.target)||!p.actions.includes(request.action)||request.paths.some(x=>!p.paths.includes(x))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
-    if(request.action==='implement'&&!request.paths.length)throw new Error('implementation_paths_required');
+    if(p.kind==='delegate'&&(!p.roles.includes(role)||!p.actions.includes(request.action)||p.projectFiles!==request.projectFiles||!p.projectFiles&&(!p.targets.includes(request.target)||request.paths.some(x=>!p.paths.includes(x)))||request.resourceRefs.some(x=>!p.resourceRefs.includes(x))))throw new Error('owner_delegation_boundary_mismatch');
+    if(request.action==='implement'&&!request.projectFiles&&!request.paths.length)throw new Error('implementation_paths_required');
     const stops=this.db.prepare('SELECT kind FROM controls WHERE scope=? AND stopped=1').all(scope.scopeId) as Row[];
     if(stops.some(s=>s.kind==='investment'||s.kind==='implementation'&&request.action==='implement'||s.kind==='merge'&&request.action==='merge'))throw new Error('owner_action_stopped');
     let binding:Row|null=null;

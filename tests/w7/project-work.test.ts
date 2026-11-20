@@ -24,7 +24,64 @@ import {repositoryFiles,repositoryFile,checkWorkMaterial} from '../../src/projec
 import type {ProjectChatScope} from '../../src/project-chat.js';
 import {captureWorkBilling,sealWorkCurrent,assertWorkCurrent,assertCurrentAttemptEnded} from '../../src/project-work-current.js';
 import {fixture as repairFixture} from '../w5/repair-fixture.js';
+import {supplementPlanningDirectory,supplementPlanningStatus} from '../../src/project-supplement-planning.js';
+import {readReviewedSupplement} from '../../src/project-supplement-review.js';
+import {IssueImplementationControls,supplementTestPlan} from '../../src/issue-implementation-controls.js';
 const scope={account:{id:1,login:'fixture'},repository:{id:2,nodeId:'REPO2',fullName:'fixture/project'}} as ProjectChatScope;
+test('a formal successor has its own supplement review version and does not consume a legacy approval',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'tongxu-supplement-review-versions-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const old={repository:'fixture/project',target:{source:'A',requestId:randomUUID(),task:'A',operation:randomUUID()},H1:'a'.repeat(40),requestId:'supplement-'+randomUUID(),text:'one saved request'};
+ const next={...old,H1:'b'.repeat(40),formalBase:'c'.repeat(64)};
+ const original=supplementPlanningDirectory(root,old),successor=supplementPlanningDirectory(root,next);
+ assert.notEqual(original,successor);
+ assert.notEqual(successor,supplementPlanningDirectory(root,{...next,formalBase:'d'.repeat(64)}));
+ await mkdir(original,{recursive:true});const stored=canonical({input:old});await writeFile(join(original,'request.json'),stored);
+ await mkdir(join(root,'supplement-reviews'));await writeFile(join(root,'supplement-reviews',old.requestId+'.json'),'invalid fixture legacy locator');
+ assert.equal(await readReviewedSupplement(root,next,'fixture'),null);
+ await assert.rejects(readReviewedSupplement(root,old,'fixture'),SyntaxError);
+ assert.equal(await supplementPlanningStatus(root,next,{} as any),null);
+ assert.equal((await readFile(join(original,'request.json'))).toString(),stored);
+});
+test('published repair planning reads the tested Git successor and retains the ordinary origin requirements',async t=>{
+ const repo=await mkdtemp(join(tmpdir(),'tongxu-supplement-planning-base-'));t.after(()=>rm(repo,{recursive:true,force:true}));
+ await git(repo,['init']);const save=async(text:string)=>{
+   await writeFile(join(repo,'sample.txt'),text);await git(repo,['add','sample.txt']);
+   await git(repo,['-c','user.name=fixture','-c','user.email=fixture@local','commit','-m',text]);
+   return git(repo,['rev-parse','HEAD']);
+ };
+ const H0=await save('original ordinary result'),H1=await save('actual formal repair');
+ const target={source:'A',requestId:randomUUID(),task:'A',operation:randomUUID()},id=randomUUID();
+ const issue={number:72,body:'Original adopted issue',url:'https://github.com/fixture/project/issues/72'};
+ const published={previousH:H0,workspace:repo,reviewOperation:'fresh-dual-review',reviewMaterialSha256:'a'.repeat(64),requirementsSha256:'b'.repeat(64),
+   publicationSha256:'c'.repeat(64),fixSha256:'d'.repeat(64),testPlans:[],protectedPaths:[],image:'sha256:'+'e'.repeat(64),
+   contract:'Verified repair contract',revisions:[{requirement:'Keep A working',acceptance:['A test remains applicable']}]};
+ const ended={operation:'formal-original',round:1,H:H1,sessionId:'original-writer',report:{decision:'repaired'},published};
+ const controls={supplementSource:async()=>({ready:true,root:{issue:issue.number},rootRequest:{issue:{bodySha256:hash(issue.body)}},
+   entry:{id:'A',repository:'fixture/project',projectFiles:true,workRequestId:target.requestId},latest:{result:{H1:H0},plan:{workspace:repo}},request:{workflowPrompt:{}}}),
+   generated:new Map([['A',{}]]),read:async()=>issue,checkEndedRepair:async(_target:unknown,_id:string,_text:string,H:string)=>assert.equal(H,H1)};
+ const plan=await IssueImplementationControls.prototype.supplementPlanningInput.call(controls as any,target,id,'late change',ended);
+ assert.equal(plan.input.requestId,'supplement-'+id);assert.equal(plan.input.H1,H1);
+ assert.equal(plan.input.formalBase,hash(canonical(published)));
+ assert.equal(await git(plan.source.path,['show',plan.source.H+':sample.txt']),'actual formal repair');
+ assert.match(plan.issue.body,/Original adopted issue[\s\S]*Verified repair contract[\s\S]*A test remains applicable/);
+ await assert.rejects(IssueImplementationControls.prototype.supplementPlanningInput.call(controls as any,target,id,'late change',
+   {...ended,published:{...published,previousH:'0'.repeat(40)}}),/formal_repair_supplement_current_base_required/);
+ const ordinary=join(repo,'ordinary-plan.json'),formal=join(repo,'formal-plan.json');
+ const executor={kind:'docker',image:'fixture/current',node:'/usr/bin/node',client:'/fixture/docker',endpoint:'unix:///fixture/docker.sock'};
+ const oldTest={id:'work-acceptance',argv:[executor.node,'--test','old.mjs'],timeoutMs:30000};
+ const fixedTest={id:'formal-test',argv:[executor.node,'--test','fix.mjs'],timeoutMs:30000};
+ const oldBytes=canonical({schemaVersion:2,executor,tools:[oldTest]});await writeFile(ordinary,oldBytes);
+ const original={testPlan:ordinary,testPlanSha256:hash(oldBytes)},writePlan=async(config:unknown)=>{
+   const bytes=canonical(config);await writeFile(formal,bytes);return {...published,testPlans:[{path:formal,sha256:hash(bytes)}]};
+ };
+ const proof=await writePlan({schemaVersion:2,executor,tools:[fixedTest]});
+ const amendment={inputSha256:'f'.repeat(64),reviewRun:'a'.repeat(64),validation:{description:'late check',script:'0'},requirement:'late change',acceptance:['late check runs'],replies:[]};
+ const merged=JSON.parse(await supplementTestPlan(original,amendment,proof));
+ assert.deepEqual(merged.tools.slice(0,2),[oldTest,fixedTest]);assert.equal(merged.executor.image,published.image);assert.equal(merged.tools.length,3);
+ const changed=await writePlan({schemaVersion:2,executor:{...executor,endpoint:'unix:///different.sock'},tools:[fixedTest]});
+ await assert.rejects(supplementTestPlan(original,amendment,changed),/formal_repair_supplement_test_config_changed/);
+ await assert.rejects(supplementTestPlan(original,amendment,proof),/formal_repair_supplement_evidence_missing/);
+});
 test('current billing observations use only official metadata and immutable expiry; partial active attempts cannot be replaced',async t=>{
  const f=await repairFixture(t),parent=join(f.root,'attempt');await mkdir(parent);const directory=join(parent,'billing'),observed=await captureWorkBilling(f.config,directory,()=>{}),sent=(await readFile(join(directory,'stdin.ndjson'),'utf8')).trim().split('\n').map(x=>JSON.parse(x));
  assert.deepEqual(sent.map(x=>x.method),['initialize','initialized','account/read','config/read','account/rateLimits/read']);assert.equal((await readFile(f.trace,'utf8')).includes('model-input'),false);
@@ -196,14 +253,23 @@ for(const latest of ['no_change','incomplete','unknown'])for(const blocked of [f
   if(blocked)await writeFile(join(f.workspace,'external.txt'),'retain external work');
   if(blocked)await assert.rejects(f.work.receive(scope,f.id),/workspace_changed/);else if(latest==='no_change')assert.deepEqual(await f.work.receive(scope,f.id),{status:'no_change',newCommit:false});else await assert.rejects(f.work.receive(scope,f.id),/result_not_complete/);
   const d=f.state();assert.equal(d.delivery!.H,f.H1);assert.equal(d.delivery!.status,blocked?'pending':'received');assert.equal(d.stage,blocked||latest!=='no_change'?'waiting_return':'delivered');assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);if(!blocked)assert.equal(await git(f.workspace,['rev-parse','HEAD']),f.H1);
-  assert.deepEqual(f.reports,['original']);assert.deepEqual(f.resources,['resource-original']);assert.deepEqual(await readFile(join(f.evidence,'receipt-'+f.H1+'.json')),intent);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
+  const verifiedNoChange=!blocked&&latest==='no_change';
+  assert.deepEqual(f.reports,verifiedNoChange?['original','latest']:['original']);assert.deepEqual(f.resources,verifiedNoChange?['resource-original','resource-latest']:['resource-original']);assert.deepEqual(await readFile(join(f.evidence,'receipt-'+f.H1+'.json')),intent);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
 });
 for(const match of ['missing','ambiguous'])test('pending receipt refuses '+match+' original result sample',async t=>{
   const f=await pendingWork(t,'completed');f.setRows(match==='missing'?[f.latest]:[f.original,{...f.original,id:'other'},f.latest]);await assert.rejects(f.work.receive(scope,f.id),/pending_result_not_unique/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,'pending');assert.deepEqual(f.reports,[]);assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);
 });
-for(const target of ['original','latest'])for(const gate of ['report','resources'])test('pending receipt retains exact result at explicit '+target+' '+gate+' refusal',async t=>{
-  const f=await pendingWork(t,'completed');if(gate==='report')f.setBadReport(target);else f.setUnsettled('resource-'+target);
+for(const target of ['original','latest'])for(const gate of ['report','resources'])for(const latest of target==='latest'?['completed','no_change']:['completed'])test('pending receipt retains exact result at explicit '+target+' '+gate+' refusal ('+latest+')',async t=>{
+  const f=await pendingWork(t,latest);if(gate==='report')f.setBadReport(target);else f.setUnsettled('resource-'+target);
   await assert.rejects(f.work.receive(scope,f.id),gate==='report'?/report_changed/:/resources_unresolved/);assert.equal(f.state().delivery!.H,f.H1);assert.equal(f.state().delivery!.status,target==='original'?'pending':'received');assert.equal(await exists(join(f.directory,'receipt-'+f.H2)),false);assert.equal(await git(f.source,['rev-parse',f.branch]),f.H1);
+});
+test('a canceled newest supplement leaves the earlier complete result eligible after its predecessor receipt',async t=>{
+  const f=await pendingWork(t,'completed');
+  f.setRows([f.original,f.latest,{id:'withdrawn',result:{status:'cancelled_unstarted'}}]);
+  assert.equal((await f.work.receive(scope,f.id) as any).H,f.H2);
+  assert.deepEqual(f.reports,['original','latest']);
+  assert.deepEqual(f.resources,['resource-original','resource-latest']);
+  assert.equal(f.state().delivery?.status,'received');
 });
 test('a failed latest receipt retains H2 pending with the truly received H1 predecessor',async t=>{
   const f=await pendingWork(t,'completed'),spawn=childProcess.spawn;
@@ -231,7 +297,7 @@ test('known V1 full capture retains detail, confirmation and start preflight aft
   const f=await preparationCapture(t),{readWorkProposal}=await import('../../src/project-work-preparation.js'),read=await readWorkProposal(f.directory,f.source),at=new Date().toISOString(),trace=await readFile(f.trace);
   assert.equal(read.ready,true);const id=randomUUID(),draft={id,issue:{number:1,title:'Synthetic V1',body:'fixed',bodySha256:hash('fixed')},version:1,stage:'prepared',goal:'exact',revision:0,events:[],preparation:{directory:f.directory,H:f.H,repositoryPath:f.source.path,...read,observedAt:at}};
   const owner={ownerId:1,executorId:1,ghExecutable:'/usr/bin/unused-gh',ghSha256:'a'.repeat(64),executionKind:'fixture',maxObservationAgeMs:300000,maxGrantDurationMs:86400000,sharedAccountApproval:{decisionReference:{kind:'recorded_user_decision',sha256:'a'.repeat(64)}}};
-  const work=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(draft)},active:new Map(),config:{owner},verify:async()=>{},readIssue:async()=>({...draft.issue,defaultHead:f.H}),save:(_scope:any,d:any)=>d,initializeQueue:async()=>{throw Error('synthetic_start_preflight_passed');},job:(_scope:any,_id:any,fn:any)=>fn({stop:false})});
+  const work=Object.assign(Object.create(ProjectWork.prototype),{store:{get:()=>structuredClone(draft)},active:new Map(),config:{owner,root:f.root},verify:async()=>{},readIssue:async()=>({...draft.issue,defaultHead:f.H}),save:(_scope:any,d:any)=>d,initializeQueue:async()=>{throw Error('synthetic_start_preflight_passed');},job:(_scope:any,_id:any,fn:any)=>fn({stop:false})});
   const detail=await work.detail(scope,id);assert.equal(detail.draft.preparation.proposalDigest,read.proposalDigest);
   const payload={version:1,proposalSha256:read.proposalDigest};assert.deepEqual((await work.confirmation(scope,id,payload)).allowedPaths,['code.mjs']);
   await assert.rejects(work.start(scope,id,payload),/synthetic_start_preflight_passed/);assert.deepEqual(await readFile(f.trace),trace);assert.equal(await exists(join(f.directory,'environment')),false);

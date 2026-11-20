@@ -1,5 +1,5 @@
 import {isAdditionalProgram} from './ai-programs.js';
-import {ExtraCliSession,parseAcpPrompt,checkAcpSessionEvents,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions} from './additional-cli.js';
+import {ExtraCliSession,parseAcpPrompt,checkAcpSessionEvents,extraProfileArgs,extraProfileFiles,extraInitializeParams,acpOptions,retainKimiDataConfig} from './additional-cli.js';
 import {codexConversation,cliVersion,capturedExecutableMatches,claudeMetadata} from './cli-capabilities.js';
 import {checkCodexChoice,checkCodexSelected,codexThreadChoice,codexTurnChoice,claudeChoiceArgs,checkClaudeChoice,checkClaudeSelected,capturedCodexModels,checkMetadataModelRequests,claudeSelectionObservation} from './ai-execution.js';
 import type {AIModelChoice} from './ai-catalog.js';
@@ -17,7 +17,7 @@ import { regular,exists,processState } from './repair-workspace.js';
 import { canonical } from './comparison.js';
 import { hash } from './snapshot.js';
 import { inspectRolePrompt,requireIssuedRolePrompt,type RolePrompt } from './role-prompts.js';
-import {messageControlInput,messageControlDigest,messageReplySchema,type MessageParticipant,type MessagePlan,type MessageNativeControl,type MessageNativeResume} from './message-contract.js';
+import {additionalMessageRole,messageControlInput,messageControlDigest,messageReplySchema,type MessageParticipant,type MessagePlan,type MessageNativeControl,type MessageNativeResume} from './message-contract.js';
 import {BoundedCodexSession,readOwnedCodexSession,type NativeOptions} from './repair-native.js';
 import type {NativeControlPolicy,NativeControlRequest} from './native-control-contract.js';
 type Row=Record<string,any>;
@@ -290,7 +290,7 @@ async function inspectUnstartedOwnedMessage(o:RuntimeSpec){
 class ACPMessageDialog extends ReadonlyDialog{
   private constructor(private spec:RuntimeSpec,private session:ExtraCliSession,route:Row){super(spec,session.rpc,route);}
   static async openExtra(o:RuntimeSpec){
-    if(!isAdditionalProgram(o.participant.tool)||o.nativeControls||o.nativeResume||!o.participant.aiModel||!['issue_owner','acceptance'].includes(o.participant.role))throw Error('additional_cli_message_profile_required');
+    if(!isAdditionalProgram(o.participant.tool)||o.nativeControls||o.nativeResume||!o.participant.aiModel||!additionalMessageRole(o.participant.tool,o.participant.role))throw Error('additional_cli_message_profile_required');
     requireIssuedRolePrompt(o.assembly,o.participant.role);await newStage(o.directory);save(join(o.directory,'runtime-spec.json'),o);
     const session=await ExtraCliSession.open(o.participant.tool,o.participant.executable,o.directory,o.assembly.system+'\n'+messagePolicy,o.executionKind==='fixture',true);
     try{
@@ -311,7 +311,9 @@ class ACPMessageDialog extends ReadonlyDialog{
 async function acpOriginals(o:RuntimeSpec){
   if(!isAdditionalProgram(o.participant.tool))throw Error('additional_cli_message_profile_required');const originals:Record<string,Buffer>={};
   for(const name of ['runtime-spec.json','executable.json','launch.json','process.json','route.json','stdin.ndjson','stdout.ndjson','stderr.txt','exit.json','capture-status.json','capture-failure.json','profile.json','initialize.json','session.json','selection.json','profile-observed.json','prompt-boundaries.ndjson',...Object.keys(extraProfileFiles(o.participant.tool,o.directory,o.assembly.system+'\n'+messagePolicy))])if(await exists(join(o.directory,name)))originals[name]=await regular(join(o.directory,name),16*1024*1024);
-  if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');return originals;
+  if(!originals['runtime-spec.json']||canonical(JSON.parse(originals['runtime-spec.json'].toString()))!==canonical(o))throw Error('message_original_runtime_spec_changed');
+  if(originals['profile.json'])await retainKimiDataConfig(o.directory,JSON.parse(originals['profile.json'].toString()),originals);
+  return originals;
 }
 async function inspectUnstartedACPMessage(o:RuntimeSpec){
   const originals=await acpOriginals(o);if(originals['launch.json']){

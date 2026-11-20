@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {createContext,runInContext} from 'node:vm';
 
@@ -29,13 +30,76 @@ async function page(implementation=false){
   const nodes=new Map<string,Element>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id)!;},navigation=['projects','github','local-history','overview','tasks','events'].map(view=>{const n=new Element('button');n.dataset.view=view;return n;});
   const document:{[key:string]:any}={activeElement:null,getElementById:get,createElement:(tag:string)=>new Element(tag),createTextNode:(text:string)=>Object.assign(new Element('text'),{textContent:text}),querySelector:(selector:string)=>get(selector),querySelectorAll:()=>navigation};
   const fetchCalls:Array<{path:string;options:any;resolve:(value:any)=>void;reject:(error:Error)=>void}>=[];
-  const context=createContext({queueMicrotask,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},formalReviewPanel:()=>new Element('section'),implementationPanel:()=>new Element('section'),renderProjectChat:()=>{},loadProjectChat:()=>{},chatData:()=>({}),setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);runInContext(await readFile(new URL('../../../web/workbench/reception.js',import.meta.url),'utf8'),context);if(implementation)runInContext(await readFile(new URL('../../../web/workbench/implementation.js',import.meta.url),'utf8'),context);
+  const context=createContext({queueMicrotask,TextEncoder,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111',subtle:crypto.subtle},formalReviewPanel:()=>new Element('section'),implementationPanel:()=>new Element('section'),renderProjectChat:()=>{},loadProjectChat:()=>{},chatData:()=>({}),setSecretaryOpen:()=>{},fetch:(path:string,options:any)=>new Promise((resolve,reject)=>fetchCalls.push({path,options,resolve,reject})),location:{hash:'#'+'a'.repeat(64)},document,setTimeout,clearTimeout});runInContext(full.slice(0,end),context);runInContext(await readFile(new URL('../../../web/workbench/reception.js',import.meta.url),'utf8'),context);if(implementation)runInContext(await readFile(new URL('../../../web/workbench/implementation.js',import.meta.url),'utf8'),context);
   (context as any).fakeRead=(path:string)=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}));
   runInContext("githubApi=fakeRead;gh.account={id:7,login:'fixture'};entryInfo={githubProjects:true};",context);
   const run=(text:string)=>runInContext(text,context),state=()=>JSON.parse(run('JSON.stringify(gh)'));const findFilter=():Element=>{const visit=(n:Element):Element|undefined=>n.tag==='input'&&n.type==='search'?n:n.children.map((x:Element)=>visit(x)).find(Boolean);return visit(get('content'))!;};return {calls,fetchCalls,run,state,nodes,document,findFilter};
 }
 const data=(id:number,kind:string,number:number)=>({repository:{id,fullName:'fixture/repo'+id,description:'Fixture repository',private:true,archived:false,url:'https://github.com/fixture/repo'+id},kind,items:[{number,title:'repo'+id,labels:[],state:'open',updatedAt:'2026-10-30T00:00:00Z',author:'fixture',url:'https://github.com/fixture/repo'+id+'/issues/'+number}],page:1,hasNext:false,connection:{account:{id:7,login:'fixture'},checkedAt:'2026-10-30T00:00:00Z'}});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+for(const kind of ['issues','pulls'])test('GitHub '+kind+' detail updates integration notice across older lists and project switches',async()=>{
+  const p=await page(true),H0='a'.repeat(40),advanced='b'.repeat(40),repository={...data(1,kind,74).repository,defaultHead:H0};
+  const option={id:'approved-project',H0,projectFiles:true,protectedPaths:[],issues:[{number:74,goal:'Fixture',bodySha256:createHash('sha256').update('adopted').digest('hex')}]};
+  p.run(`entryInfo.issueImplementation=true;view='github';render=()=>{};chooseGithubProject(${JSON.stringify(repository)});Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}]});`);
+  const text=(node:any):string=>[node.textContent,...node.children.map(text)].join(' ');
+  const panel=()=>text(p.run("implementationPanel()"));
+  p.calls[0]!.resolve({...data(1,'issues',74),repository,connection:{...data(1,'issues',74).connection,sequence:1}});await flush();
+  assert.doesNotMatch(panel(),/仍需核对/);
+  const detail=p.run(`openGithubItem('${kind}',{number:74,title:'Existing work'})`);
+  const item={...data(1,kind,74).items[0],body:'adopted'};
+  p.calls[2]!.resolve({repository:{...repository,defaultHead:advanced},item,connection:{sequence:3}});await detail;
+  p.calls[1]!.resolve({...data(1,'pulls',94),repository,connection:{...data(1,'pulls',94).connection,sequence:2}});await flush();
+  assert.equal(p.state().pulls.items[0].number,94);
+  assert.equal(p.state().selected.defaultHead,advanced);
+  assert.match(panel(),/从 a{12} 开始/);
+  assert.match(panel(),/GitHub 默认分支 b{12} · 仍需核对/);
+  assert.equal(p.run('implementationData().options[0].H0'),H0);
+  assert.equal(p.fetchCalls.length,0);
+  // The later provider observation belongs to a request started earlier.
+  const latest='c'.repeat(40), list=p.run("loadGithubItems('issues')");
+  const earlierObserved=p.run(`openGithubItem('${kind}',{number:74,title:'Earlier provider snapshot'})`);
+  p.calls[3]!.resolve({...data(1,'issues',74),repository:{...repository,defaultHead:latest},connection:{...data(1,'issues',74).connection,sequence:5}});await list;
+  p.calls[4]!.resolve({repository:{...repository,defaultHead:advanced},item,connection:{sequence:4}});await earlierObserved;
+  assert.equal(p.state().selected.defaultHead,latest);
+  const late=p.run(`openGithubItem('${kind}',{number:74,title:'Pending detail'})`);
+  p.run("chooseGithubProject({id:2,defaultHead:'other'})");
+  p.calls[5]!.resolve({repository:{...repository,defaultHead:'d'.repeat(40)},item,connection:{sequence:6}});await late;
+  assert.equal(p.state().selected.defaultHead,'other');
+  assert.equal(p.nodes.get('report-dialog')!.open,false);
+  assert.equal(p.fetchCalls.length,0);
+});
+for(const exactBody of [true,false])test(`GitHub Issue detail uses the project grant only for the exact adopted Issue body (${exactBody?'exact':'changed'})`,async()=>{
+  const p=await page(true),body='## 已审定需求\n支持默认标签。',repository=data(1,'issues',74).repository;
+  const option={id:'approved-project',projectFiles:true,issues:[{number:74,bodySha256:createHash('sha256').update(body).digest('hex')}]};
+  p.run(`entryInfo.issueImplementation=true;entryInfo.projectWork=true;gh.selected=${JSON.stringify(repository)};view='github';render=()=>{};`);
+  const opened=p.run("openGithubItem('issues',{number:74,title:'Existing goal'})");
+  p.calls[0]!.resolve({repository,item:{...data(1,'issues',74).items[0],body:exactBody?body:body+'\n新要求。'}});
+  await flush();
+  assert.equal(p.fetchCalls[0]!.path,'/api/implementation');
+  const response={available:true,options:[option],entries:[]};
+  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>response});
+  await opened;
+  assert.equal(p.fetchCalls.length,1);
+  const action=p.nodes.get('report-meta')!.children.find(child=>child.tag==='button');
+  assert.equal(action?.textContent,exactBody?'开始实施':'交给同序准备');
+  if(!exactBody)return;
+  const starting=action.onclick();
+  action.onclick();
+  assert.equal(p.fetchCalls.length,2);
+  assert.equal(p.fetchCalls[1]!.path,'/api/implementation/approved-project/prepare');
+  const request=JSON.parse(p.fetchCalls[1]!.options.body);
+  assert.equal(request.issueNumber,74);
+  assert.equal(p.fetchCalls[1]!.options.headers['X-Tongxu-Project'],'1');
+  p.fetchCalls[1]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared',id:request.requestId,repositoryObservation:{repository:{...repository,defaultHead:'b'.repeat(40)},sequence:3}})});
+  await flush();
+  assert.equal(p.fetchCalls[2]!.path,'/api/implementation/approved-project/start');
+  assert.equal(p.state().selected.defaultHead,'b'.repeat(40));
+  assert.deepEqual(JSON.parse(p.fetchCalls[2]!.options.body),{requestId:request.requestId});
+  p.fetchCalls[2]!.resolve({ok:true,status:202,json:async()=>({})});
+  await flush();
+  p.fetchCalls[3]!.resolve({ok:true,status:200,json:async()=>response});
+  await starting;
+});
 test('project reports are nonmodal so the companion can remain usable; legacy standalone reports keep their modal behavior',async()=>{
   const p=await page();p.run('showWorkbenchReport()');assert.equal(p.nodes.get('report-dialog')!.modal,false);assert.equal(p.nodes.get('report-dialog')!.dataset.projectPanel,'true');p.run("$('report-dialog').close();entryInfo={githubProjects:false};showWorkbenchReport()");assert.equal(p.nodes.get('report-dialog')!.modal,true);
 });
@@ -181,10 +245,41 @@ for(const supplement of [false,true])for(const [status,label] of [['no_change','
  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({status,H0:request.H0,H1:null,report:{report:'FULL ORIGINAL TERMINAL REPORT'}})});await pending;assert.match(p.nodes.get('report-meta')!.textContent,new RegExp(label));assert.equal(p.nodes.get('report-body')!.textContent,'FULL ORIGINAL TERMINAL REPORT');assert.equal(p.fetchCalls.length,1);
 });
 
+test('implementation report shows truncated previews, exact log download and a distinct retained-evidence gap',async()=>{
+ const p=await page(true),H0='a'.repeat(40),sha256='b'.repeat(64);
+ p.run(`gh.selected={id:1,fullName:'fixture/repo1'};
+   globalThis.URL={createObjectURL:blob=>{globalThis.downloadBytes=blob;return 'blob:fixture';},revokeObjectURL:()=>{}};
+   const newElement=document.createElement;
+   document.createElement=tag=>{const node=newElement(tag);node.click=()=>{globalThis.downloadName=node.download;};return node;};
+   globalThis.setTimeout=fn=>fn();`);
+ const pending=p.run("openImplementationReport('impl',{id:'retained',issue:74})");
+ p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({status:'validation_failed',validationFailed:true,H0,H1:null,tests:{passed:false,tools:[{id:'unit',stdout:'short preview',stdoutOriginal:{sha256,bytes:20000,previewTruncated:true}}],unexecutedTools:['later']}})});
+ await pending;
+ assert.match(p.nodes.get('report-body')!.textContent,/stdout 预览已截断/);
+ assert.match(p.nodes.get('report-body')!.textContent,/未执行：later/);
+ const logs=p.nodes.get('implementation-report-logs')!;
+ assert.equal(logs.hidden,false);assert.match(logs.children[0].children[1].textContent,new RegExp(sha256));
+ const download=logs.children[0].children[0].onclick();
+ const request=p.fetchCalls[1]!;assert.equal(request.path,'/api/implementation-report/impl/retained/logs/unit/stdout');assert.equal(request.options.headers['X-Tongxu-Project'],'1');
+ const raw=new Blob(['exact original log']);request.resolve({ok:true,status:200,blob:async()=>raw});await download;
+ assert.equal(p.run('downloadBytes'),raw);assert.equal(p.run('downloadName'),'unit-stdout.log');
+ const fallback=p.run("openImplementationReport('impl',{id:'retained',issue:74})");
+ p.fetchCalls[2]!.resolve({ok:true,status:200,json:async()=>({status:'partial_or_unknown',observationOnly:true,H0,H1:null,evidenceGap:'retained_additions_unverified',diff:'tracked file diff'})});
+ await fallback;
+ assert.match(p.nodes.get('report-body')!.textContent,/tracked file diff/);assert.match(p.nodes.get('report-body')!.textContent,/新增文件证据待核/);
+ assert.equal(logs.hidden,true);assert.equal(logs.children.length,0);
+});
+
 for(const supplement of [false,true])for(const switchProject of [false,true])test(`registered ${supplement?'supplement':'implementation'} UI continues its original ID and guards project changes (${switchProject?'switch':'same'})`,async()=>{
  const p=await page(true),option={id:'impl',H0:'a'.repeat(40),allowedPaths:['src/value.mjs'],executionKind:'fixture',issues:[{number:74,goal:'A bounded change'}]},request={id:'original-registered',issue:74,phase:'registered',stopped:false,controllerActive:false,supplement};
+ const workflow={revision:'b'.repeat(40),executionContract:'coding-loop-v2',promptSha256:'c'.repeat(64)};
+ Object.assign(request,{workflow:supplement?null:workflow,lastRecordedAt:'2026-11-19T06:05:00.000Z'});
  p.run(`gh.selected={id:1,fullName:'fixture/repo1'};view='github';Object.assign(implementationData(),{loaded:true,available:true,options:[${JSON.stringify(option)}],entries:[{id:'impl',requests:[${JSON.stringify(request)}]}]});`);
  const buttons:any[]=[],labels:string[]=[];const collect=(n:any)=>{if(n.tag==='button')buttons.push(n);if(n.tag==='strong')labels.push(n.textContent);for(const child of n.children??[])collect(child);};collect(p.run('implementationPanel()'));assert.ok(labels.some(text=>text.startsWith((supplement?'原任务补充 · Issue #':'Issue #')+'74 · 已登记，待补准备')));
+ const rendered=p.run('implementationPanel()'),links:string[]=[],text=(n:any):string=>{if(n.tag==='a')links.push(n.href);return n.textContent+(n.children??[]).map(text).join('');};
+ const visible=text(rendered);assert.match(visible,/最近记录/);
+ if(supplement)assert.doesNotMatch(visible,/本次请求固定的工作流/);
+ else{assert.match(visible,/本次请求固定的工作流 bbbbbbbbbbbb · coding-loop-v2/);assert.ok(links.includes('https://github.com/wlvh/coding-workflow/commit/'+workflow.revision));}
  const button=buttons.find(b=>b.textContent==='继续原请求'),pending=button.onclick();button.onclick();assert.equal(p.fetchCalls.length,1);assert.deepEqual(JSON.parse(p.fetchCalls[0]!.options.body),{requestId:request.id,issueNumber:74});
  if(switchProject)p.run("chooseGithubProject({id:2,fullName:'fixture/repo2'})");
  p.fetchCalls[0]!.resolve({ok:true,status:200,json:async()=>({phase:'prepared',id:request.id})});await flush();

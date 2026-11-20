@@ -1,5 +1,5 @@
 import {assertWorkCurrent} from './project-work-current.js';
-import {requireValidationFailure,assertValidationClosure,type ValidationFailureProof} from './implementation-validation.js';
+import {requireValidationFailure,assertValidationClosure,validValidationCorrectionDirectory,type ValidationFailureProof} from './implementation-validation.js';
 import {requireFirstSendProof,type FirstSendProof} from './implementation-first-send.js';
 import type {DatabaseSync} from 'node:sqlite';
 import {readFileSync,existsSync} from 'node:fs';
@@ -112,15 +112,29 @@ export class IssueImplementations {
   });}
   firstSendCandidate(source:string,id:string){
     const f=this.fixed(source,id),dispatches=f.events.filter(e=>e.kind==='issue_implementation_dispatched');
-    if(f.terminal||f.events.some(e=>e.kind==='issue_implementation_stopped')||!f.selected||dispatches.length!==1||f.events.some(e=>e.kind==='issue_implementation_first_input'))throw new Error('implementation_first_send_not_available');
-    return {dispatchEvent:dispatches[0]!.id,plan:f.selected.plan};
+    if(f.terminal||f.events.some(e=>['issue_implementation_stopped','issue_implementation_first_input_dispatch'].includes(e.kind))||
+       !f.selected||dispatches.length!==1)throw new Error('implementation_first_send_not_available');
+    const checkpoint=f.events.find(e=>e.kind==='issue_implementation_first_input')?.data;
+    return {dispatchEvent:dispatches[0]!.id,plan:f.selected.plan,checkpoint};
   }
   firstInput(source:string,id:string,proof:FirstSendProof,observations:OwnerObservation[]){return this.transaction(()=>{
     const record=requireFirstSendProof(proof),candidate=this.firstSendCandidate(source,id),f=this.fixed(source,id);
     if(candidate.dispatchEvent!==record.dispatchEvent||f.registered.requestSha256!==record.requestSha256||candidate.plan.sha256!==record.planSha256||candidate.plan.operationRoot!==record.operationRoot)throw new Error('implementation_first_send_binding_changed');
     this.checkValue(source,id,observations);
-    const ref={nativeDirectory:record.nativeDirectory,requestSha256:record.requestSha256,planSha256:record.planSha256,firstInputSha256:record.firstInputSha256,proofSha256:hash(canonical(record)),proof:record};
+    const guard=candidate.checkpoint?candidate.checkpoint.replacementDispatchGuard:'v1';
+    const ref={nativeDirectory:record.nativeDirectory,requestSha256:record.requestSha256,planSha256:record.planSha256,firstInputSha256:record.firstInputSha256,proofSha256:hash(canonical(record)),proof:record,
+      ...(guard?{replacementDispatchGuard:guard}:{})};
+    if(candidate.checkpoint){
+      if(canonical(candidate.checkpoint)!==canonical(ref))throw new Error('implementation_first_send_checkpoint_changed');
+      return candidate.checkpoint;
+    }
     this.event('first_input',this.key(source,id),ref);return ref;
+  });}
+  firstInputDispatch(source:string,id:string,reference:Row,observations:OwnerObservation[]){return this.transaction(()=>{
+    const {checkpoint}=this.firstSendCandidate(source,id);
+    if(!checkpoint||canonical(checkpoint)!==canonical(reference))throw new Error('implementation_first_send_checkpoint_changed');
+    this.checkValue(source,id,observations);
+    this.event('first_input_dispatch',this.key(source,id),{nativeDirectory:reference.nativeDirectory,firstInputSha256:reference.firstInputSha256});
   });}
   recordValidationFailure(source:string,id:string,proof:ValidationFailureProof){return this.transaction(()=>{
     const record=requireValidationFailure(proof),f=this.fixed(source,id);if(!f.dispatched||f.terminal||record.requestSha256!==f.registered.requestSha256||record.operationRoot!==f.selected?.plan.operationRoot||record.planSha256!==f.selected.plan.sha256)throw new Error('implementation_validation_binding_changed');
@@ -176,10 +190,12 @@ export class IssueImplementations {
     const result={status:'failed',requestId:id,task:f.request.task,H0:f.request.workspaceRequest.candidate.H,H1:null,report:record.report,sessionId:record.sessionId,completeCapture:true,testsDirectory:record.testsDirectory,tests:JSON.parse(bytes.toString()),treeSha256:record.treeSha256,firstInputContinuation:this.state(source,id).firstInputContinuation??undefined,failureClosure:{failureSha256:hash(canonical(record)),lease:proof.lease,originalFilesPreserved:true,newModelRequests:0}};
     const resultSha256=this.blob(result);this.event('terminal',this.key(source,id),{operation:s.operation,resultSha256});this.updateOperation(s.operation,{...this.operation(s.operation),phase:'returned',resultSha256,controllerReturned:true},true);return this.state(source,id);
   });}
-  reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,observations:OwnerObservation[]){return this.transaction(()=>{
+  reserveValidationCorrection(source:string,id:string,proof:ValidationFailureProof,input:string,definition:Row,nativeDirectory:string,observations:OwnerObservation[]){return this.transaction(()=>{
     const f=this.fixed(source,id),record=requireValidationFailure(proof);if(f.events.some(e=>e.kind==='issue_implementation_validation_correction')||!f.events.some(e=>e.kind==='issue_implementation_validation_failed'&&canonical(e.data)===canonical(record)))throw new Error('implementation_validation_correction_consumed');
     if(f.request.workspaceRequest.authorization.maxRepairRounds!==1||f.selected?.plan.resourceRequests.length||this.db.prepare("SELECT 1 FROM meta WHERE key LIKE 'resource-ledger:%'").get())throw new Error('implementation_validation_empty_budget_required');
-    this.checkValue(source,id,observations);const ref={failureSha256:hash(canonical(record)),inputSha256:hash(input),definition, nativeDirectory:record.operationRoot+'/validation-correction/native'};this.event('validation_correction',this.key(source,id),ref);return ref;
+    if(!validValidationCorrectionDirectory(record.operationRoot,nativeDirectory))throw new Error('implementation_validation_binding_changed');
+    this.checkValue(source,id,observations);assertValidationClosure(proof);
+    const ref={failureSha256:hash(canonical(record)),inputSha256:hash(input),definition,nativeDirectory};this.event('validation_correction',this.key(source,id),ref);return ref;
   });}
   complete(source:string,id:string,result:Row){return this.transaction(()=>{
     const f=this.fixed(source,id);if(f.terminal){if(f.terminal.resultSha256!==hash(canonical(result)))throw new Error('implementation_terminal_is_fixed');return this.state(source,id);}
@@ -227,6 +243,9 @@ export class IssueImplementations {
     const result=JSON.parse(this.bytes(value.resultSha256).toString()),state=result.status==='completed'?'completed':['no_change','cancelled_unstarted'].includes(result.status)?'cancelled':'failed';
     return {state,executionKind:action.executionKind==='fixture'?'fixture':'external',source:'verified_issue_implementation_capture',proof:Buffer.from(canonical({operation,resultSha256:value.resultSha256,state,completeCapture:result.completeCapture,H1:result.H1}))};
   }
-  state(source:string,id:string){const f=this.fixed(source,id);return {source,id,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.events.some(e=>e.kind==='issue_implementation_validation_failed')&&!f.events.some(e=>e.kind==='issue_implementation_validation_correction')?'validation_failed':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,definitionConsent:f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data??null,readonlyFailure:f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data??null,validationFailure:f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data??null,validationCorrection:f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
+  state(source:string,id:string){
+    const f=this.fixed(source,id),prompt=f.request.workflowPrompt;
+    const workflow=prompt?{revision:prompt.revision,executionContract:prompt.executionContract,promptSha256:prompt.sha256}:null;
+    return {source,id,workflow,lastRecordedAt:f.events.at(-1)?.observed_at??null,task:f.request.task,logicalOwner:f.request.continuation?.logicalOwner??f.request.task,supplement:!!f.request.continuation,issue:f.request.issue.number,H0:f.request.workspaceRequest.candidate.H,phase:f.terminal?'returned':f.events.some(e=>e.kind==='issue_implementation_validation_failed')&&!f.events.some(e=>e.kind==='issue_implementation_validation_correction')?'validation_failed':f.dispatched?'active_or_unknown':f.selected?'prepared':'registered',stopped:f.events.some(e=>e.kind==='issue_implementation_stopped'),reason:f.events.filter(e=>e.kind==='issue_implementation_problem').at(-1)?.data.reason??null,operation:f.selected?.operation??null,requestSha256:f.registered.requestSha256,plan:f.selected?.plan??null,definitionConsent:f.events.find(e=>e.kind==='issue_implementation_definition_consent')?.data??null,readonlyFailure:f.events.filter(e=>e.kind==='issue_implementation_readonly_failure_recorded').at(-1)?.data??null,validationFailure:f.events.find(e=>e.kind==='issue_implementation_validation_failed')?.data??null,validationCorrection:f.events.find(e=>e.kind==='issue_implementation_validation_correction')?.data??null,firstInputContinuation:f.events.find(e=>e.kind==='issue_implementation_first_input')?.data??null,result:f.terminal?JSON.parse(this.bytes(f.terminal.resultSha256).toString()):null};}
   requests(source:string){return (this.db.prepare("SELECT data FROM events WHERE kind='issue_implementation_registered' ORDER BY id").all() as Row[]).map(e=>JSON.parse(e.data).value).filter(e=>e.source===source).map(e=>this.state(source,e.id));}
 }
